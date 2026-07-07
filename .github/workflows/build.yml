@@ -1,0 +1,62 @@
+name: Build
+
+# Build the installable macOS bundle.
+# - workflow_dispatch: build on demand from the Actions tab.
+# - push of a v* tag: a release tag also produces the artifact.
+#
+# macOS only on purpose: Podium's PTY layer is Unix-only today and the app is
+# macOS-first (Windows/Linux are kept in mind but not yet packaged).
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build (macos-latest)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Cargo workspace root (target/ lives here, not under src-tauri/).
+          workspaces: .
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Tauri's own dmg step uses HFS+, which is broken on macOS 26+, so we
+      # build the .app here and package the .dmg ourselves (APFS) via
+      # scripts/make-dmg.sh — the same path `just build` uses locally.
+      # `tauri build` runs beforeBuildCommand (pnpm build) first, producing dist.
+      - name: Build app bundle
+        run: pnpm tauri build --bundles app
+
+      - name: Package DMG (APFS)
+        run: ./scripts/make-dmg.sh
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: podium-macos
+          # Cargo workspace: target/ is at the repo root, not under src-tauri/.
+          path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
