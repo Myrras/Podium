@@ -1,0 +1,331 @@
+.pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header mirrors the terminal pane: kind icon, title, right-aligned actions. */
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.kindIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.checkbox {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.checkbox:focus {
+  box-shadow: none;
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.name[data-done="true"] {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.closeBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.closeBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* Scrollable content; the composer and thread grow with the to-do. */
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-4);
+}
+
+/* Issue/PR links pinned to the top of the to-do; clickable, agent-managed. */
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.linkIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.linkAnchor {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.linkAnchor:hover {
+  text-decoration: underline;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.field > label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* Description label shares its row with the Save button (shown when dirty). */
+.fieldHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+}
+
+.fieldHeader label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* Global styles cover input/select; textarea needs the same treatment. */
+.description,
+.commentInput {
+  font-family: inherit;
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+  width: 100%;
+  resize: vertical;
+  user-select: text;
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out);
+}
+
+/* Give the description room by default so longer detail reads without
+ * scrolling; still user-resizable. */
+.description {
+  min-height: 220px;
+}
+
+.description:focus,
+.commentInput:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.description::placeholder,
+.commentInput::placeholder {
+  color: var(--text-faint);
+}
+
+.comments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comment {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 2px solid var(--border);
+  padding-left: var(--sp-3);
+}
+
+.commentMeta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.commentAuthor {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.commentTime {
+  color: var(--text-faint);
+}
+
+/* Per-comment edit/delete controls, pushed to the right of the meta row.
+ * Hidden until the comment (or thread) is hovered to keep the thread calm. */
+.commentActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.comment:hover .commentActions,
+.comment:focus-within .commentActions {
+  opacity: 1;
+}
+
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.iconBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.confirmLabel {
+  color: var(--text-muted);
+}
+
+.linkBtn,
+.confirmDelete {
+  padding: 2px 6px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.linkBtn {
+  color: var(--text-muted);
+}
+
+.linkBtn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.confirmDelete {
+  color: #e5484d;
+  font-weight: 600;
+}
+
+.confirmDelete:hover {
+  background: color-mix(in srgb, #e5484d 15%, transparent);
+}
+
+.confirmDelete:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.commentText {
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+/* Inline comment editor: textarea over right-aligned Cancel / Save. */
+.editComment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.editActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+/* Comment composer: textarea above a right-aligned submit. */
+.addComment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-end;
+}
+
+.addComment .commentInput {
+  width: 100%;
+}

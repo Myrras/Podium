@@ -1,0 +1,313 @@
+/* A floating island: rounded, bordered, elevated; clips its sections. */
+.sidebar {
+  height: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: islandIn var(--dur-3) var(--ease-out);
+}
+
+@keyframes islandIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+/* ── Project groups ────────────────────────────────────────────────────────── */
+
+/* Scrollable stack of project groups; the footer stays pinned below it. */
+.groups {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.projectGroup {
+  flex-shrink: 0;
+}
+
+.projectGroup + .projectGroup {
+  border-top: 1px solid var(--border);
+}
+
+/* ── Project header ────────────────────────────────────────────────────────── */
+
+/* Click-to-collapse header row for one project group. */
+.projectHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-2);
+  min-height: 36px;
+  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.projectHeader:hover {
+  background: var(--surface-hover);
+}
+
+/* The caret icon wrapper rotates 90° when the group is expanded. */
+.caretWrap {
+  display: flex;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.caretWrap[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+/* Square initials badge for a project (from podium.yml or derived). */
+.projectBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-contrast);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+/* podium.yml problem indicator; the message rides in the title tooltip. */
+.configError {
+  display: flex;
+  align-items: center;
+  color: var(--warning);
+  flex-shrink: 0;
+}
+
+.projectName {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inline rename field; sized to sit in the name's slot without shifting the row. */
+.projectNameInput {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-1);
+  margin: -1px 0;
+  outline: none;
+}
+
+/* Grip handle: the drag source. Faint until the row is hovered. */
+.dragHandle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-faint);
+  cursor: grab;
+  opacity: 0;
+  transition:
+    opacity var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.projectHeader:hover .dragHandle {
+  opacity: 1;
+}
+
+.dragHandle:hover {
+  color: var(--text);
+}
+
+.dragHandle:active {
+  cursor: grabbing;
+}
+
+/* The project being dragged fades; the current drop target shows a top rule. */
+.dragging {
+  opacity: 0.5;
+}
+
+.dropTarget {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+.projectAction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.projectAction:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ── Group body ────────────────────────────────────────────────────────────── */
+/*
+ * Grid trick for smooth height animation from auto → 0 without JS.
+ * The inner wrapper must have overflow:hidden; the outer wrapper uses
+ * grid-template-rows to animate the available space for the inner child.
+ */
+
+.groupBody {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-3) var(--ease-out);
+}
+
+.groupBodyCollapsed {
+  grid-template-rows: 0fr;
+}
+
+.groupBodyInner {
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Subsections (Agents / Processes / Terminals) ──────────────────────────── */
+
+.subsection {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+/* Divider between stacked subsections. */
+.subsection + .subsection {
+  border-top: 1px solid var(--border);
+}
+
+/* ── Subsection header ─────────────────────────────────────────────────────── */
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.panelIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.panelTitle {
+  flex: 1;
+}
+
+.placeholder {
+  padding: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-start;
+}
+
+/* "+" affordance in a section header (e.g. new terminal). */
+.addBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.addBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* List of process rows inside a subsection (the groups area scrolls). */
+.rows {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-1) 0;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────────── */
+
+/* Pinned below the scrollable groups; hosts the add-project affordance. */
+.footer {
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.addProjectBtn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  background: none;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.addProjectBtn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}

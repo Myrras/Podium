@@ -1,0 +1,108 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.row:hover {
+  background: var(--surface-hover);
+}
+
+.row[data-selected="true"] {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inline rename field; sized to sit in the name's slot without shifting the row. */
+.nameInput {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-1);
+  margin: -1px 0;
+  outline: none;
+}
+
+/* Agent activity hint (working…/idle/needs input) — quiet, right-aligned. */
+.activity {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.activity[data-activity="waiting"] {
+  color: var(--accent);
+}
+
+/* Yield the space to the hover/selection actions so the row stays uncluttered. */
+.row:hover .activity,
+.row:focus-within .activity,
+.row[data-selected="true"] .activity {
+  display: none;
+}
+
+/* Actions appear on hover/selection to keep rows quiet. */
+.actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.row:hover .actions,
+.row:focus-within .actions,
+.row[data-selected="true"] .actions {
+  display: flex;
+}
+
+.action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.action:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.actionDanger:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}

@@ -1,0 +1,140 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// The process store pulls in the IPC layer; jsdom has no Tauri bridge.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(() => Promise.resolve([])),
+  Channel: class {
+    onmessage: (message: unknown) => void = () => undefined;
+  },
+}));
+
+const lastOutput = vi.fn<(id: string) => number | null>();
+const viewport = vi.fn<(id: string) => string | null>();
+vi.mock("../lib/terminalRegistry", () => ({
+  disposeTerminal: vi.fn(),
+  getLastOutputAt: (id: string) => lastOutput(id),
+  readViewportText: (id: string) => viewport(id),
+}));
+
+const notifyAgentWaiting = vi.fn();
+vi.mock("../lib/notify", () => ({
+  notifyAgentWaiting: (name: string) => notifyAgentWaiting(name),
+}));
+
+import type { ProcessInfo, ProcessKind, ProcessStatus } from "../ipc/types";
+import { useProcessStore } from "./processStore";
+import { useAgentActivityStore } from "./agentActivityStore";
+
+function proc(
+  id: string,
+  kind: ProcessKind,
+  status: ProcessStatus,
+  name = id,
+): ProcessInfo {
+  return {
+    id,
+    projectId: "p",
+    name,
+    kind,
+    status,
+    restartPolicy: "never",
+    command: "run",
+  };
+}
+
+const RUNNING: ProcessStatus = { state: "running", pid: 1, since: "now" };
+const AGENT: ProcessKind = { kind: "agent", adapter: "claude-code" };
+
+function seed(processes: ProcessInfo[]) {
+  useProcessStore.setState({ processes });
+}
+
+function tick() {
+  useAgentActivityStore.getState().tick();
+}
+
+describe("agentActivityStore", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAgentActivityStore.setState({ activity: {} });
+    lastOutput.mockReturnValue(null);
+    viewport.mockReturnValue(null);
+  });
+
+  it("marks recent output as working", () => {
+    lastOutput.mockReturnValue(Date.now());
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBe("working");
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
+  });
+
+  it("marks a quiet prompt screen as waiting and notifies once", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+    seed([proc("a1", AGENT, RUNNING, "claude")]);
+
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBe("waiting");
+    expect(notifyAgentWaiting).toHaveBeenCalledOnce();
+    expect(notifyAgentWaiting).toHaveBeenCalledWith("claude");
+
+    // Still on the same prompt next poll — no repeat alert.
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a quiet non-prompt screen as idle", () => {
+    lastOutput.mockReturnValue(null);
+    viewport.mockReturnValue("Compiled successfully.");
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
+  });
+
+  it("ignores non-agent and non-running processes", () => {
+    seed([
+      proc("svc", { kind: "service" }, RUNNING),
+      proc("a2", AGENT, { state: "notStarted" }),
+    ]);
+    tick();
+    expect(useAgentActivityStore.getState().activity).toEqual({});
+  });
+
+  it("drops agents that are no longer running", () => {
+    viewport.mockReturnValue("(y/n)");
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBe("waiting");
+
+    seed([
+      proc("a1", AGENT, {
+        state: "exited",
+        code: 0,
+        crashed: false,
+        at: "now",
+      }),
+    ]);
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBeUndefined();
+  });
+
+  it("re-alerts after leaving and re-entering the waiting state", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("Continue? (y/n)");
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+
+    // Agent resumes working, then stalls on another prompt.
+    lastOutput.mockReturnValue(Date.now());
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBe("working");
+
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(2);
+  });
+});

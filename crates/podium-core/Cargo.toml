@@ -1,0 +1,40 @@
+[package]
+name = "podium-core"
+description = "UI-agnostic core for Podium: process orchestration, PTY management, agent adapters, and the built-in MCP server. Zero Tauri dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# `io-std` on top of the shared features: the MCP bridge proxies stdio.
+tokio = { workspace = true, features = ["io-std"] }
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+portable-pty = "0.9"
+nix = { version = "0.30", features = ["signal", "process"] }
+# `podium.yml` project configuration.
+serde_yaml_ng = "0.10"
+# Shell-safe quoting for agent launch command lines.
+shlex = "1"
+# Built-in MCP server. rmcp is pinned exactly (API churn); all rmcp usage is
+# isolated to `src/mcp/`.
+rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }
+axum = "0.8"
+schemars = "1"
+# ANSI stripping for `get_process_output` (agents read plain text).
+strip-ansi-escapes = "0.2"
+# CancellationToken for MCP server shutdown (already in-tree via rmcp).
+tokio-util = "0.7"
+# HTTP client for the stdio MCP bridge (`mcp/bridge.rs`). Localhost plain
+# HTTP only, so no TLS backend is needed.
+reqwest = { version = "0.13.3", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+# Integration tests call the MCP tools directly (Parameters extractor).
+rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }

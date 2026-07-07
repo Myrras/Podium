@@ -1,0 +1,15 @@
+/* Host for the xterm element. The background matches --term-bg so the
+   padding gutter blends into the terminal canvas. */
+.host {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-2);
+  background: var(--term-bg);
+  overflow: hidden;
+}
+
+/* xterm sizes itself to the host; make sure it fills it. */
+.host :global(.xterm) {
+  height: 100%;
+}

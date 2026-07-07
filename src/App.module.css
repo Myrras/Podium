@@ -1,0 +1,163 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0 var(--sp-3);
+  /* A slim brand strip that blends into the canvas — no dividing line. */
+  background: var(--canvas);
+}
+
+/* Windows: the strip IS the (custom) title bar, so the controls run flush to the
+   top-right corner — drop the right padding the macOS brand strip uses. */
+.titlebarWindows {
+  padding-right: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+/* Right-hand cluster: settings gear (+ window controls on Windows). Opt out of
+   the drag region so the buttons receive clicks instead of moving the window. */
+.titlebarRight {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.settingsBtn {
+  width: 44px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.settingsBtn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border: none;
+  color: var(--text);
+}
+
+.settingsBtn:active:not(:disabled) {
+  transform: none;
+  background: var(--surface-2);
+}
+
+.settingsBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Playful quarter-turn on hover, echoing the brand logo's tilt. */
+.settingsBtn svg {
+  transition: transform var(--dur-3) var(--ease-spring);
+}
+
+.settingsBtn:hover svg {
+  transform: rotate(90deg);
+}
+
+.logo {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  align-self: center;
+  flex-shrink: 0;
+  transition: transform var(--dur-3) var(--ease-spring);
+}
+
+/* Playful tilt when hovering the brand. */
+.brand:hover .logo {
+  transform: rotate(-8deg) translateY(-1px);
+}
+
+.product {
+  font-weight: 700;
+  font-size: var(--fs-lg);
+  letter-spacing: 0.01em;
+}
+
+.tagline {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  /* The "desktop" the islands float on: canvas shows in the padding and the
+     gap between the sidebar island and the work column. */
+  background: var(--canvas);
+  padding: var(--gap-island);
+  gap: 0; /* sidebarResizer element fills the gap */
+}
+
+/* Drag handle between sidebar island and work area. Visually it IS the gap —
+   width matches --gap-island. A centred 3px accent line appears on hover so
+   the resize affordance is discoverable without adding visible chrome at rest. */
+.sidebarResizer {
+  width: var(--gap-island);
+  flex-shrink: 0;
+  cursor: col-resize;
+  position: relative;
+}
+
+.sidebarResizer::after {
+  content: "";
+  position: absolute;
+  top: 10%;
+  bottom: 10%;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  background: transparent;
+  border-radius: 2px;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.sidebarResizer:hover::after {
+  background: var(--accent);
+}
+
+/* The main work island: rounded, bordered, elevated, like the sidebar. */
+.work {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  animation: islandIn var(--dur-3) var(--ease-out);
+}
+
+@keyframes islandIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}

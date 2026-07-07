@@ -1,0 +1,190 @@
+.rows {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-1) 0;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+/* The always-visible line: checkbox, text/toggle, hover actions. */
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.rowMain:hover {
+  background: var(--surface-hover);
+}
+
+/* Button wrapping the text; click opens the to-do detail dialog. */
+.textToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.textToggle:focus {
+  box-shadow: none;
+}
+
+/* Small "N comments" hint sitting after the text. */
+.commentCount {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* Native checkbox, sized down and tinted; global input styles reset. */
+.checkbox {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.checkbox:focus {
+  box-shadow: none;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row[data-done="true"] .text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+/* A row that is part of a multi-select. */
+.row[data-selected="true"] .rowMain {
+  background: var(--accent-bg, var(--surface-2));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Bar under the list to hand every selected to-do to one agent. */
+.selectionBar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.selectionSpawn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.selectionSpawn:hover {
+  background: var(--surface-2);
+}
+
+.selectionClear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.selectionClear:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* Spawn-agent and remove appear on hover/focus to keep rows quiet. */
+.action,
+.remove {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.rowMain:hover .action,
+.rowMain:hover .remove,
+.row:focus-within .action,
+.row:focus-within .remove {
+  display: flex;
+}
+
+.action:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.remove:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* Inline add input under the rows; compact against the global sizing. */
+.addForm {
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-3);
+}
+
+.addInput {
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-2);
+}

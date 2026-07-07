@@ -1,0 +1,753 @@
+//! Integration tests for the built-in MCP server (phase 6): lifecycle,
+//! bearer auth, the tool surface, and the agent recursion guard.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use podium_core::mcp::tools::{
+    AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, GetProcessOutputParams,
+    ListTodosParams, PodiumTools, SpawnAgentParams, UpdateTodoParams,
+};
+use podium_core::mcp::{self, McpServer};
+use podium_core::{
+    AdapterRegistry, AgentAdapter, AgentLaunchCtx, CoreError, CoreResult, LaunchPlan, Orchestrator,
+    ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
+};
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolResult;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::time::{sleep, timeout};
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"podium-test","version":"0.0.0"}}}"#;
+
+async fn start_server(config_dir: std::path::PathBuf) -> (Arc<Orchestrator>, McpServer) {
+    let orch = Arc::new(Orchestrator::new());
+    let server = mcp::start(Arc::clone(&orch), config_dir)
+        .await
+        .expect("mcp server starts");
+    (orch, server)
+}
+
+/// One raw HTTP/1.1 POST to `<base_url>/mcp`; returns (status, full response).
+async fn http_post_mcp(base_url: &str, token: Option<&str>, body: &str) -> (u16, String) {
+    let addr = base_url.strip_prefix("http://").expect("http url");
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    let auth = token
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    let mut response = Vec::new();
+    timeout(TEST_TIMEOUT, stream.read_to_end(&mut response))
+        .await
+        .expect("timely response")
+        .expect("read response");
+    let text = String::from_utf8_lossy(&response).into_owned();
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("status line");
+    (status, text)
+}
+
+/// Text of the first content block of a tool result (shape-agnostic).
+fn first_text(result: &CallToolResult) -> String {
+    let value = serde_json::to_value(result).expect("serialize tool result");
+    value["content"][0]["text"]
+        .as_str()
+        .expect("text content")
+        .to_string()
+}
+
+async fn wait_for_exit(orch: &Orchestrator, id: ProcessId) {
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let status = orch
+                .list_processes(None)
+                .into_iter()
+                .find(|p| p.id == id)
+                .expect("process listed")
+                .status;
+            if matches!(status, ProcessStatus::Exited { .. }) {
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for process to exit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn starts_on_ephemeral_localhost_port_and_wipes_config_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_dir = dir.path().join("mcp");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::write(config_dir.join("agent-stale.json"), "{}").expect("write stale file");
+
+    let (_orch, server) = start_server(config_dir.clone()).await;
+
+    assert!(server.url().starts_with("http://127.0.0.1:"));
+    assert_eq!(server.token().len(), 64, "64-char hex token");
+    assert!(server.token().chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(config_dir.is_dir(), "config dir recreated");
+    assert!(
+        !config_dir.join("agent-stale.json").exists(),
+        "stale configs from previous runs are wiped"
+    );
+
+    // The stdio bridge discovers the server through this file.
+    let connect_file = config_dir.join("server.json");
+    let connect: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&connect_file).expect("server.json written"))
+            .expect("valid json");
+    assert_eq!(connect["url"], server.url());
+    assert_eq!(connect["token"], server.token());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&connect_file)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "server.json must be private");
+    }
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_requests_without_or_with_wrong_token() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_orch, server) = start_server(dir.path().join("mcp")).await;
+
+    let (status, _) = http_post_mcp(server.url(), None, INITIALIZE).await;
+    assert_eq!(status, 401, "missing token is rejected");
+
+    let (status, _) = http_post_mcp(server.url(), Some("wrong-token"), INITIALIZE).await;
+    assert_eq!(status, 401, "wrong token is rejected");
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn initialize_succeeds_with_the_bearer_token() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_orch, server) = start_server(dir.path().join("mcp")).await;
+
+    let (status, response) = http_post_mcp(server.url(), Some(server.token()), INITIALIZE).await;
+    assert_eq!(status, 200);
+    assert!(
+        response.contains("protocolVersion"),
+        "initialize result returned: {response}"
+    );
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_list_projects_and_read_ansi_stripped_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let projects = tools.list_projects().await.expect("list_projects");
+    assert!(
+        first_text(&projects).contains(&project_id.to_string()),
+        "list_projects returns the open project"
+    );
+
+    let pid = orch
+        .add_process(
+            project_id,
+            ProcessSpec {
+                name: "colors".to_string(),
+                command: r"printf '\033[31mred\033[0m plain\n'".to_string(),
+                cwd: dir.path().to_path_buf(),
+                env: Vec::new(),
+                kind: ProcessKind::Service,
+                restart_policy: RestartPolicy::Never,
+            },
+        )
+        .await
+        .expect("add process");
+    orch.start_process(pid).await.expect("start process");
+    wait_for_exit(&orch, pid).await;
+
+    let output = tools
+        .get_process_output(Parameters(GetProcessOutputParams {
+            process_id: pid.to_string(),
+            lines: None,
+        }))
+        .await
+        .expect("get_process_output");
+    let text = first_text(&output);
+    assert!(text.contains("red"), "output captured: {text:?}");
+    assert!(!text.contains('\u{1b}'), "ANSI escapes stripped: {text:?}");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn todo_tools_update_and_comment_round_trip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let added = tools
+        .add_todo(Parameters(AddTodoParams {
+            project_id: project_id.to_string(),
+            text: "wire up auth".to_string(),
+        }))
+        .await
+        .expect("add_todo");
+    let todo_id = serde_json::from_str::<serde_json::Value>(&first_text(&added))
+        .expect("todo json")["id"]
+        .as_str()
+        .expect("todo id")
+        .to_string();
+
+    let updated = tools
+        .update_todo(Parameters(UpdateTodoParams {
+            project_id: project_id.to_string(),
+            todo_id: todo_id.clone(),
+            text: Some("wire up OAuth".to_string()),
+            description: Some("use the shared provider".to_string()),
+        }))
+        .await
+        .expect("update_todo");
+    let updated_text = first_text(&updated);
+    assert!(updated_text.contains("wire up OAuth"), "{updated_text:?}");
+    assert!(
+        updated_text.contains("use the shared provider"),
+        "{updated_text:?}"
+    );
+
+    tools
+        .comment_todo(Parameters(CommentTodoParams {
+            project_id: project_id.to_string(),
+            todo_id: todo_id.clone(),
+            text: "handler stubbed out".to_string(),
+            author: Some("claude".to_string()),
+        }))
+        .await
+        .expect("comment_todo");
+
+    let linked = tools
+        .add_todo_link(Parameters(AddTodoLinkParams {
+            project_id: project_id.to_string(),
+            todo_id: todo_id.clone(),
+            url: "https://gitlab.example.com/acme/web/-/issues/42".to_string(),
+            label: Some("#42 Fix login".to_string()),
+        }))
+        .await
+        .expect("add_todo_link");
+    let linked_text = first_text(&linked);
+    assert!(linked_text.contains("#42 Fix login"), "{linked_text:?}");
+
+    // A non-http(s) url is rejected.
+    let bad = tools
+        .add_todo_link(Parameters(AddTodoLinkParams {
+            project_id: project_id.to_string(),
+            todo_id: todo_id.clone(),
+            url: "ftp://nope".to_string(),
+            label: None,
+        }))
+        .await;
+    assert!(bad.is_err(), "non-http url must be rejected");
+
+    // list_todos must reflect the revised text/description, comment, and link.
+    let listed_result = tools
+        .list_todos(Parameters(ListTodosParams {
+            project_id: project_id.to_string(),
+        }))
+        .await
+        .expect("list_todos");
+    let listed = first_text(&listed_result);
+    assert!(listed.contains("wire up OAuth"), "{listed:?}");
+    assert!(listed.contains("handler stubbed out"), "{listed:?}");
+    assert!(listed.contains("claude"), "{listed:?}");
+    assert!(listed.contains("#42 Fix login"), "{listed:?}");
+
+    orch.shutdown().await;
+}
+
+/// Adapter whose "agent" is just a long sleep, for cap testing.
+struct FakeAgentAdapter;
+
+impl AgentAdapter for FakeAgentAdapter {
+    fn id(&self) -> &'static str {
+        "fake"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Fake"
+    }
+
+    fn binary(&self) -> &'static str {
+        "fake-agent"
+    }
+
+    fn build_launch(&self, _ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        Ok(LaunchPlan {
+            command: "sleep 30".to_string(),
+            env: Vec::new(),
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+
+    for n in 1..=8 {
+        orch.spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+            .await
+            .unwrap_or_else(|e| panic!("agent {n} under the cap should spawn: {e}"));
+    }
+
+    let err = orch
+        .spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+        .await
+        .expect_err("ninth concurrent agent must be rejected");
+    assert!(
+        matches!(err, CoreError::AgentLimitReached),
+        "unexpected error: {err}"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_spawned_from_todo_takes_the_todo_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth")
+        .expect("add todo");
+
+    // No explicit name: the window inherits the to-do's text.
+    let first = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![todo.id],
+        )
+        .await
+        .expect("spawn agent for todo");
+    // A second agent on the same to-do is deduplicated, not renamed generically.
+    let second = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![todo.id],
+        )
+        .await
+        .expect("spawn second agent for todo");
+
+    let procs = orch.list_processes(Some(project_id));
+    let name_of = |id| {
+        procs
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+            .expect("process present")
+    };
+    assert_eq!(name_of(first), "wire up OAuth");
+    assert_eq!(name_of(second), "wire up OAuth-2");
+
+    // An explicit name still wins over the to-do's text.
+    let named = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("custom".to_string()),
+            None,
+            vec![todo.id],
+        )
+        .await
+        .expect("spawn named agent for todo");
+    assert_eq!(
+        name_of_in(&orch.list_processes(Some(project_id)), named),
+        "custom"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth")
+        .expect("add todo");
+
+    // Before any agent, the to-do has no assignment.
+    let listed = orch.list_todos(project_id).expect("list todos");
+    assert!(listed[0].assigned_agent.is_none());
+
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![todo.id],
+        )
+        .await
+        .expect("spawn agent for todo");
+
+    // Spawning on the to-do links the agent to it, enriched in list_todos.
+    let listed = orch.list_todos(project_id).expect("list todos");
+    let assigned = listed[0]
+        .assigned_agent
+        .as_ref()
+        .expect("agent assigned after spawn");
+    assert_eq!(assigned.process_id, agent);
+    assert_eq!(assigned.name, "wire up OAuth");
+    assert_eq!(orch.agent_for_todo(todo.id), Some(agent));
+
+    // Unassigning clears the link (and returns the enriched, now-empty to-do).
+    let after = orch.unassign_todo(project_id, todo.id).expect("unassign");
+    assert!(after.assigned_agent.is_none());
+    assert!(orch.list_todos(project_id).expect("list")[0]
+        .assigned_agent
+        .is_none());
+    assert_eq!(orch.agent_for_todo(todo.id), None);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_an_agent_clears_its_todo_assignment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth")
+        .expect("add todo");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![todo.id],
+        )
+        .await
+        .expect("spawn agent for todo");
+    assert_eq!(orch.agent_for_todo(todo.id), Some(agent));
+
+    orch.remove_process(agent).await.expect("remove agent");
+    assert_eq!(orch.agent_for_todo(todo.id), None);
+    assert!(orch.list_todos(project_id).expect("list")[0]
+        .assigned_agent
+        .is_none());
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn assign_todo_tool_self_assigns_a_running_agent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    // A bare agent (no to-do handed to it at launch) and a separate to-do.
+    let agent = orch
+        .spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+        .await
+        .expect("spawn bare agent");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth")
+        .expect("add todo");
+    assert_eq!(orch.agent_for_todo(todo.id), None);
+
+    let assigned = tools
+        .assign_todo(Parameters(AssignTodoParams {
+            project_id: project_id.to_string(),
+            todo_id: todo.id.to_string(),
+            process_id: agent.to_string(),
+        }))
+        .await
+        .expect("assign_todo");
+    let text = first_text(&assigned);
+    assert!(text.contains(&agent.to_string()), "{text:?}");
+    assert_eq!(orch.agent_for_todo(todo.id), Some(agent));
+
+    // A non-agent process (or an unknown one) is rejected.
+    let bogus = tools
+        .assign_todo(Parameters(AssignTodoParams {
+            project_id: project_id.to_string(),
+            todo_id: todo.id.to_string(),
+            process_id: ProcessId::new().to_string(),
+        }))
+        .await;
+    assert!(bogus.is_err(), "unknown process must be rejected");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let a = orch.add_todo(project_id, "wire up auth").expect("todo a");
+    let b = orch.add_todo(project_id, "write tests").expect("todo b");
+
+    // Both to-dos (with `todo_id` overlapping `todo_ids` to prove dedup) go to
+    // one agent; the window inherits the first to-do's text.
+    let spawned = tools
+        .spawn_agent(Parameters(SpawnAgentParams {
+            project_id: project_id.to_string(),
+            prompt: None,
+            name: None,
+            adapter_id: Some("fake".to_string()),
+            todo_id: Some(a.id.to_string()),
+            todo_ids: Some(vec![a.id.to_string(), b.id.to_string()]),
+        }))
+        .await
+        .expect("spawn_agent over MCP");
+    let name = serde_json::from_str::<serde_json::Value>(&first_text(&spawned))
+        .expect("process json")["name"]
+        .as_str()
+        .expect("name")
+        .to_string();
+    assert_eq!(name, "wire up auth");
+
+    // Exactly one agent was created for the two to-dos.
+    let agents = orch
+        .list_processes(Some(project_id))
+        .into_iter()
+        .filter(|p| matches!(p.kind, ProcessKind::Agent { .. }))
+        .count();
+    assert_eq!(agents, 1);
+
+    orch.shutdown().await;
+}
+
+fn name_of_in(procs: &[podium_core::ProcessInfo], id: ProcessId) -> String {
+    procs
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.name.clone())
+        .expect("process present")
+}
+
+/// Adapter that echoes the effective command override + args into its command
+/// line, so tests can assert what the orchestrator actually planned.
+struct EchoAdapter;
+
+impl AgentAdapter for EchoAdapter {
+    fn id(&self) -> &'static str {
+        "echo"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Echo"
+    }
+
+    fn binary(&self) -> &'static str {
+        "echo-agent"
+    }
+
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        let bin = ctx.command_override.unwrap_or(self.binary());
+        let mut parts = vec![bin.to_string()];
+        parts.extend(ctx.extra_args.iter().cloned());
+        Ok(LaunchPlan {
+            command: parts.join(" "),
+            env: Vec::new(),
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
+/// A second echo-style adapter, so default-adapter selection can be observed
+/// by which binary lands in the planned command line.
+struct BetaAdapter;
+
+impl AgentAdapter for BetaAdapter {
+    fn id(&self) -> &'static str {
+        "beta"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Beta"
+    }
+
+    fn binary(&self) -> &'static str {
+        "beta-agent"
+    }
+
+    fn build_launch(&self, _ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        Ok(LaunchPlan {
+            command: self.binary().to_string(),
+            env: Vec::new(),
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
+/// Which adapter binary the orchestrator planned for a spawned agent.
+fn planned_command(orch: &Orchestrator, project_id: ProjectId, id: ProcessId) -> String {
+    orch.list_processes(Some(project_id))
+        .into_iter()
+        .find(|p| p.id == id)
+        .map(|p| p.command)
+        .expect("process present")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bare_spawn_uses_the_global_default_adapter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![
+        Arc::new(EchoAdapter),
+        Arc::new(BetaAdapter),
+    ]));
+    orch.set_agent_settings_path(dir.path().join("agents.json"));
+    // No project podium.yml default; the global default should decide.
+    orch.set_agent_default_adapter(Some("beta".to_string()))
+        .expect("set default adapter");
+
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let id = orch
+        .spawn_agent(project_id, None, None, None, vec![])
+        .await
+        .expect("spawn agent");
+
+    assert_eq!(planned_command(&orch, project_id, id), "beta-agent");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_default_adapter_overrides_the_global_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The project pins "echo"; the global default is "beta" — the project wins.
+    std::fs::write(
+        dir.path().join("podium.yml"),
+        "agents:\n  default_adapter: echo\n",
+    )
+    .expect("write podium.yml");
+    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![
+        Arc::new(EchoAdapter),
+        Arc::new(BetaAdapter),
+    ]));
+    orch.set_agent_settings_path(dir.path().join("agents.json"));
+    orch.set_agent_default_adapter(Some("beta".to_string()))
+        .expect("set default adapter");
+
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let id = orch
+        .spawn_agent(project_id, None, None, None, vec![])
+        .await
+        .expect("spawn agent");
+
+    assert_eq!(planned_command(&orch, project_id, id), "echo-agent");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_agent_applies_global_override_and_default_args() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let settings_file = dir.path().join("agents.json");
+    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(EchoAdapter)]));
+    orch.set_agent_settings_path(settings_file);
+    orch.set_agent_override(
+        "echo",
+        Some("/opt/echo".to_string()),
+        vec!["--model".to_string(), "opus".to_string()],
+    )
+    .expect("set override");
+
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let id = orch
+        .spawn_agent(project_id, Some("echo".to_string()), None, None, vec![])
+        .await
+        .expect("spawn agent");
+
+    let command = orch
+        .list_processes(Some(project_id))
+        .into_iter()
+        .find(|p| p.id == id)
+        .map(|p| p.command)
+        .expect("process present");
+    assert_eq!(command, "/opt/echo --model opus");
+
+    orch.shutdown().await;
+}

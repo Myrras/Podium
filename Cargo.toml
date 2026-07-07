@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+authors = ["Podium contributors"]
+
+[workspace.dependencies]
+# Shared across podium-core and the Tauri shell.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tracing = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+# Smaller, faster release binaries for a desktop app.
+codegen-units = 1
+lto = true
+strip = true

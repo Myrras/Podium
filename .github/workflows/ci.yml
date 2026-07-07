@@ -1,0 +1,52 @@
+# Test + lint pipeline. A single macOS job on purpose: the podium-core PTY
+# tests need a real Unix PTY, and a Linux runner would additionally need the
+# webkit system deps just to compile src-tauri.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `tauri::generate_context!` requires the frontendDist dir (../dist,
+      # gitignored) to exist when src-tauri compiles.
+      - name: Stub dist for src-tauri compilation
+        run: mkdir -p dist
+
+      - name: Rustfmt
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Frontend tests
+        run: pnpm test
+      - name: Frontend build
+        run: pnpm build

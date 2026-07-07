@@ -1,0 +1,47 @@
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+  transition: background var(--dur-2) var(--ease-out);
+}
+
+.dot[data-state="running"] {
+  background: var(--success);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--success) 60%, transparent);
+}
+
+.dot[data-state="stopping"] {
+  background: var(--warning);
+}
+
+.dot[data-state="exited"] {
+  background: var(--text-muted);
+}
+
+.dot[data-crashed="true"] {
+  background: var(--danger);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--danger) 60%, transparent);
+}
+
+/* Agent with recent output: pulse the running dot. Opacity-only so the
+ * compositor handles the infinite animation (per the motion rule); the
+ * global reduced-motion guard neutralizes it. */
+.dot[data-working="true"] {
+  animation: dotPulse 0.9s var(--ease-in-out) infinite;
+}
+
+/* Agent stalled waiting for the user (permission/input): blue and pulsing to
+ * draw the eye. Overrides the running-green above. */
+.dot[data-waiting="true"] {
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: dotPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes dotPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
