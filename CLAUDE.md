@@ -39,7 +39,7 @@ extracted into a standalone template:
   (not Podium-specific domain code), also open a **PR against the boilerplate**
   so it stays current. App-specific code does not flow back.
 
-## Status — v0.1
+## Status — v1.0
 
 - ✅ **`podium-core`**: the whole domain — project open/close + `podium.yml`
   config (strict serde, broken config still opens the project), PTY process
@@ -366,20 +366,51 @@ per test file.
     done. Only skip adding a test when it is genuinely infeasible (e.g. a
     pure canvas/xterm path jsdom can't exercise) — say so explicitly.
 
+## Git workflow
+
+The repo is on GitHub (`RobbieMinderhoud/Podium`); use the **`gh` CLI** for PRs.
+**Every code change goes through a branch → PR** — do not commit straight to
+`main`. `main` stays releasable; each change merges via a PR and is eventually
+released (see _Versioning & CI_). We do **not** open a GitHub issue per change:
+the PR is the unit of work (title + body capture the what and why).
+Conversations that touch no code (questions, exploration) need no branch.
+
+1. **Branch** — from an up-to-date `main`, named `short-description`
+   (e.g. `agent-activity-fix`). No issue-number prefix.
+2. **Implement, commit, push** the branch. Commit subjects are free-form,
+   imperative (Keep-a-Changelog voice). Per the global rule, **never add a
+   `Co-Authored-By` trailer** (a `commit-msg` hook also strips Anthropic ones).
+3. **PR** — `gh pr create --base main --fill` (or with an explicit title/body).
+   `ci.yml` runs on the PR and must be green.
+4. **Merge + release** — cut the release with the **`release` skill**
+   (`.claude/skills/release/SKILL.md`): it folds the CHANGELOG entry + version
+   bump into the feature PR, then (with explicit approval) squash-merges and
+   tags. Pushing a `v*` tag triggers the macOS bundle build.
+
 ## Versioning & CI
 
 - **SemVer.** The `[workspace.package]` version in the root `Cargo.toml` is
   the single source of truth; `scripts/sync-version.sh` propagates it to
   `tauri.conf.json` and `package.json` (`just version-check` detects drift).
+- **`CHANGELOG.md`** follows _Keep a Changelog_ and lists **only functional
+  (user-facing) changes** — the `release` skill adds an entry per release.
 - **CI** (`.github/workflows/ci.yml`): one `macos-latest` job on every PR
   and push to `main` — rustfmt, clippy `-D warnings`, `cargo test
   --workspace` (needs real PTYs, hence macOS), then typecheck, ESLint,
   Vitest, and a production `pnpm build`. A stub `dist/` is created first so
   `tauri::generate_context!` compiles.
-- Do **not** create git tags or releases without explicit user approval.
+- **Bundle build** (`.github/workflows/build.yml`): builds the macOS bundle
+  (the `.app` plus the APFS `.dmg` via `scripts/make-dmg.sh`) on
+  `workflow_dispatch` and on any pushed `v*` tag, uploading the `.dmg` as an
+  artifact. macOS only — the PTY layer is Unix-only and the app is macOS-first.
+- **Releasing** is done via the **`release` skill** (see _Git workflow_).
+  Do **not** create git tags or releases without explicit user approval
+  (invoking the skill + its confirmation step is that approval).
+- **Not yet set up:** Conventional Commits, git-cliff changelog automation,
+  signed/notarized releases.
 
 ## Roadmap
 
-Phases 0–7 of `PLAN.md` are shipped (v0.1). `PLAN.md` is the historical
+Phases 0–7 of `PLAN.md` are shipped (v1.0). `PLAN.md` is the historical
 build plan — consult it for design rationale, but this file and the code are
 the source of truth for current behaviour.
