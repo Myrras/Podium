@@ -8,7 +8,7 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
-## [0.1.0] - 2026-07-07
+## [1.0.0] - 2026-07-07
 
 ### Added
 

@@ -39,7 +39,7 @@ extracted into a standalone template:
   (not Podium-specific domain code), also open a **PR against the boilerplate**
   so it stays current. App-specific code does not flow back.
 
-## Status — v0.1
+## Status — v1.0
 
 - ✅ **`podium-core`**: the whole domain — project open/close + `podium.yml`
   config (strict serde, broken config still opens the project), PTY process
@@ -411,6 +411,6 @@ Conversations that touch no code (questions, exploration) need no branch.
 
 ## Roadmap
 
-Phases 0–7 of `PLAN.md` are shipped (v0.1). `PLAN.md` is the historical
+Phases 0–7 of `PLAN.md` are shipped (v1.0). `PLAN.md` is the historical
 build plan — consult it for design rationale, but this file and the code are
 the source of truth for current behaviour.
