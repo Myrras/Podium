@@ -9,23 +9,13 @@
 import { useEffect } from "react";
 
 import type { ProjectId } from "../ipc/types";
+import { formatTime } from "../lib/dateFormat";
 import { useTodoStore } from "../state/todoStore";
 import styles from "./ArchiveModal.module.css";
 import { Modal } from "./Modal";
 import { CheckIcon, DeleteIcon, UnarchiveIcon } from "./icons";
 
 const NO_TODOS = [] as const;
-
-/** Compact local-time label (e.g. "Apr 3, 14:05"). */
-function formatTime(iso: string | null): string {
-  if (!iso) return "";
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 export function ArchiveModal({
   open,

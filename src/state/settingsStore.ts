@@ -16,35 +16,17 @@ const DEFAULTS: Settings = {
 
 const STORAGE_KEY = "podium.settings";
 
-/** Recursively merges `partial` into a fresh deep clone of `base`. Only plain
- *  objects are recursed; arrays/primitives replace. Guards against saved blobs
- *  whose shape predates a newer field. */
-function deepMerge<T>(base: T, partial: unknown): T {
-  if (
-    typeof base !== "object" ||
-    base === null ||
-    typeof partial !== "object" ||
-    partial === null
-  ) {
-    return (partial as T) ?? base;
-  }
-  const result = structuredClone(base) as Record<string, unknown>;
-  for (const key of Object.keys(partial as object)) {
-    const bv = result[key];
-    const pv = (partial as Record<string, unknown>)[key];
-    result[key] =
-      typeof bv === "object" && bv !== null && !Array.isArray(bv)
-        ? deepMerge(bv, pv)
-        : pv;
-  }
-  return result as T;
-}
-
 function load(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return structuredClone(DEFAULTS);
-    return deepMerge(DEFAULTS, JSON.parse(raw) as unknown);
+    // Spread saved values over defaults per section, so a blob whose shape
+    // predates a newer field still gets that field's default.
+    const saved = JSON.parse(raw) as Partial<Settings>;
+    return {
+      appearance: { ...DEFAULTS.appearance, ...saved.appearance },
+      terminal: { ...DEFAULTS.terminal, ...saved.terminal },
+    };
   } catch {
     return structuredClone(DEFAULTS);
   }

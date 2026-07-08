@@ -48,6 +48,12 @@ impl std::fmt::Display for IpcError {
 
 impl std::error::Error for IpcError {}
 
+impl From<std::io::Error> for IpcError {
+    fn from(err: std::io::Error) -> Self {
+        Self::new("io", err.to_string())
+    }
+}
+
 impl From<CoreError> for IpcError {
     fn from(err: CoreError) -> Self {
         // The `message` is `CoreError`'s own `Display`, which is built from

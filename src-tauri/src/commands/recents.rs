@@ -56,17 +56,13 @@ fn save(path: &Path, recents: &[RecentProject]) -> Result<(), IpcError> {
     let dir = path
         .parent()
         .ok_or_else(|| IpcError::new("io", "recents path has no parent directory"))?;
-    std::fs::create_dir_all(dir).map_err(io_err)?;
+    std::fs::create_dir_all(dir).map_err(IpcError::from)?;
     let json = serde_json::to_string_pretty(recents)
         .map_err(|e| IpcError::new("io", format!("failed to encode recents: {e}")))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(io_err)?;
-    std::fs::rename(&tmp, path).map_err(io_err)?;
+    std::fs::write(&tmp, json).map_err(IpcError::from)?;
+    std::fs::rename(&tmp, path).map_err(IpcError::from)?;
     Ok(())
-}
-
-fn io_err(e: std::io::Error) -> IpcError {
-    IpcError::new("io", e.to_string())
 }
 
 fn now_millis() -> u64 {

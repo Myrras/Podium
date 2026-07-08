@@ -6,10 +6,9 @@
 //! line and environment look like. The MCP seam ([`McpConnectInfo`]) is
 //! designed in now but stays `None` until the built-in MCP server lands.
 
-pub mod auggie;
-pub mod claude;
 pub mod settings;
 
+use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,7 +16,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 use crate::ids::{ProcessId, ProjectId};
 
 /// Everything an adapter may need to build a [`LaunchPlan`].
@@ -91,6 +90,75 @@ pub trait AgentAdapter: Send + Sync {
             .map(|status| status.success())
             .unwrap_or(false)
     }
+}
+
+/// A data-driven [`AgentAdapter`]. Claude Code and Auggie both take the prompt
+/// as a positional arg and consume the same `--mcp-config <file>` shape, so the
+/// launch plan is identical — they differ only in the binary they drive. One
+/// struct with three fields covers both; add another CLI by adding a `const`.
+#[derive(Clone, Copy)]
+pub struct CliAdapter {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    /// The CLI binary the adapter drives (also the default name prefix).
+    pub binary: &'static str,
+}
+
+/// The Claude Code CLI (`claude`).
+pub const CLAUDE_CODE: CliAdapter = CliAdapter {
+    id: "claude-code",
+    display_name: "Claude Code",
+    binary: "claude",
+};
+
+/// The Augment / Auggie CLI (`auggie`).
+pub const AUGGIE: CliAdapter = CliAdapter {
+    id: "auggie",
+    display_name: "Auggie",
+    binary: "auggie",
+};
+
+impl AgentAdapter for CliAdapter {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+
+    fn display_name(&self) -> &'static str {
+        self.display_name
+    }
+
+    fn binary(&self) -> &'static str {
+        self.binary
+    }
+
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        let bin = ctx.command_override.unwrap_or(self.binary);
+        let mut args: Vec<String> = vec![quote(bin)?];
+        if let Some(prompt) = ctx.prompt {
+            args.push(quote(prompt)?);
+        }
+        for arg in ctx.extra_args {
+            args.push(quote(arg)?);
+        }
+        if let Some(mcp) = ctx.mcp {
+            let path = write_mcp_config(mcp, ctx.process_id)?;
+            args.push("--mcp-config".to_string());
+            args.push(quote(&path.to_string_lossy())?);
+        }
+        Ok(LaunchPlan {
+            command: args.join(" "),
+            env: vec![
+                ("PODIUM_PROJECT_ID".to_string(), ctx.project_id.to_string()),
+                ("PODIUM_PROCESS_ID".to_string(), ctx.process_id.to_string()),
+            ],
+        })
+    }
+}
+
+fn quote(arg: &str) -> CoreResult<String> {
+    shlex::try_quote(arg)
+        .map(Cow::into_owned)
+        .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
 }
 
 /// Write `contents` to `path` with owner-only permissions (0600) — used for
@@ -183,16 +251,14 @@ impl AdapterRegistry {
 
 impl Default for AdapterRegistry {
     fn default() -> Self {
-        Self::new(vec![
-            Arc::new(claude::ClaudeCodeAdapter),
-            Arc::new(auggie::AuggieAdapter),
-        ])
+        Self::new(vec![Arc::new(CLAUDE_CODE), Arc::new(AUGGIE)])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn default_registry_exposes_claude_and_auggie() {
@@ -203,5 +269,150 @@ mod tests {
         let ids: Vec<String> = registry.infos().into_iter().map(|i| i.id).collect();
         assert!(ids.contains(&"claude-code".to_string()));
         assert!(ids.contains(&"auggie".to_string()));
+    }
+
+    fn plan(
+        prompt: Option<&str>,
+        extra_args: &[String],
+        mcp: Option<&McpConnectInfo>,
+    ) -> (LaunchPlan, ProjectId, ProcessId) {
+        plan_with_override(prompt, extra_args, None, mcp)
+    }
+
+    fn plan_with_override(
+        prompt: Option<&str>,
+        extra_args: &[String],
+        command_override: Option<&str>,
+        mcp: Option<&McpConnectInfo>,
+    ) -> (LaunchPlan, ProjectId, ProcessId) {
+        let project_id = ProjectId::new();
+        let process_id = ProcessId::new();
+        let ctx = AgentLaunchCtx {
+            project_id,
+            process_id,
+            project_root: Path::new("/tmp"),
+            prompt,
+            extra_args,
+            command_override,
+            mcp,
+        };
+        let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
+        (plan, project_id, process_id)
+    }
+
+    #[test]
+    fn bare_launch_is_just_the_binary() {
+        let (plan, _, _) = plan(None, &[], None);
+        assert_eq!(plan.command, "claude");
+    }
+
+    #[test]
+    fn prompt_and_extra_args_are_shell_quoted() {
+        let prompt = r#"fix the "login" bug; $HOME"#;
+        let extra = vec!["--verbose".to_string(), "two words".to_string()];
+        let (plan, _, _) = plan(Some(prompt), &extra, None);
+        // Round-trip through a shell tokenizer: quoting must preserve args.
+        let tokens = shlex::split(&plan.command).expect("valid shell line");
+        assert_eq!(tokens, vec!["claude", prompt, "--verbose", "two words"]);
+    }
+
+    #[test]
+    fn command_override_replaces_the_binary() {
+        let (plan, _, _) = plan_with_override(None, &[], Some("/opt/bin/claude"), None);
+        let tokens = shlex::split(&plan.command).expect("valid shell line");
+        assert_eq!(tokens, vec!["/opt/bin/claude"]);
+    }
+
+    #[test]
+    fn env_identifies_project_and_process() {
+        let (plan, project_id, process_id) = plan(None, &[], None);
+        assert!(plan
+            .env
+            .contains(&("PODIUM_PROJECT_ID".to_string(), project_id.to_string())));
+        assert!(plan
+            .env
+            .contains(&("PODIUM_PROCESS_ID".to_string(), process_id.to_string())));
+    }
+
+    #[test]
+    fn mcp_config_file_has_exact_shape_and_is_referenced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:39217".to_string(),
+            token: "sekret-token".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let (plan, _, process_id) = plan(Some("hello"), &[], Some(&mcp));
+
+        let path = dir.path().join(format!("agent-{process_id}.json"));
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("config written"))
+                .expect("valid json");
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "mcpServers": {
+                    "podium": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:39217/mcp",
+                        "headers": { "Authorization": "Bearer sekret-token" },
+                    }
+                }
+            })
+        );
+
+        let tokens = shlex::split(&plan.command).expect("valid shell line");
+        assert_eq!(
+            tokens,
+            vec![
+                "claude".to_string(),
+                "hello".to_string(),
+                "--mcp-config".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("metadata").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "config must be private");
+        }
+    }
+
+    #[test]
+    fn url_already_ending_in_mcp_is_kept_as_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://localhost:1234/mcp".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let (_, _, process_id) = plan(None, &[], Some(&mcp));
+        let path = dir.path().join(format!("agent-{process_id}.json"));
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("config written"))
+                .expect("valid json");
+        assert_eq!(
+            written["mcpServers"]["podium"]["url"],
+            "http://localhost:1234/mcp"
+        );
+    }
+
+    #[test]
+    fn auggie_drives_its_own_binary() {
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp"),
+            prompt: None,
+            extra_args: &[],
+            command_override: None,
+            mcp: None,
+        };
+        assert_eq!(
+            AUGGIE.build_launch(&ctx).expect("build_launch").command,
+            "auggie"
+        );
     }
 }

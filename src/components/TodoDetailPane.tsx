@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { CommentId, ProjectId, TodoId, TodoInfo } from "../ipc/types";
+import { formatTime } from "../lib/dateFormat";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
 import {
@@ -22,16 +23,6 @@ import {
 } from "./icons";
 import { Markdown } from "./Markdown";
 import styles from "./TodoDetailPane.module.css";
-
-/** Compact local-time label for a comment (e.g. "Apr 3, 14:05"). */
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 const NO_TODOS: TodoInfo[] = [];
 
