@@ -49,6 +49,18 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
+// SettingsModal transitively imports the notify helper; keep its Tauri plugins
+// inert under jsdom.
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: () => Promise.resolve(false),
+  requestPermission: () => Promise.resolve("denied"),
+  sendNotification: () => undefined,
+}));
+vi.mock("@tauri-apps/plugin-log", () => ({
+  error: () => Promise.resolve(),
+  warn: () => Promise.resolve(),
+}));
+
 import { SettingsModal } from "./SettingsModal";
 
 async function openAgentsTab() {
@@ -115,5 +127,21 @@ describe("SettingsModal — Agents tab", () => {
         mode: "project-overrides",
       }),
     );
+  });
+});
+
+describe("SettingsModal — Notifications", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("toggles the sound setting and persists it", () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    const toggle = screen.getByRole("switch", { name: "Play sound" });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    const saved = JSON.parse(localStorage.getItem("podium.settings") ?? "{}");
+    expect(saved.notifications.sound).toBe(false);
   });
 });

@@ -7,11 +7,19 @@ export interface Settings {
   terminal: {
     fontSize: number; // px
   };
+  notifications: {
+    sound: boolean;
+    // Custom sound as a data URL (empty = built-in beep). Stored inline so it
+    // survives the source file moving/deleting and needs no fs/asset access.
+    soundDataUrl: string;
+    soundName: string; // display name of the picked file, for the UI
+  };
 }
 
 const DEFAULTS: Settings = {
   appearance: { reduceMotion: false },
   terminal: { fontSize: 13 },
+  notifications: { sound: true, soundDataUrl: "", soundName: "" },
 };
 
 const STORAGE_KEY = "podium.settings";
@@ -26,6 +34,7 @@ function load(): Settings {
     return {
       appearance: { ...DEFAULTS.appearance, ...saved.appearance },
       terminal: { ...DEFAULTS.terminal, ...saved.terminal },
+      notifications: { ...DEFAULTS.notifications, ...saved.notifications },
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -65,6 +74,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => {
         JSON.stringify({
           appearance: merged.appearance,
           terminal: merged.terminal,
+          notifications: merged.notifications,
         }),
       );
       if (section === "appearance") {

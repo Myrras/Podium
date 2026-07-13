@@ -8,6 +8,16 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.1.0] - 2026-07-13
+
+### Added
+
+- **Notifications now play a sound.** When an agent needs your input, Podium
+  plays a sound alongside the OS notification and toast — a built-in beep by
+  default, or a custom audio file you pick. A new Settings → General →
+  Notifications section adds a Play sound toggle, a Choose…/Reset custom-sound
+  picker, and a Test button.
+
 ## [1.0.0] - 2026-07-07
 
 ### Added
