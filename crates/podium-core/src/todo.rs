@@ -467,6 +467,13 @@ impl TodoStore {
     /// Archive or unarchive a to-do (regardless of its done state). Archiving
     /// stamps `archived_at`; unarchiving clears it and returns the item to the
     /// active list.
+    ///
+    /// Restoring a *done* item also reopens it (clears `done`/`done_at`).
+    /// Otherwise `auto_archive_stale_done` — which sweeps done items completed
+    /// on an earlier day — would re-archive it on the very next `list()` (the
+    /// refresh the restore itself triggers), so Restore would appear to do
+    /// nothing. An open item is never auto-archived, so reopening keeps it in
+    /// the active list until the user acts on it again.
     pub fn set_archived(
         &self,
         project_id: ProjectId,
@@ -482,6 +489,10 @@ impl TodoStore {
             .ok_or(CoreError::TodoNotFound)?;
         todo.archived = archived;
         todo.archived_at = if archived { Some(Utc::now()) } else { None };
+        if !archived && todo.done {
+            todo.done = false;
+            todo.done_at = None;
+        }
         let info = todo.info(project_id);
         save(&inner)?;
         Ok(info)
@@ -795,6 +806,35 @@ mod tests {
         let arch = store.list_archived(project, &root);
         assert_eq!(arch.len(), 1);
         assert_eq!(arch[0].id, yesterday_done.id);
+    }
+
+    #[test]
+    fn restoring_a_stale_done_todo_keeps_it_active() {
+        use chrono::Duration;
+        let store = TodoStore::new();
+        let (project, root) = ids();
+        let t = store.add(project, &root, "finished last week").unwrap();
+
+        // Complete it and back-date the completion so it auto-archives.
+        store.set_done(project, &root, t.id, true).unwrap();
+        {
+            let mut inner = store.inner.lock().unwrap();
+            let items = inner.todos.get_mut(&key(&root)).unwrap();
+            let item = items.iter_mut().find(|i| i.id == t.id).unwrap();
+            item.done_at = Some(Utc::now() - Duration::days(3));
+        }
+        store.list(project, &root); // triggers auto-archive
+        assert_eq!(store.list_archived(project, &root).len(), 1);
+
+        // Restoring reopens it and it must survive the next list() (the refresh
+        // the restore triggers) instead of being swept straight back.
+        let restored = store.set_archived(project, &root, t.id, false).unwrap();
+        assert!(!restored.archived);
+        assert!(!restored.done, "restore reopens a done item");
+        let active = store.list(project, &root);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, t.id);
+        assert!(store.list_archived(project, &root).is_empty());
     }
 
     #[test]
