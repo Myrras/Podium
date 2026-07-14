@@ -1,14 +1,18 @@
 /* Host for the xterm element. The background matches --term-bg so the
-   padding gutter blends into the terminal canvas. The right gutter is
-   symmetric with the left on purpose: FitAddon derives cols from the host's
-   content-box width, so a right gutter keeps the last column off the panel
-   edge — otherwise the final chars sit flush (clipped) and macOS overlay
-   scrollbars, which measure 0-width, draw over them. */
+   padding gutter blends into the terminal canvas. Horizontal padding is
+   symmetric on purpose: FitAddon derives cols from the host's content-box
+   width, so a right gutter keeps the last column off the panel edge —
+   otherwise the final chars sit flush (clipped) and macOS overlay scrollbars,
+   which measure 0-width, draw over them. The bottom padding is larger than the
+   top: FitAddon floors rows to the content-box height, and a full-screen TUI
+   (Claude Code) paints its last line right at that edge — a deeper bottom
+   gutter (more than one cell) guarantees breathing room and absorbs the
+   sub-cell rounding so the bottom line is never clipped. */
 .host {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  padding: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-4);
   background: var(--term-bg);
   overflow: hidden;
 }

@@ -197,8 +197,37 @@ export function attachToElement(
 /** Refit to the container and propagate the new grid size to the PTY. */
 export function fitTerminal(processId: ProcessId): void {
   const entry = entries.get(processId);
-  if (!entry?.terminal.element) return;
+  const el = entry?.terminal.element;
+  if (!entry || !el) return;
   entry.fit.fit();
+
+  // FitAddon derives rows from an *estimated* CSS cell height, but the renderer
+  // rounds each row up to whole device pixels; on a fractional cell height
+  // those roundings accumulate and the grid ends up taller than the host,
+  // clipping the bottom line (host padding gets painted over, so it can't fix
+  // it). Shed rows until the rendered grid actually fits the host's content
+  // box — one resize at a time, reading the live screen height back each pass.
+  const screen = el.querySelector<HTMLElement>(".xterm-screen");
+  const host = el.parentElement;
+  if (screen && host) {
+    const cs = getComputedStyle(host);
+    const avail =
+      host.clientHeight -
+      parseFloat(cs.paddingTop) -
+      parseFloat(cs.paddingBottom);
+    // Guard the loop: a handful of rows at most, never below one. Skip
+    // entirely if the host isn't measurable yet (avail non-finite / ≤0).
+    for (let i = 0; Number.isFinite(avail) && avail > 0 && i < 8; i += 1) {
+      if (
+        entry.terminal.rows <= 1 ||
+        screen.getBoundingClientRect().height <= avail
+      ) {
+        break;
+      }
+      entry.terminal.resize(entry.terminal.cols, entry.terminal.rows - 1);
+    }
+  }
+
   const { cols, rows } = entry.terminal;
   processResize(processId, cols, rows).catch(() => {
     // Expected while the process is not running; the PTY is resized on the

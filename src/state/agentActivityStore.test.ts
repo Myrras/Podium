@@ -56,9 +56,12 @@ function tick() {
 describe("agentActivityStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAgentActivityStore.setState({ activity: {} });
+    useAgentActivityStore.setState({ activity: {}, notified: {} });
+    useProcessStore.setState({ activeProcessId: null });
     lastOutput.mockReturnValue(null);
     viewport.mockReturnValue(null);
+    // Default: the user is not looking at any agent, so waiting agents ping.
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
   });
 
   it("marks recent output as working", () => {
@@ -121,19 +124,54 @@ describe("agentActivityStore", () => {
     expect(useAgentActivityStore.getState().activity.a1).toBeUndefined();
   });
 
-  it("re-alerts after leaving and re-entering the waiting state", () => {
+  it("does not re-alert on working↔waiting flicker while unattended", () => {
     lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Continue? (y/n)");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
 
-    // Agent resumes working, then stalls on another prompt.
+    // A live prompt repaints (spinner/cursor), briefly reading as "working",
+    // then reads as waiting again — the user must not be pinged again.
     lastOutput.mockReturnValue(Date.now());
     tick();
     expect(useAgentActivityStore.getState().activity.a1).toBe("working");
 
     lastOutput.mockReturnValue(Date.now() - 10_000);
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ping while the user is viewing the agent", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    useProcessStore.setState({ activeProcessId: "a1" });
+    seed([proc("a1", AGENT, RUNNING)]);
+
+    tick();
+    expect(useAgentActivityStore.getState().activity.a1).toBe("waiting");
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
+  });
+
+  it("re-arms after the user views the agent, then looks away", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+    seed([proc("a1", AGENT, RUNNING)]);
+
+    // Not looking → one ping.
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+
+    // User views the agent (focus + active): acknowledges, re-arms.
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    useProcessStore.setState({ activeProcessId: "a1" });
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+
+    // User looks away again while it's still waiting → pings once more.
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    useProcessStore.setState({ activeProcessId: null });
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(2);
   });

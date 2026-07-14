@@ -8,6 +8,28 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.1.3] - 2026-07-14
+
+### Added
+
+- **Standalone agents are now named after their prompt.** An agent spawned
+  without an explicit name (and not tied to a to-do) takes a short label from
+  the first line of its launch prompt instead of the generic adapter name, so
+  sessions are recognisable in the sidebar right away. The agent can still
+  rename itself later.
+
+### Fixed
+
+- **Agent terminals no longer clip their bottom line.** The grid now sheds any
+  rows that don't actually fit the panel (a fractional cell height made the
+  fit over-count and push the last line under the edge), and the terminal keeps
+  a deeper bottom gutter — so Claude Code's status line stays fully visible.
+- **The "agent needs input" notification pings once, not repeatedly.** A
+  waiting agent alerts a single time while you're not looking at it, and only
+  re-arms once you view that agent again — a live prompt's redraw no longer
+  fires a fresh ping every couple of seconds, and the window you're already
+  watching never pings.
+
 ## [1.1.2] - 2026-07-14
 
 ### Fixed

@@ -22,6 +22,7 @@ import type { ProcessId } from "../ipc/types";
 import { detectInputPrompt } from "../lib/agentPrompt";
 import { notifyAgentWaiting } from "../lib/notify";
 import { getLastOutputAt, readViewportText } from "../lib/terminalRegistry";
+import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 
 /** The three states an agent surfaces to the user. */
@@ -40,44 +41,74 @@ function computeActivity(processId: ProcessId): AgentActivity {
   return "idle";
 }
 
+/**
+ * Is the user currently looking at this agent's terminal? True only when the
+ * app window is focused, the agent is the active process, and no to-do pane is
+ * covering the work area. Used to suppress the "needs input" ping — you don't
+ * want a notification for the window you're already watching.
+ */
+function isViewingAgent(processId: ProcessId): boolean {
+  if (!document.hasFocus()) return false;
+  if (useLayoutStore.getState().openTodo !== null) return false;
+  return useProcessStore.getState().activeProcessId === processId;
+}
+
 interface AgentActivityState {
   /** Latest activity per running-agent process id. */
   activity: Record<string, AgentActivity>;
+  /**
+   * Agents already pinged for their current unattended "waiting" episode. Kept
+   * out of `activity` (which drives UI) — this only gates the notification.
+   * Re-armed when the user views the agent, so a fresh look-away pings again.
+   */
+  notified: Record<string, true>;
   /** One monitor step: recompute, fire alerts on new "waiting" transitions. */
   tick: () => void;
 }
 
 export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   activity: {},
+  notified: {},
   tick: () => {
     const { processes } = useProcessStore.getState();
     const prev = get().activity;
+    const prevNotified = get().notified;
     const next: Record<string, AgentActivity> = {};
+    const notified: Record<string, true> = {};
     let changed = false;
 
     for (const p of processes) {
       if (p.kind.kind !== "agent" || p.status.state !== "running") continue;
       const activity = computeActivity(p.id);
       next[p.id] = activity;
-      const before = prev[p.id];
-      if (before !== activity) {
-        changed = true;
-        // Alert only on the edge into "waiting" so we don't re-notify each
-        // poll while the agent keeps sitting on the same prompt.
-        if (activity === "waiting") notifyAgentWaiting(p.name);
+      if (prev[p.id] !== activity) changed = true;
+
+      if (isViewingAgent(p.id)) {
+        // The user is watching this agent — no ping, and re-arm so a later
+        // look-away while it's waiting alerts once more.
+        continue;
+      }
+      if (prevNotified[p.id]) {
+        // Already pinged for this unattended episode; keep the flag so the
+        // working↔waiting flicker of a live prompt doesn't re-notify.
+        notified[p.id] = true;
+      } else if (activity === "waiting") {
+        notifyAgentWaiting(p.name);
+        notified[p.id] = true;
       }
     }
-    // Agents that stopped/were removed drop out of the map.
-    if (!changed) {
-      for (const id of Object.keys(prev)) {
-        if (!(id in next)) {
-          changed = true;
-          break;
-        }
+    // Agents that stopped/were removed drop out of both maps.
+    for (const id of Object.keys(prev)) {
+      if (!(id in next)) {
+        changed = true;
+        break;
       }
     }
 
-    if (changed) set({ activity: next });
+    set((s) => ({
+      activity: changed ? next : s.activity,
+      notified,
+    }));
   },
 }));
 

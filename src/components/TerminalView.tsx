@@ -37,12 +37,21 @@ export function TerminalView({ processId }: { processId: ProcessId }) {
       theme: readTerminalTheme(),
     });
     attachToElement(processId, host);
-    fitTerminal(processId);
-    terminal.focus();
+    // Defer the first fit to the next frame: running it synchronously here
+    // measures the host before the just-mounted pane's flex layout is final
+    // (the header bar's height not yet subtracted), yielding one row too many
+    // and clipping the terminal's bottom line. rAF measures the settled size.
+    const raf = requestAnimationFrame(() => {
+      fitTerminal(processId);
+      terminal.focus();
+    });
 
     const observer = new ResizeObserver(() => fitTerminal(processId));
     observer.observe(host);
-    return () => observer.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
   }, [processId]);
 
   return <div ref={hostRef} className={styles.host} />;

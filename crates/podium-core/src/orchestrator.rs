@@ -843,23 +843,26 @@ impl Orchestrator {
                     .ok_or(CoreError::TodoNotFound)
             })
             .collect::<CoreResult<Vec<_>>>()?;
+        let base_prompt = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
         let name = match name.as_deref().map(str::trim) {
             Some(n) if !n.is_empty() => n.to_string(),
-            // An agent spawned for to-dos takes the first to-do's text as its
-            // window name (deduplicated); otherwise fall back to the adapter
-            // binary.
+            // Window name, in precedence: the first to-do's text (an agent
+            // spawned on to-dos), a short label derived from the prompt (so a
+            // standalone agent is recognisable without waiting on the model to
+            // rename itself over MCP), else the adapter binary.
             _ => {
                 let base = todos
                     .first()
                     .map(|t| t.text.trim())
                     .filter(|t| !t.is_empty())
-                    .unwrap_or_else(|| adapter.binary());
-                next_free_name(base, &existing_names)
+                    .map(str::to_string)
+                    .or_else(|| base_prompt.and_then(name_from_prompt))
+                    .unwrap_or_else(|| adapter.binary().to_string());
+                next_free_name(&base, &existing_names)
             }
         };
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         let process_id = ProcessId::new();
-        let base_prompt = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
         // To-dos seed a context-rich prompt; otherwise use the raw one.
         let final_prompt: Option<String> = if todos.is_empty() {
             base_prompt.map(str::to_string)
@@ -1211,6 +1214,24 @@ fn active_agent_count(inner: &Inner, project_id: ProjectId) -> usize {
                 && p.is_active()
         })
         .count()
+}
+
+/// A short window name derived from an agent's launch prompt: the first
+/// non-empty line, truncated to ~40 chars on a word boundary. Lets a
+/// standalone agent be recognisable in the sidebar immediately, without
+/// depending on the model to rename itself over MCP. `None` if the prompt has
+/// no usable text.
+fn name_from_prompt(prompt: &str) -> Option<String> {
+    let line = prompt.lines().map(str::trim).find(|l| !l.is_empty())?;
+    const MAX: usize = 40;
+    if line.chars().count() <= MAX {
+        return Some(line.to_string());
+    }
+    // Truncate on a char boundary, then back off to the last word break so we
+    // don't cut mid-word; append an ellipsis.
+    let head: String = line.chars().take(MAX).collect();
+    let trimmed = head.rsplit_once(' ').map(|(h, _)| h).unwrap_or(&head);
+    Some(format!("{}…", trimmed.trim_end()))
 }
 
 /// Build an agent launch prompt from a to-do: its text/description, the
@@ -1566,6 +1587,30 @@ mod tests {
         // The standing MCP instructions and user prompt appear once.
         assert!(prompt.contains("complete_todo"));
         assert!(prompt.contains("Additional instructions:\nstart with auth"));
+    }
+
+    #[test]
+    fn name_from_prompt_takes_first_line_and_truncates_on_word_boundary() {
+        assert_eq!(
+            name_from_prompt("fix the bug").as_deref(),
+            Some("fix the bug")
+        );
+        // Leading blank lines skipped; first real line used.
+        assert_eq!(
+            name_from_prompt("\n  \nrename sessions").as_deref(),
+            Some("rename sessions")
+        );
+        // Long single line truncates on a word break with an ellipsis, and
+        // never exceeds the char budget before the ellipsis.
+        let n = name_from_prompt(
+            "investigate the terminal height clipping problem in agent windows please",
+        )
+        .unwrap();
+        assert!(n.ends_with('…'));
+        assert!(n.trim_end_matches('…').chars().count() <= 40);
+        assert!(!n.trim_end_matches('…').ends_with(' '));
+        // Empty / whitespace-only prompt yields nothing.
+        assert_eq!(name_from_prompt("   \n  "), None);
     }
 
     #[tokio::test]
