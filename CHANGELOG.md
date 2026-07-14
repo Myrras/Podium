@@ -8,6 +8,15 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.1.2] - 2026-07-14
+
+### Fixed
+
+- **Agent terminals no longer clip the last column on the right.** Text now
+  keeps a right-hand gutter matching the left, so the final characters of each
+  line stay fully visible instead of running under the panel edge (or behind a
+  macOS overlay scrollbar).
+
 ## [1.1.1] - 2026-07-14
 
 ### Added

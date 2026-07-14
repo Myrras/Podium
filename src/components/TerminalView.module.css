@@ -1,10 +1,14 @@
 /* Host for the xterm element. The background matches --term-bg so the
-   padding gutter blends into the terminal canvas. */
+   padding gutter blends into the terminal canvas. The right gutter is
+   symmetric with the left on purpose: FitAddon derives cols from the host's
+   content-box width, so a right gutter keeps the last column off the panel
+   edge — otherwise the final chars sit flush (clipped) and macOS overlay
+   scrollbars, which measure 0-width, draw over them. */
 .host {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  padding: var(--sp-2) 0 var(--sp-2) var(--sp-2);
+  padding: var(--sp-2);
   background: var(--term-bg);
   overflow: hidden;
 }
