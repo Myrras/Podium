@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, GetProcessOutputParams,
-    ListTodosParams, PodiumTools, SpawnAgentParams, UpdateTodoParams,
+    ListTodosParams, PodiumTools, RenameSessionParams, SpawnAgentParams, UpdateTodoParams,
 };
 use podium_core::mcp::{self, McpServer};
 use podium_core::{
@@ -536,6 +536,50 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
         }))
         .await;
     assert!(bogus.is_err(), "unknown process must be rejected");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_session_tool_renames_the_calling_agent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let agent = orch
+        .spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+        .await
+        .expect("spawn agent");
+
+    let renamed = tools
+        .rename_session(Parameters(RenameSessionParams {
+            process_id: agent.to_string(),
+            name: "  Wiring up OAuth  ".to_string(),
+        }))
+        .await
+        .expect("rename_session");
+    assert!(first_text(&renamed).contains("Wiring up OAuth"));
+    let listed = orch
+        .list_processes(Some(project_id))
+        .into_iter()
+        .find(|p| p.id == agent)
+        .expect("agent in list");
+    assert_eq!(listed.name, "Wiring up OAuth", "trimmed name persists");
+
+    // Blank names are rejected.
+    assert!(tools
+        .rename_session(Parameters(RenameSessionParams {
+            process_id: agent.to_string(),
+            name: "   ".to_string(),
+        }))
+        .await
+        .is_err());
 
     orch.shutdown().await;
 }

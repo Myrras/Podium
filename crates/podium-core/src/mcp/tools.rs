@@ -1,4 +1,4 @@
-//! The 14 MCP tools Podium exposes to agents — all thin calls into
+//! The 16 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
 
 use std::str::FromStr;
@@ -85,6 +85,16 @@ pub struct AssignTodoParams {
     /// Your own agent process UUID — the value of the `PODIUM_PROCESS_ID`
     /// environment variable set for you at launch.
     pub process_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RenameSessionParams {
+    /// Your own agent process UUID — the value of the `PODIUM_PROCESS_ID`
+    /// environment variable set for you at launch.
+    pub process_id: String,
+    /// The new session name (must not be blank). Keep it short and
+    /// descriptive of what the session is about.
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -321,6 +331,22 @@ impl PodiumTools {
     }
 
     #[tool(
+        description = "Rename your own session (agent process) to reflect what it is about, so the user can tell your sessions apart in Podium. Pick a short, descriptive name yourself. If you were started standalone (not handed a to-do at launch), do this right after the user's first prompt. Pass your own process_id from the PODIUM_PROCESS_ID environment variable. Returns the updated process snapshot."
+    )]
+    pub async fn rename_session(
+        &self,
+        Parameters(p): Parameters<RenameSessionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let process_id = parse_process_id(&p.process_id)?;
+        json_result(
+            &self
+                .orchestrator
+                .rename_process(process_id, &p.name)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(
         description = "Revise a to-do's text and/or description (e.g. as scope changes). Returns the updated to-do."
     )]
     pub async fn update_todo(
@@ -411,7 +437,11 @@ impl ServerHandler for PodiumTools {
              or MR/PR while working on a to-do, call add_todo_link so its URL \
              is pinned to the top of the to-do for the user. If you pick up a \
              to-do that was not handed to you at launch, call assign_todo with \
-             your own PODIUM_PROCESS_ID so the user can see you own it."
+             your own PODIUM_PROCESS_ID so the user can see you own it. Keep your \
+             session recognisable: call rename_session (with your own \
+             PODIUM_PROCESS_ID) to give yourself a short name describing what the \
+             session is about — if you were started standalone rather than on a \
+             to-do, do this right after the user's first prompt."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

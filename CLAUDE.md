@@ -47,7 +47,7 @@ extracted into a standalone template:
   stop), ring-buffer scrollback with per-chunk `seq`, supervision (exponential
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos (persisted, shared with agents), and the built-in MCP server (axum +
-  rmcp streamable-HTTP, bearer auth, 15 tools). Zero Tauri dependency; unit
+  rmcp streamable-HTTP, bearer auth, 16 tools). Zero Tauri dependency; unit
   tests plus real-PTY/MCP integration tests on plain `cargo test`.
 - ✅ **Tauri IPC layer** (`src-tauri`): **34 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
@@ -93,7 +93,7 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 15 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 16 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
 │  ├─ ids.rs                   # ProjectId / ProcessId / TodoId (UUID newtypes)
@@ -151,7 +151,9 @@ comes back named after a restart.
   `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`,
   `add_todo_link` (pin an issue/PR URL to the top of a to-do),
   `assign_todo` (a running agent self-assigns a to-do via its
-  `PODIUM_PROCESS_ID`, so the user sees who owns it).
+  `PODIUM_PROCESS_ID`, so the user sees who owns it),
+  `rename_session` (a running agent renames itself via its
+  `PODIUM_PROCESS_ID` to reflect what the session is about).
   Spawned agents get the URL + token via 0600 per-agent config files under
   `{app_data_dir}/mcp` (wiped on every start); the same dir holds
   `server.json` (current URL + token, 0600) for the **stdio bridge**:
