@@ -161,6 +161,11 @@ export interface McpClientInfo {
   installed: boolean;
   /** The registration command line, for display / manual copy-paste. */
   installCommand: string;
+  /**
+   * The CLI command that lists registered servers, shown in the card hint
+   * (e.g. `claude mcp list` / `auggie mcp list`).
+   */
+  checkCommand: string;
 }
 
 /**

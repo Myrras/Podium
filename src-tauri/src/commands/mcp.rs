@@ -50,6 +50,9 @@ pub struct McpClientInfo {
     pub installed: bool,
     /// The registration command line, for display / manual copy-paste.
     pub install_command: String,
+    /// The CLI command that lists registered servers, for the card hint
+    /// (e.g. `claude mcp list` / `auggie mcp list`).
+    pub check_command: String,
 }
 
 fn current_exe() -> Result<std::path::PathBuf, IpcError> {
@@ -63,15 +66,20 @@ fn current_exe() -> Result<std::path::PathBuf, IpcError> {
 pub async fn mcp_clients_status() -> Result<Vec<McpClientInfo>, IpcError> {
     let exe = current_exe()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let status = install::claude_status();
-        let install_command = install::claude_add_command(&exe).map_err(IpcError::from)?;
-        Ok(vec![McpClientInfo {
-            id: "claude-code".to_string(),
-            display_name: "Claude Code".to_string(),
-            cli_available: status.cli_available,
-            installed: status.installed,
-            install_command,
-        }])
+        install::CLIENTS
+            .iter()
+            .map(|client| {
+                let status = client.status();
+                Ok(McpClientInfo {
+                    id: client.id.to_string(),
+                    display_name: client.display_name.to_string(),
+                    cli_available: status.cli_available,
+                    installed: status.installed,
+                    install_command: client.add_command(&exe).map_err(IpcError::from)?,
+                    check_command: client.check_command().to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, IpcError>>()
     })
     .await
     .map_err(|e| IpcError::new("io", format!("client probe task failed: {e}")))?
@@ -81,11 +89,10 @@ pub async fn mcp_clients_status() -> Result<Vec<McpClientInfo>, IpcError> {
 /// entry). Returns the refreshed client list.
 #[tauri::command]
 pub async fn mcp_client_install(client_id: String) -> Result<Vec<McpClientInfo>, IpcError> {
-    if client_id != "claude-code" {
-        return Err(IpcError::new("invalidInput", "unknown MCP client"));
-    }
+    let client = install::client(&client_id)
+        .ok_or_else(|| IpcError::new("invalidInput", "unknown MCP client"))?;
     let exe = current_exe()?;
-    tauri::async_runtime::spawn_blocking(move || install::claude_install(&exe))
+    tauri::async_runtime::spawn_blocking(move || client.install(&exe))
         .await
         .map_err(|e| IpcError::new("io", format!("client install task failed: {e}")))?
         .map_err(IpcError::from)?;

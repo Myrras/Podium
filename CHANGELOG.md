@@ -8,6 +8,17 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.1.1] - 2026-07-14
+
+### Added
+
+- **Auggie can now be registered as an MCP client in one click.** Settings →
+  MCP shows an Auggie card alongside Claude Code, so agents running in Auggie
+  can use Podium's MCP tools (list processes, read output, spawn sibling
+  agents). Press Run — or copy the shown `auggie mcp add …` command — to
+  register Podium; the card reflects whether Auggie's CLI is installed and
+  whether Podium is already registered.
+
 ## [1.1.0] - 2026-07-13
 
 ### Added

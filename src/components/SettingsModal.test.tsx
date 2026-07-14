@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentSettingsDto } from "../ipc/types";
+import type { AgentSettingsDto, McpClientInfo } from "../ipc/types";
 
 // The settings modal reaches the backend only through the Tauri invoke bridge,
 // which jsdom lacks — route every command by name to a canned response.
@@ -28,10 +28,33 @@ const sampleDto: AgentSettingsDto = {
   ],
 };
 
+const sampleClients: McpClientInfo[] = [
+  {
+    id: "claude-code",
+    displayName: "Claude Code",
+    cliAvailable: true,
+    installed: true,
+    installCommand:
+      "claude mcp add --scope user --transport stdio podium -- /App/Podium mcp-bridge",
+    checkCommand: "claude mcp list",
+  },
+  {
+    id: "auggie",
+    displayName: "Auggie",
+    cliAvailable: true,
+    installed: false,
+    installCommand:
+      "auggie mcp add podium --command /App/Podium --args mcp-bridge --replace",
+    checkCommand: "auggie mcp list",
+  },
+];
+
 const invoke = vi.fn((cmd: string, _args?: unknown) => {
   switch (cmd) {
     case "mcp_clients_status":
-      return Promise.resolve([]);
+      return Promise.resolve(sampleClients);
+    case "mcp_client_install":
+      return Promise.resolve(sampleClients);
     case "agent_settings_get":
     case "agent_settings_set_adapter":
     case "agent_settings_set_default_adapter":
@@ -125,6 +148,38 @@ describe("SettingsModal — Agents tab", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("agent_settings_set_merge_mode", {
         mode: "project-overrides",
+      }),
+    );
+  });
+});
+
+describe("SettingsModal — MCP tab", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+  });
+
+  it("lists both external clients with per-client check commands", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "MCP" }));
+
+    expect(await screen.findByText("Claude Code")).toBeInTheDocument();
+    expect(screen.getByText("Auggie")).toBeInTheDocument();
+    // The hint shows each client's own list command.
+    expect(screen.getByText("claude mcp list")).toBeInTheDocument();
+    expect(screen.getByText("auggie mcp list")).toBeInTheDocument();
+  });
+
+  it("registers the Auggie bridge when its Run is pressed", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "MCP" }));
+    await screen.findByText("Auggie");
+
+    // Cards render in list order; the second Run button is Auggie's.
+    fireEvent.click(screen.getAllByRole("button", { name: "Run" })[1]);
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("mcp_client_install", {
+        clientId: "auggie",
       }),
     );
   });

@@ -2,7 +2,7 @@
  * App settings dialog with three tabs: General (appearance, terminal), Agents
  * (per-adapter command override + default arguments, plus the argument merge
  * mode), and MCP (one-click registration of the stdio bridge with external
- * clients like Claude Code).
+ * clients like Claude Code and Auggie).
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -162,8 +162,8 @@ function McpClientCard({
         </div>
       </div>
       <small className={styles.rowHelp}>
-        Check with <code>claude mcp list</code>. If a stale <code>podium</code>{" "}
-        entry exists, Run replaces it automatically.
+        Check with <code>{client.checkCommand}</code>. If a stale{" "}
+        <code>podium</code> entry exists, Run replaces it automatically.
       </small>
     </div>
   );

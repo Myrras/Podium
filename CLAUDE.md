@@ -163,10 +163,13 @@ comes back named after a restart.
   handshake with backoff when the app restarts, so client config never goes
   stale even though port and token rotate every launch
   (`PODIUM_APP_DATA_DIR` overrides the app data dir). `mcp/install.rs`
-  registers the bridge with external clients (Claude Code today:
+  registers the bridge with external clients (Claude Code —
   `claude mcp add --scope user --transport stdio podium -- <exe>
-  mcp-bridge`, via the login shell) — surfaced in the Settings → MCP tab
-  as a one-click Run/Copy card with an installed indicator.
+  mcp-bridge` — and Auggie —
+  `auggie mcp add podium --command <exe> --args mcp-bridge --replace`, its
+  installed-check reading `auggie mcp list --json`; all via the login
+  shell) — each surfaced in the Settings → MCP tab as a one-click Run/Copy
+  card with an installed indicator.
 - **To-dos** (`todo.rs`): each project has a shared to-do list, visible to
   the user (sidebar) and every agent (MCP). Persisted in one `todos.json`
   in the app data dir — **keyed by project root path**, not project id, so
