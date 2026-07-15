@@ -8,6 +8,15 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.1.4] - 2026-07-15
+
+### Changed
+
+- **To-dos an agent is working on are now clickable in the sidebar.** Clicking a
+  to-do listed under an agent's row opens it in the work area (matching the
+  already-clickable scratchpad titles), so you can jump straight to a to-do an
+  agent has self-assigned.
+
 ## [1.1.3] - 2026-07-14
 
 ### Added

@@ -6,9 +6,8 @@
  * scratchpad state (assignments arrive/leave via the `scratchpad:changed`
  * refresh), so it updates as agents self-assign at spawn time.
  *
- * Unlike `AgentTodoList`, clicking a title here navigates to that scratchpad
- * in the work area — scratchpad content is long-lived context worth opening,
- * whereas to-dos stay non-clickable here by design.
+ * Like `AgentTodoList`, clicking a title navigates to that scratchpad in the
+ * work area.
  */
 
 import { useMemo } from "react";

@@ -10,6 +10,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { AssignedAgent, TodoInfo } from "../ipc/types";
+import { useLayoutStore } from "../state/layoutStore";
+import { useProjectStore } from "../state/projectStore";
 import { useTodoStore } from "../state/todoStore";
 import { AgentTodoList } from "./AgentTodoList";
 
@@ -85,5 +87,23 @@ describe("AgentTodoList", () => {
     );
 
     expect(unassignTodo).toHaveBeenCalledWith(PROJECT, "a");
+  });
+
+  it("opens the to-do in the work area when its text is clicked", () => {
+    seed([todo("a", "Wire auth", { processId: AGENT, name: "claude" })]);
+    const openTodoInWorkArea = vi.spyOn(
+      useLayoutStore.getState(),
+      "openTodoInWorkArea",
+    );
+    const setActiveProject = vi.spyOn(
+      useProjectStore.getState(),
+      "setActiveProject",
+    );
+    render(<AgentTodoList projectId={PROJECT} processId={AGENT} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Wire auth" }));
+
+    expect(setActiveProject).toHaveBeenCalledWith(PROJECT);
+    expect(openTodoInWorkArea).toHaveBeenCalledWith(PROJECT, "a");
   });
 });

@@ -31,8 +31,8 @@
   white-space: nowrap;
 }
 
-/* Scratchpad titles are clickable (unlike to-do text); reset button chrome
-   so it reads like plain text until hovered. */
+/* To-do text and scratchpad titles are clickable buttons; reset button chrome
+   so they read like plain text until hovered. */
 button.text {
   display: block;
   background: none;

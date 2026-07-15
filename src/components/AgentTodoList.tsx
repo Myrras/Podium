@@ -1,14 +1,16 @@
 /**
  * Read-only list of the to-dos an agent is currently working on, shown under
- * its row in the sidebar. Each entry has a single (x) that unassigns the to-do
- * and sends the agent a best-effort cancel/rollback request. The list is
- * driven by the shared to-do state (assignments arrive/leave via the
+ * its row in the sidebar. Clicking a to-do opens it in the work area; the (x)
+ * unassigns it and sends the agent a best-effort cancel/rollback request. The
+ * list is driven by the shared to-do state (assignments arrive/leave via the
  * `todo:changed` refresh), so it updates as agents self-assign over MCP.
  */
 
 import { useMemo } from "react";
 
 import type { ProcessId, ProjectId, TodoInfo } from "../ipc/types";
+import { useLayoutStore } from "../state/layoutStore";
+import { useProjectStore } from "../state/projectStore";
 import { useTodoStore } from "../state/todoStore";
 import { CloseIcon } from "./icons";
 import styles from "./AgentTodoList.module.css";
@@ -27,6 +29,8 @@ export function AgentTodoList({ projectId, processId }: AgentTodoListProps) {
   // on every store change and trip useSyncExternalStore's snapshot check.
   const todos = useTodoStore((s) => s.todosByProject[projectId] ?? NO_TODOS);
   const unassignTodo = useTodoStore((s) => s.unassignTodo);
+  const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const openTodoInWorkArea = useLayoutStore((s) => s.openTodoInWorkArea);
   const assigned = useMemo(
     () => todos.filter((t) => t.assignedAgent?.processId === processId),
     [todos, processId],
@@ -38,9 +42,17 @@ export function AgentTodoList({ projectId, processId }: AgentTodoListProps) {
     <ul className={styles.list} aria-label="To-dos this agent is working on">
       {assigned.map((todo) => (
         <li key={todo.id} className={styles.item}>
-          <span className={styles.text} title={todo.text}>
+          <button
+            type="button"
+            className={styles.text}
+            title={`Open "${todo.text}"`}
+            onClick={() => {
+              setActiveProject(projectId);
+              openTodoInWorkArea(projectId, todo.id);
+            }}
+          >
             {todo.text}
-          </span>
+          </button>
           <button
             type="button"
             className={styles.remove}
