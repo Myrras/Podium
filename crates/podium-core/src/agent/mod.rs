@@ -2,7 +2,7 @@
 //! concrete shell command line + environment (a [`LaunchPlan`]).
 //!
 //! Adapters are pure planners — the core PTY machinery does the spawning
-//! (`$SHELL -lc "<command>"`), so an adapter only decides what the command
+//! (`$SHELL -lic "<command>"`), so an adapter only decides what the command
 //! line and environment look like. The MCP seam ([`McpConnectInfo`]) is
 //! designed in now but stays `None` until the built-in MCP server lands.
 
@@ -62,7 +62,7 @@ impl fmt::Debug for McpConnectInfo {
     }
 }
 
-/// A ready-to-run launch: a full shell command line (run via `$SHELL -lc`)
+/// A ready-to-run launch: a full shell command line (run via `$SHELL -lic`)
 /// plus extra environment variables for the process.
 #[derive(Debug, Clone)]
 pub struct LaunchPlan {

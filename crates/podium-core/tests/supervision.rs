@@ -11,6 +11,11 @@ use tokio::sync::broadcast;
 use tokio::time::{sleep, timeout};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Processes spawn via an interactive login shell (`-lic`), so a spawn can
+// itself take a couple of seconds on a heavier shell profile (oh-my-zsh,
+// p10k, …) — comfortably longer than the fast backoff timings below. The
+// "no more restarts" quiet window must outlast that per-spawn cost.
+const RESTART_QUIET_WINDOW: Duration = Duration::from_secs(8);
 
 fn fast_supervisor() -> SupervisorConfig {
     SupervisorConfig {
@@ -97,7 +102,7 @@ async fn on_crash_policy_restarts_until_breaker_trips() {
 
     let runs = timeout(
         TEST_TIMEOUT,
-        running_events_until_quiet(&mut rx, Duration::from_secs(2)),
+        running_events_until_quiet(&mut rx, RESTART_QUIET_WINDOW),
     )
     .await
     .expect("timed out counting restarts");
@@ -129,7 +134,7 @@ async fn always_policy_restarts_clean_exits() {
 
     let runs = timeout(
         TEST_TIMEOUT,
-        running_events_until_quiet(&mut rx, Duration::from_secs(2)),
+        running_events_until_quiet(&mut rx, RESTART_QUIET_WINDOW),
     )
     .await
     .expect("timed out counting restarts");

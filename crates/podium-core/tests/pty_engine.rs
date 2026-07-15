@@ -249,3 +249,53 @@ async fn mid_stream_attach_reconstructs_output_without_gaps_or_dups() {
         assert_eq!(count, 1, "expected exactly one occurrence of line{i}");
     }
 }
+
+/// Regression test for the `-lic` (login *and* interactive) shell invocation:
+/// PATH/env edits some installers (nvm, Homebrew shellenv, Docker Desktop
+/// alternatives, …) only add to `.zshrc` — an interactive-only rc file that a
+/// plain login shell (`-lc`) never reads. `zsh` is macOS's default shell, but
+/// some environments (e.g. GitHub Actions macOS runners) still run with a
+/// non-zsh `$SHELL`, so skip rather than fail when this zsh-specific
+/// assertion doesn't apply.
+#[tokio::test(flavor = "multi_thread")]
+async fn zshrc_only_env_is_visible_to_spawned_processes() {
+    if !std::env::var("SHELL").unwrap_or_default().contains("zsh") {
+        eprintln!("skipping: this test asserts zsh-specific rc behaviour; host $SHELL is not zsh");
+        return;
+    }
+
+    let fake_home = tempfile::tempdir().expect("tempdir for fake $HOME");
+    std::fs::write(
+        fake_home.path().join(".zshrc"),
+        "export PODIUM_INTERACTIVE_TEST_MARKER=zshrc_was_sourced\n",
+    )
+    .expect("write .zshrc");
+
+    let dir = tempfile::tempdir().expect("tempdir for project");
+    let orch = Orchestrator::new();
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let process_id = orch
+        .add_process(
+            project_id,
+            ProcessSpec {
+                name: "test".to_string(),
+                command: "echo $PODIUM_INTERACTIVE_TEST_MARKER".to_string(),
+                cwd: dir.path().to_path_buf(),
+                env: vec![(
+                    "HOME".to_string(),
+                    fake_home.path().to_string_lossy().into_owned(),
+                )],
+                kind: ProcessKind::Service,
+                restart_policy: RestartPolicy::Never,
+            },
+        )
+        .await
+        .expect("add process");
+
+    orch.start_process(process_id).await.expect("start");
+    let text = wait_for_output(&orch, process_id, "zshrc_was_sourced").await;
+    assert!(text.contains("zshrc_was_sourced"));
+}

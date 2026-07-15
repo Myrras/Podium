@@ -9,13 +9,16 @@
 /// The login shell plus the args that precede a command *string*, so that
 /// `Command::new(program).args(prefix).arg(cmd)` runs `cmd` through it.
 ///
-/// Unix: `$SHELL -lc <cmd>` — a login shell, so profile PATH edits (nvm,
-/// homebrew, …) apply. Windows: `%COMSPEC% /C <cmd>` (defaults to `cmd.exe`).
+/// Unix: `$SHELL -lic <cmd>` — login *and* interactive, so both
+/// `.zprofile`/`.bash_profile` and `.zshrc`/`.bashrc` PATH/env edits (nvm,
+/// Homebrew shellenv, Docker Desktop alternatives, …) apply — some installers
+/// only add to the interactive-only file. Windows: `%COMSPEC% /C <cmd>`
+/// (defaults to `cmd.exe`).
 pub fn login_shell() -> (String, &'static [&'static str]) {
     #[cfg(unix)]
     {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        (shell, &["-lc"])
+        (shell, &["-lic"])
     }
     #[cfg(windows)]
     {

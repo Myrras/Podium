@@ -32,7 +32,7 @@ pub struct PodiumConfig {
 #[serde(deny_unknown_fields)]
 pub struct ProcessConfig {
     pub name: String,
-    /// Shell command line, run via `$SHELL -lc`.
+    /// Shell command line, run via `$SHELL -lic`.
     pub command: String,
     /// Working directory relative to the project root (defaults to the root).
     #[serde(default)]
