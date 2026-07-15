@@ -2,6 +2,7 @@ name: Build
 
 # Build the installable macOS bundle.
 # - workflow_dispatch: build on demand from the Actions tab.
+# - push to main: every merge to main produces the artifact.
 # - push of a v* tag: a release tag also produces the artifact.
 #
 # macOS only on purpose: Podium's PTY layer is Unix-only today and the app is
@@ -9,6 +10,8 @@ name: Build
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
