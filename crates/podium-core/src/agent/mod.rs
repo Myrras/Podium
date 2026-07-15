@@ -11,7 +11,8 @@ pub mod settings;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -243,25 +244,48 @@ pub struct AdapterInfo {
     pub available: bool,
 }
 
+/// How long a probed availability snapshot stays fresh. Each probe spawns a
+/// login+interactive shell per adapter, which is slow; the UI re-lists on every
+/// modal open, so without a cache that cost is paid on every open. A newly
+/// installed/removed CLI is picked up within this window (or on restart).
+const AVAILABILITY_TTL: Duration = Duration::from_secs(60);
+
+/// Cached availability snapshot: when it was probed + the resulting infos.
+type AvailabilityCache = Arc<Mutex<Option<(Instant, Vec<AdapterInfo>)>>>;
+
 /// The set of adapters an [`crate::Orchestrator`] can spawn. Injectable so
 /// tests can register fakes; defaults to the real registry.
 #[derive(Clone)]
 pub struct AdapterRegistry {
     adapters: Vec<Arc<dyn AgentAdapter>>,
+    /// Shared across clones so every caller hits the same cache. `None` until
+    /// the first probe.
+    cache: AvailabilityCache,
 }
 
 impl AdapterRegistry {
     pub fn new(adapters: Vec<Arc<dyn AgentAdapter>>) -> Self {
-        Self { adapters }
+        Self {
+            adapters,
+            cache: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn by_id(&self, id: &str) -> Option<Arc<dyn AgentAdapter>> {
         self.adapters.iter().find(|a| a.id() == id).cloned()
     }
 
-    /// Snapshot for listing; probes each adapter's binary availability.
+    /// Snapshot for listing; probes each adapter's binary availability, cached
+    /// for [`AVAILABILITY_TTL`] so rapid re-lists don't re-shell every time.
     pub fn infos(&self) -> Vec<AdapterInfo> {
-        self.adapters
+        let mut cache = self.cache.lock().expect("adapter cache mutex poisoned");
+        if let Some((at, infos)) = cache.as_ref() {
+            if at.elapsed() < AVAILABILITY_TTL {
+                return infos.clone();
+            }
+        }
+        let infos: Vec<AdapterInfo> = self
+            .adapters
             .iter()
             .map(|a| AdapterInfo {
                 id: a.id().to_string(),
@@ -269,7 +293,9 @@ impl AdapterRegistry {
                 binary: a.binary().to_string(),
                 available: a.is_available(),
             })
-            .collect()
+            .collect();
+        *cache = Some((Instant::now(), infos.clone()));
+        infos
     }
 }
 
@@ -297,6 +323,43 @@ mod tests {
         {
             crate::platform::parse_windows_argv(cmd)
         }
+    }
+
+    #[test]
+    fn infos_caches_the_availability_probe() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingAdapter(Arc<AtomicUsize>);
+        impl AgentAdapter for CountingAdapter {
+            fn id(&self) -> &'static str {
+                "counting"
+            }
+            fn display_name(&self) -> &'static str {
+                "Counting"
+            }
+            fn binary(&self) -> &'static str {
+                "counting"
+            }
+            fn build_launch(&self, _ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+                unreachable!("not used in this test")
+            }
+            fn is_available(&self) -> bool {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        }
+
+        let probes = Arc::new(AtomicUsize::new(0));
+        let registry = AdapterRegistry::new(vec![Arc::new(CountingAdapter(Arc::clone(&probes)))]);
+        let first = registry.infos();
+        let second = registry.infos();
+        assert_eq!(first.len(), 1);
+        assert!(second[0].available);
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "second list within the TTL must reuse the cache, not re-probe"
+        );
     }
 
     #[test]
