@@ -19,6 +19,8 @@ export interface Toast {
   detail?: string;
   /** When set, the toast is "sticky" and updated in place (progress). */
   sticky?: boolean;
+  /** Optional inline action (e.g. "Remove from workspace"), rendered as a button. */
+  action?: { label: string; onClick: () => void | Promise<void> };
   /**
    * Set while the toast plays its exit animation, just before it is removed.
    * The view keys its `data-state` off this so the card can slide/fade out.
@@ -71,11 +73,17 @@ export const useToastStore = create<ToastState>((set, get) => ({
 }));
 
 /** Convenience for the common error path. Also writes a sanitized log line. */
-export function toastError(message: string, detail?: string): number {
+export function toastError(
+  message: string,
+  detail?: string,
+  opts?: { sticky?: boolean; action?: Toast["action"] },
+): number {
   // `message`/`detail` are caller-sanitized (UI text) — no secrets ever reach
   // here.
   logErr(message, detail ?? "");
-  return useToastStore.getState().push({ kind: "error", message, detail });
+  return useToastStore
+    .getState()
+    .push({ kind: "error", message, detail, ...opts });
 }
 
 export function toastSuccess(message: string): number {

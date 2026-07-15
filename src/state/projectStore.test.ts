@@ -15,8 +15,15 @@ vi.mock("../ipc/commands", () => ({
   }),
 }));
 
-// Swallow toasts (no DOM assertions here).
-vi.mock("./toastStore", () => ({ toastError: vi.fn() }));
+// Swallow toasts (no DOM assertions here); expose just enough of the toast
+// store for the restore-failure toast's remove action to dismiss itself.
+const { requestDismissMock } = vi.hoisted(() => ({
+  requestDismissMock: vi.fn(),
+}));
+vi.mock("./toastStore", () => ({
+  toastError: vi.fn(() => 1),
+  useToastStore: { getState: () => ({ requestDismiss: requestDismissMock }) },
+}));
 
 import type { ProjectInfo } from "../ipc/types";
 import {
@@ -27,6 +34,7 @@ import {
   workspaceList,
   workspaceRemove,
 } from "../ipc/commands";
+import { toastError } from "./toastStore";
 import { reorderIds, useProjectStore } from "./projectStore";
 
 const projectOpenMock = vi.mocked(projectOpen);
@@ -35,6 +43,7 @@ const projectRenameMock = vi.mocked(projectRename);
 const projectReorderMock = vi.mocked(projectReorder);
 const workspaceListMock = vi.mocked(workspaceList);
 const workspaceRemoveMock = vi.mocked(workspaceRemove);
+const toastErrorMock = vi.mocked(toastError);
 
 /** A fictitious project snapshot for store fixtures. */
 function project(id: string, name = id): ProjectInfo {
@@ -68,6 +77,26 @@ describe("projectStore.restoreWorkspace", () => {
 
     expect(projectOpenMock).toHaveBeenCalledWith("/projects/webshop");
     expect(workspaceRemoveMock).not.toHaveBeenCalled();
+  });
+
+  it("offers a remove-from-workspace action on a failed restore", async () => {
+    // A permanent failure (folder moved/deleted) would otherwise fail on
+    // every launch forever; the toast's action lets the user drop it.
+    workspaceListMock.mockResolvedValue(["/projects/gone"]);
+    projectOpenMock.mockRejectedValue(new Error("not a directory"));
+    projectListMock.mockResolvedValue([]);
+
+    await useProjectStore.getState().restoreWorkspace();
+
+    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+    const opts = toastErrorMock.mock.calls[0][2];
+    expect(opts?.sticky).toBe(true);
+    expect(opts?.action?.label).toBe("Remove from workspace");
+
+    await opts?.action?.onClick();
+
+    expect(workspaceRemoveMock).toHaveBeenCalledWith("/projects/gone");
+    expect(requestDismissMock).toHaveBeenCalledWith(1);
   });
 
   it("restores every persisted project in order", async () => {

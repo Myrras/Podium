@@ -80,6 +80,22 @@
   word-break: break-word;
 }
 
+.action {
+  align-self: flex-start;
+  margin-top: var(--sp-1);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+}
+
+.action:hover:not(:disabled) {
+  color: var(--accent-hover);
+  background: transparent;
+}
+
 @keyframes slideIn {
   from {
     transform: translateX(16px) scale(0.98);

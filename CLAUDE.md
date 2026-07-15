@@ -121,13 +121,19 @@ reaches around it.
 
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
-it; at startup the frontend calls `workspace_list` and re-opens every path
-via `project_open` (pruning dead paths with `workspace_remove`). Each entry is
+it; at startup the frontend calls `workspace_list` and re-opens every path via
+`project_open`. A path that fails to open (folder moved/deleted, drive not
+yet mounted) is *not* auto-pruned — a transient failure must not silently
+drop the project — but its error toast offers a "Remove from workspace"
+action wired to `workspace_remove` for permanent failures. Each entry is
 a `{ path, name? }` object — the optional `name` is a user-set display-name
 override (set via `project_rename`) and list position is the sidebar order
 (set via `project_reorder`); legacy bare-path-string files are migrated on
 load. `project_open` re-applies a stored name override so a renamed project
-comes back named after a restart.
+comes back named after a restart. Opening the same folder concurrently (e.g.
+React StrictMode's double-mount firing `restoreWorkspace` twice) dedupes to
+one project: the "already open" check and the id reservation happen under
+one lock acquisition, atomically, before the async `podium.yml` load.
 
 - **Processes** are shell command lines run via `$SHELL -lc` in their own
   PTY + process group. Stop = SIGTERM to the group, SIGKILL after a grace

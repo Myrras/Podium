@@ -14,9 +14,10 @@ import {
   recentsRemove,
   toIpcError,
   workspaceList,
+  workspaceRemove,
 } from "../ipc/commands";
 import type { ProjectId, ProjectInfo, RecentProject } from "../ipc/types";
-import { toastError } from "./toastStore";
+import { toastError, useToastStore } from "./toastStore";
 
 /**
  * Move the project with id `id` to sit before the project with id `beforeId`
@@ -46,8 +47,10 @@ interface ProjectState {
   /** Re-pull the recents list (startup / after opening a project). */
   refreshRecents: () => Promise<void>;
   /**
-   * Re-open every persisted workspace project (startup). Entries that fail
-   * to open are pruned from the workspace so they don't fail every launch.
+   * Re-open every persisted workspace project (startup). An entry that fails
+   * to open is kept (not pruned — a transient failure, e.g. an unmounted
+   * drive, must not silently drop the project) and its error toast offers a
+   * "Remove from workspace" action for permanent failures.
    */
   restoreWorkspace: () => Promise<void>;
   /** Open the folder at `path` as a project; activates it on success. */
@@ -109,11 +112,30 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // added until the user explicitly closes it. Transient failures (e.g. an
     // external/network drive not yet mounted at startup) must not silently drop
     // the project — it comes back on the next launch when the folder is there.
+    // For a permanent failure (folder moved/deleted), the toast's action lets
+    // the user drop the entry instead of seeing it fail on every launch.
     for (const path of paths) {
       try {
         await projectOpen(path);
       } catch (e) {
-        toastError(`Could not restore ${path}`, toIpcError(e).message);
+        let toastId = -1;
+        toastId = toastError(`Could not restore ${path}`, toIpcError(e).message, {
+          sticky: true,
+          action: {
+            label: "Remove from workspace",
+            onClick: async () => {
+              try {
+                await workspaceRemove(path);
+                useToastStore.getState().requestDismiss(toastId);
+              } catch (removeErr) {
+                toastError(
+                  "Could not remove from workspace",
+                  toIpcError(removeErr).message,
+                );
+              }
+            },
+          },
+        });
       }
     }
     await get().refresh();

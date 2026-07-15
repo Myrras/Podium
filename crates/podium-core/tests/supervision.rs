@@ -313,6 +313,35 @@ async fn reopening_same_folder_returns_the_same_project() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn concurrently_opening_same_folder_dedupes() {
+    // The frontend fires `restoreWorkspace()` from a `useEffect` with no
+    // dependency array; React StrictMode (dev builds) intentionally mounts,
+    // cleans up, and remounts once, so two overlapping `open_project` calls
+    // for the same folder are a real startup scenario, not just a
+    // sequential re-open. The "already open" check and the project-map
+    // insert are separated by an `.await` (the config-file load), so two
+    // concurrent calls can both pass the check before either has inserted.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Orchestrator::new();
+
+    let (first, second) = tokio::join!(
+        orch.open_project(dir.path().to_path_buf()),
+        orch.open_project(dir.path().to_path_buf()),
+    );
+
+    assert_eq!(
+        first.expect("first open"),
+        second.expect("second open"),
+        "concurrent opens of the same folder must dedupe to one project id"
+    );
+    assert_eq!(
+        orch.list_projects().len(),
+        1,
+        "no duplicate record from the race"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn reopening_via_different_path_spelling_dedupes() {
     // A trailing-slash / `.` spelling of the same folder canonicalizes to the
     // same identity, so it also dedupes to one project.

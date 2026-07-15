@@ -257,16 +257,42 @@ impl Orchestrator {
         // Idempotent: opening an already-open folder returns the existing
         // project rather than minting a duplicate record. This is what keeps
         // a double startup restore (e.g. React StrictMode invoking the effect
-        // twice) from producing two sidebar entries for one project.
-        if let Some(existing) = {
-            let inner = self.inner.lock().expect(LOCK_POISONED);
-            inner
+        // twice) from producing two sidebar entries for one project. The
+        // check and the reservation below happen under the same lock
+        // acquisition, atomically with each other: the config load is async,
+        // so if the reservation happened only after that `.await`, two
+        // concurrent opens of the same folder could both pass the check
+        // before either had inserted, minting two records for one folder.
+        let (id, is_new) = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            if let Some(existing) = inner
                 .projects
                 .iter()
                 .find(|(_, p)| p.root == path)
                 .map(|(id, _)| *id)
-        } {
-            return Ok(existing);
+            {
+                (existing, false)
+            } else {
+                let id = ProjectId::new();
+                let name = project::folder_name(&path);
+                let icon_initials = project::derive_icon_initials(&name);
+                inner.projects.insert(
+                    id,
+                    ProjectHandle {
+                        name,
+                        root: path.clone(),
+                        icon_initials,
+                        config_error: None,
+                        agents: AgentsConfig::default(),
+                        name_override: None,
+                    },
+                );
+                inner.order.push(id);
+                (id, true)
+            }
+        };
+        if !is_new {
+            return Ok(id);
         }
         let root = path.clone();
         let loaded = tokio::task::spawn_blocking(move || project::load_project_config(&root))
@@ -291,21 +317,14 @@ impl Orchestrator {
                 )
             }
         };
-        let id = ProjectId::new();
         let (added, auto_start) = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
-            inner.projects.insert(
-                id,
-                ProjectHandle {
-                    name,
-                    root: path,
-                    icon_initials,
-                    config_error,
-                    agents,
-                    name_override: None,
-                },
-            );
-            inner.order.push(id);
+            if let Some(handle) = inner.projects.get_mut(&id) {
+                handle.name = name;
+                handle.icon_initials = icon_initials;
+                handle.config_error = config_error;
+                handle.agents = agents;
+            }
             insert_configured(&mut inner, id, configured)
         };
         self.events

@@ -30,6 +30,15 @@ export function Toasts() {
           <div className={styles.content}>
             <span className={styles.message}>{t.message}</span>
             {t.detail && <span className={styles.detail}>{t.detail}</span>}
+            {t.action && (
+              <button
+                type="button"
+                className={styles.action}
+                onClick={() => void t.action?.onClick()}
+              >
+                {t.action.label}
+              </button>
+            )}
           </div>
           <button
             type="button"
