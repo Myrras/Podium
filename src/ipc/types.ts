@@ -15,6 +15,7 @@ export type ProcessId = string;
 export type TodoId = string;
 export type CommentId = string;
 export type LinkId = string;
+export type ScratchpadId = string;
 
 /** Open project snapshot (`podium_core::ProjectInfo`). */
 export interface ProjectInfo {
@@ -135,6 +136,11 @@ export interface AgentSpawnOptions {
    * to-dos are handed to the one agent as a single combined task.
    */
   todoIds?: TodoId[];
+  /**
+   * Scratchpads to work on; only used when `todoIds` is empty. Several
+   * scratchpads are handed to the one agent as a single combined task.
+   */
+  scratchpadIds?: ScratchpadId[];
 }
 
 /**
@@ -179,12 +185,13 @@ export type TermEvent =
   | { type: "lagged" };
 
 /**
- * The agent currently working on a to-do (`podium_core::AssignedAgent`).
- * Runtime-only on the Rust side (a process id is per-run), so it is `null`
- * after a restart until an agent is (re)assigned.
+ * The agent currently working on a to-do or scratchpad
+ * (`podium_core::AssignedAgent`). Runtime-only on the Rust side (a process id
+ * is per-run), so it is `null` after a restart until an agent is
+ * (re)assigned. Shared by `TodoInfo` and `ScratchpadInfo`.
  */
 export interface AssignedAgent {
-  /** The agent process working on the to-do. */
+  /** The agent process working on the item. */
   processId: ProcessId;
   /** The agent's display name, for showing without a process lookup. */
   name: string;
@@ -244,6 +251,33 @@ export interface TodoInfo {
   /** Progress notes, oldest first. */
   comments: TodoComment[];
   /** The agent currently working on this to-do, or `null` if unassigned. */
+  assignedAgent: AssignedAgent | null;
+}
+
+/**
+ * One scratchpad (`podium_core::ScratchpadInfo`). Scratchpads are keyed by
+ * project root on the Rust side, so they survive app restarts.
+ */
+export interface ScratchpadInfo {
+  id: ScratchpadId;
+  projectId: ProjectId;
+  title: string;
+  content: string;
+  /** Whether the scratchpad is archived (hidden from the main list). */
+  archived: boolean;
+  /** RFC 3339 timestamp of when it was archived; `null` while active. */
+  archivedAt: string | null;
+  /** RFC 3339 creation timestamp. */
+  createdAt: string;
+  /** RFC 3339 timestamp of the last edit. */
+  updatedAt: string;
+  /** Who last touched the content: `"User"` or an agent name. */
+  updatedBy: string;
+  /** Increments on every content update, starting at 1. */
+  version: number;
+  /** Free-text tags, addable by the user and by agents over MCP. */
+  tags: string[];
+  /** The agent currently working on this scratchpad, or `null` if unassigned. */
   assignedAgent: AssignedAgent | null;
 }
 

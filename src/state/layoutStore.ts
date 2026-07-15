@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-import type { ProjectId, TodoId } from "../ipc/types";
+import type { ProjectId, ScratchpadId, TodoId } from "../ipc/types";
 import { useProcessStore } from "./processStore";
 
 interface LayoutPersisted {
@@ -53,19 +53,39 @@ export interface OpenTodo {
   todoId: TodoId;
 }
 
+/** The scratchpad currently filling the work area (opened from the sidebar). */
+export interface OpenScratchpad {
+  projectId: ProjectId;
+  scratchpadId: ScratchpadId;
+}
+
 export interface LayoutState extends LayoutPersisted {
   /**
-   * To-do shown in the work area, or `null` when a process/welcome screen is
-   * shown instead. In-memory (not persisted) — the work area starts empty.
-   * Mutually exclusive with the focused process: opening one clears the other.
+   * To-do shown in the work area, or `null` when a process/scratchpad/welcome
+   * screen is shown instead. In-memory (not persisted) — the work area starts
+   * empty. Mutually exclusive with the focused process and the open
+   * scratchpad: opening one clears the others.
    */
   openTodo: OpenTodo | null;
+  /**
+   * Scratchpad shown in the work area, or `null` when a process/to-do/welcome
+   * screen is shown instead. In-memory (not persisted). Mutually exclusive
+   * with the focused process and the open to-do.
+   */
+  openScratchpad: OpenScratchpad | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
-  /** Fill the work area with a to-do (clears the focused process). */
+  /** Fill the work area with a to-do (clears the focused process/scratchpad). */
   openTodoInWorkArea: (projectId: ProjectId, todoId: TodoId) => void;
   /** Clear the open to-do (e.g. when a process takes the work area). */
   clearOpenTodo: () => void;
+  /** Fill the work area with a scratchpad (clears the focused process/to-do). */
+  openScratchpadInWorkArea: (
+    projectId: ProjectId,
+    scratchpadId: ScratchpadId,
+  ) => void;
+  /** Clear the open scratchpad (e.g. when a process takes the work area). */
+  clearOpenScratchpad: () => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => {
@@ -73,6 +93,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
   return {
     ...initial,
     openTodo: null,
+    openScratchpad: null,
     setSidebarWidth: (w) => {
       const sidebarWidth = Math.min(600, Math.max(160, w));
       const s = get();
@@ -89,10 +110,16 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       set({ collapsedProjects });
     },
     openTodoInWorkArea: (projectId, todoId) => {
-      // A to-do and a process are mutually exclusive in the work area.
+      // A to-do, a scratchpad, and a process are mutually exclusive in the
+      // work area.
       useProcessStore.getState().setActiveProcess(null);
-      set({ openTodo: { projectId, todoId } });
+      set({ openTodo: { projectId, todoId }, openScratchpad: null });
     },
     clearOpenTodo: () => set({ openTodo: null }),
+    openScratchpadInWorkArea: (projectId, scratchpadId) => {
+      useProcessStore.getState().setActiveProcess(null);
+      set({ openScratchpad: { projectId, scratchpadId }, openTodo: null });
+    },
+    clearOpenScratchpad: () => set({ openScratchpad: null }),
   };
 });

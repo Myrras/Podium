@@ -108,6 +108,9 @@ fn forward(app: &AppHandle, event: PodiumEvent) {
         PodiumEvent::TodosChanged { project_id } => {
             app.emit("todo:changed", ProjectRefPayload { project_id })
         }
+        PodiumEvent::ScratchpadsChanged { project_id } => {
+            app.emit("scratchpad:changed", ProjectRefPayload { project_id })
+        }
     };
     if let Err(e) = result {
         tracing::warn!("failed to emit event to webview: {e}");

@@ -6,6 +6,7 @@ pub mod mcp;
 pub mod process;
 pub mod project;
 pub mod recents;
+pub mod scratchpad;
 pub mod todo;
 pub mod window;
 pub mod workspace;

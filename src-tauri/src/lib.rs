@@ -133,6 +133,11 @@ pub fn run() {
             state
                 .orchestrator
                 .set_todos_path(app.path().app_data_dir()?.join("todos.json"));
+            // Per-project scratchpads persist the same way, keyed by project
+            // root.
+            state
+                .orchestrator
+                .set_scratchpads_path(app.path().app_data_dir()?.join("scratchpads.json"));
             // Global agent settings (command override + default args per
             // adapter, merge mode) persist in the app data dir too.
             state
@@ -199,6 +204,15 @@ pub fn run() {
             commands::todo::todo_remove_link,
             commands::todo::todo_remove,
             commands::todo::todo_unassign,
+            commands::scratchpad::scratchpad_list,
+            commands::scratchpad::scratchpad_list_archived,
+            commands::scratchpad::scratchpad_add,
+            commands::scratchpad::scratchpad_update_content,
+            commands::scratchpad::scratchpad_update_title,
+            commands::scratchpad::scratchpad_add_tag,
+            commands::scratchpad::scratchpad_remove_tag,
+            commands::scratchpad::scratchpad_set_archived,
+            commands::scratchpad::scratchpad_unassign,
             commands::window::window_confirm_close,
         ])
         .build(tauri::generate_context!())

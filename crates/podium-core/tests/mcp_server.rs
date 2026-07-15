@@ -5,8 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use podium_core::mcp::tools::{
-    AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, GetProcessOutputParams,
-    ListTodosParams, PodiumTools, RenameSessionParams, SpawnAgentParams, UpdateTodoParams,
+    AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
+    GetProcessOutputParams, ListScratchpadsParams, ListTodosParams, PodiumTools,
+    RenameSessionParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    UpdateScratchpadParams, UpdateTodoParams,
 };
 use podium_core::mcp::{self, McpServer};
 use podium_core::{
@@ -33,13 +35,28 @@ async fn start_server(config_dir: std::path::PathBuf) -> (Arc<Orchestrator>, Mcp
 
 /// One raw HTTP/1.1 POST to `<base_url>/mcp`; returns (status, full response).
 async fn http_post_mcp(base_url: &str, token: Option<&str>, body: &str) -> (u16, String) {
+    http_post_mcp_with_session(base_url, token, None, body).await
+}
+
+/// Like [`http_post_mcp`], but able to carry an `Mcp-Session-Id` header (the
+/// streamable-HTTP transport ties `tools/list`/`tools/call` to the session
+/// opened by `initialize`).
+async fn http_post_mcp_with_session(
+    base_url: &str,
+    token: Option<&str>,
+    session_id: Option<&str>,
+    body: &str,
+) -> (u16, String) {
     let addr = base_url.strip_prefix("http://").expect("http url");
     let mut stream = TcpStream::connect(addr).await.expect("connect");
     let auth = token
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
         .unwrap_or_default();
+    let session = session_id
+        .map(|s| format!("Mcp-Session-Id: {s}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -58,6 +75,46 @@ async fn http_post_mcp(base_url: &str, token: Option<&str>, body: &str) -> (u16,
         .and_then(|s| s.parse().ok())
         .expect("status line");
     (status, text)
+}
+
+/// Pull the `Mcp-Session-Id` response header out of a raw HTTP response
+/// (case-insensitive header name, as HTTP requires).
+fn extract_session_id(response: &str) -> String {
+    response
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("mcp-session-id") {
+                Some(value.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .expect("Mcp-Session-Id response header present")
+}
+
+/// The JSON-RPC payload of a raw HTTP response. The server answers either
+/// `application/json` (a plain body) or `text/event-stream` (one `data: `
+/// line per SSE event, chunked-encoded) — either way, the payload we want is
+/// the first `{...}` JSON object in the response.
+fn extract_json_body(response: &str) -> serde_json::Value {
+    let start = response.find('{').expect("json object in body");
+    let mut depth = 0usize;
+    let mut end = start;
+    for (i, c) in response[start..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    serde_json::from_str(&response[start..end]).expect("valid json body")
 }
 
 /// Text of the first content block of a tool result (shape-agnostic).
@@ -149,6 +206,63 @@ async fn initialize_succeeds_with_the_bearer_token() {
         response.contains("protocolVersion"),
         "initialize result returned: {response}"
     );
+    server.stop();
+}
+
+const INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+
+fn tools_list_request(id: u64) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_list_includes_scratchpad_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_orch, server) = start_server(dir.path().join("mcp")).await;
+
+    let (status, init_response) =
+        http_post_mcp(server.url(), Some(server.token()), INITIALIZE).await;
+    assert_eq!(status, 200);
+    let session_id = extract_session_id(&init_response);
+
+    let (status, _) = http_post_mcp_with_session(
+        server.url(),
+        Some(server.token()),
+        Some(&session_id),
+        INITIALIZED,
+    )
+    .await;
+    assert_eq!(status, 202, "initialized notification accepted");
+
+    let (status, list_response) = http_post_mcp_with_session(
+        server.url(),
+        Some(server.token()),
+        Some(&session_id),
+        &tools_list_request(2),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&list_response);
+    let tools = body["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect::<Vec<_>>();
+    for name in [
+        "list_scratchpads",
+        "create_scratchpad",
+        "update_scratchpad",
+        "add_scratchpad_tag",
+        "remove_scratchpad_tag",
+        "set_scratchpad_archived",
+    ] {
+        assert!(
+            tools.contains(&name),
+            "{name} missing from tools/list: {tools:?}"
+        );
+    }
+
     server.stop();
 }
 
@@ -287,6 +401,153 @@ async fn todo_tools_update_and_comment_round_trip() {
     orch.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn create_scratchpad_round_trip_via_mcp() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let created = tools
+        .create_scratchpad(Parameters(CreateScratchpadParams {
+            project_id: project_id.to_string(),
+            author: None,
+        }))
+        .await
+        .expect("create_scratchpad");
+    let created_json: serde_json::Value =
+        serde_json::from_str(&first_text(&created)).expect("scratchpad json");
+    assert_eq!(created_json["projectId"], project_id.to_string());
+    assert_eq!(created_json["content"], "");
+    let scratchpad_id = created_json["id"]
+        .as_str()
+        .expect("scratchpad id")
+        .to_string();
+    let created_updated_at = created_json["updatedAt"]
+        .as_str()
+        .expect("updatedAt")
+        .to_string();
+
+    let updated = tools
+        .update_scratchpad(Parameters(UpdateScratchpadParams {
+            project_id: project_id.to_string(),
+            id: scratchpad_id.clone(),
+            content: "meeting notes".to_string(),
+            expected_updated_at: created_updated_at.clone(),
+            author: None,
+        }))
+        .await
+        .expect("update_scratchpad");
+    let updated_text = first_text(&updated);
+    assert!(updated_text.contains("meeting notes"), "{updated_text:?}");
+    assert!(
+        updated_text.contains("\"updatedBy\": \"agent\""),
+        "{updated_text:?}"
+    );
+    let updated_json: serde_json::Value = serde_json::from_str(&updated_text).unwrap();
+    let updated_updated_at = updated_json["updatedAt"].as_str().unwrap().to_string();
+
+    // A stale expected_updated_at (the original create timestamp, since
+    // superseded) is rejected as a conflict instead of clobbering the edit.
+    let stale = tools
+        .update_scratchpad(Parameters(UpdateScratchpadParams {
+            project_id: project_id.to_string(),
+            id: scratchpad_id.clone(),
+            content: "stale content".to_string(),
+            expected_updated_at: created_updated_at,
+            author: None,
+        }))
+        .await;
+    assert!(stale.is_err(), "stale timestamp must be rejected");
+
+    // An explicit author overrides the "agent" default; the fresh timestamp
+    // from the prior update succeeds.
+    let renamed_author = tools
+        .update_scratchpad(Parameters(UpdateScratchpadParams {
+            project_id: project_id.to_string(),
+            id: scratchpad_id.clone(),
+            content: "meeting notes v2".to_string(),
+            expected_updated_at: updated_updated_at,
+            author: Some("claude-code".to_string()),
+        }))
+        .await
+        .expect("update_scratchpad with explicit author");
+    let renamed_text = first_text(&renamed_author);
+    assert!(
+        renamed_text.contains("\"updatedBy\": \"claude-code\""),
+        "{renamed_text:?}"
+    );
+
+    // Tags and archiving round-trip too.
+    let tagged = tools
+        .add_scratchpad_tag(Parameters(ScratchpadTagParams {
+            project_id: project_id.to_string(),
+            id: scratchpad_id.clone(),
+            tag: "meeting".to_string(),
+        }))
+        .await
+        .expect("add_scratchpad_tag");
+    assert!(first_text(&tagged).contains("meeting"));
+
+    let untagged = tools
+        .remove_scratchpad_tag(Parameters(ScratchpadTagParams {
+            project_id: project_id.to_string(),
+            id: scratchpad_id.clone(),
+            tag: "meeting".to_string(),
+        }))
+        .await
+        .expect("remove_scratchpad_tag");
+    assert!(!first_text(&untagged).contains("\"meeting\""));
+
+    let archived = tools
+        .set_scratchpad_archived(Parameters(SetScratchpadArchivedParams {
+            project_id: project_id.to_string(),
+            id: scratchpad_id,
+            archived: true,
+        }))
+        .await
+        .expect("set_scratchpad_archived");
+    assert!(first_text(&archived).contains("\"archived\": true"));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_scratchpads_round_trip_via_mcp() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    tools
+        .create_scratchpad(Parameters(CreateScratchpadParams {
+            project_id: project_id.to_string(),
+            author: None,
+        }))
+        .await
+        .expect("create_scratchpad");
+
+    let listed = tools
+        .list_scratchpads(Parameters(ListScratchpadsParams {
+            project_id: project_id.to_string(),
+        }))
+        .await
+        .expect("list_scratchpads");
+    let listed_json: serde_json::Value =
+        serde_json::from_str(&first_text(&listed)).expect("scratchpad list json");
+    let items = listed_json.as_array().expect("array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["projectId"], project_id.to_string());
+
+    orch.shutdown().await;
+}
+
 /// Adapter whose "agent" is just a long sleep, for cap testing.
 struct FakeAgentAdapter;
 
@@ -326,13 +587,27 @@ async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
         .expect("open project");
 
     for n in 1..=8 {
-        orch.spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
-            .await
-            .unwrap_or_else(|e| panic!("agent {n} under the cap should spawn: {e}"));
+        orch.spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("agent {n} under the cap should spawn: {e}"));
     }
 
     let err = orch
-        .spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+        )
         .await
         .expect_err("ninth concurrent agent must be rejected");
     assert!(
@@ -365,6 +640,7 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             None,
             None,
             vec![todo.id],
+            vec![],
         )
         .await
         .expect("spawn agent for todo");
@@ -376,6 +652,7 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             None,
             None,
             vec![todo.id],
+            vec![],
         )
         .await
         .expect("spawn second agent for todo");
@@ -399,6 +676,7 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             Some("custom".to_string()),
             None,
             vec![todo.id],
+            vec![],
         )
         .await
         .expect("spawn named agent for todo");
@@ -434,6 +712,7 @@ async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
             None,
             None,
             vec![todo.id],
+            vec![],
         )
         .await
         .expect("spawn agent for todo");
@@ -479,6 +758,7 @@ async fn removing_an_agent_clears_its_todo_assignment() {
             None,
             None,
             vec![todo.id],
+            vec![],
         )
         .await
         .expect("spawn agent for todo");
@@ -507,7 +787,14 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
 
     // A bare agent (no to-do handed to it at launch) and a separate to-do.
     let agent = orch
-        .spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+        )
         .await
         .expect("spawn bare agent");
     let todo = orch
@@ -553,7 +840,14 @@ async fn rename_session_tool_renames_the_calling_agent() {
     let tools = PodiumTools::new(Arc::clone(&orch));
 
     let agent = orch
-        .spawn_agent(project_id, Some("fake".to_string()), None, None, vec![])
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+        )
         .await
         .expect("spawn agent");
 
@@ -609,6 +903,8 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
             adapter_id: Some("fake".to_string()),
             todo_id: Some(a.id.to_string()),
             todo_ids: Some(vec![a.id.to_string(), b.id.to_string()]),
+            scratchpad_id: None,
+            scratchpad_ids: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -626,6 +922,257 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
         .filter(|p| matches!(p.kind, ProcessKind::Agent { .. }))
         .count();
     assert_eq!(agents, 1);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawning_on_a_scratchpad_assigns_the_agent_and_unassign_clears_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let pad = orch
+        .add_scratchpad(project_id, "User")
+        .expect("add scratchpad");
+
+    // Before any agent, the scratchpad has no assignment.
+    let listed = orch.list_scratchpads(project_id).expect("list scratchpads");
+    assert!(listed[0].assigned_agent.is_none());
+
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![pad.id],
+        )
+        .await
+        .expect("spawn agent for scratchpad");
+
+    // Spawning on the scratchpad links the agent to it, enriched in
+    // list_scratchpads.
+    let listed = orch.list_scratchpads(project_id).expect("list scratchpads");
+    let assigned = listed[0]
+        .assigned_agent
+        .as_ref()
+        .expect("agent assigned after spawn");
+    assert_eq!(assigned.process_id, agent);
+    assert_eq!(orch.agent_for_scratchpad(pad.id), Some(agent));
+
+    // Unassigning clears the link (and returns the enriched, now-empty pad).
+    let after = orch
+        .unassign_scratchpad(project_id, pad.id)
+        .expect("unassign");
+    assert!(after.assigned_agent.is_none());
+    assert!(orch.list_scratchpads(project_id).expect("list")[0]
+        .assigned_agent
+        .is_none());
+    assert_eq!(orch.agent_for_scratchpad(pad.id), None);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawning_on_both_todo_and_scratchpad_ignores_the_scratchpad() {
+    // to-dos win: when both are passed, the scratchpad is neither assigned
+    // nor resolved (its content never entered the prompt either).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth")
+        .expect("add todo");
+    let pad = orch
+        .add_scratchpad(project_id, "User")
+        .expect("add scratchpad");
+
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            vec![pad.id],
+        )
+        .await
+        .expect("spawn agent for todo and scratchpad");
+
+    assert_eq!(orch.agent_for_todo(todo.id), Some(agent));
+    assert_eq!(orch.agent_for_scratchpad(pad.id), None);
+    assert!(orch.list_scratchpads(project_id).expect("list")[0]
+        .assigned_agent
+        .is_none());
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawning_on_a_todo_with_a_bogus_scratchpad_still_succeeds() {
+    // Per the "ignored if a to-do is also given" contract, an
+    // invalid/deleted scratchpad id must not fail a to-do spawn.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth")
+        .expect("add todo");
+    let bogus_id = podium_core::ScratchpadId::new();
+
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            vec![bogus_id],
+        )
+        .await
+        .expect("spawn agent for todo, ignoring the bogus scratchpad id");
+
+    assert_eq!(orch.agent_for_todo(todo.id), Some(agent));
+    assert_eq!(orch.agent_for_scratchpad(bogus_id), None);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_an_agent_clears_its_scratchpad_assignment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let pad = orch
+        .add_scratchpad(project_id, "User")
+        .expect("add scratchpad");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![pad.id],
+        )
+        .await
+        .expect("spawn agent for scratchpad");
+    assert_eq!(orch.agent_for_scratchpad(pad.id), Some(agent));
+
+    orch.remove_process(agent).await.expect("remove agent");
+    assert_eq!(orch.agent_for_scratchpad(pad.id), None);
+    assert!(orch.list_scratchpads(project_id).expect("list")[0]
+        .assigned_agent
+        .is_none());
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_scratchpads_enriches_assigned_agent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let pad = orch
+        .add_scratchpad(project_id, "User")
+        .expect("add scratchpad");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![pad.id],
+        )
+        .await
+        .expect("spawn agent for scratchpad");
+
+    let listed = orch.list_scratchpads(project_id).expect("list scratchpads");
+    let assigned = listed
+        .iter()
+        .find(|s| s.id == pad.id)
+        .and_then(|s| s.assigned_agent.as_ref())
+        .expect("assigned agent present");
+    assert_eq!(assigned.process_id, agent);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_agent_tool_accepts_scratchpad_ids() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let a = orch.add_scratchpad(project_id, "User").expect("pad a");
+    let b = orch.add_scratchpad(project_id, "User").expect("pad b");
+
+    // Both scratchpads (with `scratchpad_id` overlapping `scratchpad_ids` to
+    // prove dedup) go to one agent.
+    let spawned = tools
+        .spawn_agent(Parameters(SpawnAgentParams {
+            project_id: project_id.to_string(),
+            prompt: None,
+            name: None,
+            adapter_id: Some("fake".to_string()),
+            todo_id: None,
+            todo_ids: None,
+            scratchpad_id: Some(a.id.to_string()),
+            scratchpad_ids: Some(vec![a.id.to_string(), b.id.to_string()]),
+        }))
+        .await
+        .expect("spawn_agent over MCP");
+    let agent_process_id = serde_json::from_str::<serde_json::Value>(&first_text(&spawned))
+        .expect("process json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    // Exactly one agent was created for the two scratchpads, assigned to both.
+    let agents = orch
+        .list_processes(Some(project_id))
+        .into_iter()
+        .filter(|p| matches!(p.kind, ProcessKind::Agent { .. }))
+        .count();
+    assert_eq!(agents, 1);
+    let listed = orch.list_scratchpads(project_id).expect("list scratchpads");
+    for pad in [&a, &b] {
+        let assigned = listed
+            .iter()
+            .find(|s| s.id == pad.id)
+            .and_then(|s| s.assigned_agent.as_ref())
+            .expect("assigned agent present");
+        assert_eq!(assigned.process_id.to_string(), agent_process_id);
+    }
 
     orch.shutdown().await;
 }
@@ -725,7 +1272,7 @@ async fn bare_spawn_uses_the_global_default_adapter() {
         .await
         .expect("open project");
     let id = orch
-        .spawn_agent(project_id, None, None, None, vec![])
+        .spawn_agent(project_id, None, None, None, vec![], vec![])
         .await
         .expect("spawn agent");
 
@@ -755,7 +1302,7 @@ async fn project_default_adapter_overrides_the_global_one() {
         .await
         .expect("open project");
     let id = orch
-        .spawn_agent(project_id, None, None, None, vec![])
+        .spawn_agent(project_id, None, None, None, vec![], vec![])
         .await
         .expect("spawn agent");
 
@@ -781,7 +1328,14 @@ async fn spawn_agent_applies_global_override_and_default_args() {
         .await
         .expect("open project");
     let id = orch
-        .spawn_agent(project_id, Some("echo".to_string()), None, None, vec![])
+        .spawn_agent(
+            project_id,
+            Some("echo".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+        )
         .await
         .expect("spawn agent");
 

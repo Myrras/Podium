@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { configDefaults } from "vitest/config";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -19,6 +20,13 @@ export default defineConfig(async () => ({
     css: false,
     clearMocks: true,
     restoreMocks: true,
+    // `exclude` replaces Vitest's defaults rather than extending them, so
+    // spread `configDefaults.exclude` (node_modules, dist, ...) and add
+    // `.claude` — other agents' sibling worktrees can live under
+    // `.claude/worktrees/**` with their own `node_modules`, and picking up
+    // their test files pulls in a second React copy (hook errors that have
+    // nothing to do with this repo's own tests).
+    exclude: [...configDefaults.exclude, "**/.claude/**"],
   },
 
   build: {

@@ -14,6 +14,9 @@ export default tseslint.config(
       "target",
       "**/*.config.js",
       "**/*.config.ts",
+      // Sibling agent worktrees (with their own node_modules) can live
+      // under here — never part of this repo's own lint scope.
+      "**/.claude/worktrees/**",
     ],
   },
   js.configs.recommended,

@@ -66,6 +66,15 @@ export function onTodosChanged(
   return listen<ProjectRefEvent>("todo:changed", (e) => handler(e.payload));
 }
 
+/** A project's scratchpads changed (from this UI or an agent over MCP). */
+export function onScratchpadsChanged(
+  handler: (event: ProjectRefEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ProjectRefEvent>("scratchpad:changed", (e) =>
+    handler(e.payload),
+  );
+}
+
 /** The native macOS menu's Settings… item (⌘,) was activated (`lib.rs`). */
 export function onMenuOpenSettings(handler: () => void): Promise<UnlistenFn> {
   return listen("menu:open-settings", () => handler());

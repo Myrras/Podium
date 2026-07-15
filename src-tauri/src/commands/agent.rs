@@ -6,7 +6,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use podium_core::{AdapterInfo, MergeMode, Orchestrator, ProcessInfo, ProjectId, TodoId};
+use podium_core::{
+    AdapterInfo, MergeMode, Orchestrator, ProcessInfo, ProjectId, ScratchpadId, TodoId,
+};
 
 use crate::error::IpcError;
 use crate::state::AppState;
@@ -24,7 +26,8 @@ pub async fn adapters_list(state: State<'_, AppState>) -> Result<Vec<AdapterInfo
 /// Spawn (add + immediately start) an agent in a project. Blank `name` /
 /// `prompt` are treated as absent; the core picks a free default name.
 /// `todo_ids` seeds the agent's prompt with one or more to-dos to work on
-/// (multiple are handed over as one combined task).
+/// (multiple are handed over as one combined task). `scratchpad_ids` does the
+/// same for scratchpads, and is only used when `todo_ids` is empty.
 #[tauri::command]
 pub async fn agent_spawn(
     state: State<'_, AppState>,
@@ -33,6 +36,7 @@ pub async fn agent_spawn(
     name: Option<String>,
     prompt: Option<String>,
     todo_ids: Option<Vec<TodoId>>,
+    scratchpad_ids: Option<Vec<ScratchpadId>>,
 ) -> Result<ProcessInfo, IpcError> {
     let id = state
         .orchestrator
@@ -42,6 +46,7 @@ pub async fn agent_spawn(
             name,
             prompt,
             todo_ids.unwrap_or_default(),
+            scratchpad_ids.unwrap_or_default(),
         )
         .await?;
     state

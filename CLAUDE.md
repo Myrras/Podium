@@ -47,9 +47,9 @@ extracted into a standalone template:
   stop), ring-buffer scrollback with per-chunk `seq`, supervision (exponential
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos (persisted, shared with agents), and the built-in MCP server (axum +
-  rmcp streamable-HTTP, bearer auth, 16 tools). Zero Tauri dependency; unit
+  rmcp streamable-HTTP, bearer auth, 22 tools). Zero Tauri dependency; unit
   tests plus real-PTY/MCP integration tests on plain `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **34 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **51 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, dialog + log plugins, locked-down CSP.
@@ -60,7 +60,7 @@ extracted into a standalone template:
   activity ("working…"/idle) heuristic, a to-do detail view that fills the
   work area (description edit + comment thread, mutually exclusive with the
   focused process), settings + theme (dark/light) + toasts, Zustand stores,
-  typed IPC wrappers over all 28 commands.
+  typed IPC wrappers over all 51 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -93,7 +93,7 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 16 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 22 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
 │  ├─ ids.rs                   # ProjectId / ProcessId / TodoId (UUID newtypes)
@@ -180,6 +180,17 @@ comes back named after a restart.
   **archived**: listing auto-archives any done to-do left over from an
   earlier day, and a to-do can be archived/unarchived manually — archived
   items drop out of the active list and show in the Archive modal.
+- **Scratchpads** (`scratchpad.rs`): each project has shared freeform-notes
+  scratchpads, visible to the user and every agent (MCP). Persisted in one
+  `scratchpads.json`, keyed by project root path like to-dos. Scratchpads
+  carry free-text **tags** (`add_tag`/`remove_tag`, dedup by exact value) and
+  can be **archived/unarchived** manually (`set_archived`, mirroring to-dos'
+  archive semantics but with no auto-archive sweep). Content/title updates
+  require an `expected_updated_at` matching the scratchpad's current
+  `updatedAt` — a stale value (a concurrent user or agent edit landed first)
+  is rejected as `CoreError::ScratchpadConflict` instead of silently
+  overwriting it; the frontend surfaces this as an in-pane reload/force-save
+  choice rather than a toast.
 
 ### Tauri IPC contract
 
@@ -210,7 +221,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_resize`        | `{ processId, cols, rows }`                 | –                 |
 | `process_attach`        | `{ processId, channel: Channel<TermEvent> }`| –                 |
 | `adapters_list`         | –                                           | `AdapterInfo[]`   |
-| `agent_spawn`           | `{ projectId, adapterId?, name?, prompt? }` | `ProcessInfo`     |
+| `agent_spawn`           | `{ projectId, adapterId?, name?, prompt?, todoIds?, scratchpadIds? }` | `ProcessInfo` |
 | `agent_settings_get`    | –                                           | `AgentSettingsDto` |
 | `agent_settings_set_adapter` | `{ adapterId, command?, defaultArgs }` | `AgentSettingsDto` |
 | `agent_settings_set_default_adapter` | `{ adapterId? }` (blank clears) | `AgentSettingsDto` |
@@ -231,6 +242,27 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `todo_remove_link`      | `{ projectId, todoId, linkId }`             | `TodoInfo`        |
 | `todo_remove`           | `{ projectId, todoId }`                     | –                 |
 | `todo_unassign`         | `{ projectId, todoId }`                     | `TodoInfo`        |
+| `scratchpad_list`       | `{ projectId }`                             | `ScratchpadInfo[]`|
+| `scratchpad_list_archived` | `{ projectId }`                          | `ScratchpadInfo[]`|
+| `scratchpad_add`        | `{ projectId }`                             | `ScratchpadInfo`  |
+| `scratchpad_update_content` | `{ projectId, id, content, expectedUpdatedAt }` | `ScratchpadInfo` |
+| `scratchpad_update_title`   | `{ projectId, id, title, expectedUpdatedAt }`   | `ScratchpadInfo` |
+| `scratchpad_add_tag`    | `{ projectId, id, tag }`                    | `ScratchpadInfo`  |
+| `scratchpad_remove_tag` | `{ projectId, id, tag }`                    | `ScratchpadInfo`  |
+| `scratchpad_set_archived` | `{ projectId, id, archived }`             | `ScratchpadInfo`  |
+| `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
+
+> ⚠️ **Breaking change (Phase 4):** `scratchpad_update_content` and
+> `scratchpad_update_title` — plus the matching `Orchestrator` methods
+> (`update_scratchpad_content`/`update_scratchpad_title`) and the
+> `update_scratchpad` MCP tool — now require `expectedUpdatedAt`
+> (`expected_updated_at` for the MCP tool), the scratchpad's current
+> `updatedAt` echoed back verbatim. A stale value fails with
+> `IpcError.kind === "scratchpadConflict"` over Tauri, or an
+> `invalid_params` MCP error whose message starts with `scratchpad
+> conflict:`. Any caller written against Phase 1's 4-argument signature
+> (frontend, MCP client, or another agent) must be updated to pass the
+> timestamp through.
 
 `NewProcess` is `{ name, command?, cwd?, kind, adapter?, restartPolicy? }`
 (`kind` is serde-flattened). `cwd` is **relative to the project root**; the

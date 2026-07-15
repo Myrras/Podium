@@ -24,6 +24,8 @@ import type {
   ProjectId,
   ProjectInfo,
   RecentProject,
+  ScratchpadId,
+  ScratchpadInfo,
   TermEvent,
   TodoId,
   TodoInfo,
@@ -198,6 +200,7 @@ export function agentSpawn(
     name: options.name ?? null,
     prompt: options.prompt ?? null,
     todoIds: options.todoIds ?? null,
+    scratchpadIds: options.scratchpadIds ?? null,
   });
 }
 
@@ -379,6 +382,108 @@ export function todoUnassign(
   todoId: TodoId,
 ): Promise<TodoInfo> {
   return invoke("todo_unassign", { projectId, todoId });
+}
+
+// ---------------------------------------------------------------------------
+// Scratchpads
+// ---------------------------------------------------------------------------
+
+/** List a project's active (non-archived) scratchpads. */
+export function scratchpadList(
+  projectId: ProjectId,
+): Promise<ScratchpadInfo[]> {
+  return invoke("scratchpad_list", { projectId });
+}
+
+/** List a project's archived scratchpads, most recently archived first. */
+export function scratchpadListArchived(
+  projectId: ProjectId,
+): Promise<ScratchpadInfo[]> {
+  return invoke("scratchpad_list_archived", { projectId });
+}
+
+/** Create a new scratchpad (auto-generated timestamp title, empty content). */
+export function scratchpadAdd(projectId: ProjectId): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_add", { projectId });
+}
+
+/**
+ * Replace a scratchpad's content (bumps its version). `expectedUpdatedAt`
+ * must be the exact `updatedAt` string last seen for this scratchpad — echo
+ * it back verbatim (never reparse/reformat it) or the timestamp comparison
+ * on the backend will never match. Rejects with
+ * `IpcError.kind === "scratchpadConflict"` if someone else edited it first.
+ */
+export function scratchpadUpdateContent(
+  projectId: ProjectId,
+  id: ScratchpadId,
+  content: string,
+  expectedUpdatedAt: string,
+): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_update_content", {
+    projectId,
+    id,
+    content,
+    expectedUpdatedAt,
+  });
+}
+
+/**
+ * Revise a scratchpad's title (blank falls back to a timestamp title).
+ * `expectedUpdatedAt` is checked the same way as
+ * {@link scratchpadUpdateContent}.
+ */
+export function scratchpadUpdateTitle(
+  projectId: ProjectId,
+  id: ScratchpadId,
+  title: string,
+  expectedUpdatedAt: string,
+): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_update_title", {
+    projectId,
+    id,
+    title,
+    expectedUpdatedAt,
+  });
+}
+
+/** Add a free-text tag to a scratchpad (blank rejected, dedup by value). */
+export function scratchpadAddTag(
+  projectId: ProjectId,
+  id: ScratchpadId,
+  tag: string,
+): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_add_tag", { projectId, id, tag });
+}
+
+/** Remove a tag from a scratchpad by exact value (idempotent). */
+export function scratchpadRemoveTag(
+  projectId: ProjectId,
+  id: ScratchpadId,
+  tag: string,
+): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_remove_tag", { projectId, id, tag });
+}
+
+/** Archive or unarchive a scratchpad. */
+export function scratchpadSetArchived(
+  projectId: ProjectId,
+  id: ScratchpadId,
+  archived: boolean,
+): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_set_archived", { projectId, id, archived });
+}
+
+/**
+ * Unassign a scratchpad from its agent (the sidebar (x) action). Sends a
+ * best-effort cancel/rollback request to the agent's stdin first, then clears
+ * the link. Returns the updated scratchpad.
+ */
+export function scratchpadUnassign(
+  projectId: ProjectId,
+  id: ScratchpadId,
+): Promise<ScratchpadInfo> {
+  return invoke("scratchpad_unassign", { projectId, id });
 }
 
 // ---------------------------------------------------------------------------

@@ -160,8 +160,12 @@ export const useProcessStore = create<ProcessState>((set) => ({
   },
 
   setActiveProcess: (id) => {
-    // Focusing a process takes over the work area from any open to-do.
-    if (id !== null) useLayoutStore.getState().clearOpenTodo();
+    // Focusing a process takes over the work area from any open to-do or
+    // scratchpad.
+    if (id !== null) {
+      useLayoutStore.getState().clearOpenTodo();
+      useLayoutStore.getState().clearOpenScratchpad();
+    }
     set({ activeProcessId: id });
   },
 

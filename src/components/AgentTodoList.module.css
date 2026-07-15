@@ -31,6 +31,25 @@
   white-space: nowrap;
 }
 
+/* Scratchpad titles are clickable (unlike to-do text); reset button chrome
+   so it reads like plain text until hovered. */
+button.text {
+  display: block;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.text:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 /* The (x) stays quiet until the row is hovered/focused. */
 .remove {
   display: flex;

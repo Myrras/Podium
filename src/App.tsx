@@ -21,6 +21,7 @@ import {
   onProjectClosed,
   onProjectOpened,
   onProjectUpdated,
+  onScratchpadsChanged,
   onTodosChanged,
   onWindowCloseRequested,
 } from "./ipc/events";
@@ -34,11 +35,13 @@ import { startAgentActivityMonitor } from "./state/agentActivityStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useProcessStore } from "./state/processStore";
 import { useProjectStore } from "./state/projectStore";
+import { useScratchpadStore } from "./state/scratchpadStore";
 import { useSettingsStore } from "./state/settingsStore";
 import { useThemeStore } from "./state/themeStore";
 import { useTodoStore } from "./state/todoStore";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
+import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPane } from "./components/TerminalPane";
@@ -56,6 +59,7 @@ export default function App() {
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const openTodo = useLayoutStore((s) => s.openTodo);
+  const openScratchpad = useLayoutStore((s) => s.openScratchpad);
 
   const activeProcess = useProcessStore(
     (s) => s.processes.find((p) => p.id === s.activeProcessId) ?? null,
@@ -91,8 +95,12 @@ export default function App() {
         void useProjectStore.getState().refresh();
         void useProcessStore.getState().refresh();
         useTodoStore.getState().dropProject(e.projectId);
+        useScratchpadStore.getState().dropProject(e.projectId);
       }),
       onTodosChanged((e) => void useTodoStore.getState().refresh(e.projectId)),
+      onScratchpadsChanged(
+        (e) => void useScratchpadStore.getState().refresh(e.projectId),
+      ),
       // The backend blocked a quit because agents/terminals are still
       // running — surface the warning so the user can confirm or cancel.
       onWindowCloseRequested(() => setCloseWarnOpen(true)),
@@ -229,7 +237,13 @@ export default function App() {
           aria-label="Resize sidebar"
         />
         <main className={styles.work}>
-          {openTodo ? (
+          {openScratchpad ? (
+            <ScratchpadDetailPane
+              key={openScratchpad.scratchpadId}
+              projectId={openScratchpad.projectId}
+              scratchpadId={openScratchpad.scratchpadId}
+            />
+          ) : openTodo ? (
             <TodoDetailPane
               key={openTodo.todoId}
               projectId={openTodo.projectId}

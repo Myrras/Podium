@@ -62,6 +62,10 @@ uuid_newtype!(
     /// Identifies a single issue/PR link on a to-do (for removing it).
     LinkId
 );
+uuid_newtype!(
+    /// Identifies a scratchpad within a project.
+    ScratchpadId
+);
 
 #[cfg(test)]
 mod tests {
@@ -78,6 +82,20 @@ mod tests {
     fn round_trips_through_from_str() {
         let id = ProjectId::new();
         let parsed: ProjectId = id.to_string().parse().unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn scratchpad_id_serializes_as_plain_uuid_string() {
+        let id = ScratchpadId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, format!("\"{id}\""));
+    }
+
+    #[test]
+    fn scratchpad_id_round_trips_through_from_str() {
+        let id = ScratchpadId::new();
+        let parsed: ScratchpadId = id.to_string().parse().unwrap();
         assert_eq!(parsed, id);
     }
 }

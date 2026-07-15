@@ -6,6 +6,7 @@ import type { ProcessInfo } from "../ipc/types";
 import { activityLabel, isActive } from "../lib/processStatus";
 import { useAgentActivity } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
+import { AgentScratchpadList } from "./AgentScratchpadList";
 import { AgentTodoList } from "./AgentTodoList";
 import { StatusDot } from "./StatusDot";
 import { CloseIcon, EditIcon, RestartIcon, RunIcon, StopIcon } from "./icons";
@@ -168,6 +169,12 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
       </div>
       {isAgent && (
         <AgentTodoList projectId={process.projectId} processId={process.id} />
+      )}
+      {isAgent && (
+        <AgentScratchpadList
+          projectId={process.projectId}
+          processId={process.id}
+        />
       )}
     </>
   );

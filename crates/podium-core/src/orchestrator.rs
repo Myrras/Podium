@@ -5,23 +5,25 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
+use crate::assignment::AssignedAgent;
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{ProcessId, ProjectId};
+use crate::ids::{ProcessId, ProjectId, ScratchpadId};
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 use crate::project::{self, ConfiguredProcess};
-use crate::todo::{AssignedAgent, TodoInfo, TodoStore};
+use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
+use crate::todo::{TodoInfo, TodoStore};
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
 const CHUNK_CHANNEL_CAPACITY: usize = 1024;
@@ -132,6 +134,9 @@ struct Inner {
     /// ids do not survive a restart), so it is never persisted; cleared when
     /// the agent exits, is removed, or its project closes.
     todo_assignments: HashMap<TodoId, ProcessId>,
+    /// Which agent process is working on which scratchpad. Mirrors
+    /// `todo_assignments` exactly (runtime-only, cleared the same way).
+    scratchpad_assignments: HashMap<ScratchpadId, ProcessId>,
 }
 
 /// Owns all projects and processes; every UI/adapter goes through this.
@@ -144,6 +149,8 @@ pub struct Orchestrator {
     mcp: Mutex<Option<McpConnectInfo>>,
     /// Per-project to-do lists, keyed by project root (survives restarts).
     todos: TodoStore,
+    /// Per-project scratchpads, keyed by project root (survives restarts).
+    scratchpads: ScratchpadStore,
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
@@ -169,6 +176,7 @@ impl Orchestrator {
             adapters: AdapterRegistry::default(),
             mcp: Mutex::new(None),
             todos: TodoStore::new(),
+            scratchpads: ScratchpadStore::new(),
             agent_settings: AgentSettingsStore::new(),
         }
     }
@@ -189,6 +197,12 @@ impl Orchestrator {
     /// Until this is called, to-dos are held in memory only.
     pub fn set_todos_path(&self, path: PathBuf) {
         self.todos.set_path(path);
+    }
+
+    /// Point the scratchpad store at its backing file (app data dir) and
+    /// load it. Until this is called, scratchpads are held in memory only.
+    pub fn set_scratchpads_path(&self, path: PathBuf) {
+        self.scratchpads.set_path(path);
     }
 
     /// Point the global agent settings at their backing file (app data dir)
@@ -332,9 +346,13 @@ impl Orchestrator {
                     }
                 }
             }
-            // The project (and its to-dos) is gone; drop any dangling
-            // assignments so the runtime map can't leak stale process ids.
+            // The project (and its to-dos/scratchpads) is gone; drop any
+            // dangling assignments so the runtime maps can't leak stale
+            // process ids.
             inner.todo_assignments.retain(|_, pid| !ids.contains(pid));
+            inner
+                .scratchpad_assignments
+                .retain(|_, pid| !ids.contains(pid));
             ids
         };
         for pid in removed {
@@ -534,6 +552,17 @@ impl Orchestrator {
             .copied()
     }
 
+    /// The agent process currently assigned to a scratchpad, if any (so the
+    /// command layer can reach its stdin for a best-effort cancel request).
+    pub fn agent_for_scratchpad(&self, scratchpad_id: ScratchpadId) -> Option<ProcessId> {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .scratchpad_assignments
+            .get(&scratchpad_id)
+            .copied()
+    }
+
     /// Add a to-do to a project. Blank text is rejected.
     pub fn add_todo(&self, project_id: ProjectId, text: &str) -> CoreResult<TodoInfo> {
         let root = self.project_root(project_id)?;
@@ -668,6 +697,226 @@ impl Orchestrator {
         Ok(info)
     }
 
+    /// List a project's active (non-archived) scratchpads, each enriched with
+    /// the agent (if any) currently assigned to it.
+    pub fn list_scratchpads(&self, project_id: ProjectId) -> CoreResult<Vec<ScratchpadInfo>> {
+        let root = self.project_root(project_id)?;
+        let mut scratchpads = self.scratchpads.list(project_id, &root);
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        for scratchpad in &mut scratchpads {
+            scratchpad.assigned_agent = scratchpad_assigned_agent_of(&inner, scratchpad.id);
+        }
+        Ok(scratchpads)
+    }
+
+    /// List a project's archived scratchpads, most recently archived first.
+    pub fn list_archived_scratchpads(
+        &self,
+        project_id: ProjectId,
+    ) -> CoreResult<Vec<ScratchpadInfo>> {
+        let root = self.project_root(project_id)?;
+        let mut scratchpads = self.scratchpads.list_archived(project_id, &root);
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        for scratchpad in &mut scratchpads {
+            scratchpad.assigned_agent = scratchpad_assigned_agent_of(&inner, scratchpad.id);
+        }
+        Ok(scratchpads)
+    }
+
+    /// Create a new scratchpad in a project (auto-generated timestamp title,
+    /// empty content). Freshly created, so it can never already be assigned.
+    pub fn add_scratchpad(
+        &self,
+        project_id: ProjectId,
+        updated_by: &str,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let info = self.scratchpads.add(project_id, &root, updated_by)?;
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
+    /// One scratchpad by id, if it exists, enriched with its assignment.
+    pub fn get_scratchpad(
+        &self,
+        project_id: ProjectId,
+        id: ScratchpadId,
+    ) -> CoreResult<Option<ScratchpadInfo>> {
+        let root = self.project_root(project_id)?;
+        let mut info = self.scratchpads.get(project_id, &root, id);
+        if let Some(info) = &mut info {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, id);
+        }
+        Ok(info)
+    }
+
+    /// Replace a scratchpad's content (bumps its version). `expected_updated_at`
+    /// must match the scratchpad's current `updated_at` or the call fails
+    /// with [`CoreError::ScratchpadConflict`] (a concurrent edit landed
+    /// first).
+    pub fn update_scratchpad_content(
+        &self,
+        project_id: ProjectId,
+        id: ScratchpadId,
+        content: &str,
+        expected_updated_at: DateTime<Utc>,
+        updated_by: &str,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let mut info = self.scratchpads.update_content(
+            project_id,
+            &root,
+            id,
+            content,
+            expected_updated_at,
+            updated_by,
+        )?;
+        {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, id);
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
+    /// Revise a scratchpad's title (blank falls back to a timestamp title).
+    /// `expected_updated_at` is checked the same way as in
+    /// [`Self::update_scratchpad_content`].
+    pub fn update_scratchpad_title(
+        &self,
+        project_id: ProjectId,
+        id: ScratchpadId,
+        title: &str,
+        expected_updated_at: DateTime<Utc>,
+        updated_by: &str,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let mut info = self.scratchpads.update_title(
+            project_id,
+            &root,
+            id,
+            title,
+            expected_updated_at,
+            updated_by,
+        )?;
+        {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, id);
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
+    /// Add a free-text tag to a scratchpad (blank rejected, dedup by value).
+    pub fn add_scratchpad_tag(
+        &self,
+        project_id: ProjectId,
+        id: ScratchpadId,
+        tag: &str,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let mut info = self.scratchpads.add_tag(project_id, &root, id, tag)?;
+        {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, id);
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
+    /// Remove a tag from a scratchpad by exact value (idempotent).
+    pub fn remove_scratchpad_tag(
+        &self,
+        project_id: ProjectId,
+        id: ScratchpadId,
+        tag: &str,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let mut info = self.scratchpads.remove_tag(project_id, &root, id, tag)?;
+        {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, id);
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
+    /// Assign one or more scratchpads to an agent process, replacing any
+    /// prior assignment. Silently ignores unknown scratchpad ids (the caller
+    /// has already validated them at spawn time). Emits `ScratchpadsChanged`
+    /// for the project.
+    fn assign_scratchpads(
+        &self,
+        project_id: ProjectId,
+        process_id: ProcessId,
+        scratchpad_ids: &[ScratchpadId],
+    ) {
+        if scratchpad_ids.is_empty() {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            for id in scratchpad_ids {
+                inner.scratchpad_assignments.insert(*id, process_id);
+            }
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+    }
+
+    /// Clear a scratchpad's agent assignment (the (x) action in the UI). A
+    /// best-effort cancel/rollback request is left to the command layer,
+    /// which can still reach the (soon-to-be-unassigned) agent's stdin. No-op
+    /// — but not an error — when the scratchpad had no assignment. Returns
+    /// the enriched scratchpad. There is no MCP-facing self-assign
+    /// counterpart to this (unlike `assign_todo`) — a scratchpad's assignment
+    /// is only ever set at spawn time.
+    pub fn unassign_scratchpad(
+        &self,
+        project_id: ProjectId,
+        scratchpad_id: ScratchpadId,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let mut info = self
+            .scratchpads
+            .get(project_id, &root, scratchpad_id)
+            .ok_or(CoreError::ScratchpadNotFound)?;
+        {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            inner.scratchpad_assignments.remove(&scratchpad_id);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, scratchpad_id);
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
+    /// Archive or unarchive a scratchpad.
+    pub fn set_scratchpad_archived(
+        &self,
+        project_id: ProjectId,
+        id: ScratchpadId,
+        archived: bool,
+    ) -> CoreResult<ScratchpadInfo> {
+        let root = self.project_root(project_id)?;
+        let mut info = self
+            .scratchpads
+            .set_archived(project_id, &root, id, archived)?;
+        {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            info.assigned_agent = scratchpad_assigned_agent_of(&inner, id);
+        }
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(info)
+    }
+
     /// Re-read `podium.yml`: update name/initials, replace config-defined
     /// processes (stopping any running ones), keep manually added processes.
     /// A parse/validation failure keeps current processes and only updates
@@ -795,8 +1044,10 @@ impl Orchestrator {
     /// with those to-dos' text/description plus standing instructions to keep
     /// them current over MCP (comment progress, update on scope change,
     /// complete when done); multiple to-dos are handed over as one combined
-    /// task. On a start failure the process stays listed as `NotStarted` so
-    /// the user can retry from the UI.
+    /// task. `scratchpad_ids` works the same way for scratchpads, but only
+    /// when `todo_ids` is empty — to-dos win if both are somehow populated.
+    /// On a start failure the process stays listed as `NotStarted` so the
+    /// user can retry from the UI.
     pub async fn spawn_agent(
         &self,
         project_id: ProjectId,
@@ -804,6 +1055,7 @@ impl Orchestrator {
         name: Option<String>,
         prompt: Option<String>,
         todo_ids: Vec<TodoId>,
+        scratchpad_ids: Vec<ScratchpadId>,
     ) -> CoreResult<ProcessId> {
         let (root, agents, existing_names) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
@@ -843,19 +1095,44 @@ impl Orchestrator {
                     .ok_or(CoreError::TodoNotFound)
             })
             .collect::<CoreResult<Vec<_>>>()?;
+        // Same for scratchpads — but only when no to-dos were given: to-dos
+        // win, and scratchpad_ids is documented as ignored in that case, so
+        // an invalid/deleted scratchpad id must not fail (or a valid one
+        // spuriously get assigned) a to-do spawn. All must exist before we
+        // spawn anything.
+        let scratchpads: Vec<ScratchpadInfo> = if todos.is_empty() {
+            scratchpad_ids
+                .iter()
+                .map(|id| {
+                    self.scratchpads
+                        .get(project_id, &root, *id)
+                        .ok_or(CoreError::ScratchpadNotFound)
+                })
+                .collect::<CoreResult<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         let base_prompt = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
         let name = match name.as_deref().map(str::trim) {
             Some(n) if !n.is_empty() => n.to_string(),
             // Window name, in precedence: the first to-do's text (an agent
-            // spawned on to-dos), a short label derived from the prompt (so a
-            // standalone agent is recognisable without waiting on the model to
-            // rename itself over MCP), else the adapter binary.
+            // spawned on to-dos), the first scratchpad's title (an agent
+            // spawned on scratchpads), a short label derived from the prompt
+            // (so a standalone agent is recognisable without waiting on the
+            // model to rename itself over MCP), else the adapter binary.
             _ => {
                 let base = todos
                     .first()
                     .map(|t| t.text.trim())
                     .filter(|t| !t.is_empty())
                     .map(str::to_string)
+                    .or_else(|| {
+                        scratchpads
+                            .first()
+                            .map(|s| s.title.trim())
+                            .filter(|t| !t.is_empty())
+                            .map(str::to_string)
+                    })
                     .or_else(|| base_prompt.and_then(name_from_prompt))
                     .unwrap_or_else(|| adapter.binary().to_string());
                 next_free_name(&base, &existing_names)
@@ -863,11 +1140,14 @@ impl Orchestrator {
         };
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         let process_id = ProcessId::new();
-        // To-dos seed a context-rich prompt; otherwise use the raw one.
-        let final_prompt: Option<String> = if todos.is_empty() {
-            base_prompt.map(str::to_string)
-        } else {
+        // To-dos seed a context-rich prompt; failing that, scratchpads;
+        // otherwise use the raw one.
+        let final_prompt: Option<String> = if !todos.is_empty() {
             Some(compose_todos_prompt(&todos, base_prompt))
+        } else if !scratchpads.is_empty() {
+            Some(compose_scratchpads_prompt(&scratchpads, base_prompt))
+        } else {
+            base_prompt.map(str::to_string)
         };
         // Combine the global default args (Settings → Agents) with the
         // project's `agents.extra_args` per the user's merge mode, and apply
@@ -912,21 +1192,25 @@ impl Orchestrator {
             process_id,
         });
         do_start(&self.inner, &self.events, self.supervisor, process_id, true)?;
-        // Link the agent to the to-dos it was spawned for so the UI can show
-        // who is working on what (also emits TodosChanged for the project).
-        let assign_ids: Vec<TodoId> = todos.iter().map(|t| t.id).collect();
-        self.assign_todos(project_id, process_id, &assign_ids);
+        // Link the agent to the to-dos/scratchpads it was spawned for so the
+        // UI can show who is working on what (also emits TodosChanged /
+        // ScratchpadsChanged for the project).
+        let assign_todo_ids: Vec<TodoId> = todos.iter().map(|t| t.id).collect();
+        self.assign_todos(project_id, process_id, &assign_todo_ids);
+        let assign_scratchpad_ids: Vec<ScratchpadId> = scratchpads.iter().map(|s| s.id).collect();
+        self.assign_scratchpads(project_id, process_id, &assign_scratchpad_ids);
         Ok(process_id)
     }
 
     /// Remove a process, stopping it first if it is still running. Also
     /// cancels any pending supervised restart.
     pub async fn remove_process(&self, id: ProcessId) -> CoreResult<()> {
-        let (project_id, todos_changed) = {
+        let (project_id, cleared) = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
-            // Drop the process's to-do assignments while it is still in the
-            // map (clearing needs its project id), then remove the process.
-            let todos_changed = clear_agent_assignments(&mut inner, id);
+            // Drop the process's to-do/scratchpad assignments while it is
+            // still in the map (clearing needs its project id), then remove
+            // the process.
+            let cleared = clear_agent_assignments(&mut inner, id);
             let mut p = inner
                 .processes
                 .remove(&id)
@@ -935,15 +1219,19 @@ impl Orchestrator {
             if let Some(pty) = &p.pty {
                 pty.stop();
             }
-            (p.project_id, todos_changed)
+            (p.project_id, cleared)
         };
         self.events.publish(PodiumEvent::ProcessRemoved {
             project_id,
             process_id: id,
         });
-        for pid in todos_changed {
+        for pid in cleared.todos {
             self.events
                 .publish(PodiumEvent::TodosChanged { project_id: pid });
+        }
+        for pid in cleared.scratchpads {
+            self.events
+                .publish(PodiumEvent::ScratchpadsChanged { project_id: pid });
         }
         Ok(())
     }
@@ -1183,23 +1471,63 @@ fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
     })
 }
 
-/// Drop every to-do assignment pointing at `process_id` (called when an agent
-/// exits, is removed, or its project closes). Returns the affected projects so
-/// the caller can emit `TodosChanged` once per project.
-fn clear_agent_assignments(inner: &mut Inner, process_id: ProcessId) -> HashSet<ProjectId> {
-    let removed: Vec<TodoId> = inner
+/// Resolve a scratchpad's assignment to an [`AssignedAgent`] snapshot,
+/// dropping a stale entry whose process has since vanished from the map.
+fn scratchpad_assigned_agent_of(
+    inner: &Inner,
+    scratchpad_id: ScratchpadId,
+) -> Option<AssignedAgent> {
+    let process_id = *inner.scratchpad_assignments.get(&scratchpad_id)?;
+    inner.processes.get(&process_id).map(|p| AssignedAgent {
+        process_id,
+        name: p.spec.name.clone(),
+    })
+}
+
+/// The projects whose to-do and/or scratchpad assignments changed, returned
+/// by [`clear_agent_assignments`] so the caller can publish exactly the
+/// events that apply (never both, unless the removed process really did hold
+/// both kinds of assignment).
+#[derive(Default)]
+struct ClearedAssignments {
+    todos: HashSet<ProjectId>,
+    scratchpads: HashSet<ProjectId>,
+}
+
+/// Drop every to-do/scratchpad assignment pointing at `process_id` (called
+/// when an agent exits, is removed, or its project closes). Returns the
+/// affected projects, split by kind, so the caller can emit `TodosChanged`
+/// and/or `ScratchpadsChanged` once per project — without firing an event for
+/// a kind that had nothing to clear.
+fn clear_agent_assignments(inner: &mut Inner, process_id: ProcessId) -> ClearedAssignments {
+    let removed_todos: Vec<TodoId> = inner
         .todo_assignments
         .iter()
         .filter(|(_, pid)| **pid == process_id)
         .map(|(tid, _)| *tid)
         .collect();
+    let removed_scratchpads: Vec<ScratchpadId> = inner
+        .scratchpad_assignments
+        .iter()
+        .filter(|(_, pid)| **pid == process_id)
+        .map(|(sid, _)| *sid)
+        .collect();
     let project = inner.processes.get(&process_id).map(|p| p.project_id);
-    for tid in &removed {
+    for tid in &removed_todos {
         inner.todo_assignments.remove(tid);
     }
-    match project {
-        Some(pid) if !removed.is_empty() => HashSet::from([pid]),
-        _ => HashSet::new(),
+    for sid in &removed_scratchpads {
+        inner.scratchpad_assignments.remove(sid);
+    }
+    ClearedAssignments {
+        todos: match project {
+            Some(pid) if !removed_todos.is_empty() => HashSet::from([pid]),
+            _ => HashSet::new(),
+        },
+        scratchpads: match project {
+            Some(pid) if !removed_scratchpads.is_empty() => HashSet::from([pid]),
+            _ => HashSet::new(),
+        },
     }
 }
 
@@ -1294,6 +1622,74 @@ fn compose_todos_prompt(todos: &[TodoInfo], user_prompt: Option<&str>) -> String
          - update_todo: revise a to-do's text or description if the scope or \
          details change.\n\
          - complete_todo: mark each to-do done once its part is finished.\n",
+    );
+    if let Some(user_prompt) = user_prompt {
+        out.push_str("\nAdditional instructions:\n");
+        out.push_str(user_prompt);
+        out.push('\n');
+    }
+    out
+}
+
+/// Build an agent launch prompt from a scratchpad: its title/content, the
+/// standing instructions to keep it current over MCP, then any user prompt.
+fn compose_scratchpad_prompt(scratchpad: &ScratchpadInfo, user_prompt: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str("You are working on a Podium scratchpad.\n\n");
+    out.push_str(&format!("Scratchpad id: {}\n", scratchpad.id));
+    out.push_str(&format!("Title: {}\n", scratchpad.title));
+    out.push_str(
+        "\nThis scratchpad is shared with the user and other agents. Fetch \
+         its current content and use the Podium MCP tools to keep it up to \
+         date as you work (pass the scratchpad id above):\n\
+         - list_scratchpads: get the current content and updatedAt — do \
+         this before your first update_scratchpad call, so it doesn't get \
+         rejected as a conflict.\n\
+         - update_scratchpad: revise the content — pass the updatedAt you \
+         just fetched as expected_updated_at.\n\
+         - add_scratchpad_tag / remove_scratchpad_tag: tag it for easy \
+         discovery.\n",
+    );
+    if let Some(user_prompt) = user_prompt {
+        out.push_str("\nAdditional instructions:\n");
+        out.push_str(user_prompt);
+        out.push('\n');
+    }
+    out
+}
+
+/// Build an agent launch prompt from one or more scratchpads. A single
+/// scratchpad keeps the original single-scratchpad phrasing; several
+/// scratchpads are handed over as one combined task, each listed with its
+/// id/title, followed by the standing MCP instructions (once) and any user
+/// prompt. Content isn't embedded here — the agent fetches it (and the
+/// current `updatedAt`) via `list_scratchpads` itself.
+fn compose_scratchpads_prompt(scratchpads: &[ScratchpadInfo], user_prompt: Option<&str>) -> String {
+    if let [only] = scratchpads {
+        return compose_scratchpad_prompt(only, user_prompt);
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "You are working on {} Podium scratchpads as a single task.\n\n",
+        scratchpads.len()
+    ));
+    for (i, scratchpad) in scratchpads.iter().enumerate() {
+        out.push_str(&format!("Scratchpad {} of {}\n", i + 1, scratchpads.len()));
+        out.push_str(&format!("Scratchpad id: {}\n", scratchpad.id));
+        out.push_str(&format!("Title: {}\n", scratchpad.title));
+        out.push('\n');
+    }
+    out.push_str(
+        "Work through all of the scratchpads above. Fetch each one's current \
+         content and use the Podium MCP tools to keep it up to date as you \
+         work (pass the relevant scratchpad id):\n\
+         - list_scratchpads: get the current content and updatedAt — do \
+         this before your first update_scratchpad call for each scratchpad, \
+         so it doesn't get rejected as a conflict.\n\
+         - update_scratchpad: revise the content — pass the updatedAt you \
+         just fetched as expected_updated_at.\n\
+         - add_scratchpad_tag / remove_scratchpad_tag: tag it for easy \
+         discovery.\n",
     );
     if let Some(user_prompt) = user_prompt {
         out.push_str("\nAdditional instructions:\n");
@@ -1413,7 +1809,7 @@ fn make_exit_handler(
     // (all `do_start` callers run inside the runtime).
     let rt = tokio::runtime::Handle::current();
     Box::new(move |code| {
-        let (status, restart, todos_changed) = {
+        let (status, restart, cleared) = {
             let mut guard = inner.lock().expect(LOCK_POISONED);
             let Some(p) = guard.processes.get_mut(&id) else {
                 return;
@@ -1452,21 +1848,25 @@ fn make_exit_handler(
                 None
             };
             // An exited agent that is not being restarted no longer works on
-            // its to-dos; drop the assignments so the UI stops showing it.
-            let todos_changed = if restart.is_none() {
+            // its to-dos/scratchpads; drop the assignments so the UI stops
+            // showing it.
+            let cleared = if restart.is_none() {
                 clear_agent_assignments(&mut guard, id)
             } else {
-                HashSet::new()
+                ClearedAssignments::default()
             };
-            (status, restart, todos_changed)
+            (status, restart, cleared)
         };
         events.publish(PodiumEvent::ProcessStatusChanged {
             project_id,
             process_id: id,
             status,
         });
-        for pid in todos_changed {
+        for pid in cleared.todos {
             events.publish(PodiumEvent::TodosChanged { project_id: pid });
+        }
+        for pid in cleared.scratchpads {
+            events.publish(PodiumEvent::ScratchpadsChanged { project_id: pid });
         }
         if let Some((delay, generation)) = restart {
             schedule_restart(&rt, inner, events, supervisor, id, delay, generation);
@@ -1587,6 +1987,80 @@ mod tests {
         // The standing MCP instructions and user prompt appear once.
         assert!(prompt.contains("complete_todo"));
         assert!(prompt.contains("Additional instructions:\nstart with auth"));
+    }
+
+    fn scratchpad(title: &str, content: &str) -> ScratchpadInfo {
+        ScratchpadInfo {
+            id: ScratchpadId::new(),
+            project_id: ProjectId::new(),
+            title: title.to_string(),
+            content: content.to_string(),
+            archived: false,
+            archived_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            updated_by: "User".to_string(),
+            version: 1,
+            tags: Vec::new(),
+            assigned_agent: None,
+        }
+    }
+
+    #[test]
+    fn compose_scratchpad_prompt_includes_title_and_mcp_instructions() {
+        let pad = scratchpad("Launch notes", "draft the release checklist");
+        let prompt = compose_scratchpad_prompt(&pad, None);
+
+        assert!(prompt.contains(&format!("Scratchpad id: {}", pad.id)));
+        assert!(prompt.contains("Title: Launch notes"));
+        // Content isn't embedded — the agent fetches it via list_scratchpads.
+        assert!(!prompt.contains("draft the release checklist"));
+        // The standing instructions name each tool the agent should use.
+        assert!(prompt.contains("list_scratchpads"));
+        assert!(prompt.contains("update_scratchpad"));
+        assert!(prompt.contains("add_scratchpad_tag"));
+        assert!(prompt.contains("remove_scratchpad_tag"));
+        // No user prompt, so no additional-instructions block.
+        assert!(!prompt.contains("Additional instructions:"));
+    }
+
+    #[test]
+    fn compose_scratchpad_prompt_appends_user_prompt() {
+        let pad = scratchpad("Launch notes", "draft the release checklist");
+        let prompt = compose_scratchpad_prompt(&pad, Some("focus on the changelog"));
+
+        assert!(prompt.contains("Additional instructions:\nfocus on the changelog"));
+    }
+
+    #[test]
+    fn compose_scratchpads_prompt_single_matches_single_helper() {
+        // One scratchpad routes through the original single-scratchpad phrasing.
+        let pad = scratchpad("Launch notes", "draft the release checklist");
+        let one = compose_scratchpads_prompt(std::slice::from_ref(&pad), Some("go"));
+        assert_eq!(one, compose_scratchpad_prompt(&pad, Some("go")));
+    }
+
+    #[test]
+    fn compose_scratchpads_prompt_combines_multiple_scratchpads() {
+        let a = scratchpad("Launch notes", "draft the release checklist");
+        let b = scratchpad("Bug list", "triage open reports");
+        let prompt =
+            compose_scratchpads_prompt(&[a.clone(), b.clone()], Some("start with launch notes"));
+
+        // Presented as one combined task listing every scratchpad id and title.
+        assert!(prompt.contains("2 Podium scratchpads as a single task"));
+        assert!(prompt.contains("Scratchpad 1 of 2"));
+        assert!(prompt.contains("Scratchpad 2 of 2"));
+        assert!(prompt.contains(&format!("Scratchpad id: {}", a.id)));
+        assert!(prompt.contains(&format!("Scratchpad id: {}", b.id)));
+        assert!(prompt.contains("Title: Launch notes"));
+        assert!(prompt.contains("Title: Bug list"));
+        // Content isn't embedded for either scratchpad.
+        assert!(!prompt.contains("draft the release checklist"));
+        assert!(!prompt.contains("triage open reports"));
+        // The standing MCP instructions and user prompt appear once.
+        assert!(prompt.contains("update_scratchpad"));
+        assert!(prompt.contains("Additional instructions:\nstart with launch notes"));
     }
 
     #[test]
@@ -1719,5 +2193,139 @@ mod tests {
         orch.close_project(ida).await.unwrap();
         let ids: Vec<_> = orch.list_projects().into_iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![idb]);
+    }
+
+    #[tokio::test]
+    async fn add_scratchpad_publishes_scratchpads_changed_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let added = orch.add_scratchpad(project_id, "User").unwrap();
+        assert!(added.title.ends_with("Scratchpad"));
+
+        let event = rx.try_recv().expect("event published");
+        assert!(matches!(
+            event,
+            PodiumEvent::ScratchpadsChanged { project_id: pid } if pid == project_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_scratchpad_content_publishes_scratchpads_changed_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let added = orch.add_scratchpad(project_id, "User").unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let updated = orch
+            .update_scratchpad_content(project_id, added.id, "hello", added.updated_at, "claude")
+            .unwrap();
+        assert_eq!(updated.content, "hello");
+        assert_eq!(updated.version, 2);
+
+        let event = rx.try_recv().expect("event published");
+        assert!(matches!(
+            event,
+            PodiumEvent::ScratchpadsChanged { project_id: pid } if pid == project_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_scratchpads_does_not_publish_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        orch.add_scratchpad(project_id, "User").unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let listed = orch.list_scratchpads(project_id).unwrap();
+        assert_eq!(listed.len(), 1);
+
+        assert!(rx.try_recv().is_err(), "list must not publish an event");
+    }
+
+    /// Simulates a concurrent user + agent edit: the user's stale
+    /// `expected_updated_at` is rejected once the agent's edit has landed,
+    /// instead of silently clobbering it.
+    #[tokio::test]
+    async fn concurrent_update_with_stale_timestamp_is_a_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let added = orch.add_scratchpad(project_id, "User").unwrap();
+
+        // The agent's edit lands first.
+        let agent_edit = orch
+            .update_scratchpad_content(
+                project_id,
+                added.id,
+                "agent wrote this",
+                added.updated_at,
+                "claude",
+            )
+            .unwrap();
+
+        // The user's UI still holds the pre-agent-edit timestamp.
+        let result = orch.update_scratchpad_content(
+            project_id,
+            added.id,
+            "user's stale edit",
+            added.updated_at,
+            "User",
+        );
+        assert!(matches!(result, Err(CoreError::ScratchpadConflict)));
+
+        // Retrying with the fresh timestamp succeeds.
+        let resolved = orch
+            .update_scratchpad_content(
+                project_id,
+                added.id,
+                "user's edit after reload",
+                agent_edit.updated_at,
+                "User",
+            )
+            .unwrap();
+        assert_eq!(resolved.content, "user's edit after reload");
+    }
+
+    #[tokio::test]
+    async fn scratchpad_tags_add_remove_and_archive_publish_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let added = orch.add_scratchpad(project_id, "User").unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let tagged = orch
+            .add_scratchpad_tag(project_id, added.id, "urgent")
+            .unwrap();
+        assert_eq!(tagged.tags, vec!["urgent".to_string()]);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            PodiumEvent::ScratchpadsChanged { project_id: pid } if pid == project_id
+        ));
+
+        let untagged = orch
+            .remove_scratchpad_tag(project_id, added.id, "urgent")
+            .unwrap();
+        assert!(untagged.tags.is_empty());
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            PodiumEvent::ScratchpadsChanged { project_id: pid } if pid == project_id
+        ));
+
+        let archived = orch
+            .set_scratchpad_archived(project_id, added.id, true)
+            .unwrap();
+        assert!(archived.archived);
+        assert!(orch.list_scratchpads(project_id).unwrap().is_empty());
+        assert_eq!(orch.list_archived_scratchpads(project_id).unwrap().len(), 1);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            PodiumEvent::ScratchpadsChanged { project_id: pid } if pid == project_id
+        ));
     }
 }

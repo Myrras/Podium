@@ -50,6 +50,11 @@ pub enum PodiumEvent {
     TodosChanged {
         project_id: ProjectId,
     },
+    /// A project's scratchpads changed (add / content or title update); the
+    /// UI re-pulls the list via `list_scratchpads`.
+    ScratchpadsChanged {
+        project_id: ProjectId,
+    },
 }
 
 /// Fan-out bus for [`PodiumEvent`]s, backed by a tokio broadcast channel.

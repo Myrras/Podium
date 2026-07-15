@@ -1,4 +1,4 @@
-//! The 16 MCP tools Podium exposes to agents — all thin calls into
+//! The 22 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
 
 use std::str::FromStr;
@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::error::CoreError;
-use crate::ids::{ProcessId, ProjectId, TodoId};
+use crate::ids::{ProcessId, ProjectId, ScratchpadId, TodoId};
 use crate::orchestrator::Orchestrator;
 
 /// Default number of trailing lines returned by `get_process_output`.
@@ -141,6 +141,67 @@ pub struct SpawnAgentParams {
     /// combined task. Seeds the prompt with each to-do plus the standing
     /// instructions to keep them current over MCP.
     pub todo_ids: Option<Vec<String>>,
+    /// Scratchpad UUID to work on; seeds the agent's prompt with the
+    /// scratchpad and instructions to keep it current over MCP. Only used
+    /// when no to-do is given. Prefer `scratchpad_ids` for one or more
+    /// scratchpads; this single-id field is kept for compatibility and is
+    /// merged with `scratchpad_ids` (deduplicated).
+    pub scratchpad_id: Option<String>,
+    /// Scratchpad UUIDs to work on; several are handed to the one agent as a
+    /// single combined task. Only used when no to-do is given.
+    pub scratchpad_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListScratchpadsParams {
+    /// Project UUID whose scratchpads to list.
+    pub project_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateScratchpadParams {
+    /// Project UUID the scratchpad belongs to.
+    pub project_id: String,
+    /// Who is creating the scratchpad (defaults to `agent`).
+    pub author: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateScratchpadParams {
+    /// Project UUID the scratchpad belongs to.
+    pub project_id: String,
+    /// Scratchpad UUID (from `list_scratchpads`).
+    pub id: String,
+    /// The new full content of the scratchpad.
+    pub content: String,
+    /// The scratchpad's `updatedAt` from your last `list_scratchpads` /
+    /// `create_scratchpad` / `update_scratchpad` call (RFC 3339). Must match
+    /// the current value or the update is rejected as a conflict — someone
+    /// else (the user or another agent) edited it first. On conflict,
+    /// re-fetch with `list_scratchpads` and retry with the fresh timestamp.
+    pub expected_updated_at: String,
+    /// Who is making the edit (defaults to `agent`).
+    pub author: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScratchpadTagParams {
+    /// Project UUID the scratchpad belongs to.
+    pub project_id: String,
+    /// Scratchpad UUID (from `list_scratchpads`).
+    pub id: String,
+    /// The tag text (must not be blank).
+    pub tag: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetScratchpadArchivedParams {
+    /// Project UUID the scratchpad belongs to.
+    pub project_id: String,
+    /// Scratchpad UUID (from `list_scratchpads`).
+    pub id: String,
+    /// `true` to archive, `false` to restore to the active list.
+    pub archived: bool,
 }
 
 /// The MCP tool surface. One instance is created per HTTP session; all state
@@ -204,14 +265,14 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Returns the new process snapshot."
+        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Returns the new process snapshot."
     )]
     pub async fn spawn_agent(
         &self,
         Parameters(p): Parameters<SpawnAgentParams>,
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
-        // Merge the single-id compatibility field with `todo_ids`, preserving
+        // Merge each single-id compatibility field with its plural, preserving
         // order and dropping duplicates.
         let mut todo_ids = Vec::new();
         for raw in p.todo_id.iter().chain(p.todo_ids.iter().flatten()) {
@@ -220,9 +281,27 @@ impl PodiumTools {
                 todo_ids.push(id);
             }
         }
+        let mut scratchpad_ids = Vec::new();
+        for raw in p
+            .scratchpad_id
+            .iter()
+            .chain(p.scratchpad_ids.iter().flatten())
+        {
+            let id = parse_scratchpad_id(raw)?;
+            if !scratchpad_ids.contains(&id) {
+                scratchpad_ids.push(id);
+            }
+        }
         let id = self
             .orchestrator
-            .spawn_agent(project_id, p.adapter_id, p.name, p.prompt, todo_ids)
+            .spawn_agent(
+                project_id,
+                p.adapter_id,
+                p.name,
+                p.prompt,
+                todo_ids,
+                scratchpad_ids,
+            )
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
@@ -404,6 +483,103 @@ impl PodiumTools {
         )
     }
 
+    #[tool(description = "List a project's active (non-archived) scratchpads.")]
+    pub async fn list_scratchpads(
+        &self,
+        Parameters(p): Parameters<ListScratchpadsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        json_result(
+            &self
+                .orchestrator
+                .list_scratchpads(project_id)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(
+        description = "Create a new scratchpad in a project (auto-generated timestamp title, empty content). Returns the created scratchpad."
+    )]
+    pub async fn create_scratchpad(
+        &self,
+        Parameters(p): Parameters<CreateScratchpadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let author = p.author.as_deref().unwrap_or("agent");
+        json_result(
+            &self
+                .orchestrator
+                .add_scratchpad(project_id, author)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(
+        description = "Replace a scratchpad's content (bumps its version). Requires expected_updated_at (from your last read of the scratchpad) — if someone else edited it since, this fails as a conflict; re-fetch with list_scratchpads and retry. Returns the updated scratchpad."
+    )]
+    pub async fn update_scratchpad(
+        &self,
+        Parameters(p): Parameters<UpdateScratchpadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let id = parse_scratchpad_id(&p.id)?;
+        let expected_updated_at = parse_timestamp(&p.expected_updated_at)?;
+        let author = p.author.as_deref().unwrap_or("agent");
+        json_result(
+            &self
+                .orchestrator
+                .update_scratchpad_content(project_id, id, &p.content, expected_updated_at, author)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(description = "Add a free-text tag to a scratchpad. Returns the updated scratchpad.")]
+    pub async fn add_scratchpad_tag(
+        &self,
+        Parameters(p): Parameters<ScratchpadTagParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let id = parse_scratchpad_id(&p.id)?;
+        json_result(
+            &self
+                .orchestrator
+                .add_scratchpad_tag(project_id, id, &p.tag)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(
+        description = "Remove a tag from a scratchpad (by exact value). Returns the updated scratchpad."
+    )]
+    pub async fn remove_scratchpad_tag(
+        &self,
+        Parameters(p): Parameters<ScratchpadTagParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let id = parse_scratchpad_id(&p.id)?;
+        json_result(
+            &self
+                .orchestrator
+                .remove_scratchpad_tag(project_id, id, &p.tag)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(description = "Archive or restore a scratchpad. Returns the updated scratchpad.")]
+    pub async fn set_scratchpad_archived(
+        &self,
+        Parameters(p): Parameters<SetScratchpadArchivedParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let id = parse_scratchpad_id(&p.id)?;
+        json_result(
+            &self
+                .orchestrator
+                .set_scratchpad_archived(project_id, id, p.archived)
+                .map_err(core_error)?,
+        )
+    }
+
     fn find_process(&self, id: ProcessId) -> Result<crate::process::ProcessInfo, McpError> {
         self.orchestrator
             .list_processes(None)
@@ -441,7 +617,10 @@ impl ServerHandler for PodiumTools {
              session recognisable: call rename_session (with your own \
              PODIUM_PROCESS_ID) to give yourself a short name describing what the \
              session is about — if you were started standalone rather than on a \
-             to-do, do this right after the user's first prompt."
+             to-do, do this right after the user's first prompt. Each project \
+             also has shared scratchpads for freeform notes \
+             (list_scratchpads/create_scratchpad/update_scratchpad), visible \
+             to the user and every agent."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
@@ -471,6 +650,21 @@ fn parse_process_id(s: &str) -> Result<ProcessId, McpError> {
 
 fn parse_todo_id(s: &str) -> Result<TodoId, McpError> {
     TodoId::from_str(s).map_err(|_| McpError::invalid_params(format!("invalid todo_id: {s}"), None))
+}
+
+fn parse_scratchpad_id(s: &str) -> Result<ScratchpadId, McpError> {
+    ScratchpadId::from_str(s)
+        .map_err(|_| McpError::invalid_params(format!("invalid scratchpad id: {s}"), None))
+}
+
+/// Parse an RFC 3339 timestamp (e.g. a scratchpad's `updatedAt`) from a tool
+/// parameter. `schemars`/`JsonSchema` doesn't cover `DateTime<Utc>` for the
+/// generated tool schemas, so callers pass it as a plain string and this
+/// parses it, mirroring the id-parsing helpers above.
+fn parse_timestamp(s: &str) -> Result<chrono::DateTime<chrono::Utc>, McpError> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| McpError::invalid_params(format!("invalid RFC 3339 timestamp: {s}"), None))
 }
 
 /// Map a [`CoreError`] onto MCP error codes. Every message is Podium-owned

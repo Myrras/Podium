@@ -13,21 +13,11 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::assignment::AssignedAgent;
 use crate::error::{CoreError, CoreResult};
-use crate::ids::{CommentId, LinkId, ProcessId, ProjectId, TodoId};
+use crate::ids::{CommentId, LinkId, ProjectId, TodoId};
 
 const LOCK_POISONED: &str = "todo store lock poisoned";
-
-/// The agent currently working on a to-do. Runtime-only (a `ProcessId` is
-/// per-run), so it is never persisted and is filled in at list time.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssignedAgent {
-    /// The agent process working on the to-do.
-    pub process_id: ProcessId,
-    /// The agent's display name, for showing in the UI without a lookup.
-    pub name: String,
-}
 
 /// One progress note on a to-do. Agents post these over MCP (`comment_todo`)
 /// so the user — and other agents — can track what has been done.

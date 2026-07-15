@@ -26,6 +26,7 @@ tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"
 serde.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 # Terminal bytes are base64-encoded across the IPC bridge for JSON safety.
 base64 = "0.22"
 tokio.workspace = true

@@ -1,0 +1,56 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+}
+
+.rowIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: var(--surface-hover);
+  border-radius: var(--radius-full, 999px);
+}
+
+.remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.remove:hover {
+  color: var(--text);
+}
+
+.input {
+  flex: 1;
+  min-width: 80px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 2px var(--sp-1);
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}
+
+.input:focus {
+  outline: none;
+}
