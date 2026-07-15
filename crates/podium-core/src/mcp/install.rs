@@ -16,48 +16,14 @@
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
 use crate::error::{CoreError, CoreResult};
+use crate::platform::{run_shell_ok as login_shell_ok, run_shell_stdout as login_shell_stdout};
 
 /// The server name Podium registers under in external clients.
 pub const SERVER_NAME: &str = "podium";
-
-/// Run `cmd` via the login shell, discarding all output. Returns whether it
-/// exited successfully.
-fn login_shell_ok(cmd: &str) -> bool {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    Command::new(shell)
-        .arg("-lc")
-        .arg(cmd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-/// Run `cmd` via the login shell, discarding stderr. Returns its stdout when
-/// the command exits successfully, otherwise `None`. Used only for the Auggie
-/// installed-check, whose non-secret JSON listing must be read (not just its
-/// exit status).
-fn login_shell_stdout(cmd: &str) -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let output = Command::new(shell)
-        .arg("-lc")
-        .arg(cmd)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-}
 
 fn quote(arg: &str) -> CoreResult<String> {
     shlex::try_quote(arg)
@@ -76,7 +42,7 @@ pub struct ClientStatus {
 
 /// Probe the Claude Code CLI: is it on PATH, and is `podium` registered?
 pub fn claude_status() -> ClientStatus {
-    let cli_available = login_shell_ok("command -v claude");
+    let cli_available = login_shell_ok(&crate::platform::command_exists_query("claude"));
     let installed = cli_available && login_shell_ok(&format!("claude mcp get {SERVER_NAME}"));
     ClientStatus {
         cli_available,
@@ -96,7 +62,7 @@ pub fn claude_add_command(exe: &Path) -> CoreResult<String> {
 /// Register the bridge with Claude Code, replacing any existing `podium`
 /// entry first (so re-runs and moved binaries just work).
 pub fn claude_install(exe: &Path) -> CoreResult<()> {
-    if !login_shell_ok("command -v claude") {
+    if !login_shell_ok(&crate::platform::command_exists_query("claude")) {
         return Err(CoreError::Config(
             "Claude Code CLI (`claude`) not found on PATH".to_string(),
         ));
@@ -141,7 +107,7 @@ fn auggie_installed() -> bool {
 
 /// Probe the Auggie CLI: is it on PATH, and is `podium` registered?
 pub fn auggie_status() -> ClientStatus {
-    let cli_available = login_shell_ok("command -v auggie");
+    let cli_available = login_shell_ok(&crate::platform::command_exists_query("auggie"));
     let installed = cli_available && auggie_installed();
     ClientStatus {
         cli_available,
@@ -152,7 +118,7 @@ pub fn auggie_status() -> ClientStatus {
 /// Register the bridge with Auggie. `--replace` overwrites any existing
 /// `podium` entry, so re-runs and moved binaries just work.
 pub fn auggie_install(exe: &Path) -> CoreResult<()> {
-    if !login_shell_ok("command -v auggie") {
+    if !login_shell_ok(&crate::platform::command_exists_query("auggie")) {
         return Err(CoreError::Config(
             "Auggie CLI (`auggie`) not found on PATH".to_string(),
         ));

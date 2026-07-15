@@ -58,6 +58,12 @@ const THEMES: {
 const FONT_SIZE_MIN = 10;
 const FONT_SIZE_MAX = 24;
 
+// Placeholder for the terminal-shell field: the platform default the backend
+// falls back to when the field is blank.
+const DEFAULT_SHELL_HINT = navigator.userAgent.includes("Windows")
+  ? "powershell (default)"
+  : "$SHELL (default)";
+
 /** Checkbox toggle row with label and optional helper text. */
 function SettingToggle({
   label,
@@ -655,6 +661,22 @@ function GeneralTab() {
               <AddIcon size={14} />
             </button>
           </div>
+        </div>
+        <div className={styles.field}>
+          <label htmlFor="terminal-shell">Shell</label>
+          <input
+            id="terminal-shell"
+            type="text"
+            value={settings.terminal.shell}
+            placeholder={DEFAULT_SHELL_HINT}
+            onChange={(e) => settings.set("terminal", { shell: e.target.value })}
+          />
+          <small className={styles.rowHelp}>
+            Command new terminals launch. Leave blank for the system default
+            (your login shell on macOS/Linux, PowerShell on Windows). Examples:{" "}
+            <code>pwsh</code>, <code>cmd</code>, <code>bash</code>,{" "}
+            <code>wsl</code>.
+          </small>
         </div>
       </section>
 

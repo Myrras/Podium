@@ -1,12 +1,12 @@
 name: Build
 
-# Build the installable macOS bundle.
+# Build installable desktop bundles.
 # - workflow_dispatch: build on demand from the Actions tab.
 # - push to main: every merge to main produces the artifact.
 # - push of a v* tag: a release tag also produces the artifact.
 #
-# macOS only on purpose: Podium's PTY layer is Unix-only today and the app is
-# macOS-first (Windows/Linux are kept in mind but not yet packaged).
+# Matrix over macOS (.dmg) and Windows (NSIS .exe). Cross-compiling is painful,
+# so each OS builds natively on its own runner.
 on:
   workflow_dispatch:
   push:
@@ -17,8 +17,12 @@ on:
 
 jobs:
   build:
-    name: Build (macos-latest)
-    runs-on: macos-latest
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -42,24 +46,41 @@ jobs:
         with:
           # Cargo workspace root (target/ lives here, not under src-tauri/).
           workspaces: .
+          key: ${{ matrix.os }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      # Tauri's own dmg step uses HFS+, which is broken on macOS 26+, so we
-      # build the .app here and package the .dmg ourselves (APFS) via
+      # macOS: Tauri's own dmg step uses HFS+, which is broken on macOS 26+, so
+      # we build the .app here and package the .dmg ourselves (APFS) via
       # scripts/make-dmg.sh — the same path `just build` uses locally.
       # `tauri build` runs beforeBuildCommand (pnpm build) first, producing dist.
-      - name: Build app bundle
+      - name: Build app bundle (macOS)
+        if: runner.os == 'macOS'
         run: pnpm tauri build --bundles app
 
       - name: Package DMG (APFS)
+        if: runner.os == 'macOS'
         run: ./scripts/make-dmg.sh
 
-      - name: Upload bundle
+      - name: Upload macOS bundle
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: podium-macos
           # Cargo workspace: target/ is at the repo root, not under src-tauri/.
           path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      # Windows: build only the NSIS .exe installer.
+      - name: Build app bundle (Windows)
+        if: runner.os == 'Windows'
+        run: pnpm tauri build --bundles nsis
+
+      - name: Upload Windows bundle
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: podium-windows
+          path: target/release/bundle/nsis/*.exe
           if-no-files-found: error

@@ -2,10 +2,9 @@
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::Duration;
 
-use nix::sys::signal::{killpg, Signal};
-use nix::unistd::Pid;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
@@ -14,6 +13,7 @@ use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::ProcessSpec;
 
 const LOCK_POISONED: &str = "pty lock poisoned";
+#[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// A chunk of raw PTY output tagged with its scrollback sequence number.
@@ -35,6 +35,10 @@ pub type ExitCallback = Box<dyn FnOnce(Option<i32>) + Send>;
 pub struct PtyProcess {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
+    // Windows stop() terminates the child through this handle (no process
+    // groups); Unix stops the whole group via killpg and never touches it.
+    #[cfg(windows)]
+    killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     pid: u32,
 }
 
@@ -56,9 +60,11 @@ impl PtyProcess {
             })
             .map_err(|e| CoreError::Pty(e.to_string()))?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let (shell, prefix) = crate::platform::login_shell();
         let mut cmd = CommandBuilder::new(shell);
-        cmd.arg("-lc");
+        for arg in prefix {
+            cmd.arg(arg);
+        }
         cmd.arg(&spec.command);
         cmd.cwd(&spec.cwd);
         for (key, value) in &spec.env {
@@ -76,6 +82,11 @@ impl PtyProcess {
         let pid = child
             .process_id()
             .ok_or_else(|| CoreError::Pty("spawned child has no pid".to_string()))?;
+
+        // Split off a killer handle before the child moves into the wait
+        // thread; Windows stop() uses it (Unix signals the process group).
+        #[cfg(windows)]
+        let killer = child.clone_killer();
 
         let mut reader = pair
             .master
@@ -116,6 +127,8 @@ impl PtyProcess {
         Ok(Self {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
+            #[cfg(windows)]
+            killer: Mutex::new(killer),
             pid,
         })
     }
@@ -144,13 +157,17 @@ impl PtyProcess {
             .map_err(|e| CoreError::Pty(e.to_string()))
     }
 
-    /// Gracefully stop the whole process group: SIGTERM now, then SIGKILL
-    /// after a grace period if the group is still alive.
+    /// Gracefully stop the process.
     ///
-    /// portable-pty spawns the child as a session leader, so pgid == pid.
-    /// Must be called from within a tokio runtime (the SIGKILL escalation
-    /// runs on a spawned task).
+    /// Unix: SIGTERM the whole process group now, then SIGKILL it after a
+    /// grace period if it is still alive (portable-pty spawns the child as a
+    /// session leader, so pgid == pid). Must be called from within a tokio
+    /// runtime — the SIGKILL escalation runs on a spawned task.
+    #[cfg(unix)]
     pub fn stop(&self) {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+
         let pgid = Pid::from_raw(self.pid as i32);
         let _ = killpg(pgid, Signal::SIGTERM);
         tokio::spawn(async move {
@@ -159,5 +176,16 @@ impl PtyProcess {
                 let _ = killpg(pgid, Signal::SIGKILL);
             }
         });
+    }
+
+    /// Windows: terminate the ConPTY child via its killer handle. Windows has
+    /// no process groups, so this is an immediate TerminateProcess; any
+    /// grandchildren are reaped when the pseudoconsole tears down as the
+    /// master handle drops.
+    // ponytail: single-process kill. If orphaned grandchildren become a
+    // problem, spawn the child into a Win32 Job Object and kill that instead.
+    #[cfg(windows)]
+    pub fn stop(&self) {
+        let _ = self.killer.lock().expect(LOCK_POISONED).kill();
     }
 }

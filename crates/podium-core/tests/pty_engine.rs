@@ -3,7 +3,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(unix)]
 use nix::sys::signal::{killpg, Signal};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use podium_core::{
     Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
@@ -116,6 +118,9 @@ async fn nonzero_exit_is_a_crash() {
     assert!(crashed);
 }
 
+// Unix-only: asserts process-group teardown (killpg). Windows kills the
+// single ConPTY child, so there is no group to poll.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn user_stop_is_not_a_crash_and_kills_the_group() {
     let (orch, id, _dir) = setup("sleep 30").await;

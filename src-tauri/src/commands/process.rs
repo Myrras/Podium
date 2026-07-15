@@ -35,7 +35,12 @@ const BATCH_MAX_BYTES: usize = 64 * 1024;
 
 /// Default command for terminal processes: replace the wrapper `$SHELL -lc`
 /// with an interactive shell so the user gets prompts, job control, etc.
+#[cfg(unix)]
 const TERMINAL_DEFAULT_COMMAND: &str = "exec \"$SHELL\" -i";
+/// Windows: the wrapper is `cmd /C <command>`, so launching PowerShell hands
+/// the user an interactive shell inside the ConPTY.
+#[cfg(windows)]
+const TERMINAL_DEFAULT_COMMAND: &str = "powershell";
 
 /// Frontend payload for creating a process. `kind` is flattened, so the wire
 /// shape is `{ name, command?, cwd?, kind: "service"|"terminal"|"agent",

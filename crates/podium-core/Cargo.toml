@@ -16,7 +16,6 @@ tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 portable-pty = "0.9"
-nix = { version = "0.30", features = ["signal", "process"] }
 # `podium.yml` project configuration.
 serde_yaml_ng = "0.10"
 # Shell-safe quoting for agent launch command lines.
@@ -33,6 +32,11 @@ tokio-util = "0.7"
 # HTTP client for the stdio MCP bridge (`mcp/bridge.rs`). Localhost plain
 # HTTP only, so no TLS backend is needed.
 reqwest = { version = "0.13.3", default-features = false }
+
+# Unix-only: process-group signalling for graceful stop (killpg SIGTERM →
+# SIGKILL). Windows kills the ConPTY child via portable-pty's ChildKiller.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal", "process"] }
 
 [dev-dependencies]
 tempfile = "3"

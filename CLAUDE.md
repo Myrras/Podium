@@ -10,8 +10,9 @@ Podium is a cross-platform **desktop cockpit for AI coding agents**, built in
 today; more adapters later) — each in its own PTY with a real terminal view,
 lifecycle supervision, and a built-in **MCP server** so agents can inspect
 and orchestrate the very processes Podium manages (including spawning more
-agents). macOS-first; Windows/Linux kept in mind (the PTY layer is Unix-only
-today).
+agents). macOS-first, but macOS **and** Windows are built and packaged (the
+PTY layer runs on Windows via ConPTY; process-group stop is Unix-only, Windows
+terminates the ConPTY child directly). Linux is kept in mind, not yet packaged.
 
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id
 > `com.podium.app`.
@@ -436,10 +437,12 @@ Conversations that touch no code (questions, exploration) need no branch.
   --workspace` (needs real PTYs, hence macOS), then typecheck, ESLint,
   Vitest, and a production `pnpm build`. A stub `dist/` is created first so
   `tauri::generate_context!` compiles.
-- **Bundle build** (`.github/workflows/build.yml`): builds the macOS bundle
-  (the `.app` plus the APFS `.dmg` via `scripts/make-dmg.sh`) on
-  `workflow_dispatch` and on any pushed `v*` tag, uploading the `.dmg` as an
-  artifact. macOS only — the PTY layer is Unix-only and the app is macOS-first.
+- **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
+  Windows, each building natively (cross-compiling Tauri is painful). macOS
+  packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
+  packages the NSIS `.exe`. Runs on `workflow_dispatch` and any pushed `v*`
+  tag, uploading each OS's installer as an artifact. CI (`ci.yml`) still runs
+  tests on macOS only — they need real Unix PTYs.
 - **Releasing** is done via the **`release` skill** (see _Git workflow_).
   Do **not** create git tags or releases without explicit user approval
   (invoking the skill + its confirmation step is that approval).

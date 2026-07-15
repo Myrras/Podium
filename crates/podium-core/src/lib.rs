@@ -14,6 +14,7 @@ pub mod events;
 pub mod ids;
 pub mod mcp;
 pub mod orchestrator;
+pub mod platform;
 pub mod process;
 pub mod project;
 pub mod scratchpad;

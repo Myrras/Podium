@@ -23,6 +23,7 @@ import type {
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
+import { useSettingsStore } from "../state/settingsStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
@@ -185,9 +186,12 @@ function ProjectGroup({
 
   const addTerminal = async () => {
     setActiveProject(project.id);
+    // Blank = backend platform default ($SHELL -i / PowerShell).
+    const shell = useSettingsStore.getState().terminal.shell.trim();
     const info = await addProcess(project.id, {
       name: `Terminal ${terminals.length + 1}`,
       kind: "terminal",
+      ...(shell ? { command: shell } : {}),
     });
     if (info) await startProcess(info.id);
   };

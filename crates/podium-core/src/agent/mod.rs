@@ -80,20 +80,11 @@ pub trait AgentAdapter: Send + Sync {
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan>;
 
     /// Whether the binary resolves on the user's login-shell `PATH`. Probed
-    /// via `$SHELL -lc "command -v <binary>"` so shell-profile PATH edits
-    /// (nvm, homebrew, …) are honoured; output is discarded, only the exit
-    /// status matters.
+    /// via the login shell (`command -v <binary>` on Unix, `where` on Windows)
+    /// so shell-profile PATH edits (nvm, homebrew, …) are honoured; output is
+    /// discarded, only the exit status matters.
     fn is_available(&self) -> bool {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        std::process::Command::new(shell)
-            .arg("-lc")
-            .arg(format!("command -v {}", self.binary()))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+        crate::platform::run_shell_ok(&crate::platform::command_exists_query(self.binary()))
     }
 }
 
