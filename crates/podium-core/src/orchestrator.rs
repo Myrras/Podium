@@ -1113,30 +1113,33 @@ impl Orchestrator {
             Vec::new()
         };
         let base_prompt = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
-        let name = match name.as_deref().map(str::trim) {
-            Some(n) if !n.is_empty() => n.to_string(),
-            // Window name, in precedence: the first to-do's text (an agent
-            // spawned on to-dos), the first scratchpad's title (an agent
-            // spawned on scratchpads), a short label derived from the prompt
-            // (so a standalone agent is recognisable without waiting on the
-            // model to rename itself over MCP), else the adapter binary.
-            _ => {
-                let base = todos
+        // Window name, in precedence: an explicit name, the first to-do's
+        // text (an agent spawned on to-dos), the first scratchpad's title (an
+        // agent spawned on scratchpads), a short label derived from the
+        // prompt, else the adapter binary. A generically named agent (the
+        // binary fallback) is told via its launch plan to rename itself over
+        // MCP after the first user message.
+        let explicit = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        let derived = todos
+            .first()
+            .map(|t| t.text.trim())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                scratchpads
                     .first()
-                    .map(|t| t.text.trim())
+                    .map(|s| s.title.trim())
                     .filter(|t| !t.is_empty())
                     .map(str::to_string)
-                    .or_else(|| {
-                        scratchpads
-                            .first()
-                            .map(|s| s.title.trim())
-                            .filter(|t| !t.is_empty())
-                            .map(str::to_string)
-                    })
-                    .or_else(|| base_prompt.and_then(name_from_prompt))
-                    .unwrap_or_else(|| adapter.binary().to_string());
-                next_free_name(&base, &existing_names)
-            }
+            })
+            .or_else(|| base_prompt.and_then(name_from_prompt));
+        let named = explicit.is_some() || derived.is_some();
+        let name = match explicit {
+            Some(n) => n.to_string(),
+            None => next_free_name(
+                &derived.unwrap_or_else(|| adapter.binary().to_string()),
+                &existing_names,
+            ),
         };
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         let process_id = ProcessId::new();
@@ -1164,6 +1167,7 @@ impl Orchestrator {
             extra_args: &merged_args,
             command_override,
             mcp: mcp.as_ref(),
+            named,
         })?;
         let spec = ProcessSpec {
             name,

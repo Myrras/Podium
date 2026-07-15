@@ -34,6 +34,11 @@ pub struct AgentLaunchCtx<'a> {
     pub command_override: Option<&'a str>,
     /// How to reach Podium's MCP server; `None` until phase 6 provides it.
     pub mcp: Option<&'a McpConnectInfo>,
+    /// Whether the process already got a descriptive window name (explicit,
+    /// to-do or prompt-derived). When false, the launch plan tells the agent
+    /// in its system prompt to rename itself right after the first user
+    /// message — models never act on the buried MCP-server instruction alone.
+    pub named: bool,
 }
 
 /// Connection details for the built-in MCP server.
@@ -102,6 +107,10 @@ pub struct CliAdapter {
     pub display_name: &'static str,
     /// The CLI binary the adapter drives (also the default name prefix).
     pub binary: &'static str,
+    /// CLI flag that appends text to the agent's system prompt; used to hand
+    /// the agent its Podium identity (see [`identity_prompt`]). `None` when
+    /// the CLI has no such flag.
+    pub system_prompt_flag: Option<&'static str>,
 }
 
 /// The Claude Code CLI (`claude`).
@@ -109,6 +118,7 @@ pub const CLAUDE_CODE: CliAdapter = CliAdapter {
     id: "claude-code",
     display_name: "Claude Code",
     binary: "claude",
+    system_prompt_flag: Some("--append-system-prompt"),
 };
 
 /// The Augment / Auggie CLI (`auggie`).
@@ -116,6 +126,8 @@ pub const AUGGIE: CliAdapter = CliAdapter {
     id: "auggie",
     display_name: "Auggie",
     binary: "auggie",
+    // ponytail: no known system-prompt flag; add one when Auggie grows it.
+    system_prompt_flag: None,
 };
 
 impl AgentAdapter for CliAdapter {
@@ -144,6 +156,11 @@ impl AgentAdapter for CliAdapter {
             let path = write_mcp_config(mcp, ctx.process_id)?;
             args.push("--mcp-config".to_string());
             args.push(quote(&path.to_string_lossy())?);
+            // Identity only makes sense alongside the Podium MCP tools.
+            if let Some(flag) = self.system_prompt_flag {
+                args.push(flag.to_string());
+                args.push(quote(&identity_prompt(ctx))?);
+            }
         }
         Ok(LaunchPlan {
             command: args.join(" "),
@@ -153,6 +170,29 @@ impl AgentAdapter for CliAdapter {
             ],
         })
     }
+}
+
+/// System-prompt blurb handing the agent its Podium identity. The MCP tools
+/// that act on the calling agent (`rename_session`, `assign_todo`) need its
+/// process id, but models don't fish `PODIUM_PROCESS_ID` out of the
+/// environment or act on the MCP server instructions on their own — so spell
+/// the ids out in-context, and tell a generically named session outright to
+/// rename itself.
+fn identity_prompt(ctx: &AgentLaunchCtx) -> String {
+    let mut prompt = format!(
+        "You run as a Podium-managed agent: your process_id is {} and your \
+         project_id is {}. Use these ids for Podium MCP tools that ask for \
+         them (rename_session, assign_todo).",
+        ctx.process_id, ctx.project_id
+    );
+    if !ctx.named {
+        prompt.push_str(
+            " This session has a generic window name: immediately after the \
+             user's first message, call the podium rename_session tool with a \
+             short name describing the session, then continue with the task.",
+        );
+    }
+    prompt
 }
 
 fn quote(arg: &str) -> CoreResult<String> {
@@ -295,6 +335,7 @@ mod tests {
             extra_args,
             command_override,
             mcp,
+            named: false,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         (plan, project_id, process_id)
@@ -362,15 +403,18 @@ mod tests {
         );
 
         let tokens = shlex::split(&plan.command).expect("valid shell line");
+        assert_eq!(tokens.len(), 6, "expected identity prompt appended");
         assert_eq!(
-            tokens,
-            vec![
+            tokens[..4],
+            [
                 "claude".to_string(),
                 "hello".to_string(),
                 "--mcp-config".to_string(),
                 path.to_string_lossy().into_owned(),
             ]
         );
+        assert_eq!(tokens[4], "--append-system-prompt");
+        assert!(tokens[5].contains(&process_id.to_string()));
 
         #[cfg(unix)]
         {
@@ -409,10 +453,75 @@ mod tests {
             extra_args: &[],
             command_override: None,
             mcp: None,
+            named: false,
         };
         assert_eq!(
             AUGGIE.build_launch(&ctx).expect("build_launch").command,
             "auggie"
         );
+    }
+
+    #[test]
+    fn identity_prompt_nudges_unnamed_agents_to_rename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let (plan, project_id, process_id) = plan(None, &[], Some(&mcp));
+        let tokens = shlex::split(&plan.command).expect("valid shell line");
+        let blurb = &tokens[tokens.len() - 1];
+        assert!(blurb.contains(&process_id.to_string()));
+        assert!(blurb.contains(&project_id.to_string()));
+        assert!(blurb.contains("rename_session"));
+        assert!(blurb.contains("generic window name"));
+    }
+
+    #[test]
+    fn named_agents_get_identity_but_no_rename_nudge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp"),
+            prompt: None,
+            extra_args: &[],
+            command_override: None,
+            mcp: Some(&mcp),
+            named: true,
+        };
+        let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
+        let tokens = shlex::split(&plan.command).expect("valid shell line");
+        let blurb = &tokens[tokens.len() - 1];
+        assert!(blurb.contains(&ctx.process_id.to_string()));
+        assert!(!blurb.contains("generic window name"));
+    }
+
+    #[test]
+    fn adapters_without_system_prompt_flag_skip_the_identity_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp"),
+            prompt: None,
+            extra_args: &[],
+            command_override: None,
+            mcp: Some(&mcp),
+            named: false,
+        };
+        let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
+        assert!(!plan.command.contains("--append-system-prompt"));
     }
 }

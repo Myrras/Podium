@@ -35,7 +35,7 @@ export default defineConfig(async () => ({
     rollupOptions: {
       output: {
         manualChunks: {
-          xterm: ["@xterm/xterm", "@xterm/addon-fit"],
+          xterm: ["@xterm/xterm"],
         },
       },
     },
