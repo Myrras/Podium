@@ -14,22 +14,16 @@
 //! `podium` entry. That listing never carries the bearer token (the bridge
 //! reads it from `server.json`) and is inspected in memory, never logged.
 
-use std::borrow::Cow;
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::error::{CoreError, CoreResult};
+use crate::platform::quote_arg as quote;
 use crate::platform::{run_shell_ok as login_shell_ok, run_shell_stdout as login_shell_stdout};
 
 /// The server name Podium registers under in external clients.
 pub const SERVER_NAME: &str = "podium";
-
-fn quote(arg: &str) -> CoreResult<String> {
-    shlex::try_quote(arg)
-        .map(Cow::into_owned)
-        .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
-}
 
 /// Registration state of Podium's bridge in an external client's CLI.
 #[derive(Debug, Clone, Copy)]
@@ -217,6 +211,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn add_command_quotes_paths_with_spaces() {
         let cmd =
@@ -224,6 +219,15 @@ mod tests {
         let tokens = shlex::split(&cmd).expect("valid shell line");
         assert!(tokens.contains(&"/Applications/My Podium.app/MacOS/Podium".to_string()));
         assert_eq!(tokens.last().unwrap(), "mcp-bridge");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn add_command_quotes_paths_with_spaces() {
+        let cmd =
+            claude_add_command(&PathBuf::from(r"C:\Program Files\Podium\podium.exe")).unwrap();
+        assert!(cmd.contains(r#""C:\Program Files\Podium\podium.exe""#));
+        assert!(cmd.ends_with("mcp-bridge"));
     }
 
     #[test]
@@ -235,6 +239,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn auggie_add_command_quotes_paths_with_spaces() {
         let cmd =
@@ -242,6 +247,15 @@ mod tests {
         let tokens = shlex::split(&cmd).expect("valid shell line");
         assert!(tokens.contains(&"/Applications/My Podium.app/MacOS/Podium".to_string()));
         assert!(tokens.contains(&"mcp-bridge".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn auggie_add_command_quotes_paths_with_spaces() {
+        let cmd =
+            auggie_add_command(&PathBuf::from(r"C:\Program Files\Podium\podium.exe")).unwrap();
+        assert!(cmd.contains(r#""C:\Program Files\Podium\podium.exe""#));
+        assert!(cmd.contains("mcp-bridge"));
     }
 
     #[test]

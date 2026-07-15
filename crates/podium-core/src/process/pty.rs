@@ -10,6 +10,8 @@ use tokio::sync::broadcast;
 
 use crate::error::{CoreError, CoreResult};
 use crate::process::scrollback::ScrollbackBuffer;
+#[cfg(windows)]
+use crate::process::ProcessKind;
 use crate::process::ProcessSpec;
 
 const LOCK_POISONED: &str = "pty lock poisoned";
@@ -43,6 +45,63 @@ pub struct PtyProcess {
 }
 
 impl PtyProcess {
+    /// Builds the [`CommandBuilder`] for `spec`, deciding *how* to hand its
+    /// `command` string to the OS.
+    ///
+    /// Agent commands (`ProcessKind::Agent`) are always `binary arg1 arg2 …`
+    /// with no shell syntax — [`crate::agent::CliAdapter::build_launch`]
+    /// builds that string by shell-quoting each argument. On Unix that quoted
+    /// string is handed to `$SHELL -lc` as one opaque argument and parsed
+    /// once, correctly, by a real POSIX shell. On Windows the analogous
+    /// `cmd.exe /C <string>` does not work: portable-pty must itself flatten
+    /// our `.arg()` calls into one `CreateProcessW` command line, so passing
+    /// our already-quoted string as a single argument makes portable-pty
+    /// quote it *again* — but `cmd.exe`'s own `/C` parsing has no notion of
+    /// the backslash-escaping that second layer relies on, so it re-splits
+    /// the string on whitespace, corrupting any argument that needed
+    /// quoting (e.g. truncating a prompt at the first space or quote).
+    ///
+    /// So on Windows, agent commands bypass `cmd.exe` entirely: the string
+    /// is re-tokenized with [`crate::platform::parse_windows_argv`] (the
+    /// exact inverse of the quoting `build_launch` applied) and the binary is
+    /// spawned directly, one argument per `.arg()` call, so portable-pty's
+    /// own quoting is the *only* layer in play. Services and terminals are
+    /// unaffected — their `command` is arbitrary shell syntax from
+    /// `podium.yml` or the user's chosen shell, which still needs a real
+    /// shell (`cmd.exe` on Windows) to interpret.
+    #[cfg(windows)]
+    fn build_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
+        if matches!(spec.kind, ProcessKind::Agent { .. }) {
+            let mut tokens = crate::platform::parse_windows_argv(&spec.command).into_iter();
+            let program = tokens
+                .next()
+                .ok_or_else(|| CoreError::Pty("empty agent command".to_string()))?;
+            let mut cmd = CommandBuilder::new(program);
+            for arg in tokens {
+                cmd.arg(arg);
+            }
+            return Ok(cmd);
+        }
+        let (shell, prefix) = crate::platform::login_shell();
+        let mut cmd = CommandBuilder::new(shell);
+        for arg in prefix {
+            cmd.arg(arg);
+        }
+        cmd.arg(&spec.command);
+        Ok(cmd)
+    }
+
+    #[cfg(unix)]
+    fn build_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
+        let (shell, prefix) = crate::platform::login_shell();
+        let mut cmd = CommandBuilder::new(shell);
+        for arg in prefix {
+            cmd.arg(arg);
+        }
+        cmd.arg(&spec.command);
+        Ok(cmd)
+    }
+
     pub fn spawn(
         spec: &ProcessSpec,
         size: Option<(u16, u16)>,
@@ -60,12 +119,7 @@ impl PtyProcess {
             })
             .map_err(|e| CoreError::Pty(e.to_string()))?;
 
-        let (shell, prefix) = crate::platform::login_shell();
-        let mut cmd = CommandBuilder::new(shell);
-        for arg in prefix {
-            cmd.arg(arg);
-        }
-        cmd.arg(&spec.command);
+        let mut cmd = Self::build_command(spec)?;
         cmd.cwd(&spec.cwd);
         for (key, value) in &spec.env {
             cmd.env(key, value);

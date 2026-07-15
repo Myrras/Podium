@@ -1,10 +1,13 @@
 //! The small OS gap Podium has to bridge: wrapping a command *string* in a
-//! login shell, and asking that shell whether a binary is on `PATH`. Every
-//! other platform difference is handled by portable-pty (ConPTY on Windows).
+//! login shell, asking that shell whether a binary is on `PATH`, and quoting
+//! a single argument for inclusion in that command string. Every other
+//! platform difference is handled by portable-pty (ConPTY on Windows).
 //!
-//! Keeping these three helpers in one place means the shell idiom
-//! (`$SHELL -lc` vs `cmd /C`) is written once, not re-derived at each of the
-//! PTY-spawn / adapter-probe / MCP-install call sites.
+//! Keeping these helpers in one place means the shell idiom (`$SHELL -lc` vs
+//! `cmd /C`) is written once, not re-derived at each of the PTY-spawn /
+//! adapter-probe / MCP-install call sites.
+
+use crate::error::{CoreError, CoreResult};
 
 /// The login shell plus the args that precede a command *string*, so that
 /// `Command::new(program).args(prefix).arg(cmd)` runs `cmd` through it.
@@ -38,6 +41,67 @@ pub fn command_exists_query(binary: &str) -> String {
     {
         format!("where {binary}")
     }
+}
+
+/// Quote a single argument for inclusion in a command line run through
+/// [`login_shell`]: POSIX single-quote quoting for `$SHELL -lc` on Unix,
+/// Windows argv quoting (the C-runtime backslash/quote escaping rules that
+/// `CommandLineToArgvW` reverses) for `cmd.exe /C` on Windows.
+///
+/// The two are not interchangeable: `cmd.exe` has no concept of POSIX
+/// single-quote grouping, so a POSIX-quoted argument containing a `'` (e.g.
+/// `You're …`) is not treated as one quoted token — `cmd.exe` still splits it
+/// on whitespace, truncating the argument at the first space.
+pub fn quote_arg(arg: &str) -> CoreResult<String> {
+    #[cfg(unix)]
+    {
+        shlex::try_quote(arg)
+            .map(std::borrow::Cow::into_owned)
+            .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
+    }
+    #[cfg(windows)]
+    {
+        if arg.contains('\0') {
+            return Err(CoreError::InvalidInput(
+                "cannot quote argument: contains a nul byte".to_string(),
+            ));
+        }
+        Ok(quote_arg_windows(arg))
+    }
+}
+
+/// Windows argv quoting: wraps `arg` in double quotes and escapes embedded
+/// quotes/backslashes per the rules every Windows argv parser (the C
+/// runtime's, `CommandLineToArgvW`) expects — see Microsoft's "Parsing C++
+/// Command-Line Arguments". Only quotes when necessary so simple args stay
+/// readable in the command string shown in the UI.
+#[cfg(windows)]
+fn quote_arg_windows(arg: &str) -> String {
+    let needs_quotes = arg.is_empty() || arg.contains([' ', '\t', '"']);
+    if !needs_quotes {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                backslashes = 0;
+                out.push(c);
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+    out
 }
 
 /// Run `cmd` through the login shell, discarding all output; returns whether
@@ -75,6 +139,55 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Reverses [`quote_arg_windows`]'s escaping, mirroring the documented
+/// `CommandLineToArgvW` / C-runtime argv-parsing algorithm.
+///
+/// Used in production to un-quote an agent's `spec.command` before spawning
+/// it directly (see `process::pty` — agent launches bypass `cmd.exe` on
+/// Windows entirely, so the tokens this recovers are handed to
+/// `CommandBuilder::arg` as-is, letting portable-pty apply the *one* correct
+/// quoting pass instead of re-parsing an already-quoted string). Also used as
+/// a dependency-free stand-in for actually invoking `cmd.exe` in the quoting
+/// round-trip tests below, the same role `shlex::split` plays for Unix.
+#[cfg(windows)]
+pub(crate) fn parse_windows_argv(cmd: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut chars = cmd.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let mut backslashes = 1;
+                while chars.peek() == Some(&'\\') {
+                    backslashes += 1;
+                    chars.next();
+                }
+                if chars.peek() == Some(&'"') {
+                    cur.extend(std::iter::repeat_n('\\', backslashes / 2));
+                    if backslashes % 2 == 1 {
+                        chars.next();
+                        cur.push('"');
+                    }
+                } else {
+                    cur.extend(std::iter::repeat_n('\\', backslashes));
+                }
+            }
+            '"' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    args.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        args.push(cur);
+    }
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +215,47 @@ mod tests {
         assert!(run_shell_ok("true"));
         #[cfg(windows)]
         assert!(run_shell_ok("exit 0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quote_arg_round_trips_through_a_posix_tokenizer() {
+        let cases = [
+            "claude",
+            "fix the \"login\" bug",
+            "You're the assigned agent",
+        ];
+        let quoted: Vec<String> = cases.iter().map(|a| quote_arg(a).unwrap()).collect();
+        let line = quoted.join(" ");
+        assert_eq!(shlex::split(&line).unwrap(), cases);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quote_arg_round_trips_through_windows_argv_parsing() {
+        // The regression case: an embedded apostrophe (e.g. a to-do prompt
+        // starting "You're …") must survive as one argument, not get split
+        // apart by cmd.exe, which has no notion of POSIX single-quoting.
+        let cases = [
+            "claude",
+            "You're the assigned agent for to-do X",
+            "fix the \"login\" bug",
+            r"trailing backslash \",
+            r"C:\path with spaces\",
+        ];
+        let quoted: Vec<String> = cases.iter().map(|a| quote_arg(a).unwrap()).collect();
+        let line = quoted.join(" ");
+        assert_eq!(parse_windows_argv(&line), cases);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quote_arg_wraps_an_empty_argument_in_quotes() {
+        assert_eq!(quote_arg("").unwrap(), "\"\"");
+    }
+
+    #[test]
+    fn quote_arg_rejects_nul_bytes() {
+        assert!(quote_arg("bad\0arg").is_err());
     }
 }
