@@ -8,6 +8,46 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.2.0] - 2026-07-15
+
+### Added
+
+- **Scratchpads: shared, freeform notes per project.** Each project now has a
+  Scratchpads section (below Terminals) with a WYSIWYG markdown editor
+  (headings, lists, checklists, tables, code blocks, links), a live "On this
+  page" table of contents, free-text tags, and archive/restore. Scratchpads are
+  shared with agents over MCP — an agent can read and write them just like you
+  can — and you can spawn an agent directly on one.
+- **Windows support.** Podium now builds and runs on Windows: the PTY layer
+  runs on ConPTY, terminals default to PowerShell, and the build workflow ships
+  an NSIS installer alongside the macOS `.dmg`.
+- **Agents name their own sessions.** A new `rename_session` MCP tool lets a
+  running agent rename its session to reflect what it's working on, and a
+  generically named agent is now told (in-context) to do so right after your
+  first message — so sessions in the sidebar become recognisable on their own.
+
+### Fixed
+
+- **Spawned processes now see PATH edits from `.zshrc`/`.bashrc`.** Services,
+  terminals, and agents run via a login *and* interactive shell (`$SHELL
+  -lic`), so tools set up in interactive-only rc files (nvm, Homebrew shellenv,
+  Docker/Colima/OrbStack) resolve — an agent no longer fails to find `docker`
+  when a normal terminal tab finds it fine.
+- **Agent prompts with apostrophes are no longer truncated on Windows.**
+  Spawning an agent from a prompt containing a `'` (e.g. a to-do starting
+  "You're…") used to cut the prompt off at the quote; agent command lines now
+  use OS-correct argument quoting.
+- **Restoring a project no longer duplicates it.** A race at startup (two
+  concurrent restores of the same folder) could mint two entries for one
+  project; opening a folder is now atomic. A workspace entry whose folder is
+  permanently gone can be cleared via a "Remove from workspace" action on its
+  error toast.
+- **Restoring a done to-do from the archive keeps it active** instead of being
+  swept straight back into the archive.
+- **Agent terminal height no longer drifts** after tab switches or resizes —
+  full-screen TUIs like Claude Code stay stable, with no flicker on an
+  unchanged panel.
+
 ## [1.1.4] - 2026-07-15
 
 ### Changed
