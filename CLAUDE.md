@@ -17,12 +17,12 @@ terminates the ConPTY child directly). Linux is kept in mind, not yet packaged.
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id
 > `com.podium.app`.
 
-> Lineage: architecturally patterned after the user's earlier app **Selene**
-> (a desktop SQL editor, same stack) — same Cargo workspace shape (a `*-core`
-> crate with zero Tauri dependency, a thin `src-tauri` IPC layer, a
-> presentation-only React frontend), the same `justfile`/version-sync
-> conventions, and this file mirrors Selene's `CLAUDE.md` structure. See
-> `../Selene/CLAUDE.md` for the sibling project's conventions and prior art.
+> Lineage: architecturally patterned after an earlier desktop app by the same
+> author — same Cargo workspace shape (a `*-core` crate with zero Tauri
+> dependency, a thin `src-tauri` IPC layer, a presentation-only React
+> frontend), the same `justfile`/version-sync conventions, and a mirrored
+> `CLAUDE.md` structure. (That sibling app is a private repo — this is
+> background context only; nothing here depends on access to it.)
 
 ## Boilerplate (shared skeleton)
 
@@ -32,36 +32,43 @@ React frontend), the `justfile`, `scripts/sync-version.sh`, CI, the shared
 config files, the design tokens, and the layering/IPC conventions — is
 extracted into a standalone template:
 
-- **Repo:** <https://github.com/RobbieMinderhoud/rust-application-boilerplate>
-  (`../rust-application-boilerplate` locally). It is the **upstream** source of
-  truth for the skeleton; Podium carries its domain (processes, PTYs, agents,
-  MCP) on top.
-- **Rule:** when a change here touches the **shared skeleton or conventions**
-  (not Podium-specific domain code), also open a **PR against the boilerplate**
-  so it stays current. App-specific code does not flow back.
+- **Repo:** <https://github.com/RobbieMinderhoud/rust-application-boilerplate>.
+  It is the **upstream** source of truth for the skeleton; Podium carries its
+  domain (processes, PTYs, agents, MCP) on top.
+- **Maintainer rule (internal):** when a change here touches the **shared
+  skeleton or conventions** (not Podium-specific domain code), the maintainer
+  also opens a **PR against the boilerplate** so it stays current. App-specific
+  code does not flow back. Outside contributors can ignore this — just send
+  your change as a normal PR to this repo.
 
-## Status — v1.0
+## Status
+
+Shipped and current (v1.1.x). The counts below are the source of truth — keep
+them in sync when you add a command or MCP tool.
 
 - ✅ **`podium-core`**: the whole domain — project open/close + `podium.yml`
   config (strict serde, broken config still opens the project), PTY process
   engine (spawn via `$SHELL -lic`, process groups, `killpg` SIGTERM→SIGKILL
   stop), ring-buffer scrollback with per-chunk `seq`, supervision (exponential
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
-  to-dos (persisted, shared with agents), and the built-in MCP server (axum +
-  rmcp streamable-HTTP, bearer auth, 22 tools). Zero Tauri dependency; unit
-  tests plus real-PTY/MCP integration tests on plain `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **51 commands**, per-attach terminal
+  to-dos and scratchpads (persisted, shared with agents), and the built-in MCP
+  server (axum + rmcp streamable-HTTP, bearer auth, 22 tools). Zero Tauri
+  dependency; unit tests plus real-PTY/MCP integration tests on plain
+  `cargo test`.
+- ✅ **Tauri IPC layer** (`src-tauri`): **52 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
-  persistence, dialog + log plugins, locked-down CSP.
-- ✅ **Frontend** (`src/`): project switcher + sidebar (Agents / Processes /
-  Terminals / To-dos), xterm.js terminals living **outside React** (registry
-  keyed by processId; scrollback survives tab switches and StrictMode),
-  snapshot+seq attach protocol with lag re-attach, new-agent modal, agent
-  activity ("working…"/idle) heuristic, a to-do detail view that fills the
-  work area (description edit + comment thread, mutually exclusive with the
-  focused process), settings + theme (dark/light) + toasts, Zustand stores,
-  typed IPC wrappers over all 51 commands.
+  persistence, an app-quit close guard while agents/terminals run
+  (`window_confirm_close`), dialog + log plugins, locked-down CSP.
+- ✅ **Frontend** (`src/`): project switcher + sidebar (To-dos / Agents /
+  Processes / Terminals / Scratchpads), xterm.js terminals living **outside
+  React** (registry keyed by processId; scrollback survives tab switches and
+  StrictMode), snapshot+seq attach protocol with lag re-attach, new-agent
+  modal, agent activity ("working…"/idle) heuristic, to-do and scratchpad
+  detail views that fill the work area (description/comment thread; scratchpad
+  editor with TOC, mutually exclusive with the focused process), settings +
+  theme (dark/light/retro) + toasts, Zustand stores, typed IPC wrappers over
+  all 52 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -162,7 +169,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `assign_todo` (a running agent self-assigns a to-do via its
   `PODIUM_PROCESS_ID`, so the user sees who owns it),
   `rename_session` (a running agent renames itself via its
-  `PODIUM_PROCESS_ID` to reflect what the session is about).
+  `PODIUM_PROCESS_ID` to reflect what the session is about), and the
+  scratchpad tools `list_scratchpads`, `create_scratchpad`,
+  `update_scratchpad`, `add_scratchpad_tag`, `remove_scratchpad_tag`,
+  `set_scratchpad_archived`.
   Spawned agents get the URL + token via 0600 per-agent config files under
   `{app_data_dir}/mcp` (wiped on every start); the same dir holds
   `server.json` (current URL + token, 0600) for the **stdio bridge**:
@@ -260,6 +270,12 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_remove_tag` | `{ projectId, id, tag }`                    | `ScratchpadInfo`  |
 | `scratchpad_set_archived` | `{ projectId, id, archived }`             | `ScratchpadInfo`  |
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
+| `window_confirm_close`  | –                                           | –                 |
+
+`window_confirm_close` is the frontend's answer to the app-quit close guard:
+when agents/terminals are still running the quit is intercepted and a warning
+modal shown; confirming calls this command, which sets the force-close flag so
+the next quit proceeds.
 
 > ⚠️ **Breaking change (Phase 4):** `scratchpad_update_content` and
 > `scratchpad_update_title` — plus the matching `Orchestrator` methods
@@ -459,6 +475,6 @@ Conversations that touch no code (questions, exploration) need no branch.
 
 ## Roadmap
 
-Phases 0–7 of `PLAN.md` are shipped (v1.0). `PLAN.md` is the historical
-build plan — consult it for design rationale, but this file and the code are
-the source of truth for current behaviour.
+All the originally planned phases are shipped, plus post-v1.0 work
+(scratchpads, the app-quit close guard, the Auggie adapter, the retro theme).
+This file and the code are the source of truth for current behaviour.
