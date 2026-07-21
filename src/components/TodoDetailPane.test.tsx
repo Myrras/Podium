@@ -9,6 +9,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
+const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
+
 import type { TodoComment, TodoInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
@@ -84,6 +87,7 @@ describe("TodoDetailPane", () => {
   beforeEach(() => {
     useTodoStore.setState(initialTodo, true);
     useLayoutStore.setState(initialLayout, true);
+    openUrlMock.mockClear();
   });
 
   it("renders the to-do title, description, and comments", () => {
@@ -247,5 +251,27 @@ describe("TodoDetailPane", () => {
       screen.getByRole("button", { name: "Remove link #42 Fix login" }),
     );
     expect(removeLink).toHaveBeenCalledWith(PROJECT, TODO, "link-1");
+  });
+
+  it("opens a pinned link via the OS default browser instead of navigating the webview", () => {
+    seed({
+      links: [
+        {
+          id: "link-1",
+          label: "#42 Fix login",
+          url: "https://gitlab.example.com/acme/web/-/issues/42",
+          createdAt: "2024-04-03T12:00:00Z",
+        },
+      ],
+    });
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    const anchor = screen.getByRole("link", { name: "#42 Fix login" });
+    const event = fireEvent.click(anchor);
+
+    expect(event).toBe(false); // preventDefault() was called, so the webview never navigates
+    expect(openUrlMock).toHaveBeenCalledWith(
+      "https://gitlab.example.com/acme/web/-/issues/42",
+    );
   });
 });

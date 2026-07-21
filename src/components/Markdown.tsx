@@ -7,15 +7,47 @@
  * them, and works under Podium's locked-down CSP.
  */
 
+import type { AnchorHTMLAttributes } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { openExternalLink } from "../lib/links";
 import styles from "./Markdown.module.css";
+
+// Plain `<a target="_blank">` clicks resolve to a `window.open` new-window
+// request the webview has no handler for (see `src/lib/links.ts`), so
+// markdown-authored links need the same explicit-open treatment as the
+// to-do link chips.
+function MarkdownLink({
+  href,
+  children,
+  ...rest
+}: AnchorHTMLAttributes<HTMLAnchorElement>) {
+  return (
+    <a
+      {...rest}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(e) => {
+        e.preventDefault();
+        if (href) openExternalLink(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 export function Markdown({ children }: { children: string }) {
   return (
     <div className={styles.prose}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{ a: MarkdownLink }}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   );
 }

@@ -40,6 +40,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         // Persist window size/position across runs.
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        // Opens to-do links and markdown links in the OS default browser.
+        .plugin(tauri_plugin_opener::init())
         // Logging sinks: stdout (dev), the per-OS log directory (support), and
         // the webview console (in-app diagnostics).
         .plugin(

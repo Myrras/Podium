@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { CommentId, ProjectId, TodoId, TodoInfo } from "../ipc/types";
 import { formatTime } from "../lib/dateFormat";
+import { openExternalLink } from "../lib/links";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
 import {
@@ -166,6 +167,10 @@ export function TodoDetailPane({
                   rel="noreferrer"
                   className={styles.linkAnchor}
                   title={link.url}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    openExternalLink(link.url);
+                  }}
                 >
                   {link.label}
                 </a>

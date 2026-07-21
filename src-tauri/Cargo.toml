@@ -24,6 +24,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 # Persist and restore window size/position across runs.
 tauri-plugin-window-state = "2"
+# Opens URLs (to-do links, markdown links) in the OS default browser instead
+# of navigating the webview — supported on Windows, macOS, and Linux.
+tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
