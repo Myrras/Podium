@@ -198,7 +198,7 @@ interface XtermCoreInternals {
     clear(): void;
     dimensions: { device: { cell: { width: number; height: number } } };
   };
-  viewport?: { scrollBarWidth: number };
+  viewport?: { scrollBarWidth: number; syncScrollArea(immediate?: boolean): void };
 }
 
 /**
@@ -264,6 +264,18 @@ export function fitTerminal(processId: ProcessId): void {
     // Same clear-then-resize FitAddon does, for a clean full render.
     core._renderService.clear();
     entry.terminal.resize(grid.cols, grid.rows);
+  } else {
+    // xterm only resyncs its viewport's scroll dimensions (scrollTop/
+    // scrollHeight) as a side effect of `resize()`, which is skipped above
+    // when the grid is unchanged — the common case when re-focusing a
+    // process whose pane didn't change size. Data written while the
+    // terminal was unmounted (hidden tabs keep streaming) grows the buffer
+    // without ever updating those DOM dimensions, so the viewport's cached
+    // scrollHeight stays stale. The next real wheel scroll then reconciles
+    // against that stale value in one jump, snapping straight to the top.
+    // Forcing a resync here — the same call `resize()` makes internally —
+    // keeps the viewport in sync so that jump can't happen.
+    core.viewport?.syncScrollArea(true);
   }
   processResize(processId, grid.cols, grid.rows).catch(() => {
     // Expected while the process is not running; the PTY is resized on the

@@ -41,8 +41,16 @@ export function TerminalView({ processId }: { processId: ProcessId }) {
     // measures the host before the just-mounted pane's flex layout is final
     // (the header bar's height not yet subtracted), yielding one row too many
     // and clipping the terminal's bottom line. rAF measures the settled size.
+    //
+    // scrollToBottom is deferred the same way: re-focusing a process
+    // reparents the (possibly scrolled-away) terminal into a freshly mounted,
+    // not-yet-laid-out host, so scrolling immediately after the reparent
+    // operates on an unmeasured viewport and gets silently clamped back to
+    // where it started. Scrolling after the rAF fit — once layout is
+    // settled — actually sticks.
     const raf = requestAnimationFrame(() => {
       fitTerminal(processId);
+      terminal.scrollToBottom();
       terminal.focus();
     });
 
