@@ -39,12 +39,17 @@
 
 /* ── Project header ────────────────────────────────────────────────────────── */
 
-/* Click-to-collapse header row for one project group. */
+/*
+ * Click-to-collapse header row for one project group. Relative so the
+ * drag handle can overlay the left gutter instead of consuming its own
+ * flex slot — see .dragHandle below.
+ */
 .projectHeader {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-3);
   min-height: 36px;
   flex-shrink: 0;
   cursor: pointer;
@@ -120,22 +125,34 @@
   outline: none;
 }
 
-/* Grip handle: the drag source. Faint until the row is hovered. */
+/*
+ * Grip handle: the drag source. Absolutely positioned so it overlays the
+ * header's left gutter instead of reserving its own flex-item width —
+ * without this, the badge/name would sit permanently indented past where
+ * the project's own subsections start. Hidden (opacity + pointer-events)
+ * until the row is hovered or focused; still draggable in the DOM at rest.
+ */
 .dragHandle {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--text-faint);
   cursor: grab;
   opacity: 0;
+  pointer-events: none;
   transition:
     opacity var(--dur-1) var(--ease-out),
     color var(--dur-1) var(--ease-out);
 }
 
-.projectHeader:hover .dragHandle {
+.projectHeader:hover .dragHandle,
+.projectHeader:focus-within .dragHandle {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .dragHandle:hover {
@@ -195,11 +212,14 @@
   grid-template-rows: 0fr;
 }
 
+/* Indent-guide: a single line ties every subsection back to its project. */
 .groupBodyInner {
   overflow: hidden;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border);
 }
 
 /* ── Subsections (Agents / Processes / Terminals) ──────────────────────────── */
