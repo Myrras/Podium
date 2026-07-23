@@ -8,6 +8,29 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.2.1] - 2026-07-23
+
+### Changed
+
+- **Agents no longer show start/stop/restart controls** — in the sidebar row
+  and the terminal pane header. An agent session is a one-shot conversation, not
+  a restartable service; services and terminals keep their controls.
+- **To-do titles are editable** in the detail pane header — via the edit button
+  or a double-click (Enter commits, Escape cancels).
+- **To-do descriptions autosave.** The Save button is gone; edits save after a
+  typing pause and flush on blur. External (agent) edits still sync in and no
+  longer clobber what you're typing.
+
+### Fixed
+
+- **The "needs input" notification no longer fires repeatedly.** Switching away
+  from an agent whose prompt you'd already seen used to ping every time; it now
+  fires once per prompt — viewing the agent acknowledges it, and only a new
+  prompt pings again.
+- **Adapter availability is probed once per app start** instead of every 60s, so
+  the slow per-adapter login-shell check no longer recurs during a session. A
+  newly installed CLI is picked up on the next launch.
+
 ## [1.2.0] - 2026-07-15
 
 ### Added
