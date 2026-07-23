@@ -38,38 +38,42 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
             </span>
           )}
         </span>
-        <span className={styles.headerActions}>
-          {active ? (
+        {/* Agents get no start/stop/restart controls — an agent session is
+            a one-shot conversation, not a restartable service. */}
+        {!isAgent && (
+          <span className={styles.headerActions}>
+            {active ? (
+              <button
+                type="button"
+                className={styles.headerBtn}
+                aria-label={`Stop ${process.name}`}
+                title="Stop"
+                onClick={() => void stopProcess(process.id)}
+              >
+                <StopIcon />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={styles.headerBtn}
+                aria-label={`Start ${process.name}`}
+                title="Start"
+                onClick={() => void startProcess(process.id)}
+              >
+                <RunIcon />
+              </button>
+            )}
             <button
               type="button"
               className={styles.headerBtn}
-              aria-label={`Stop ${process.name}`}
-              title="Stop"
-              onClick={() => void stopProcess(process.id)}
+              aria-label={`Restart ${process.name}`}
+              title="Restart"
+              onClick={() => void restartProcess(process.id)}
             >
-              <StopIcon />
+              <RestartIcon />
             </button>
-          ) : (
-            <button
-              type="button"
-              className={styles.headerBtn}
-              aria-label={`Start ${process.name}`}
-              title="Start"
-              onClick={() => void startProcess(process.id)}
-            >
-              <RunIcon />
-            </button>
-          )}
-          <button
-            type="button"
-            className={styles.headerBtn}
-            aria-label={`Restart ${process.name}`}
-            title="Restart"
-            onClick={() => void restartProcess(process.id)}
-          >
-            <RestartIcon />
-          </button>
-        </span>
+          </span>
+        )}
       </header>
       <TerminalView processId={process.id} />
     </div>

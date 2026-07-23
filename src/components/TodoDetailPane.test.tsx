@@ -160,21 +160,86 @@ describe("TodoDetailPane", () => {
     ).toBeInTheDocument();
   });
 
-  it("reveals Save only when the description is edited, then saves it", () => {
+  it("autosaves the description after a typing pause (no Save button)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { updateTodo } = seed();
+      render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+      fireEvent.change(
+        screen.getByDisplayValue("Add a CSV export to the reports view."),
+        { target: { value: "Export to CSV and XLSX." } },
+      );
+      // No Save button anymore — persistence is automatic.
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(updateTodo).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(800);
+      expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
+        description: "Export to CSV and XLSX.",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushes a pending description edit on blur", () => {
     const { updateTodo } = seed();
     render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
 
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    const textarea = screen.getByDisplayValue(
+      "Add a CSV export to the reports view.",
+    );
+    fireEvent.change(textarea, { target: { value: "Export to CSV." } });
+    fireEvent.blur(textarea);
+
+    expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
+      description: "Export to CSV.",
+    });
+  });
+
+  it("flushes a pending description edit on unmount", () => {
+    const { updateTodo } = seed();
+    const { unmount } = render(
+      <TodoDetailPane projectId={PROJECT} todoId={TODO} />,
+    );
 
     fireEvent.change(
       screen.getByDisplayValue("Add a CSV export to the reports view."),
-      { target: { value: "Export to CSV and XLSX." } },
+      { target: { value: "Half-typed edit" } },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    unmount();
 
     expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
-      description: "Export to CSV and XLSX.",
+      description: "Half-typed edit",
     });
+  });
+
+  it("renames the to-do via the header edit button and Enter", () => {
+    const { updateTodo } = seed();
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    fireEvent.change(input, { target: { value: "Ship the export" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
+      text: "Ship the export",
+    });
+  });
+
+  it("cancels a title edit on Escape without saving", () => {
+    const { updateTodo } = seed();
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    fireEvent.change(input, { target: { value: "Nope" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(updateTodo).not.toHaveBeenCalled();
+    expect(screen.getByText("Wire the export button")).toBeInTheDocument();
   });
 
   it("adds a comment via the composer", () => {

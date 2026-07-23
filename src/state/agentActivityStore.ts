@@ -33,12 +33,18 @@ const WORKING_WINDOW_MS = 2500;
 /** Poll cadence for the monitor loop. */
 const POLL_INTERVAL_MS = 1000;
 
-function computeActivity(processId: ProcessId): AgentActivity {
-  const last = getLastOutputAt(processId);
-  if (last !== null && Date.now() - last <= WORKING_WINDOW_MS) return "working";
+function computeActivity(processId: ProcessId): {
+  activity: AgentActivity;
+  /** Whether the screen shows an input prompt right now, regardless of
+   * recent output — one prompt on screen = one notification episode. */
+  prompting: boolean;
+} {
   const screen = readViewportText(processId);
-  if (screen !== null && detectInputPrompt(screen)) return "waiting";
-  return "idle";
+  const prompting = screen !== null && detectInputPrompt(screen);
+  const last = getLastOutputAt(processId);
+  if (last !== null && Date.now() - last <= WORKING_WINDOW_MS)
+    return { activity: "working", prompting };
+  return { activity: prompting ? "waiting" : "idle", prompting };
 }
 
 /**
@@ -57,9 +63,11 @@ interface AgentActivityState {
   /** Latest activity per running-agent process id. */
   activity: Record<string, AgentActivity>;
   /**
-   * Agents already pinged for their current unattended "waiting" episode. Kept
-   * out of `activity` (which drives UI) — this only gates the notification.
-   * Re-armed when the user views the agent, so a fresh look-away pings again.
+   * Agents already alerted (pinged, or seen by the user) for the prompt
+   * currently on their screen. Kept out of `activity` (which drives UI) —
+   * this only gates the notification. The flag lives as long as the prompt
+   * does: viewing the agent acknowledges the episode (no ping on a later
+   * switch-away), and only a fresh prompt after this one clears pings again.
    */
   notified: Record<string, true>;
   /** One monitor step: recompute, fire alerts on new "waiting" transitions. */
@@ -79,18 +87,19 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 
     for (const p of processes) {
       if (p.kind.kind !== "agent" || p.status.state !== "running") continue;
-      const activity = computeActivity(p.id);
+      const { activity, prompting } = computeActivity(p.id);
       next[p.id] = activity;
       if (prev[p.id] !== activity) changed = true;
 
-      if (isViewingAgent(p.id)) {
-        // The user is watching this agent — no ping, and re-arm so a later
-        // look-away while it's waiting alerts once more.
+      if (!prompting) {
+        // No prompt on screen: the episode (if any) is over; the flag drops
+        // so the next prompt alerts again.
         continue;
       }
-      if (prevNotified[p.id]) {
-        // Already pinged for this unattended episode; keep the flag so the
-        // working↔waiting flicker of a live prompt doesn't re-notify.
+      if (prevNotified[p.id] || isViewingAgent(p.id)) {
+        // Already pinged, or the user is looking at the prompt right now —
+        // either way this episode is acknowledged and never pings again
+        // (also covers the working↔waiting flicker of a live prompt).
         notified[p.id] = true;
       } else if (activity === "waiting") {
         notifyAgentWaiting(p.name);

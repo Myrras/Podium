@@ -154,7 +154,7 @@ describe("agentActivityStore", () => {
     expect(notifyAgentWaiting).not.toHaveBeenCalled();
   });
 
-  it("re-arms after the user views the agent, then looks away", () => {
+  it("does not re-ping after the user viewed the prompt and switches away", () => {
     lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     seed([proc("a1", AGENT, RUNNING)]);
@@ -163,15 +163,47 @@ describe("agentActivityStore", () => {
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
 
-    // User views the agent (focus + active): acknowledges, re-arms.
+    // User views the agent (focus + active): episode acknowledged.
     vi.mocked(document.hasFocus).mockReturnValue(true);
     useProcessStore.setState({ activeProcessId: "a1" });
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
 
-    // User looks away again while it's still waiting → pings once more.
+    // Switching to another agent while the same prompt is still up must NOT
+    // ping again — that was the repeatable spurious-notification bug.
     vi.mocked(document.hasFocus).mockReturnValue(false);
     useProcessStore.setState({ activeProcessId: null });
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+  });
+
+  it("viewing the prompt before any ping also acknowledges the episode", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    useProcessStore.setState({ activeProcessId: "a1" });
+    seed([proc("a1", AGENT, RUNNING)]);
+
+    tick();
+    // Looking away afterwards: same prompt, already seen → no ping.
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    tick();
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
+  });
+
+  it("pings again for a fresh prompt after the previous one cleared", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+
+    // Prompt answered: screen no longer shows one → episode ends.
+    viewport.mockReturnValue("Working on it…");
+    tick();
+
+    // A new prompt appears → a new episode pings once more.
+    viewport.mockReturnValue("Overwrite file? (y/n)");
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(2);
   });

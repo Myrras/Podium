@@ -51,6 +51,22 @@
   text-decoration: line-through;
 }
 
+/* In-place title editor — same metrics as .name so the header doesn't jump. */
+.nameInput {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-1);
+  margin: -1px 0;
+  outline: none;
+}
+
 .closeBtn {
   display: flex;
   align-items: center;

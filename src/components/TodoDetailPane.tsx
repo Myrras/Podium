@@ -1,10 +1,10 @@
 /**
- * Work-area pane for an opened to-do: a header (title, done toggle, close)
- * over the editable description (what the to-do is about) and the comment
- * thread (progress notes from you and agents) with a composer. The
- * description and comments also change from agents over MCP, so the pane
- * reads the live to-do from the store by id and reflects `todo:changed`
- * refreshes while open.
+ * Work-area pane for an opened to-do: a header (editable title, done toggle,
+ * close) over the description (what the to-do is about; edits save
+ * automatically) and the comment thread (progress notes from you and agents)
+ * with a composer. The description and comments also change from agents over
+ * MCP, so the pane reads the live to-do from the store by id and reflects
+ * `todo:changed` refreshes while open.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -55,14 +55,24 @@ export function TodoDetailPane({
   const [confirmDeleteId, setConfirmDeleteId] = useState<CommentId | null>(
     null,
   );
+  // In-place title editing (mirrors the sidebar's process rename).
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const savedRef = useRef<string>("");
+  const seededFor = useRef<TodoId | null>(null);
 
   // Seed the editable description whenever a different to-do opens, or the
-  // stored description changes underneath us (agent edit).
+  // stored description changes underneath us (agent edit). While our own
+  // autosave is the only writer, `stored` equals `savedRef` and local typing
+  // is left alone.
   const stored = todo?.description ?? "";
   useEffect(() => {
-    setDescription(stored);
-    savedRef.current = stored;
+    if (seededFor.current !== todoId || stored !== savedRef.current) {
+      seededFor.current = todoId;
+      setDescription(stored);
+      savedRef.current = stored;
+    }
   }, [todoId, stored]);
 
   useEffect(() => {
@@ -70,23 +80,68 @@ export function TodoDetailPane({
     setEditingId(null);
     setEditText("");
     setConfirmDeleteId(null);
+    setEditingTitle(false);
   }, [todoId]);
+
+  useEffect(() => {
+    if (editingTitle) titleInputRef.current?.select();
+  }, [editingTitle]);
 
   // The open to-do vanished (removed here or by an agent): close the pane.
   useEffect(() => {
     if (todo === undefined) clearOpenTodo();
   }, [todo, clearOpenTodo]);
 
-  if (todo === undefined) return null;
-
   const dirty = description !== savedRef.current;
+
+  // Autosave the description: debounce keystrokes, flush on blur/unmount —
+  // no Save button. Re-armed on every render so a save skipped while another
+  // mutation is in flight retries on the next quiet window.
+  useEffect(() => {
+    if (!dirty || todo === undefined) return;
+    const timer = setTimeout(() => void saveDescription(), 800);
+    return () => clearTimeout(timer);
+  });
+
+  // Flush pending edits when the pane closes or switches to another to-do.
+  const latest = useRef({ dirty: false, description: "" });
+  latest.current = { dirty, description };
+  useEffect(() => {
+    return () => {
+      const pending = latest.current;
+      if (!pending.dirty) return;
+      const { todosByProject, updateTodo: update } = useTodoStore.getState();
+      // The to-do may have been removed — that's why the pane is going away.
+      const exists = (todosByProject[projectId] ?? NO_TODOS).some(
+        (t) => t.id === todoId,
+      );
+      if (!exists) return;
+      void update(projectId, todoId, { description: pending.description });
+    };
+  }, [projectId, todoId]);
+
+  if (todo === undefined) return null;
 
   const saveDescription = async () => {
     if (!dirty || busy) return;
     setBusy(true);
     const info = await updateTodo(projectId, todoId, { description });
     setBusy(false);
-    if (info) savedRef.current = info.description ?? "";
+    // On failure, accept the local text as current rather than retrying (and
+    // toasting) every debounce window; the edit stays in the box.
+    savedRef.current = info ? (info.description ?? "") : description;
+  };
+
+  const startTitleEdit = () => {
+    setTitleDraft(todo.text);
+    setEditingTitle(true);
+  };
+
+  const commitTitle = () => {
+    setEditingTitle(false);
+    const next = titleDraft.trim();
+    if (next.length === 0 || next === todo.text) return;
+    void updateTodo(projectId, todoId, { text: next });
   };
 
   const addComment = async () => {
@@ -137,13 +192,45 @@ export function TodoDetailPane({
           aria-label={`Mark "${todo.text}" as ${todo.done ? "not done" : "done"}`}
           onChange={() => void setTodoDone(projectId, todoId, !todo.done)}
         />
-        <span
-          className={styles.name}
-          data-done={todo.done ? "true" : undefined}
-          title={todo.text}
-        >
-          {todo.text}
-        </span>
+        {editingTitle ? (
+          <input
+            ref={titleInputRef}
+            className={styles.nameInput}
+            value={titleDraft}
+            aria-label="Edit title"
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitTitle();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setEditingTitle(false);
+              }
+            }}
+          />
+        ) : (
+          <span
+            className={styles.name}
+            data-done={todo.done ? "true" : undefined}
+            title={todo.text}
+            onDoubleClick={startTitleEdit}
+          >
+            {todo.text}
+          </span>
+        )}
+        {!editingTitle && (
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Edit title"
+            title="Edit title"
+            onClick={startTitleEdit}
+          >
+            <EditIcon size={12} />
+          </button>
+        )}
         <button
           type="button"
           className={styles.closeBtn}
@@ -191,16 +278,6 @@ export function TodoDetailPane({
         <section className={styles.field}>
           <div className={styles.fieldHeader}>
             <label htmlFor="todo-pane-description">Description</label>
-            {dirty && (
-              <button
-                type="button"
-                className="primary"
-                disabled={busy}
-                onClick={() => void saveDescription()}
-              >
-                {busy ? "Saving…" : "Save"}
-              </button>
-            )}
           </div>
           <textarea
             id="todo-pane-description"
@@ -209,6 +286,7 @@ export function TodoDetailPane({
             rows={10}
             placeholder="What is this to-do about?"
             onChange={(e) => setDescription(e.target.value)}
+            onBlur={() => void saveDescription()}
           />
         </section>
 

@@ -126,36 +126,42 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
               <EditIcon size={12} />
             </button>
           )}
-          {active ? (
-            <button
-              type="button"
-              className={styles.action}
-              aria-label={`Stop ${process.name}`}
-              title="Stop"
-              onClick={() => void stopProcess(process.id)}
-            >
-              <StopIcon size={12} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className={styles.action}
-              aria-label={`Start ${process.name}`}
-              title="Start"
-              onClick={() => void startProcess(process.id)}
-            >
-              <RunIcon size={12} />
-            </button>
+          {/* Agents get no start/stop/restart controls — an agent session is
+              a one-shot conversation, not a restartable service. */}
+          {!isAgent && (
+            <>
+              {active ? (
+                <button
+                  type="button"
+                  className={styles.action}
+                  aria-label={`Stop ${process.name}`}
+                  title="Stop"
+                  onClick={() => void stopProcess(process.id)}
+                >
+                  <StopIcon size={12} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={styles.action}
+                  aria-label={`Start ${process.name}`}
+                  title="Start"
+                  onClick={() => void startProcess(process.id)}
+                >
+                  <RunIcon size={12} />
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.action}
+                aria-label={`Restart ${process.name}`}
+                title="Restart"
+                onClick={() => void restartProcess(process.id)}
+              >
+                <RestartIcon size={12} />
+              </button>
+            </>
           )}
-          <button
-            type="button"
-            className={styles.action}
-            aria-label={`Restart ${process.name}`}
-            title="Restart"
-            onClick={() => void restartProcess(process.id)}
-          >
-            <RestartIcon size={12} />
-          </button>
           <button
             type="button"
             className={`${styles.action} ${styles.actionDanger}`}

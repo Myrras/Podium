@@ -89,3 +89,34 @@ describe("ProcessRow rename", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("ProcessRow lifecycle actions", () => {
+  beforeEach(() => {
+    useProcessStore.setState(initialProcess, true);
+  });
+
+  it("offers start and restart for services", () => {
+    seed();
+    render(<ProcessRow process={process("s1", "dev", { kind: "service" })} />);
+
+    expect(screen.getByRole("button", { name: "Start dev" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Restart dev" })).toBeVisible();
+  });
+
+  it("hides start/stop/restart for agents, keeping remove", () => {
+    seed();
+    render(
+      <ProcessRow
+        process={process("a1", "claude", {
+          kind: "agent",
+          adapter: "claude-code",
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Start claude" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop claude" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart claude" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove claude" })).toBeVisible();
+  });
+});

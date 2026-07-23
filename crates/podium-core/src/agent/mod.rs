@@ -12,7 +12,6 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -244,14 +243,11 @@ pub struct AdapterInfo {
     pub available: bool,
 }
 
-/// How long a probed availability snapshot stays fresh. Each probe spawns a
-/// login+interactive shell per adapter, which is slow; the UI re-lists on every
-/// modal open, so without a cache that cost is paid on every open. A newly
-/// installed/removed CLI is picked up within this window (or on restart).
-const AVAILABILITY_TTL: Duration = Duration::from_secs(60);
-
-/// Cached availability snapshot: when it was probed + the resulting infos.
-type AvailabilityCache = Arc<Mutex<Option<(Instant, Vec<AdapterInfo>)>>>;
+/// Probed availability snapshot, kept for the whole app run. Each probe spawns
+/// a login+interactive shell per adapter, which is slow; the UI re-lists on
+/// every modal open, so we probe once and reuse it all day. A newly
+/// installed/removed CLI is picked up on the next app start.
+type AvailabilityCache = Arc<Mutex<Option<Vec<AdapterInfo>>>>;
 
 /// The set of adapters an [`crate::Orchestrator`] can spawn. Injectable so
 /// tests can register fakes; defaults to the real registry.
@@ -275,14 +271,12 @@ impl AdapterRegistry {
         self.adapters.iter().find(|a| a.id() == id).cloned()
     }
 
-    /// Snapshot for listing; probes each adapter's binary availability, cached
-    /// for [`AVAILABILITY_TTL`] so rapid re-lists don't re-shell every time.
+    /// Snapshot for listing; probes each adapter's binary availability once
+    /// per app run — every later list reuses the cached result.
     pub fn infos(&self) -> Vec<AdapterInfo> {
         let mut cache = self.cache.lock().expect("adapter cache mutex poisoned");
-        if let Some((at, infos)) = cache.as_ref() {
-            if at.elapsed() < AVAILABILITY_TTL {
-                return infos.clone();
-            }
+        if let Some(infos) = cache.as_ref() {
+            return infos.clone();
         }
         let infos: Vec<AdapterInfo> = self
             .adapters
@@ -294,7 +288,7 @@ impl AdapterRegistry {
                 available: a.is_available(),
             })
             .collect();
-        *cache = Some((Instant::now(), infos.clone()));
+        *cache = Some(infos.clone());
         infos
     }
 }
@@ -358,7 +352,7 @@ mod tests {
         assert_eq!(
             probes.load(Ordering::SeqCst),
             1,
-            "second list within the TTL must reuse the cache, not re-probe"
+            "second list must reuse the app-lifetime cache, not re-probe"
         );
     }
 
