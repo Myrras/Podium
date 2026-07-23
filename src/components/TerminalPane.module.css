@@ -54,11 +54,43 @@
   color: var(--accent);
 }
 
+/* Git branch + worktree pill, pushed to the right edge of the header. */
+.gitInfo {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.gitBranch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Worktree name as a small chip after the branch. */
+.gitWorktree {
+  flex-shrink: 0;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .headerActions {
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--sp-1);
+}
+
+/* When the git pill precedes the controls, it owns the right-push. */
+.gitInfo + .headerActions {
+  margin-left: var(--sp-2);
 }
 
 .headerBtn {

@@ -17,6 +17,9 @@ pub enum CoreError {
     #[error("to-do not found")]
     TodoNotFound,
 
+    #[error("to-do is already assigned to another session")]
+    TodoAlreadyAssigned,
+
     #[error("comment not found")]
     CommentNotFound,
 
@@ -28,6 +31,23 @@ pub enum CoreError {
 
     #[error("scratchpad conflict: it was updated by someone else since you last loaded it")]
     ScratchpadConflict,
+
+    #[error("not a git repository: worktrees need the project to be a git repo")]
+    NotAGitRepo,
+
+    #[error("worktree not found")]
+    WorktreeNotFound,
+
+    #[error("worktree has uncommitted changes — force to remove it anyway")]
+    WorktreeDirty,
+
+    #[error("a process is still running in this worktree; stop it first")]
+    WorktreeInUse,
+
+    /// A git invocation failed; the message is Podium-owned text (git's own
+    /// output is never captured into errors).
+    #[error("git error: {0}")]
+    Git(String),
 
     #[error("process is already running")]
     ProcessAlreadyRunning,

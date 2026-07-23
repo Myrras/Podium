@@ -88,6 +88,7 @@ pub fn load_project_config(root: &Path) -> CoreResult<Option<ProjectConfig>> {
                 env: p.env.into_iter().collect(),
                 kind: ProcessKind::Service,
                 restart_policy: p.auto_restart,
+                color: None,
             },
             auto_start: p.auto_start,
         });

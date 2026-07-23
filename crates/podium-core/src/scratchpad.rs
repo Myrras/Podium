@@ -347,6 +347,23 @@ impl ScratchpadStore {
         save(&inner)?;
         Ok(info)
     }
+
+    /// Permanently remove a scratchpad. Errors `ScratchpadNotFound` if nothing
+    /// matched (mirrors `Todos::remove`).
+    pub fn remove(&self, root: &Path, id: ScratchpadId) -> CoreResult<()> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let items = inner
+            .scratchpads
+            .get_mut(&key(root))
+            .ok_or(CoreError::ScratchpadNotFound)?;
+        let before = items.len();
+        items.retain(|s| s.id != id);
+        if items.len() == before {
+            return Err(CoreError::ScratchpadNotFound);
+        }
+        save(&inner)?;
+        Ok(())
+    }
 }
 
 /// `MM-DD-HH-MM Scratchpad`, e.g. `07-14-09-30 Scratchpad`.
@@ -595,6 +612,25 @@ mod tests {
         assert!(restored.archived_at.is_none());
         assert_eq!(store.list(project, &root).len(), 2);
         assert!(store.list_archived(project, &root).is_empty());
+    }
+
+    #[test]
+    fn remove_deletes_and_errors_when_absent() {
+        let store = ScratchpadStore::new();
+        let (project, root) = ids();
+        let a = store.add(project, &root, "User").unwrap();
+        let b = store.add(project, &root, "User").unwrap();
+
+        store.remove(&root, a.id).unwrap();
+        let left = store.list(project, &root);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, b.id);
+
+        // Removing something that isn't there is a NotFound error.
+        assert!(matches!(
+            store.remove(&root, a.id),
+            Err(CoreError::ScratchpadNotFound)
+        ));
     }
 
     #[test]

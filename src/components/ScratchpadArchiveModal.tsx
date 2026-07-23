@@ -1,9 +1,10 @@
 /**
  * Archived scratchpads for one project, shown in a modal opened from the
  * Scratchpads submenu header. Each archived scratchpad can be restored
- * (unarchived) back into the active list. The list refreshes from the
- * backend whenever the modal opens, and reflects `scratchpad:changed`
- * refreshes while open.
+ * (unarchived) back into the active list or permanently deleted — deletion
+ * lives here so a scratchpad must be archived before it can be removed (same
+ * as to-dos). The list refreshes from the backend whenever the modal opens,
+ * and reflects `scratchpad:changed` refreshes while open.
  */
 
 import { useEffect } from "react";
@@ -13,7 +14,7 @@ import { formatTime } from "../lib/dateFormat";
 import { useScratchpadStore } from "../state/scratchpadStore";
 import styles from "./ArchiveModal.module.css";
 import { Modal } from "./Modal";
-import { UnarchiveIcon } from "./icons";
+import { DeleteIcon, UnarchiveIcon } from "./icons";
 
 const NO_SCRATCHPADS = [] as const;
 
@@ -33,6 +34,7 @@ export function ScratchpadArchiveModal({
   const setScratchpadArchived = useScratchpadStore(
     (s) => s.setScratchpadArchived,
   );
+  const removeScratchpad = useScratchpadStore((s) => s.removeScratchpad);
 
   useEffect(() => {
     if (open) void refreshArchived(projectId);
@@ -66,6 +68,15 @@ export function ScratchpadArchiveModal({
               >
                 <UnarchiveIcon size={13} />
                 Restore
+              </button>
+              <button
+                type="button"
+                className={styles.remove}
+                aria-label={`Delete "${sp.title}"`}
+                title="Delete permanently"
+                onClick={() => void removeScratchpad(projectId, sp.id)}
+              >
+                <DeleteIcon size={13} />
               </button>
             </li>
           ))}

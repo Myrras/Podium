@@ -8,6 +8,7 @@ import type { AgentSettingsDto, McpClientInfo } from "../ipc/types";
 const sampleDto: AgentSettingsDto = {
   mergeMode: "merge",
   defaultAdapter: "",
+  suggestWorktree: true,
   adapters: [
     {
       id: "claude-code",
@@ -59,6 +60,7 @@ const invoke = vi.fn((cmd: string, _args?: unknown) => {
     case "agent_settings_set_adapter":
     case "agent_settings_set_default_adapter":
     case "agent_settings_set_merge_mode":
+    case "agent_settings_set_suggest_worktree":
       return Promise.resolve(sampleDto);
     default:
       return Promise.resolve(null);
@@ -150,6 +152,23 @@ describe("SettingsModal — Agents tab", () => {
       expect(invoke).toHaveBeenCalledWith("agent_settings_set_merge_mode", {
         mode: "project-overrides",
       }),
+    );
+  });
+
+  it("persists the suggest-worktree toggle when flipped", async () => {
+    await openAgentsTab();
+    const toggle = screen.getByRole("switch", {
+      name: "Suggest git worktrees",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_suggest_worktree",
+        { enabled: false },
+      ),
     );
   });
 });

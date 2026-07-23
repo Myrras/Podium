@@ -24,6 +24,7 @@ use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, Resta
 use crate::project::{self, ConfiguredProcess};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
+use crate::worktree::WorktreeInfo;
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
 const CHUNK_CHANNEL_CAPACITY: usize = 1024;
@@ -112,6 +113,8 @@ impl ManagedProcess {
             status: self.status.clone(),
             restart_policy: self.spec.restart_policy,
             command: self.spec.command.clone(),
+            worktree: crate::process::worktree_name_from_cwd(&self.spec.cwd),
+            color: self.spec.color.clone(),
         }
     }
 
@@ -219,6 +222,12 @@ impl Orchestrator {
     /// Set how global default args combine with a project's `agents.extra_args`.
     pub fn set_agent_merge_mode(&self, mode: MergeMode) -> CoreResult<AgentSettings> {
         self.agent_settings.set_merge_mode(mode)
+    }
+
+    /// Set whether agents are told to offer an isolated git worktree before
+    /// their first code change.
+    pub fn set_agent_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        self.agent_settings.set_suggest_worktree(enabled)
     }
 
     /// Set (or clear) the global default adapter used by bare spawns. A blank
@@ -531,6 +540,14 @@ impl Orchestrator {
                 return Err(CoreError::InvalidInput(
                     "process is not an agent in this project".to_string(),
                 ));
+            }
+            // Block claiming a to-do already owned by a *different* live agent
+            // (a stale assignment whose process is gone resolves to `None`, so
+            // it can be reclaimed; re-claiming your own is idempotent).
+            if let Some(existing) = assigned_agent_of(&inner, todo_id) {
+                if existing.process_id != process_id {
+                    return Err(CoreError::TodoAlreadyAssigned);
+                }
             }
             inner.todo_assignments.insert(todo_id, process_id);
             info.assigned_agent = assigned_agent_of(&inner, todo_id);
@@ -936,6 +953,16 @@ impl Orchestrator {
         Ok(info)
     }
 
+    /// Permanently remove a scratchpad (deletion lives behind the Archive
+    /// view, mirroring to-dos). Emits `ScratchpadsChanged`.
+    pub fn remove_scratchpad(&self, project_id: ProjectId, id: ScratchpadId) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        self.scratchpads.remove(&root, id)?;
+        self.events
+            .publish(PodiumEvent::ScratchpadsChanged { project_id });
+        Ok(())
+    }
+
     /// Re-read `podium.yml`: update name/initials, replace config-defined
     /// processes (stopping any running ones), keep manually added processes.
     /// A parse/validation failure keeps current processes and only updates
@@ -1065,8 +1092,14 @@ impl Orchestrator {
     /// complete when done); multiple to-dos are handed over as one combined
     /// task. `scratchpad_ids` works the same way for scratchpads, but only
     /// when `todo_ids` is empty — to-dos win if both are somehow populated.
-    /// On a start failure the process stays listed as `NotStarted` so the
-    /// user can retry from the UI.
+    /// When `worktree` is true a fresh git worktree named after the agent is
+    /// created under `.podium/worktrees/` and used as the agent's cwd (the
+    /// project must be a git repo). `args_override`, when `Some`, replaces the
+    /// global Settings → Agents default args for this spawn only (still merged
+    /// with the project's `agents.extra_args` per the merge mode). On a start
+    /// failure the process stays listed as `NotStarted` so the user can retry
+    /// from the UI.
+    #[allow(clippy::too_many_arguments)] // deliberate: one flat spawn API
     pub async fn spawn_agent(
         &self,
         project_id: ProjectId,
@@ -1075,8 +1108,10 @@ impl Orchestrator {
         prompt: Option<String>,
         todo_ids: Vec<TodoId>,
         scratchpad_ids: Vec<ScratchpadId>,
+        worktree: bool,
+        args_override: Option<Vec<String>>,
     ) -> CoreResult<ProcessId> {
-        let (root, agents, existing_names) = {
+        let (root, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             let handle = inner
                 .projects
@@ -1091,7 +1126,8 @@ impl Orchestrator {
                 .filter(|p| p.project_id == project_id)
                 .map(|p| p.spec.name.clone())
                 .collect();
-            (handle.root.clone(), handle.agents.clone(), names)
+            let color = pick_session_color(&inner, project_id);
+            (handle.root.clone(), handle.agents.clone(), names, color)
         };
         // Adapter precedence: an explicit choice, then the project's pinned
         // `agents.default_adapter`, then the global Settings → Agents default,
@@ -1139,14 +1175,20 @@ impl Orchestrator {
         // binary fallback) is told via its launch plan to rename itself over
         // MCP after the first user message.
         let explicit = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        // A single to-do/scratchpad names the session after it; with several
+        // grouped, picking one is arbitrary ("a random to-do"), so leave the
+        // name underived — `named` stays false and the agent renames itself
+        // over MCP once it has read all of them.
         let derived = todos
             .first()
+            .filter(|_| todos.len() == 1)
             .map(|t| t.text.trim())
             .filter(|t| !t.is_empty())
             .map(str::to_string)
             .or_else(|| {
                 scratchpads
                     .first()
+                    .filter(|_| scratchpads.len() == 1)
                     .map(|s| s.title.trim())
                     .filter(|t| !t.is_empty())
                     .map(str::to_string)
@@ -1171,11 +1213,22 @@ impl Orchestrator {
         } else {
             base_prompt.map(str::to_string)
         };
+        // A requested worktree is created before the launch plan so the
+        // identity prompt can say the agent already runs in one; its name
+        // follows the window name (slugified + de-duplicated).
+        let wt = worktree
+            .then(|| crate::worktree::create(&root, &name))
+            .transpose()?;
         // Combine the global default args (Settings → Agents) with the
         // project's `agents.extra_args` per the user's merge mode, and apply
-        // any global command override for this adapter.
+        // any global command override for this adapter. A per-session
+        // `args_override` (from the New agent dialog) replaces the global
+        // default args just for this spawn.
         let ov = global.override_for(&adapter_id);
-        let global_args: &[String] = ov.map(|o| o.default_args.as_slice()).unwrap_or(&[]);
+        let global_args: &[String] = args_override
+            .as_deref()
+            .or_else(|| ov.map(|o| o.default_args.as_slice()))
+            .unwrap_or(&[]);
         let merged_args = settings::merge_args(global.merge_mode, global_args, &agents.extra_args);
         let command_override = ov.and_then(|o| o.command.as_deref());
         let plan = adapter.build_launch(&AgentLaunchCtx {
@@ -1187,26 +1240,38 @@ impl Orchestrator {
             command_override,
             mcp: mcp.as_ref(),
             named,
+            in_worktree: wt.is_some(),
+            suggest_worktree: global.suggest_worktree && wt.is_none(),
         })?;
         let spec = ProcessSpec {
             name,
             command: plan.command,
-            cwd: root,
+            cwd: wt.as_ref().map(|w| w.path.clone()).unwrap_or(root.clone()),
             env: plan.env,
             kind: ProcessKind::Agent {
                 adapter: adapter.id().to_string(),
             },
             restart_policy: RestartPolicy::Never,
+            color: Some(session_color),
         };
         {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
-            if !inner.projects.contains_key(&project_id) {
-                return Err(CoreError::ProjectNotFound);
-            }
             // Re-check under the same lock as the insert: a concurrent spawn
             // may have raced past the early check above.
-            if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
-                return Err(CoreError::AgentLimitReached);
+            let guard = if !inner.projects.contains_key(&project_id) {
+                Some(CoreError::ProjectNotFound)
+            } else if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
+                Some(CoreError::AgentLimitReached)
+            } else {
+                None
+            };
+            if let Some(err) = guard {
+                drop(inner);
+                // Best-effort: don't leak the just-created worktree.
+                if let Some(w) = &wt {
+                    let _ = crate::worktree::remove(&root, &w.name, true);
+                }
+                return Err(err);
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
         }
@@ -1268,6 +1333,68 @@ impl Orchestrator {
             .filter(|(_, p)| project_id.is_none_or(|pid| p.project_id == pid))
             .map(|(id, p)| p.info(*id))
             .collect()
+    }
+
+    /// The project's Podium-managed git worktrees, with `in_use` marking the
+    /// ones an active process runs in. Shells out to git — call from a
+    /// blocking-friendly context.
+    pub fn list_worktrees(&self, project_id: ProjectId) -> CoreResult<Vec<WorktreeInfo>> {
+        let root = self.project_root(project_id)?;
+        let mut infos = crate::worktree::list(&root)?;
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        for info in &mut infos {
+            info.in_use = inner.processes.values().any(|p| {
+                p.project_id == project_id && p.is_active() && p.spec.cwd.starts_with(&info.path)
+            });
+        }
+        Ok(infos)
+    }
+
+    /// The git branch currently checked out in a process's working
+    /// directory, or `None` when its cwd is not a git repo / detached. Feeds
+    /// the focused-process header. Shells out to git — call from a
+    /// blocking-friendly context.
+    pub fn process_git_branch(&self, id: ProcessId) -> CoreResult<Option<String>> {
+        let cwd = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .processes
+                .get(&id)
+                .ok_or(CoreError::ProcessNotFound)?
+                .spec
+                .cwd
+                .clone()
+        };
+        Ok(crate::worktree::current_branch(&cwd))
+    }
+
+    /// Create a Podium-managed git worktree in the project (name slugified
+    /// and de-duplicated). Shells out to git — call from a blocking-friendly
+    /// context.
+    pub fn create_worktree(&self, project_id: ProjectId, name: &str) -> CoreResult<WorktreeInfo> {
+        let root = self.project_root(project_id)?;
+        crate::worktree::create(&root, name)
+    }
+
+    /// Remove a Podium-managed git worktree. Refused while an active process
+    /// runs in it, or while it has uncommitted changes unless `force`; its
+    /// `podium/<name>` branch is kept. Shells out to git — call from a
+    /// blocking-friendly context.
+    pub fn remove_worktree(
+        &self,
+        project_id: ProjectId,
+        name: &str,
+        force: bool,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let in_use = self
+            .list_worktrees(project_id)?
+            .iter()
+            .any(|w| w.name == name && w.in_use);
+        if in_use {
+            return Err(CoreError::WorktreeInUse);
+        }
+        crate::worktree::remove(&root, name, force)
     }
 
     /// Whether any agent or terminal process is currently running (or
@@ -1484,6 +1611,43 @@ fn insert_configured(
     (added, auto_start)
 }
 
+/// Subtle session colours (Radix-ish hues) assigned round-robin to agent
+/// sessions so each session — and every to-do it owns — can be tinted the
+/// same. Solid base hues; the frontend applies the transparency.
+const SESSION_COLORS: [&str; 8] = [
+    "#3e63dd", // blue
+    "#30a46c", // green
+    "#e5484d", // red
+    "#8e4ec6", // purple
+    "#f76b15", // orange
+    "#12a594", // teal
+    "#e93d82", // pink
+    "#ffb224", // amber
+];
+
+/// Pick a session colour not currently used by another live agent in the
+/// project; once the palette is exhausted, cycle by the used count.
+// ponytail: two concurrent spawns could momentarily pick the same colour —
+// cosmetic only, and the max is 8 agents = palette size, so it's rare.
+fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
+    let used: HashSet<&str> = inner
+        .processes
+        .values()
+        .filter(|p| {
+            p.project_id == project_id
+                && p.is_active()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. })
+        })
+        .filter_map(|p| p.spec.color.as_deref())
+        .collect();
+    SESSION_COLORS
+        .iter()
+        .copied()
+        .find(|c| !used.contains(c))
+        .unwrap_or(SESSION_COLORS[used.len() % SESSION_COLORS.len()])
+        .to_string()
+}
+
 /// Resolve a to-do's assignment to an [`AssignedAgent`] snapshot, dropping a
 /// stale entry whose process has since vanished from the map.
 fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
@@ -1491,6 +1655,7 @@ fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
     inner.processes.get(&process_id).map(|p| AssignedAgent {
         process_id,
         name: p.spec.name.clone(),
+        color: p.spec.color.clone(),
     })
 }
 
@@ -1504,6 +1669,7 @@ fn scratchpad_assigned_agent_of(
     inner.processes.get(&process_id).map(|p| AssignedAgent {
         process_id,
         name: p.spec.name.clone(),
+        color: p.spec.color.clone(),
     })
 }
 
@@ -2185,6 +2351,7 @@ mod tests {
             env: Vec::new(),
             kind: ProcessKind::Terminal,
             restart_policy: RestartPolicy::Never,
+            color: None,
         };
         let id = orch.add_process(project_id, spec).await.unwrap();
 

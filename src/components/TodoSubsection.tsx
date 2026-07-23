@@ -19,10 +19,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectId, TodoId, TodoInfo } from "../ipc/types";
+import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useTodoStore } from "../state/todoStore";
 import { ArchiveModal } from "./ArchiveModal";
+import { CopyIdButton } from "./CopyIdButton";
 import {
   AddIcon,
   AgentIcon,
@@ -39,7 +41,10 @@ const NO_TODOS: TodoInfo[] = [];
 
 interface TodoRowProps {
   todo: TodoInfo;
-  selected: boolean;
+  /** Part of a Cmd/Ctrl+click multi-select — queued to hand to one agent. */
+  multiSelected: boolean;
+  /** Currently open in the work area (a plain-click "view" gesture). */
+  open: boolean;
   onToggleDone: () => void;
   /** Plain click opens; Cmd/Ctrl or Shift click drives selection. */
   onActivate: (e: React.MouseEvent) => void;
@@ -51,19 +56,28 @@ interface TodoRowProps {
 /** One to-do: a checkbox, a click-to-open title, and hover actions. */
 function TodoRow({
   todo,
-  selected,
+  multiSelected,
+  open,
   onToggleDone,
   onActivate,
   onSpawn,
   onArchive,
 }: TodoRowProps) {
   const commentCount = todo.comments.length;
+  const assigned = todo.assignedAgent;
 
   return (
     <div
       className={styles.row}
       data-done={todo.done ? "true" : undefined}
-      data-selected={selected ? "true" : undefined}
+      data-multiselect={multiSelected ? "true" : undefined}
+      data-open={open ? "true" : undefined}
+      data-assigned={assigned ? "true" : undefined}
+      style={
+        assigned?.color
+          ? ({ "--session-color": assigned.color } as React.CSSProperties)
+          : undefined
+      }
     >
       <div className={styles.rowMain}>
         <input
@@ -90,15 +104,19 @@ function TodoRow({
             </span>
           )}
         </button>
-        <button
-          type="button"
-          className={styles.action}
-          aria-label={`Start an agent on "${todo.text}"`}
-          title="Start an agent on this to-do (Cmd/Ctrl+click to pick the agent)"
-          onClick={onSpawn}
-        >
-          <AgentIcon size={13} />
-        </button>
+        {/* Once assigned, a to-do is owned by one session — no spawning a
+            second agent on it. */}
+        {!assigned && (
+          <button
+            type="button"
+            className={styles.action}
+            aria-label={`Start an agent on "${todo.text}"`}
+            title="Start an agent on this to-do (Cmd/Ctrl+click to pick the agent)"
+            onClick={onSpawn}
+          >
+            <AgentIcon size={13} />
+          </button>
+        )}
         <button
           type="button"
           className={styles.action}
@@ -108,6 +126,7 @@ function TodoRow({
         >
           <ArchiveIcon size={13} />
         </button>
+        <CopyIdButton id={todo.id} className={styles.action} />
       </div>
     </div>
   );
@@ -141,6 +160,7 @@ export function TodoSubsection({
   const setTodoArchived = useTodoStore((s) => s.setTodoArchived);
   const spawnAgent = useProcessStore((s) => s.spawnAgent);
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const openTodo = useLayoutStore((s) => s.openTodo);
 
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState("");
@@ -168,10 +188,18 @@ export function TodoSubsection({
   }, [todos]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
+  // Assigned to-dos can't be part of a selection (they're owned already).
   const selectedIds = useMemo(
-    () => todos.filter((t) => selected.has(t.id)).map((t) => t.id),
+    () =>
+      todos
+        .filter((t) => selected.has(t.id) && !t.assignedAgent)
+        .map((t) => t.id),
     [todos, selected],
   );
+
+  // The to-do currently open in the work area, highlighted like a selected
+  // agent/terminal row.
+  const openTodoId = openTodo?.projectId === projectId ? openTodo.todoId : null;
 
   useEffect(() => {
     if (adding) inputRef.current?.focus();
@@ -209,6 +237,12 @@ export function TodoSubsection({
   // selection (and its anchor) intact — clearing is done via the selection
   // bar's clear button or by toggling rows off.
   const activateTodo = (e: React.MouseEvent, todoId: TodoId) => {
+    // An assigned to-do is owned by a session — no multi-select on it; any
+    // click just opens it.
+    if (todos.find((t) => t.id === todoId)?.assignedAgent) {
+      onOpenTodo(projectId, todoId);
+      return;
+    }
     if (e.metaKey || e.ctrlKey) {
       setSelected((prev) => {
         const next = new Set(prev);
@@ -226,7 +260,9 @@ export function TodoSubsection({
         const [lo, hi] = from <= to ? [from, to] : [to, from];
         setSelected((prev) => {
           const next = new Set(prev);
-          for (let i = lo; i <= hi; i++) next.add(todos[i].id);
+          // Skip assigned rows — they can't join a selection.
+          for (let i = lo; i <= hi; i++)
+            if (!todos[i].assignedAgent) next.add(todos[i].id);
           return next;
         });
         return;
@@ -239,8 +275,9 @@ export function TodoSubsection({
     if (selectedIds.length === 0) return;
     setActiveProject(projectId);
     if (e.metaKey || e.ctrlKey) {
-      const first = todos.find((t) => t.id === selectedIds[0]);
-      onPickAgent(projectId, selectedIds, first?.text ?? "");
+      // A group of to-dos has no single sensible name — leave it blank so the
+      // agent names the session itself once it has read them all.
+      onPickAgent(projectId, selectedIds, "");
     } else {
       void spawnAgent(projectId, { todoIds: selectedIds });
     }
@@ -281,7 +318,8 @@ export function TodoSubsection({
             <TodoRow
               key={todo.id}
               todo={todo}
-              selected={selected.has(todo.id)}
+              multiSelected={selected.has(todo.id)}
+              open={openTodoId === todo.id}
               onToggleDone={() =>
                 void setTodoDone(projectId, todo.id, !todo.done)
               }

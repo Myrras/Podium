@@ -76,6 +76,21 @@ describe("TodoSubsection multi-select", () => {
     useProjectStore.setState(initialProject, true);
   });
 
+  it("marks a Cmd/Ctrl-clicked row multiselect, not open", () => {
+    seed([todo("a", "Todo A"), todo("b", "Todo B")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(titleOf("Todo A"), { metaKey: true });
+    const row = screen.getByText("Todo A").closest("[data-multiselect]");
+    expect(row).not.toBeNull();
+    expect((row as HTMLElement).getAttribute("data-open")).toBeNull();
+  });
+
   it("opens a to-do on a plain click, without selecting", () => {
     seed([todo("a", "Todo A"), todo("b", "Todo B")]);
     const onOpenTodo = vi.fn();
@@ -271,5 +286,61 @@ describe("TodoSubsection spawn button", () => {
       screen.getByRole("dialog", { name: "Archived to-dos" }),
     ).toBeInTheDocument();
     expect(refreshArchived).toHaveBeenCalledWith(PROJECT);
+  });
+});
+
+/** A to-do owned by a session, tinted with that session's colour. */
+function assignedTodo(id: string, text: string, color: string): TodoInfo {
+  return {
+    ...todo(id, text),
+    assignedAgent: { processId: "sess-1", name: "session", color },
+  };
+}
+
+describe("TodoSubsection assigned to-dos", () => {
+  beforeEach(() => {
+    useTodoStore.setState(initialTodo, true);
+    useProcessStore.setState(initialProcess, true);
+    useProjectStore.setState(initialProject, true);
+  });
+
+  it("hides the spawn button and tints the row with the session colour", () => {
+    seed([assignedTodo("a", "Todo A", "#3e63dd")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    // No spawning a second agent onto an owned to-do.
+    expect(
+      screen.queryByRole("button", { name: 'Start an agent on "Todo A"' }),
+    ).not.toBeInTheDocument();
+
+    // The row is marked assigned and carries the session colour var.
+    const row = screen.getByText("Todo A").closest('[data-assigned="true"]');
+    expect(row).not.toBeNull();
+    expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
+      "#3e63dd",
+    );
+  });
+
+  it("never joins a multi-select — any click just opens it", () => {
+    const onOpenTodo = vi.fn();
+    seed([assignedTodo("a", "Todo A", "#30a46c"), todo("b", "Todo B")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        onOpenTodo={onOpenTodo}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    // Cmd/Ctrl+click on an assigned row opens it instead of selecting.
+    fireEvent.click(titleOf("Todo A"), { metaKey: true });
+    expect(onOpenTodo).toHaveBeenCalledWith(PROJECT, "a");
+    expect(screen.queryByText(/Start agent on/)).not.toBeInTheDocument();
   });
 });

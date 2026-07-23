@@ -9,7 +9,14 @@ import { useProcessStore } from "../state/processStore";
 import { AgentScratchpadList } from "./AgentScratchpadList";
 import { AgentTodoList } from "./AgentTodoList";
 import { StatusDot } from "./StatusDot";
-import { CloseIcon, EditIcon, RestartIcon, RunIcon, StopIcon } from "./icons";
+import {
+  BranchIcon,
+  CloseIcon,
+  EditIcon,
+  RestartIcon,
+  RunIcon,
+  StopIcon,
+} from "./icons";
 import styles from "./ProcessRow.module.css";
 
 export function ProcessRow({ process }: { process: ProcessInfo }) {
@@ -60,6 +67,12 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
       <div
         className={styles.row}
         data-selected={selected ? "true" : undefined}
+        data-session={isAgent && process.color ? "true" : undefined}
+        style={
+          process.color
+            ? ({ "--session-color": process.color } as React.CSSProperties)
+            : undefined
+        }
         role="button"
         tabIndex={0}
         onClick={() => setActiveProcess(process.id)}
@@ -107,6 +120,16 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
             }
           >
             {process.name}
+          </span>
+        )}
+        {process.worktree && !editing && (
+          <span
+            className={styles.worktreeBadge}
+            role="img"
+            aria-label={`Runs in worktree ${process.worktree}`}
+            title={`Runs in worktree ${process.worktree}`}
+          >
+            <BranchIcon size={11} />
           </span>
         )}
         {isAgent && running && !editing && (

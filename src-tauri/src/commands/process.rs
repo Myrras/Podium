@@ -111,6 +111,7 @@ pub async fn process_add(
         env: Vec::new(),
         kind: spec.kind,
         restart_policy: spec.restart_policy,
+        color: None,
     };
     let id = state
         .orchestrator
@@ -139,6 +140,21 @@ pub async fn process_remove(
 #[tauri::command]
 pub fn process_list(state: State<'_, AppState>, project_id: Option<ProjectId>) -> Vec<ProcessInfo> {
     state.orchestrator.list_processes(project_id)
+}
+
+/// The git branch checked out in the process's working directory, or `null`
+/// when it is not a git repo / detached HEAD. Shells out to git, so it is
+/// fetched on demand for the focused process rather than baked into
+/// `process_list`.
+#[tauri::command]
+pub fn process_git_branch(
+    state: State<'_, AppState>,
+    process_id: ProcessId,
+) -> Result<Option<String>, IpcError> {
+    state
+        .orchestrator
+        .process_git_branch(process_id)
+        .map_err(Into::into)
 }
 
 /// Rename a process's display label (sidebar/window name). Does not restart

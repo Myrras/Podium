@@ -29,6 +29,7 @@ import type {
   TermEvent,
   TodoId,
   TodoInfo,
+  WorktreeInfo,
 } from "./types";
 
 /** Narrow an unknown rejection to the structured `IpcError` shape. */
@@ -142,6 +143,15 @@ export function processList(projectId?: ProjectId): Promise<ProcessInfo[]> {
   return invoke("process_list", { projectId: projectId ?? null });
 }
 
+/**
+ * The git branch checked out in the process's working directory, or `null`
+ * when its cwd is not a git repo / detached. Fetched on demand for the
+ * focused process (shells out to git).
+ */
+export function processGitBranch(processId: ProcessId): Promise<string | null> {
+  return invoke("process_git_branch", { processId });
+}
+
 /** Rename a process's display label; blank names are rejected. */
 export function processRename(
   processId: ProcessId,
@@ -201,6 +211,8 @@ export function agentSpawn(
     prompt: options.prompt ?? null,
     todoIds: options.todoIds ?? null,
     scratchpadIds: options.scratchpadIds ?? null,
+    worktree: options.worktree ?? null,
+    args: options.args ?? null,
   });
 }
 
@@ -242,6 +254,38 @@ export function agentSettingsSetMergeMode(
   mode: MergeMode,
 ): Promise<AgentSettingsDto> {
   return invoke("agent_settings_set_merge_mode", { mode });
+}
+
+/**
+ * Toggle whether agents are asked to offer a git worktree before modifying
+ * code. Returns the refreshed settings.
+ */
+export function agentSettingsSetSuggestWorktree(
+  enabled: boolean,
+): Promise<AgentSettingsDto> {
+  return invoke("agent_settings_set_suggest_worktree", { enabled });
+}
+
+// ---------------------------------------------------------------------------
+// Worktrees
+// ---------------------------------------------------------------------------
+
+/** List a project's Podium-managed git worktrees. */
+export function worktreeList(projectId: ProjectId): Promise<WorktreeInfo[]> {
+  return invoke("worktree_list", { projectId });
+}
+
+/**
+ * Remove a Podium-managed git worktree; returns the refreshed list. Rejects
+ * with kind `"worktreeInUse"` while a process runs in it, and with
+ * `"worktreeDirty"` when it has uncommitted changes and `force` is false.
+ */
+export function worktreeRemove(
+  projectId: ProjectId,
+  name: string,
+  force: boolean,
+): Promise<WorktreeInfo[]> {
+  return invoke("worktree_remove", { projectId, name, force });
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +516,14 @@ export function scratchpadSetArchived(
   archived: boolean,
 ): Promise<ScratchpadInfo> {
   return invoke("scratchpad_set_archived", { projectId, id, archived });
+}
+
+/** Permanently remove a scratchpad (from the Archive modal). */
+export function scratchpadRemove(
+  projectId: ProjectId,
+  id: ScratchpadId,
+): Promise<void> {
+  return invoke("scratchpad_remove", { projectId, id });
 }
 
 /**

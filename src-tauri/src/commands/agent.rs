@@ -28,6 +28,9 @@ pub async fn adapters_list(state: State<'_, AppState>) -> Result<Vec<AdapterInfo
 /// `todo_ids` seeds the agent's prompt with one or more to-dos to work on
 /// (multiple are handed over as one combined task). `scratchpad_ids` does the
 /// same for scratchpads, and is only used when `todo_ids` is empty.
+/// `worktree` runs the agent in a fresh git worktree named after it. `args`,
+/// when present, replaces the global default CLI args for this spawn only.
+#[allow(clippy::too_many_arguments)] // mirrors the core's flat spawn API
 #[tauri::command]
 pub async fn agent_spawn(
     state: State<'_, AppState>,
@@ -37,6 +40,8 @@ pub async fn agent_spawn(
     prompt: Option<String>,
     todo_ids: Option<Vec<TodoId>>,
     scratchpad_ids: Option<Vec<ScratchpadId>>,
+    worktree: Option<bool>,
+    args: Option<Vec<String>>,
 ) -> Result<ProcessInfo, IpcError> {
     let id = state
         .orchestrator
@@ -47,6 +52,8 @@ pub async fn agent_spawn(
             prompt,
             todo_ids.unwrap_or_default(),
             scratchpad_ids.unwrap_or_default(),
+            worktree.unwrap_or(false),
+            args,
         )
         .await?;
     state
@@ -80,6 +87,8 @@ pub struct AgentSettingsDto {
     pub merge_mode: MergeMode,
     /// Global default adapter for bare spawns; empty = built-in default.
     pub default_adapter: String,
+    /// Whether agents are asked to offer a git worktree before editing code.
+    pub suggest_worktree: bool,
     pub adapters: Vec<AgentAdapterConfig>,
 }
 
@@ -105,6 +114,7 @@ fn build_settings_dto(orchestrator: &Orchestrator) -> AgentSettingsDto {
     AgentSettingsDto {
         merge_mode: settings.merge_mode,
         default_adapter: settings.default_adapter.unwrap_or_default(),
+        suggest_worktree: settings.suggest_worktree,
         adapters,
     }
 }
@@ -158,6 +168,20 @@ pub async fn agent_settings_set_merge_mode(
     mode: MergeMode,
 ) -> Result<AgentSettingsDto, IpcError> {
     state.orchestrator.set_agent_merge_mode(mode)?;
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || build_settings_dto(&orchestrator))
+        .await
+        .map_err(|e| IpcError::new("io", format!("adapter probe task failed: {e}")))
+}
+
+/// Toggle whether agents are asked to offer a git worktree before modifying
+/// code. Returns the refreshed settings.
+#[tauri::command]
+pub async fn agent_settings_set_suggest_worktree(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AgentSettingsDto, IpcError> {
+    state.orchestrator.set_agent_suggest_worktree(enabled)?;
     let orchestrator = Arc::clone(&state.orchestrator);
     tauri::async_runtime::spawn_blocking(move || build_settings_dto(&orchestrator))
         .await

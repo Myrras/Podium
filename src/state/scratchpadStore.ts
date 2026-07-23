@@ -21,6 +21,7 @@ import {
   scratchpadAddTag,
   scratchpadList,
   scratchpadListArchived,
+  scratchpadRemove,
   scratchpadRemoveTag,
   scratchpadSetArchived,
   scratchpadUnassign,
@@ -94,6 +95,8 @@ interface ScratchpadState {
    * the `scratchpad:changed` refresh reconciles.
    */
   unassignScratchpad: (projectId: ProjectId, id: ScratchpadId) => Promise<void>;
+  /** Permanently remove a scratchpad (from the Archive modal). */
+  removeScratchpad: (projectId: ProjectId, id: ScratchpadId) => Promise<void>;
   /** Event applier for `project:closed` — drops the cached lists. */
   dropProject: (projectId: ProjectId) => void;
 }
@@ -282,6 +285,30 @@ export const useScratchpadStore = create<ScratchpadState>((set) => ({
       }));
     } catch (e) {
       toastError("Could not unassign scratchpad", toIpcError(e).message);
+    }
+  },
+
+  removeScratchpad: async (projectId, id) => {
+    try {
+      await scratchpadRemove(projectId, id);
+      // Deletion happens from the Archive modal; drop it from both caches
+      // (it may live in either while the modal reconciles).
+      set((s) => ({
+        scratchpadsByProject: {
+          ...s.scratchpadsByProject,
+          [projectId]: (s.scratchpadsByProject[projectId] ?? []).filter(
+            (sp) => sp.id !== id,
+          ),
+        },
+        archivedByProject: {
+          ...s.archivedByProject,
+          [projectId]: (s.archivedByProject[projectId] ?? []).filter(
+            (sp) => sp.id !== id,
+          ),
+        },
+      }));
+    } catch (e) {
+      toastError("Could not remove scratchpad", toIpcError(e).message);
     }
   },
 

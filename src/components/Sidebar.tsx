@@ -29,9 +29,11 @@ import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 import { TodoSubsection } from "./TodoSubsection";
+import { WorktreesModal } from "./WorktreesModal";
 import {
   AddIcon,
   AgentIcon,
+  BranchIcon,
   CaretIcon,
   CloseIcon,
   EditIcon,
@@ -52,15 +54,28 @@ interface SubsectionProps {
   empty?: string;
   /** Header add button; omitted for sections without a create action. */
   add?: { label: string; onClick: () => void };
+  /** Optional second header action, rendered before the add button. */
+  extra?: { label: string; Icon: typeof AgentIcon; onClick: () => void };
 }
 
 /** One entity subsection (Agents / Processes / Terminals) in a group. */
-function Subsection({ title, Icon, rows, empty, add }: SubsectionProps) {
+function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
   return (
     <div className={styles.subsection}>
       <div className={styles.sectionHeader}>
         <Icon className={styles.panelIcon} />
         <span className={styles.panelTitle}>{title}</span>
+        {extra && (
+          <button
+            type="button"
+            className={styles.addBtn}
+            aria-label={extra.label}
+            title={extra.label}
+            onClick={extra.onClick}
+          >
+            <extra.Icon size={13} />
+          </button>
+        )}
         {add && (
           <button
             type="button"
@@ -107,6 +122,8 @@ interface ProjectGroupProps {
     scratchpadIds: ScratchpadId[],
     initialName: string,
   ) => void;
+  /** Open the Worktrees modal for this project. */
+  onOpenWorktrees: (projectId: ProjectId) => void;
   /** Drag-to-reorder wiring, owned by the Sidebar (tracks the drop target). */
   dragging: boolean;
   dropTarget: boolean;
@@ -125,6 +142,7 @@ function ProjectGroup({
   onPickAgent,
   onOpenScratchpad,
   onPickScratchpadAgent,
+  onOpenWorktrees,
   dragging,
   dropTarget,
   onDragStart,
@@ -352,6 +370,14 @@ function ProjectGroup({
                 onNewAgent(project.id);
               },
             }}
+            extra={{
+              label: "Worktrees",
+              Icon: BranchIcon,
+              onClick: () => {
+                setActiveProject(project.id);
+                onOpenWorktrees(project.id);
+              },
+            }}
           />
           {services.length > 0 && (
             <Subsection title="Processes" Icon={RunIcon} rows={services} />
@@ -392,6 +418,7 @@ export function Sidebar() {
   const [agentModal, setAgentModal] = useState<AgentModalTarget | null>(null);
   const [scratchpadAgentModal, setScratchpadAgentModal] =
     useState<ScratchpadAgentModalTarget | null>(null);
+  const [worktreesFor, setWorktreesFor] = useState<ProjectId | null>(null);
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const openTodoInWorkArea = useLayoutStore((s) => s.openTodoInWorkArea);
   const openScratchpadInWorkArea = useLayoutStore(
@@ -458,6 +485,7 @@ export function Sidebar() {
                   initialName,
                 })
               }
+              onOpenWorktrees={setWorktreesFor}
             />
           ))
         ) : (
@@ -492,6 +520,13 @@ export function Sidebar() {
         initialName={scratchpadAgentModal?.initialName}
         onClose={() => setScratchpadAgentModal(null)}
       />
+      {worktreesFor !== null && (
+        <WorktreesModal
+          open
+          projectId={worktreesFor}
+          onClose={() => setWorktreesFor(null)}
+        />
+      )}
     </aside>
   );
 }

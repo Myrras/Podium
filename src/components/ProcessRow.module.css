@@ -19,6 +19,25 @@
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+/* An agent session wears its own colour (same tint + bar as the to-dos it
+   owns), so the user can match a session to the rows coloured for it.
+   --session-color is set inline from the process. */
+.row[data-session="true"] {
+  background: color-mix(in srgb, var(--session-color) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--session-color);
+}
+
+.row[data-session="true"]:hover {
+  background: color-mix(in srgb, var(--session-color) 16%, transparent);
+}
+
+/* When the session row is also selected, deepen its own tint rather than
+   switch to the generic accent (higher specificity wins). */
+.row[data-session="true"][data-selected="true"] {
+  background: color-mix(in srgb, var(--session-color) 20%, transparent);
+  box-shadow: inset 2px 0 0 var(--session-color);
+}
+
 .row:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
@@ -45,6 +64,14 @@
   padding: 1px var(--sp-1);
   margin: -1px 0;
   outline: none;
+}
+
+/* Muted branch glyph for processes running in a Podium-managed worktree. */
+.worktreeBadge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
 }
 
 /* Agent activity hint (working…/idle/needs input) — quiet, right-aligned. */

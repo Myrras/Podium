@@ -260,11 +260,8 @@ describe("ScratchpadSubsection", () => {
       fireEvent.click(titleOf("Scratchpad C"), { shiftKey: true });
 
       fireEvent.click(screen.getByText("Start agent on 3 scratchpads"));
-      expect(onPickAgent).toHaveBeenCalledWith(
-        PROJECT,
-        ["a", "b", "c"],
-        "Scratchpad A",
-      );
+      // A group has no single sensible name — blank, so the agent self-names.
+      expect(onPickAgent).toHaveBeenCalledWith(PROJECT, ["a", "b", "c"], "");
     });
 
     it("the selection bar's action opens the picker for all selected ids and clears the selection", () => {
@@ -285,11 +282,7 @@ describe("ScratchpadSubsection", () => {
       fireEvent.click(titleOf("Scratchpad B"), { metaKey: true });
       fireEvent.click(screen.getByText("Start agent on 2 scratchpads"));
 
-      expect(onPickAgent).toHaveBeenCalledWith(
-        PROJECT,
-        ["a", "b"],
-        "Scratchpad A",
-      );
+      expect(onPickAgent).toHaveBeenCalledWith(PROJECT, ["a", "b"], "");
       expect(setActiveProject).toHaveBeenCalledWith(PROJECT);
       expect(screen.queryByText(/Start agent on/)).not.toBeInTheDocument();
     });

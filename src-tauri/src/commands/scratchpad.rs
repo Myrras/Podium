@@ -125,6 +125,20 @@ pub fn scratchpad_set_archived(
         .map_err(Into::into)
 }
 
+/// Permanently remove a scratchpad (from the Archive modal, mirroring
+/// `todo_remove`).
+#[tauri::command]
+pub fn scratchpad_remove(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    id: ScratchpadId,
+) -> Result<(), IpcError> {
+    state
+        .orchestrator
+        .remove_scratchpad(project_id, id)
+        .map_err(Into::into)
+}
+
 /// Best-effort cancel/rollback request sent to an agent's stdin when the user
 /// unassigns its scratchpad. Podium-owned text; a trailing newline submits it
 /// if the agent is sitting at an input prompt.

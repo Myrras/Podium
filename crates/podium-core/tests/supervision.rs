@@ -35,6 +35,7 @@ fn spec(name: &str, command: &str, cwd: &Path, policy: RestartPolicy) -> Process
         env: Vec::new(),
         kind: ProcessKind::Service,
         restart_policy: policy,
+        color: None,
     }
 }
 

@@ -38,6 +38,12 @@ pub struct AgentLaunchCtx<'a> {
     /// in its system prompt to rename itself right after the first user
     /// message — models never act on the buried MCP-server instruction alone.
     pub named: bool,
+    /// Whether the agent's cwd is already a Podium-managed worktree; wins
+    /// over `suggest_worktree` (no point offering another one).
+    pub in_worktree: bool,
+    /// Whether the system prompt should tell the agent to offer an isolated
+    /// git worktree before its first code change (Settings → Agents toggle).
+    pub suggest_worktree: bool,
 }
 
 /// Connection details for the built-in MCP server.
@@ -180,6 +186,22 @@ fn identity_prompt(ctx: &AgentLaunchCtx) -> String {
             " This session has a generic window name: immediately after the \
              user's first message, call the podium rename_session tool with a \
              short name describing the session, then continue with the task.",
+        );
+    }
+    if ctx.in_worktree {
+        prompt.push_str(
+            " This session runs in a dedicated git worktree: your working \
+             directory is an isolated checkout on its own branch. Do all work \
+             inside it, and do not create another worktree for this session.",
+        );
+    } else if ctx.suggest_worktree {
+        prompt.push_str(
+            " Before you first modify code in this session, ask the user \
+             whether the work should happen in an isolated git worktree. If \
+             they agree, call the podium create_worktree tool (pass your \
+             project_id and a short name for the work) and make all file \
+             changes under the path it returns. If they decline, or the \
+             session stays read-only, work in place.",
         );
     }
     prompt
@@ -392,6 +414,8 @@ mod tests {
             command_override,
             mcp,
             named: false,
+            in_worktree: false,
+            suggest_worktree: false,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         (plan, project_id, process_id)
@@ -521,6 +545,8 @@ mod tests {
             command_override: None,
             mcp: None,
             named: false,
+            in_worktree: false,
+            suggest_worktree: false,
         };
         assert_eq!(
             AUGGIE.build_launch(&ctx).expect("build_launch").command,
@@ -562,12 +588,68 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: true,
+            in_worktree: false,
+            suggest_worktree: false,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
         let blurb = &tokens[tokens.len() - 1];
         assert!(blurb.contains(&ctx.process_id.to_string()));
         assert!(!blurb.contains("generic window name"));
+    }
+
+    #[test]
+    fn suggest_worktree_adds_the_offer_instruction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp"),
+            prompt: None,
+            extra_args: &[],
+            command_override: None,
+            mcp: Some(&mcp),
+            named: true,
+            in_worktree: false,
+            suggest_worktree: true,
+        };
+        let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
+        let tokens = split_command(&plan.command);
+        let blurb = &tokens[tokens.len() - 1];
+        assert!(blurb.contains("create_worktree"));
+        assert!(!blurb.contains("dedicated git worktree"));
+    }
+
+    #[test]
+    fn in_worktree_wins_over_the_suggest_instruction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp"),
+            prompt: None,
+            extra_args: &[],
+            command_override: None,
+            mcp: Some(&mcp),
+            named: true,
+            in_worktree: true,
+            suggest_worktree: true,
+        };
+        let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
+        let tokens = split_command(&plan.command);
+        let blurb = &tokens[tokens.len() - 1];
+        assert!(blurb.contains("dedicated git worktree"));
+        assert!(!blurb.contains("create_worktree"));
     }
 
     #[test]
@@ -587,6 +669,8 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: false,
+            in_worktree: false,
+            suggest_worktree: true,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         assert!(!plan.command.contains("--append-system-prompt"));

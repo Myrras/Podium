@@ -65,6 +65,16 @@ export interface ProcessInfo {
   status: ProcessStatus;
   restartPolicy: RestartPolicy;
   command: string;
+  /**
+   * Name of the Podium-managed git worktree the process runs in (derived
+   * from its cwd); `null` when it runs in the project root.
+   */
+  worktree: string | null;
+  /**
+   * Subtle UI colour of an agent session, so its sidebar row can be tinted to
+   * match the to-dos it owns; `null` for services/terminals.
+   */
+  color: string | null;
 }
 
 /**
@@ -119,6 +129,8 @@ export interface AgentSettingsDto {
   mergeMode: MergeMode;
   /** Global default adapter for bare spawns; empty = built-in default. */
   defaultAdapter: string;
+  /** Whether agents are asked to offer a git worktree before editing code. */
+  suggestWorktree: boolean;
   adapters: AgentAdapterConfig[];
 }
 
@@ -141,6 +153,28 @@ export interface AgentSpawnOptions {
    * scratchpads are handed to the one agent as a single combined task.
    */
   scratchpadIds?: ScratchpadId[];
+  /**
+   * Run the agent in a fresh git worktree under `.podium/worktrees/`, named
+   * after it (requires the project to be a git repository).
+   */
+  worktree?: boolean;
+  /**
+   * CLI args for this spawn only; replaces the global Settings → Agents
+   * default args (still merged with the project's `agents.extra_args`).
+   */
+  args?: string[];
+}
+
+/** One Podium-managed git worktree (`podium_core::WorktreeInfo`). */
+export interface WorktreeInfo {
+  /** The slugified directory/branch name (unique within the project). */
+  name: string;
+  /** Absolute path of the checkout, under `.podium/worktrees/`. */
+  path: string;
+  /** The branch checked out in it (normally `podium/<name>`). */
+  branch: string;
+  /** Whether a Podium-managed process is currently running in it. */
+  inUse: boolean;
 }
 
 /**
@@ -195,6 +229,9 @@ export interface AssignedAgent {
   processId: ProcessId;
   /** The agent's display name, for showing without a process lookup. */
   name: string;
+  /** The session's subtle UI colour (hex), so the item can be tinted to match
+   * the agent that owns it; `null` in legacy/edge cases. */
+  color: string | null;
 }
 
 /**

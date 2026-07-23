@@ -22,6 +22,7 @@ fn spec(command: &str, cwd: &Path) -> ProcessSpec {
         env: Vec::new(),
         kind: ProcessKind::Service,
         restart_policy: RestartPolicy::Never,
+        color: None,
     }
 }
 
@@ -290,6 +291,7 @@ async fn zshrc_only_env_is_visible_to_spawned_processes() {
                 )],
                 kind: ProcessKind::Service,
                 restart_policy: RestartPolicy::Never,
+                color: None,
             },
         )
         .await

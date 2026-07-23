@@ -25,7 +25,8 @@ const AGENT = "agent-1";
 function scratchpad(
   id: string,
   title: string,
-  assignedAgent: AssignedAgent | null,
+  assignedAgent:
+    (Omit<AssignedAgent, "color"> & { color?: string | null }) | null,
 ): ScratchpadInfo {
   return {
     id,
@@ -39,7 +40,7 @@ function scratchpad(
     updatedBy: "User",
     version: 1,
     tags: [],
-    assignedAgent,
+    assignedAgent: assignedAgent ? { color: null, ...assignedAgent } : null,
   };
 }
 

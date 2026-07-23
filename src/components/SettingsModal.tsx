@@ -15,6 +15,7 @@ import {
   agentSettingsSetAdapter,
   agentSettingsSetDefaultAdapter,
   agentSettingsSetMergeMode,
+  agentSettingsSetSuggestWorktree,
   mcpClientInstall,
   mcpClientsStatus,
   toIpcError,
@@ -272,7 +273,12 @@ function AgentsTab() {
       })
       .catch(() => {
         if (!cancelled)
-          setData({ mergeMode: "merge", defaultAdapter: "", adapters: [] });
+          setData({
+            mergeMode: "merge",
+            defaultAdapter: "",
+            suggestWorktree: true,
+            adapters: [],
+          });
       });
     return () => {
       cancelled = true;
@@ -369,6 +375,26 @@ function AgentsTab() {
             </option>
           ))}
         </select>
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Worktrees</h3>
+        <SettingToggle
+          label="Suggest git worktrees"
+          help="When on, agents are asked to offer isolated git-worktree checkouts before modifying code."
+          value={data.suggestWorktree}
+          onChange={(enabled) => {
+            setData({ ...data, suggestWorktree: enabled });
+            agentSettingsSetSuggestWorktree(enabled)
+              .then(setData)
+              .catch((err) =>
+                toastError(
+                  "Could not save worktree setting",
+                  toIpcError(err).message,
+                ),
+              );
+          }}
+        />
       </section>
 
       <section className={styles.section}>
@@ -669,7 +695,9 @@ function GeneralTab() {
             type="text"
             value={settings.terminal.shell}
             placeholder={DEFAULT_SHELL_HINT}
-            onChange={(e) => settings.set("terminal", { shell: e.target.value })}
+            onChange={(e) =>
+              settings.set("terminal", { shell: e.target.value })
+            }
           />
           <small className={styles.rowHelp}>
             Command new terminals launch. Leave blank for the system default

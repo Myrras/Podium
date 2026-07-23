@@ -1,4 +1,4 @@
-//! The 22 MCP tools Podium exposes to agents — all thin calls into
+//! The 25 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
 
 use std::str::FromStr;
@@ -150,6 +150,33 @@ pub struct SpawnAgentParams {
     /// Scratchpad UUIDs to work on; several are handed to the one agent as a
     /// single combined task. Only used when no to-do is given.
     pub scratchpad_ids: Option<Vec<String>>,
+    /// Run the agent in a fresh git worktree under `.podium/worktrees/`,
+    /// named after the agent (requires the project to be a git repository).
+    pub worktree: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateWorktreeParams {
+    /// Project UUID to create the worktree in.
+    pub project_id: String,
+    /// Short name for the work (slugified and de-duplicated automatically).
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListWorktreesParams {
+    /// Project UUID whose worktrees to list.
+    pub project_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RemoveWorktreeParams {
+    /// Project UUID the worktree belongs to.
+    pub project_id: String,
+    /// Worktree name (from `list_worktrees`).
+    pub name: String,
+    /// Discard uncommitted changes in the worktree (default false).
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -265,7 +292,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Returns the new process snapshot."
+        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Pass worktree=true to run it in a fresh git worktree named after the agent (requires a git repository). Returns the new process snapshot."
     )]
     pub async fn spawn_agent(
         &self,
@@ -301,10 +328,61 @@ impl PodiumTools {
                 p.prompt,
                 todo_ids,
                 scratchpad_ids,
+                p.worktree.unwrap_or(false),
+                None,
             )
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
+    }
+
+    #[tool(
+        description = "Create a git worktree for isolated code changes, at `<project_root>/.podium/worktrees/<name>` on a new `podium/<name>` branch. The name is slugified and de-duplicated automatically. Call this when the user has agreed to do the work in a worktree, then make all file changes under the returned path."
+    )]
+    pub async fn create_worktree(
+        &self,
+        Parameters(p): Parameters<CreateWorktreeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let orch = Arc::clone(&self.orchestrator);
+        let info = tokio::task::spawn_blocking(move || orch.create_worktree(project_id, &p.name))
+            .await
+            .map_err(|e| McpError::internal_error(format!("worktree task failed: {e}"), None))?
+            .map_err(core_error)?;
+        json_result(&info)
+    }
+
+    #[tool(
+        description = "List the project's Podium-managed git worktrees (name, path, branch, inUse)."
+    )]
+    pub async fn list_worktrees(
+        &self,
+        Parameters(p): Parameters<ListWorktreesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let orch = Arc::clone(&self.orchestrator);
+        let infos = tokio::task::spawn_blocking(move || orch.list_worktrees(project_id))
+            .await
+            .map_err(|e| McpError::internal_error(format!("worktree task failed: {e}"), None))?
+            .map_err(core_error)?;
+        json_result(&infos)
+    }
+
+    #[tool(
+        description = "Remove a Podium-managed git worktree. Refused while it has uncommitted changes (pass force=true to discard them) or while a Podium-managed process is still running in it. Its `podium/<name>` branch is kept."
+    )]
+    pub async fn remove_worktree(
+        &self,
+        Parameters(p): Parameters<RemoveWorktreeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let force = p.force.unwrap_or(false);
+        let orch = Arc::clone(&self.orchestrator);
+        tokio::task::spawn_blocking(move || orch.remove_worktree(project_id, &p.name, force))
+            .await
+            .map_err(|e| McpError::internal_error(format!("worktree task failed: {e}"), None))?
+            .map_err(core_error)?;
+        Ok(text_result("removed".to_string()))
     }
 
     #[tool(description = "Start a stopped or not-yet-started process.")]
@@ -620,7 +698,10 @@ impl ServerHandler for PodiumTools {
              to-do, do this right after the user's first prompt. Each project \
              also has shared scratchpads for freeform notes \
              (list_scratchpads/create_scratchpad/update_scratchpad), visible \
-             to the user and every agent."
+             to the user and every agent. For isolated code changes, \
+             create_worktree/list_worktrees/remove_worktree manage git \
+             worktrees under .podium/worktrees/ so an agent's edits don't \
+             touch the user's working tree."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
@@ -671,7 +752,7 @@ fn parse_timestamp(s: &str) -> Result<chrono::DateTime<chrono::Utc>, McpError> {
 /// text (never terminal output or secrets), so forwarding is safe.
 fn core_error(e: CoreError) -> McpError {
     match e {
-        CoreError::Io(_) | CoreError::Pty(_) | CoreError::Config(_) => {
+        CoreError::Io(_) | CoreError::Pty(_) | CoreError::Config(_) | CoreError::Git(_) => {
             McpError::internal_error(e.to_string(), None)
         }
         _ => McpError::invalid_params(e.to_string(), None),

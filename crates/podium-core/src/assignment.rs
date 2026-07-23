@@ -19,4 +19,7 @@ pub struct AssignedAgent {
     pub process_id: ProcessId,
     /// The agent's display name, for showing in the UI without a lookup.
     pub name: String,
+    /// The session's subtle UI colour, so the item can be tinted to match the
+    /// agent that owns it. `None` for legacy/edge cases where no colour was set.
+    pub color: Option<String>,
 }

@@ -10,3 +10,4 @@ pub mod scratchpad;
 pub mod todo;
 pub mod window;
 pub mod workspace;
+pub mod worktree;

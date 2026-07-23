@@ -32,6 +32,7 @@ import {
 } from "../lib/tiptapHeadings";
 import { useLayoutStore } from "../state/layoutStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
+import { CopyIdButton } from "./CopyIdButton";
 import {
   ArchiveIcon,
   CloseIcon,
@@ -325,6 +326,7 @@ export function ScratchpadDetailPane({
         >
           {fullscreen ? <CollapseIcon /> : <ExpandIcon />}
         </button>
+        <CopyIdButton id={scratchpadId} className={styles.closeBtn} />
         <button
           type="button"
           className={styles.closeBtn}

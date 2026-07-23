@@ -19,6 +19,7 @@ pub mod process;
 pub mod project;
 pub mod scratchpad;
 pub mod todo;
+pub mod worktree;
 
 pub use agent::settings::{AdapterOverride, AgentSettings, MergeMode};
 pub use agent::{
@@ -35,3 +36,4 @@ pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 pub use scratchpad::ScratchpadInfo;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
+pub use worktree::WorktreeInfo;

@@ -1,9 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Per-command invoke stub; `process_git_branch` is overridable per test.
+let gitBranch: string | null = null;
+
 // The store pulls in the IPC layer; jsdom has no Tauri bridge.
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(() => Promise.resolve([])),
+  invoke: vi.fn((cmd: string) =>
+    cmd === "process_git_branch"
+      ? Promise.resolve(gitBranch)
+      : Promise.resolve([]),
+  ),
   Channel: class {
     onmessage: (message: unknown) => void = () => undefined;
   },
@@ -32,12 +39,15 @@ function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
     status: { state: "running", pid: 1, since: "2024-04-03T12:00:00Z" },
     restartPolicy: "never",
     command: "echo hi",
+    worktree: null,
+    color: null,
   };
 }
 
 describe("TerminalPane header actions", () => {
   beforeEach(() => {
     useProcessStore.setState(initialProcess, true);
+    gitBranch = null;
   });
 
   it("offers stop and restart for services", () => {
@@ -62,5 +72,18 @@ describe("TerminalPane header actions", () => {
     expect(screen.queryByRole("button", { name: "Start claude" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Stop claude" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Restart claude" })).toBeNull();
+  });
+
+  it("shows the git branch and worktree in the header", async () => {
+    gitBranch = "podium/fix-login";
+    const proc = process("a1", "claude", {
+      kind: "agent",
+      adapter: "claude-code",
+    });
+    proc.worktree = "fix-login";
+    render(<TerminalPane process={proc} />);
+
+    expect(await screen.findByText("podium/fix-login")).toBeVisible();
+    expect(screen.getByText("fix-login")).toBeVisible();
   });
 });

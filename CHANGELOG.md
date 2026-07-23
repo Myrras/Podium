@@ -8,6 +8,32 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.2.2] - 2026-07-23
+
+### Added
+
+- **Assigned to-dos are colour-coded by session.** Each agent session gets a
+  subtle colour when it starts, and every to-do it owns is tinted to match — so
+  you can see at a glance which session is on what. An assigned to-do also hides
+  its "start agent" button and drops out of multi-select (one session owns it),
+  and an agent trying to claim a to-do already owned by another live session is
+  now refused over MCP.
+- **Copy-id button on to-dos and scratchpads.** The to-do and scratchpad detail
+  panes now have a button that copies the item's id to the clipboard — handy for
+  referencing it in a prompt or an MCP call.
+- **Delete archived scratchpads.** Archived scratchpads can now be permanently
+  deleted from the Archive view, the same way archived to-dos already could.
+
+### Fixed
+
+- **Grouped to-dos no longer borrow a random to-do's name for the session.**
+  Starting one agent on several selected to-dos left the session unnamed so the
+  agent names itself after reading them all, instead of taking whichever to-do
+  happened to be first.
+- **Selecting a to-do or scratchpad now highlights it.** Opening a to-do or
+  scratchpad in the work area highlights its sidebar row, matching how a focused
+  agent or terminal is shown.
+
 ## [1.2.1] - 2026-07-23
 
 ### Changed

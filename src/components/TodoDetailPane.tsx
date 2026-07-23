@@ -14,6 +14,7 @@ import { formatTime } from "../lib/dateFormat";
 import { openExternalLink } from "../lib/links";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
+import { CopyIdButton } from "./CopyIdButton";
 import {
   CloseIcon,
   CommentIcon,
@@ -231,6 +232,7 @@ export function TodoDetailPane({
             <EditIcon size={12} />
           </button>
         )}
+        <CopyIdButton id={todoId} className={styles.iconBtn} />
         <button
           type="button"
           className={styles.closeBtn}

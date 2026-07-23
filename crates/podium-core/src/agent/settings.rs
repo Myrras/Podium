@@ -49,7 +49,7 @@ pub struct AdapterOverride {
 }
 
 /// The whole persisted document.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSettings {
     #[serde(default)]
@@ -62,6 +62,26 @@ pub struct AgentSettings {
     /// Overrides keyed by adapter id (e.g. `"claude-code"`).
     #[serde(default)]
     pub overrides: BTreeMap<String, AdapterOverride>,
+    /// Whether agents are told to offer an isolated git worktree before
+    /// their first code change. Defaults to on (also for a legacy
+    /// `agents.json` written before this field existed).
+    #[serde(default = "default_true")]
+    pub suggest_worktree: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            merge_mode: MergeMode::default(),
+            default_adapter: None,
+            overrides: BTreeMap::new(),
+            suggest_worktree: true,
+        }
+    }
 }
 
 impl AgentSettings {
@@ -130,6 +150,15 @@ impl AgentSettingsStore {
     pub fn set_merge_mode(&self, mode: MergeMode) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.merge_mode = mode;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Set whether agents should offer a worktree before modifying code;
+    /// returns the updated settings.
+    pub fn set_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.suggest_worktree = enabled;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -337,6 +366,25 @@ mod tests {
             settings.override_for("claude-code").unwrap().default_args,
             args(&["--permission-mode", "plan"])
         );
+    }
+
+    #[test]
+    fn suggest_worktree_defaults_on_and_persists() {
+        assert!(AgentSettings::default().suggest_worktree);
+        // A legacy file without the field loads as enabled.
+        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
+        assert!(legacy.suggest_worktree);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agents.json");
+        let store = AgentSettingsStore::new();
+        store.set_path(file.clone());
+        let updated = store.set_suggest_worktree(false).unwrap();
+        assert!(!updated.suggest_worktree);
+
+        let reloaded = AgentSettingsStore::new();
+        reloaded.set_path(file);
+        assert!(!reloaded.get().suggest_worktree);
     }
 
     #[test]

@@ -29,8 +29,69 @@ function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
     status: { state: "notStarted" },
     restartPolicy: "never",
     command: "echo hi",
+    worktree: null,
+    color: null,
   };
 }
+
+describe("ProcessRow worktree badge", () => {
+  beforeEach(() => {
+    useProcessStore.setState(initialProcess, true);
+  });
+
+  it("shows a branch badge for a process running in a worktree", () => {
+    seed();
+    const p = {
+      ...process("a1", "agent", { kind: "agent", adapter: "claude-code" }),
+      worktree: "fix-login",
+    };
+    render(<ProcessRow process={p} />);
+    expect(
+      screen.getByRole("img", { name: "Runs in worktree fix-login" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no badge for a project-root process", () => {
+    seed();
+    render(
+      <ProcessRow
+        process={process("a2", "agent", {
+          kind: "agent",
+          adapter: "claude-code",
+        })}
+      />,
+    );
+    expect(screen.queryByRole("img", { name: /worktree/i })).toBeNull();
+  });
+});
+
+describe("ProcessRow session colour", () => {
+  beforeEach(() => {
+    useProcessStore.setState(initialProcess, true);
+  });
+
+  it("tints an agent row with its session colour", () => {
+    seed();
+    const p = {
+      ...process("a1", "agent", { kind: "agent", adapter: "claude-code" }),
+      color: "#3e63dd",
+    };
+    render(<ProcessRow process={p} />);
+    const row = screen.getByText("agent").closest('[data-session="true"]');
+    expect(row).not.toBeNull();
+    expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
+      "#3e63dd",
+    );
+  });
+
+  it("leaves a colourless process untinted", () => {
+    seed();
+    render(
+      <ProcessRow process={process("t1", "term", { kind: "terminal" })} />,
+    );
+    expect(screen.getByText("term").closest("[data-session]")).toBeNull();
+  });
+});
 
 function seed() {
   const renameProcess = vi.fn(() => Promise.resolve());

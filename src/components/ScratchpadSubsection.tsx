@@ -18,8 +18,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectId, ScratchpadId, ScratchpadInfo } from "../ipc/types";
+import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
+import { CopyIdButton } from "./CopyIdButton";
 import {
   AddIcon,
   AgentIcon,
@@ -36,7 +38,10 @@ const NO_SCRATCHPADS: ScratchpadInfo[] = [];
 
 interface ScratchpadRowProps {
   scratchpad: ScratchpadInfo;
-  selected: boolean;
+  /** Part of a Cmd/Ctrl+click multi-select — queued to hand to one agent. */
+  multiSelected: boolean;
+  /** Currently open in the work area (a plain-click "view" gesture). */
+  open: boolean;
   /** Plain click opens; Cmd/Ctrl or Shift click drives selection. */
   onActivate: (e: React.MouseEvent) => void;
   /** Always opens the agent picker for this one scratchpad. */
@@ -47,13 +52,18 @@ interface ScratchpadRowProps {
 /** One scratchpad: a click-to-open title, and hover actions. */
 function ScratchpadRow({
   scratchpad,
-  selected,
+  multiSelected,
+  open,
   onActivate,
   onSpawn,
   onArchive,
 }: ScratchpadRowProps) {
   return (
-    <div className={styles.row} data-selected={selected ? "true" : undefined}>
+    <div
+      className={styles.row}
+      data-multiselect={multiSelected ? "true" : undefined}
+      data-open={open ? "true" : undefined}
+    >
       <div className={styles.rowMain}>
         <button
           type="button"
@@ -81,6 +91,7 @@ function ScratchpadRow({
         >
           <ArchiveIcon size={13} />
         </button>
+        <CopyIdButton id={scratchpad.id} className={styles.action} />
       </div>
     </div>
   );
@@ -116,6 +127,11 @@ export function ScratchpadSubsection({
     (s) => s.setScratchpadArchived,
   );
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
+  const openScratchpad = useLayoutStore((s) => s.openScratchpad);
+  const openScratchpadId =
+    openScratchpad?.projectId === projectId
+      ? openScratchpad.scratchpadId
+      : null;
 
   const [archiveOpen, setArchiveOpen] = useState(false);
 
@@ -194,8 +210,9 @@ export function ScratchpadSubsection({
   const spawnOnSelected = () => {
     if (selectedIds.length === 0) return;
     setActiveProject(projectId);
-    const first = scratchpads.find((sp) => sp.id === selectedIds[0]);
-    onPickAgent(projectId, selectedIds, first?.title ?? "");
+    // A group has no single sensible name — leave it blank so the agent names
+    // the session itself once it has read them all.
+    onPickAgent(projectId, selectedIds, "");
     setSelected(new Set());
     anchorRef.current = null;
   };
@@ -230,7 +247,8 @@ export function ScratchpadSubsection({
             <ScratchpadRow
               key={sp.id}
               scratchpad={sp}
-              selected={selected.has(sp.id)}
+              multiSelected={selected.has(sp.id)}
+              open={openScratchpadId === sp.id}
               onActivate={(e) => activateScratchpad(e, sp.id)}
               onSpawn={() => spawnOnScratchpad(sp)}
               onArchive={() =>
