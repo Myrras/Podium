@@ -81,3 +81,20 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* The worktree being removed: pulses to show work is in flight (git can take a
+   moment) instead of just greying out like the other disabled buttons. The
+   global reduced-motion guard disables the animation; opacity-only keeps it
+   honouring that. Placed after :disabled so it wins the cursor/opacity. */
+.remove[data-busy] {
+  opacity: 0.7;
+  cursor: progress;
+  animation: removePulse var(--dur-4, 1s) var(--ease-in-out, ease-in-out)
+    infinite;
+}
+
+@keyframes removePulse {
+  50% {
+    opacity: 0.3;
+  }
+}

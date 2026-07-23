@@ -25,6 +25,9 @@ export function WorktreesModal({
 }) {
   /** `null` while loading. */
   const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
+  /** Name of the worktree whose removal is in flight — git can take a moment,
+   * so its delete button is disabled until it resolves (no button spamming). */
+  const [removing, setRemoving] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -45,23 +48,27 @@ export function WorktreesModal({
   }, [open, projectId]);
 
   const handleDelete = async (wt: WorktreeInfo) => {
+    if (removing) return;
+    setRemoving(wt.name);
     try {
-      setWorktrees(await worktreeRemove(projectId, wt.name, false));
-    } catch (e: unknown) {
-      const err = toIpcError(e);
-      if (err.kind !== "worktreeDirty") {
-        toastError("Could not remove worktree", err.message);
-        return;
-      }
-      const discard = window.confirm(
-        `Worktree "${wt.name}" has uncommitted changes. Discard them and remove it anyway?`,
-      );
-      if (!discard) return;
       try {
+        setWorktrees(await worktreeRemove(projectId, wt.name, false));
+      } catch (e: unknown) {
+        const err = toIpcError(e);
+        if (err.kind !== "worktreeDirty") {
+          toastError("Could not remove worktree", err.message);
+          return;
+        }
+        const discard = window.confirm(
+          `Worktree "${wt.name}" has uncommitted changes. Discard them and remove it anyway?`,
+        );
+        if (!discard) return;
         setWorktrees(await worktreeRemove(projectId, wt.name, true));
-      } catch (e2: unknown) {
-        toastError("Could not remove worktree", toIpcError(e2).message);
       }
+    } catch (e2: unknown) {
+      toastError("Could not remove worktree", toIpcError(e2).message);
+    } finally {
+      setRemoving(null);
     }
   };
 
@@ -91,9 +98,12 @@ export function WorktreesModal({
                 title={
                   wt.inUse
                     ? "A process is still running in this worktree"
-                    : "Delete worktree"
+                    : removing === wt.name
+                      ? "Removing…"
+                      : "Delete worktree"
                 }
-                disabled={wt.inUse}
+                data-busy={removing === wt.name || undefined}
+                disabled={wt.inUse || removing !== null}
                 onClick={() => void handleDelete(wt)}
               >
                 <DeleteIcon size={13} />

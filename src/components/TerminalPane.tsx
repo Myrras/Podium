@@ -3,14 +3,25 @@
 import { useEffect, useState } from "react";
 
 import { processGitBranch } from "../ipc/commands";
-import type { ProcessInfo } from "../ipc/types";
+import type { ProcessId, ProcessInfo } from "../ipc/types";
 import { activityLabel, isActive, statusLabel } from "../lib/processStatus";
 import { useAgentActivity } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
 import { StatusDot } from "./StatusDot";
 import { TerminalView } from "./TerminalView";
-import { BranchIcon, RestartIcon, RunIcon, StopIcon, TerminalIcon } from "./icons";
+import {
+  BranchIcon,
+  RestartIcon,
+  RunIcon,
+  StopIcon,
+  TerminalIcon,
+} from "./icons";
 import styles from "./TerminalPane.module.css";
+
+// Last-known git branch per process, surviving pane unmounts. Switching to a
+// window shows the cached branch instantly (no flicker to empty) while a
+// background refresh updates it — the git call itself takes a login shell.
+const branchCache = new Map<ProcessId, string | null>();
 
 export function TerminalPane({ process }: { process: ProcessInfo }) {
   const startProcess = useProcessStore((s) => s.startProcess);
@@ -24,12 +35,19 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
 
   // Git branch of the focused process's cwd (null when not a git repo). Fetched
   // on demand — it shells out to git, so it's kept off the process_list path.
-  const [branch, setBranch] = useState<string | null>(null);
+  // Seed from the cache so re-focusing a window shows the branch immediately.
+  const [branch, setBranch] = useState<string | null>(
+    () => branchCache.get(process.id) ?? null,
+  );
   useEffect(() => {
     let alive = true;
+    setBranch(branchCache.get(process.id) ?? null);
     processGitBranch(process.id)
-      .then((b) => alive && setBranch(b))
-      .catch(() => alive && setBranch(null));
+      .then((b) => {
+        branchCache.set(process.id, b);
+        if (alive) setBranch(b);
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };

@@ -601,6 +601,8 @@ async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
             vec![],
             false,
             None,
+            false,
+            None,
         )
         .await
         .unwrap_or_else(|e| panic!("agent {n} under the cap should spawn: {e}"));
@@ -614,6 +616,8 @@ async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
             None,
             vec![],
             vec![],
+            false,
+            None,
             false,
             None,
         )
@@ -652,6 +656,8 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             vec![],
             false,
             None,
+            false,
+            None,
         )
         .await
         .expect("spawn agent for todo");
@@ -664,6 +670,8 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             None,
             vec![todo.id],
             vec![],
+            false,
+            None,
             false,
             None,
         )
@@ -690,6 +698,8 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             None,
             vec![todo.id],
             vec![],
+            false,
+            None,
             false,
             None,
         )
@@ -730,6 +740,8 @@ async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
             vec![],
             false,
             None,
+            false,
+            None,
         )
         .await
         .expect("spawn agent for todo");
@@ -742,9 +754,6 @@ async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
         .expect("agent assigned after spawn");
     assert_eq!(assigned.process_id, agent);
     assert_eq!(assigned.name, "wire up OAuth");
-    // The session gets a colour at spawn, carried on the assignment so the UI
-    // can tint the to-do to match its owner.
-    assert!(assigned.color.is_some(), "assigned agent carries a colour");
     assert_eq!(orch.agent_for_todo(todo.id), Some(agent));
 
     // Unassigning clears the link (and returns the enriched, now-empty to-do).
@@ -779,6 +788,8 @@ async fn removing_an_agent_clears_its_todo_assignment() {
             None,
             vec![todo.id],
             vec![],
+            false,
+            None,
             false,
             None,
         )
@@ -818,6 +829,8 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
             vec![],
             false,
             None,
+            false,
+            None,
         )
         .await
         .expect("spawn bare agent");
@@ -852,74 +865,6 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn assign_todo_is_blocked_when_already_owned_by_another_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let orch = Arc::new(
-        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
-    );
-    let project_id = orch
-        .open_project(dir.path().to_path_buf())
-        .await
-        .expect("open project");
-    let tools = PodiumTools::new(Arc::clone(&orch));
-
-    let spawn_bare = || {
-        orch.spawn_agent(
-            project_id,
-            Some("fake".to_string()),
-            None,
-            None,
-            vec![],
-            vec![],
-            false,
-            None,
-        )
-    };
-    let first = spawn_bare().await.expect("spawn first agent");
-    let second = spawn_bare().await.expect("spawn second agent");
-    let todo = orch.add_todo(project_id, "wire up OAuth").expect("todo");
-    let todo2 = orch.add_todo(project_id, "write tests").expect("todo2");
-
-    let claim = |todo_id: TodoId, process_id: ProcessId| {
-        tools.assign_todo(Parameters(AssignTodoParams {
-            project_id: project_id.to_string(),
-            todo_id: todo_id.to_string(),
-            process_id: process_id.to_string(),
-        }))
-    };
-
-    // First session claims it; re-claiming your own is idempotent (allowed).
-    claim(todo.id, first).await.expect("first claim");
-    claim(todo.id, first)
-        .await
-        .expect("re-claiming your own is idempotent");
-    // A different live session cannot steal it.
-    assert!(
-        claim(todo.id, second).await.is_err(),
-        "a second session must not steal an owned to-do"
-    );
-    assert_eq!(orch.agent_for_todo(todo.id), Some(first));
-
-    // Two concurrent sessions get distinct colours (the palette avoids reusing
-    // a colour a live agent already holds). Colours live on the assignment.
-    claim(todo2.id, second).await.expect("second claims todo2");
-    let listed = orch.list_todos(project_id).expect("list");
-    let color_of = |tid: TodoId| {
-        listed
-            .iter()
-            .find(|t| t.id == tid)
-            .and_then(|t| t.assigned_agent.as_ref())
-            .and_then(|a| a.color.clone())
-    };
-    let c1 = color_of(todo.id);
-    let c2 = color_of(todo2.id);
-    assert!(c1.is_some() && c2.is_some(), "both carry a colour");
-    assert_ne!(c1, c2, "concurrent sessions get distinct colours");
-
-    orch.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn rename_session_tool_renames_the_calling_agent() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(
@@ -939,6 +884,8 @@ async fn rename_session_tool_renames_the_calling_agent() {
             None,
             vec![],
             vec![],
+            false,
+            None,
             false,
             None,
         )
@@ -1002,6 +949,8 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
             scratchpad_id: None,
             scratchpad_ids: None,
             worktree: None,
+            worktree_name: None,
+            worktree_on_head: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -1048,6 +997,8 @@ async fn spawning_on_a_scratchpad_assigns_the_agent_and_unassign_clears_it() {
             None,
             vec![],
             vec![pad.id],
+            false,
+            None,
             false,
             None,
         )
@@ -1105,6 +1056,8 @@ async fn spawning_on_both_todo_and_scratchpad_ignores_the_scratchpad() {
             vec![pad.id],
             false,
             None,
+            false,
+            None,
         )
         .await
         .expect("spawn agent for todo and scratchpad");
@@ -1144,6 +1097,8 @@ async fn spawning_on_a_todo_with_a_bogus_scratchpad_still_succeeds() {
             vec![bogus_id],
             false,
             None,
+            false,
+            None,
         )
         .await
         .expect("spawn agent for todo, ignoring the bogus scratchpad id");
@@ -1175,6 +1130,8 @@ async fn removing_an_agent_clears_its_scratchpad_assignment() {
             None,
             vec![],
             vec![pad.id],
+            false,
+            None,
             false,
             None,
         )
@@ -1211,6 +1168,8 @@ async fn list_scratchpads_enriches_assigned_agent() {
             None,
             vec![],
             vec![pad.id],
+            false,
+            None,
             false,
             None,
         )
@@ -1256,6 +1215,8 @@ async fn spawn_agent_tool_accepts_scratchpad_ids() {
             scratchpad_id: Some(a.id.to_string()),
             scratchpad_ids: Some(vec![a.id.to_string(), b.id.to_string()]),
             worktree: None,
+            worktree_name: None,
+            worktree_on_head: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -1380,7 +1341,18 @@ async fn bare_spawn_uses_the_global_default_adapter() {
         .await
         .expect("open project");
     let id = orch
-        .spawn_agent(project_id, None, None, None, vec![], vec![], false, None)
+        .spawn_agent(
+            project_id,
+            None,
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            false,
+            None,
+        )
         .await
         .expect("spawn agent");
 
@@ -1410,7 +1382,18 @@ async fn project_default_adapter_overrides_the_global_one() {
         .await
         .expect("open project");
     let id = orch
-        .spawn_agent(project_id, None, None, None, vec![], vec![], false, None)
+        .spawn_agent(
+            project_id,
+            None,
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            false,
+            None,
+        )
         .await
         .expect("spawn agent");
 
@@ -1443,6 +1426,8 @@ async fn spawn_agent_applies_global_override_and_default_args() {
             None,
             vec![],
             vec![],
+            false,
+            None,
             false,
             None,
         )
@@ -1486,6 +1471,8 @@ async fn spawn_agent_args_override_replaces_global_default_args() {
             None,
             vec![],
             vec![],
+            false,
+            None,
             false,
             Some(vec!["--model".to_string(), "haiku".to_string()]),
         )
@@ -1610,6 +1597,8 @@ async fn spawn_agent_tool_with_worktree_reports_it_in_the_snapshot() {
             scratchpad_id: None,
             scratchpad_ids: None,
             worktree: Some(true),
+            worktree_name: None,
+            worktree_on_head: None,
         }))
         .await
         .expect("spawn_agent with worktree over MCP");
@@ -1658,6 +1647,8 @@ async fn spawn_agent_in_worktree_on_a_non_git_project_fails_cleanly() {
             vec![],
             true,
             None,
+            false,
+            None,
         )
         .await
         .expect_err("worktree spawn on a non-git project must fail");
@@ -1688,6 +1679,8 @@ async fn remove_worktree_is_refused_while_an_agent_runs_in_it() {
             vec![],
             true,
             None,
+            false,
+            None,
         )
         .await
         .expect("spawn agent in worktree");
@@ -1707,6 +1700,76 @@ async fn remove_worktree_is_refused_while_an_agent_runs_in_it() {
     orch.remove_process(agent).await.expect("remove agent");
     orch.remove_worktree(project_id, "busy", false)
         .expect("remove worktree after agent stopped");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn assign_todo_is_blocked_when_already_owned_by_another_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let spawn_bare = || {
+        orch.spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            false,
+            None,
+        )
+    };
+    let first = spawn_bare().await.expect("spawn first agent");
+    let second = spawn_bare().await.expect("spawn second agent");
+    let todo = orch.add_todo(project_id, "wire up OAuth").expect("todo");
+    let todo2 = orch.add_todo(project_id, "write tests").expect("todo2");
+
+    let claim = |todo_id: TodoId, process_id: ProcessId| {
+        tools.assign_todo(Parameters(AssignTodoParams {
+            project_id: project_id.to_string(),
+            todo_id: todo_id.to_string(),
+            process_id: process_id.to_string(),
+        }))
+    };
+
+    // First session claims it; re-claiming your own is idempotent (allowed).
+    claim(todo.id, first).await.expect("first claim");
+    claim(todo.id, first)
+        .await
+        .expect("re-claiming your own is idempotent");
+    // A different live session cannot steal it.
+    assert!(
+        claim(todo.id, second).await.is_err(),
+        "a second session must not steal an owned to-do"
+    );
+    assert_eq!(orch.agent_for_todo(todo.id), Some(first));
+
+    // Two concurrent sessions get distinct colours (the palette avoids reusing
+    // a colour a live agent already holds). Colours live on the assignment.
+    claim(todo2.id, second).await.expect("second claims todo2");
+    let listed = orch.list_todos(project_id).expect("list");
+    let color_of = |tid: TodoId| {
+        listed
+            .iter()
+            .find(|t| t.id == tid)
+            .and_then(|t| t.assigned_agent.as_ref())
+            .and_then(|a| a.color.clone())
+    };
+    let c1 = color_of(todo.id);
+    let c2 = color_of(todo2.id);
+    assert!(c1.is_some() && c2.is_some(), "both carry a colour");
+    assert_ne!(c1, c2, "concurrent sessions get distinct colours");
 
     orch.shutdown().await;
 }

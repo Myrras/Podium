@@ -107,6 +107,47 @@ describe("NewAgentModal worktree checkbox", () => {
     expect(options.worktree).toBeUndefined();
   });
 
+  it("forces a worktree name for multiple to-dos and passes the branch choice", async () => {
+    const { spawnAgent } = seedSpawn();
+    render(
+      <NewAgentModal
+        open
+        projectId={PROJECT}
+        todoIds={["t1", "t2"]}
+        onClose={() => undefined}
+      />,
+    );
+    await screen.findByText("Claude Code");
+
+    // No worktree fields until the checkbox is ticked.
+    expect(screen.queryByLabelText("Worktree name")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Run in a git worktree"));
+
+    // Name is required — Start is blocked until it is filled.
+    const nameInput = screen.getByLabelText("Worktree name");
+    expect(screen.getByRole("button", { name: "Start agent" })).toBeDisabled();
+
+    fireEvent.change(nameInput, { target: { value: "auth-refactor" } });
+    // Opt into letting the agent name the branch.
+    fireEvent.click(
+      screen.getByLabelText(/Let the agent name the branch/, {
+        selector: "input",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start agent" }));
+
+    await waitFor(() =>
+      expect(spawnAgent).toHaveBeenCalledWith(
+        PROJECT,
+        expect.objectContaining({
+          worktree: true,
+          worktreeName: "auth-refactor",
+          worktreeOnHead: true,
+        }),
+      ),
+    );
+  });
+
   it("seeds the args field from settings and passes edits per session", async () => {
     agentSettingsGetMock.mockResolvedValue({
       ...SETTINGS,

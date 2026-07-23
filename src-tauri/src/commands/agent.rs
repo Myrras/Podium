@@ -28,8 +28,12 @@ pub async fn adapters_list(state: State<'_, AppState>) -> Result<Vec<AdapterInfo
 /// `todo_ids` seeds the agent's prompt with one or more to-dos to work on
 /// (multiple are handed over as one combined task). `scratchpad_ids` does the
 /// same for scratchpads, and is only used when `todo_ids` is empty.
-/// `worktree` runs the agent in a fresh git worktree named after it. `args`,
-/// when present, replaces the global default CLI args for this spawn only.
+/// `worktree` runs the agent in a fresh git worktree; `worktree_name` names it
+/// (the New agent dialog forces one for multi-to-do/scratchpad spawns, where
+/// deriving it from one arbitrary to-do would be misleading), and
+/// `worktree_on_head` checks it out detached so the agent names its own branch.
+/// `args`, when present, replaces the global default CLI args for this spawn
+/// only.
 #[allow(clippy::too_many_arguments)] // mirrors the core's flat spawn API
 #[tauri::command]
 pub async fn agent_spawn(
@@ -41,6 +45,8 @@ pub async fn agent_spawn(
     todo_ids: Option<Vec<TodoId>>,
     scratchpad_ids: Option<Vec<ScratchpadId>>,
     worktree: Option<bool>,
+    worktree_name: Option<String>,
+    worktree_on_head: Option<bool>,
     args: Option<Vec<String>>,
 ) -> Result<ProcessInfo, IpcError> {
     let id = state
@@ -53,6 +59,8 @@ pub async fn agent_spawn(
             todo_ids.unwrap_or_default(),
             scratchpad_ids.unwrap_or_default(),
             worktree.unwrap_or(false),
+            worktree_name,
+            worktree_on_head.unwrap_or(false),
             args,
         )
         .await?;

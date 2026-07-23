@@ -10,6 +10,7 @@
 //! `Data` batch's `seq` is the seq of its first chunk — the frontend drops
 //! any batch whose `seq` is below the snapshot's to avoid double-writes.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -143,17 +144,19 @@ pub fn process_list(state: State<'_, AppState>, project_id: Option<ProjectId>) -
 }
 
 /// The git branch checked out in the process's working directory, or `null`
-/// when it is not a git repo / detached HEAD. Shells out to git, so it is
-/// fetched on demand for the focused process rather than baked into
-/// `process_list`.
+/// when it is not a git repo / detached HEAD. Shells out to git via the login
+/// shell (seconds of shell-profile startup), so it runs on a blocking thread —
+/// a sync command would run this on the main thread and freeze the UI while
+/// the focused window switches.
 #[tauri::command]
-pub fn process_git_branch(
+pub async fn process_git_branch(
     state: State<'_, AppState>,
     process_id: ProcessId,
 ) -> Result<Option<String>, IpcError> {
-    state
-        .orchestrator
-        .process_git_branch(process_id)
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || orchestrator.process_git_branch(process_id))
+        .await
+        .map_err(|e| IpcError::new("io", format!("git branch task failed: {e}")))?
         .map_err(Into::into)
 }
 

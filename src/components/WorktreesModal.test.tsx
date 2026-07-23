@@ -74,6 +74,33 @@ describe("WorktreesModal", () => {
     await waitFor(() => expect(screen.queryByText("done")).toBeNull());
   });
 
+  it("disables the delete button while removal is in flight", async () => {
+    worktreeListMock.mockResolvedValue([wt("slow")]);
+    // Hold the removal open so we can observe the in-flight state.
+    let resolve!: (v: WorktreeInfo[]) => void;
+    worktreeRemoveMock.mockReturnValue(
+      new Promise<WorktreeInfo[]>((r) => {
+        resolve = r;
+      }),
+    );
+    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+
+    const btn = await screen.findByRole("button", {
+      name: "Delete worktree slow",
+    });
+    fireEvent.click(btn);
+
+    // Disabled + busy while the remove promise is pending.
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(btn.getAttribute("title")).toBe("Removing…");
+    // A second click cannot fire another removal.
+    fireEvent.click(btn);
+    expect(worktreeRemoveMock).toHaveBeenCalledTimes(1);
+
+    resolve([]);
+    await waitFor(() => expect(screen.queryByText("slow")).toBeNull());
+  });
+
   it("confirms before force-removing a dirty worktree", async () => {
     worktreeListMock.mockResolvedValue([wt("dirty")]);
     worktreeRemoveMock

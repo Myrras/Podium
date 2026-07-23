@@ -21,12 +21,13 @@ export default defineConfig(async () => ({
     clearMocks: true,
     restoreMocks: true,
     // `exclude` replaces Vitest's defaults rather than extending them, so
-    // spread `configDefaults.exclude` (node_modules, dist, ...) and add
-    // `.claude` — other agents' sibling worktrees can live under
-    // `.claude/worktrees/**` with their own `node_modules`, and picking up
-    // their test files pulls in a second React copy (hook errors that have
-    // nothing to do with this repo's own tests).
-    exclude: [...configDefaults.exclude, "**/.claude/**"],
+    // spread `configDefaults.exclude` (node_modules, dist, ...) and add the
+    // worktree dirs — other agents' sibling worktrees live under
+    // `.claude/worktrees/**` or Podium's own `.podium/worktrees/**` with their
+    // own `node_modules`, and picking up their test files pulls in a second
+    // React copy (hook errors that have nothing to do with this repo's own
+    // tests).
+    exclude: [...configDefaults.exclude, "**/.claude/**", "**/.podium/**"],
   },
 
   build: {

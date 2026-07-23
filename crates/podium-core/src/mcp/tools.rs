@@ -150,9 +150,17 @@ pub struct SpawnAgentParams {
     /// Scratchpad UUIDs to work on; several are handed to the one agent as a
     /// single combined task. Only used when no to-do is given.
     pub scratchpad_ids: Option<Vec<String>>,
-    /// Run the agent in a fresh git worktree under `.podium/worktrees/`,
-    /// named after the agent (requires the project to be a git repository).
+    /// Run the agent in a fresh git worktree under `.podium/worktrees/`
+    /// (requires the project to be a git repository). Named after the agent
+    /// unless `worktree_name` is given.
     pub worktree: Option<bool>,
+    /// Explicit worktree/branch name (slugified and de-duplicated). Defaults
+    /// to the agent's window name. Ignored unless `worktree` is true.
+    pub worktree_name: Option<String>,
+    /// Check the worktree out on a detached HEAD so the agent creates and
+    /// names its own branch, instead of a fresh `podium/<name>` branch.
+    /// Ignored unless `worktree` is true.
+    pub worktree_on_head: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -292,7 +300,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Pass worktree=true to run it in a fresh git worktree named after the agent (requires a git repository). Returns the new process snapshot."
+        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Pass worktree=true to run it in a fresh git worktree (requires a git repository), optionally with worktree_name to name it (defaults to the agent's name) and worktree_on_head=true to check it out on a detached HEAD so the agent names its own branch. Returns the new process snapshot."
     )]
     pub async fn spawn_agent(
         &self,
@@ -329,6 +337,8 @@ impl PodiumTools {
                 todo_ids,
                 scratchpad_ids,
                 p.worktree.unwrap_or(false),
+                p.worktree_name,
+                p.worktree_on_head.unwrap_or(false),
                 None,
             )
             .await

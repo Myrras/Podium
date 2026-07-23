@@ -8,6 +8,39 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.3.0] - 2026-07-23
+
+### Added
+
+- **Git worktree management for agent isolation.** Agents can run in a
+  Podium-managed git worktree under `.podium/worktrees/`, so their edits don't
+  touch your working tree. Tick "Run in a git worktree" when spawning an agent,
+  or have an agent create one mid-session over MCP (`create_worktree`,
+  `list_worktrees`, `remove_worktree`). Worktrees list in a new Worktrees modal
+  and show as a badge on the agent's sidebar row; removal is refused while an
+  agent still runs in one or it has uncommitted changes (unless forced), and the
+  branch is always kept.
+- **Branch choice per worktree.** A worktree checks out a fresh `podium/<name>`
+  branch by default, or you can let the agent name its own branch (it starts on
+  a detached HEAD). Spawning one agent across several to-dos now forces you to
+  name the worktree explicitly, rather than borrowing one arbitrary to-do's text.
+- **Worktree prompting.** With the (default-on) "suggest worktree" setting,
+  agents are asked to offer an isolated worktree before their first code change;
+  an agent already running in a worktree is told so and won't offer another.
+- **Git branch in the agent window header.** The focused agent window shows the
+  git branch (and worktree) of its working directory.
+- **Per-session CLI args.** The New agent dialog has an Arguments field, seeded
+  from the adapter's default args, that overrides them for that spawn only.
+
+### Fixed
+
+- **Worktree deletion feedback.** Deleting a worktree now disables the delete
+  buttons and marks the row "Removing…" while it is in flight, so it can't be
+  triggered repeatedly.
+- **Window-switch lag.** The git-branch lookup for a focused window now runs off
+  the main thread (with a cache), so switching between agent windows no longer
+  briefly freezes the UI.
+
 ## [1.2.2] - 2026-07-23
 
 ### Added

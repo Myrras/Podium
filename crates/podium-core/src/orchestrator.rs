@@ -1109,6 +1109,8 @@ impl Orchestrator {
         todo_ids: Vec<TodoId>,
         scratchpad_ids: Vec<ScratchpadId>,
         worktree: bool,
+        worktree_name: Option<String>,
+        worktree_on_head: bool,
         args_override: Option<Vec<String>>,
     ) -> CoreResult<ProcessId> {
         let (root, agents, existing_names, session_color) = {
@@ -1214,10 +1216,21 @@ impl Orchestrator {
             base_prompt.map(str::to_string)
         };
         // A requested worktree is created before the launch plan so the
-        // identity prompt can say the agent already runs in one; its name
-        // follows the window name (slugified + de-duplicated).
+        // identity prompt can say the agent already runs in one. Its name is
+        // an explicit `worktree_name` when given (the New agent dialog forces
+        // one for multi-to-do/scratchpad spawns, where the window name would
+        // otherwise be one arbitrary to-do's text), else the window name.
+        // `worktree_on_head` leaves the checkout on a detached HEAD so the
+        // agent picks the branch name itself.
         let wt = worktree
-            .then(|| crate::worktree::create(&root, &name))
+            .then(|| {
+                let wt_name = worktree_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(name.as_str());
+                crate::worktree::create(&root, wt_name, worktree_on_head)
+            })
             .transpose()?;
         // Combine the global default args (Settings → Agents) with the
         // project's `agents.extra_args` per the user's merge mode, and apply
@@ -1241,6 +1254,8 @@ impl Orchestrator {
             mcp: mcp.as_ref(),
             named,
             in_worktree: wt.is_some(),
+            // A detached worktree has no branch yet — the agent names it.
+            worktree_needs_branch: wt.is_some() && worktree_on_head,
             suggest_worktree: global.suggest_worktree && wt.is_none(),
         })?;
         let spec = ProcessSpec {
@@ -1373,7 +1388,7 @@ impl Orchestrator {
     /// context.
     pub fn create_worktree(&self, project_id: ProjectId, name: &str) -> CoreResult<WorktreeInfo> {
         let root = self.project_root(project_id)?;
-        crate::worktree::create(&root, name)
+        crate::worktree::create(&root, name, false)
     }
 
     /// Remove a Podium-managed git worktree. Refused while an active process
