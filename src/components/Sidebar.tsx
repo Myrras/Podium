@@ -20,14 +20,17 @@ import type {
   ScratchpadId,
   TodoId,
 } from "../ipc/types";
+import { projectOpenInWarp, toIpcError } from "../ipc/commands";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSettingsStore } from "../state/settingsStore";
+import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
+import { TerminalCommands } from "./TerminalCommands";
 import { TodoSubsection } from "./TodoSubsection";
 import { WorktreesModal } from "./WorktreesModal";
 import {
@@ -38,6 +41,7 @@ import {
   CloseIcon,
   EditIcon,
   ErrorIcon,
+  ExternalLinkIcon,
   FolderOpenIcon,
   GripIcon,
   RestartIcon,
@@ -56,10 +60,20 @@ interface SubsectionProps {
   add?: { label: string; onClick: () => void };
   /** Optional second header action, rendered before the add button. */
   extra?: { label: string; Icon: typeof AgentIcon; onClick: () => void };
+  /** Extra content rendered below the rows (e.g. the Commands block). */
+  children?: React.ReactNode;
 }
 
 /** One entity subsection (Agents / Processes / Terminals) in a group. */
-function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
+function Subsection({
+  title,
+  Icon,
+  rows,
+  empty,
+  add,
+  extra,
+  children,
+}: SubsectionProps) {
   return (
     <div className={styles.subsection}>
       <div className={styles.sectionHeader}>
@@ -97,6 +111,7 @@ function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
       ) : empty ? (
         <div className={styles.placeholder}>{empty}</div>
       ) : null}
+      {children}
     </div>
   );
 }
@@ -212,6 +227,24 @@ function ProjectGroup({
       ...(shell ? { command: shell } : {}),
     });
     if (info) await startProcess(info.id);
+  };
+
+  // Quick command from the Commands block: a new terminal running it.
+  const runCommand = async (command: string) => {
+    setActiveProject(project.id);
+    const info = await addProcess(project.id, {
+      name: command,
+      kind: "terminal",
+      command,
+    });
+    if (info) await startProcess(info.id);
+  };
+
+  const openInWarp = () => {
+    setActiveProject(project.id);
+    projectOpenInWarp(project.id).catch((e: unknown) =>
+      toastError("Could not open Warp", toIpcError(e).message),
+    );
   };
 
   return (
@@ -388,7 +421,18 @@ function ProjectGroup({
             rows={terminals}
             empty="No terminals yet."
             add={{ label: "New terminal", onClick: () => void addTerminal() }}
-          />
+            extra={{
+              label: "Open in Warp",
+              Icon: ExternalLinkIcon,
+              onClick: openInWarp,
+            }}
+          >
+            <TerminalCommands
+              projectId={project.id}
+              root={project.root}
+              onRun={(command) => void runCommand(command)}
+            />
+          </Subsection>
           <ScratchpadSubsection
             projectId={project.id}
             onOpenScratchpad={onOpenScratchpad}

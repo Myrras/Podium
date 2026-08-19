@@ -170,6 +170,8 @@ pub fn run() {
             commands::project::project_config_reload,
             commands::project::project_rename,
             commands::project::project_reorder,
+            commands::project::project_just_recipes,
+            commands::project::project_open_in_warp,
             commands::recents::recents_list,
             commands::recents::recents_remove,
             commands::workspace::workspace_list,
