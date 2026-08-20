@@ -8,6 +8,33 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.6.0] - 2026-08-20
+
+### Added
+
+- **Worktrees have their own sidebar list, with terminals and quick commands
+  that run inside them.** A new Worktrees section under Terminals lists every
+  Podium-managed worktree; each row can open a terminal rooted in that
+  checkout, open it in Warp, launch a quick command there (the Commands list,
+  now targeted at the worktree), or remove it — the same dirty-changes
+  confirmation as before, and removal stays blocked while a process runs in
+  it. Terminals running in a worktree nest under their worktree's row instead
+  of the plain Terminals list. The list stays live: a worktree created or
+  removed by an agent over MCP shows up immediately.
+
+### Changed
+
+- **Worktree actions are much faster.** Listing, creating and removing
+  worktrees spawned a fresh login shell for every git call, which took
+  seconds per action on heavy shell profiles. The git binary is now resolved
+  once and invoked directly, and the sidebar list renders instantly from a
+  cache that is refreshed in the background.
+
+### Removed
+
+- **The Worktrees modal.** Its button on the Agents header is gone; the
+  sidebar list replaces it.
+
 ## [1.5.0] - 2026-08-20
 
 ### Added
