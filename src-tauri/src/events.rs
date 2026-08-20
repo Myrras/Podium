@@ -122,6 +122,9 @@ fn forward(app: &AppHandle, event: PodiumEvent) {
         PodiumEvent::AssistantEvent { event } => {
             app.emit("assistant:event", AssistantPayload(event))
         }
+        PodiumEvent::WorktreesChanged { project_id } => {
+            app.emit("worktree:changed", ProjectRefPayload { project_id })
+        }
     };
     if let Err(e) = result {
         tracing::warn!("failed to emit event to webview: {e}");

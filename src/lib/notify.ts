@@ -79,10 +79,13 @@ export function playNotifySound(): void {
   }
 }
 
-/** Alert the user that an agent has stalled awaiting permission or input. */
-export function notifyAgentWaiting(agentName: string): void {
-  const title = "Agent needs your input";
-  const body = `${agentName} is waiting for permission or input.`;
+/**
+ * Alert the user that a process has stalled awaiting permission or input —
+ * an agent on a permission prompt, or a terminal on e.g. a `sudo` password.
+ */
+export function notifyAgentWaiting(name: string, isAgent = true): void {
+  const title = `${isAgent ? "Agent" : "Terminal"} needs your input`;
+  const body = `${name} is waiting for permission or input.`;
   toastInfo(title, body);
   playNotifySound();
   void ensureNotificationPermission().then((granted) => {

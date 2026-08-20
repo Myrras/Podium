@@ -3,11 +3,14 @@
 //! `podium/<name>` branch, so an agent's changes never touch the user's
 //! working tree.
 //!
-//! Git is driven through the login shell (`platform::run_shell_stdout`) —
-//! the same idiom as adapter probing, so PATH edits from shell profiles are
-//! honoured. stderr is always discarded so git output can never leak into
-//! `CoreError` messages. There is no persistence and no events:
-//! `git worktree list --porcelain` is the source of truth.
+//! Git is invoked directly via `platform::git_binary()` (a path resolved once
+//! through the login shell, then reused) rather than re-spawning a login
+//! shell on every call — list/create/remove can each fire several git calls,
+//! and a login shell per call is slow on heavy shell profiles. stderr is
+//! always discarded so git output can never leak into `CoreError` messages.
+//! There is no persistence, and `list` has no events (`git worktree list
+//! --porcelain` is the source of truth); `create`/`remove` do emit
+//! `WorktreesChanged` via the orchestrator.
 
 use std::path::{Path, PathBuf};
 
@@ -33,19 +36,22 @@ pub struct WorktreeInfo {
 /// Longest slug we generate — keeps paths and branch names readable.
 const MAX_SLUG_LEN: usize = 40;
 
-/// Run `git -C <root> <args…>` through the login shell, discarding stderr;
-/// `Some(stdout)` on success, `None` on any failure. Output never reaches an
-/// error message.
+/// Run `git -C <root> <args…>` directly (no shell in between — args are
+/// passed as argv, so no quoting is needed), discarding stderr; `Some(stdout)`
+/// on success, `None` on any failure. Output never reaches an error message.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = format!(
-        "git -C {}",
-        crate::platform::quote_arg(&root.to_string_lossy()).ok()?
-    );
-    for arg in args {
-        cmd.push(' ');
-        cmd.push_str(&crate::platform::quote_arg(arg).ok()?);
-    }
-    crate::platform::run_shell_stdout(&cmd)
+    let output = std::process::Command::new(crate::platform::git_binary())
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// The current branch checked out at `cwd`, or `None` when it is not a git

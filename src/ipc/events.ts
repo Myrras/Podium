@@ -83,6 +83,13 @@ export function onAssistantEvent(
   return listen<AssistantEvent>("assistant:event", (e) => handler(e.payload));
 }
 
+/** A project's git worktrees changed (from this UI or an agent over MCP). */
+export function onWorktreesChanged(
+  handler: (event: ProjectRefEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ProjectRefEvent>("worktree:changed", (e) => handler(e.payload));
+}
+
 /** The native macOS menu's Settings… item (⌘,) was activated (`lib.rs`). */
 export function onMenuOpenSettings(handler: () => void): Promise<UnlistenFn> {
   return listen("menu:open-settings", () => handler());

@@ -259,6 +259,7 @@ pub fn run() {
             commands::window::window_confirm_close,
             commands::worktree::worktree_list,
             commands::worktree::worktree_remove,
+            commands::worktree::worktree_open_in_warp,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
