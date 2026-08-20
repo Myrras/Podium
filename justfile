@@ -1,5 +1,13 @@
 # Podium — development tasks. Run `just` (or `just --list`) to see them.
 
+# Share one target/ across the main checkout and every git worktree. A fresh
+# worktree otherwise starts cold and rebuilds every dependency (minutes);
+# pointing it at the main checkout's target/ keeps them warm.
+# ponytail: cargo locks the target dir, so two builds in different worktrees
+# serialise instead of running in parallel — still far cheaper than a cold
+# rebuild. Falls back to ./target outside a git checkout.
+export CARGO_TARGET_DIR := `dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$PWD/.git")"` / "target"
+
 # Show available recipes.
 default:
     @just --list
