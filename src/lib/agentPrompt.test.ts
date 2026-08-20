@@ -15,6 +15,27 @@ describe("detectInputPrompt", () => {
     expect(detectInputPrompt(screen)).toBe(true);
   });
 
+  it("flags a sudo password prompt", () => {
+    expect(detectInputPrompt("$ sudo just install-signed\nPassword:")).toBe(
+      true,
+    );
+    expect(detectInputPrompt("[sudo] password for tester: \n")).toBe(true);
+  });
+
+  it("flags an ssh passphrase prompt", () => {
+    expect(
+      detectInputPrompt(
+        "Enter passphrase for key '/home/tester/.ssh/id_ed25519':",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not flag output that merely mentions a password", () => {
+    expect(detectInputPrompt("warn: password rotation is due in 3 days")).toBe(
+      false,
+    );
+  });
+
   it("flags a numbered selection pointer", () => {
     expect(detectInputPrompt("Pick one:\n❯ 2. Rebase")).toBe(true);
   });

@@ -36,6 +36,9 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
   const running = process.status.state === "running";
   const activity = useAgentActivity(process.id);
   const shells = useAgentShells(process.id);
+  // Agents show their full activity; for anything else only "needs input" is
+  // worth surfacing — "working…"/"idle" says nothing about a plain shell.
+  const showActivity = isAgent || activity === "waiting";
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(process.name);
@@ -86,7 +89,7 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
       >
         <StatusDot
           status={process.status}
-          activity={isAgent ? activity : undefined}
+          activity={showActivity ? activity : undefined}
         />
         {editing ? (
           <input
@@ -133,7 +136,7 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
             <BranchIcon size={11} />
           </span>
         )}
-        {isAgent && running && !editing && (
+        {showActivity && running && !editing && (
           <span className={styles.activity} data-activity={activity}>
             {activityLabel(activity, shells)}
           </span>

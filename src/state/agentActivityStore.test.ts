@@ -18,7 +18,8 @@ vi.mock("../lib/terminalRegistry", () => ({
 
 const notifyAgentWaiting = vi.fn();
 vi.mock("../lib/notify", () => ({
-  notifyAgentWaiting: (name: string) => notifyAgentWaiting(name),
+  notifyAgentWaiting: (name: string, isAgent?: boolean) =>
+    notifyAgentWaiting(name, isAgent),
 }));
 
 import type { ProcessInfo, ProcessKind, ProcessStatus } from "../ipc/types";
@@ -82,7 +83,7 @@ describe("agentActivityStore", () => {
     tick();
     expect(useAgentActivityStore.getState().activity.a1).toBe("waiting");
     expect(notifyAgentWaiting).toHaveBeenCalledOnce();
-    expect(notifyAgentWaiting).toHaveBeenCalledWith("claude");
+    expect(notifyAgentWaiting).toHaveBeenCalledWith("claude", true);
 
     // Still on the same prompt next poll — no repeat alert.
     tick();
@@ -98,13 +99,29 @@ describe("agentActivityStore", () => {
     expect(notifyAgentWaiting).not.toHaveBeenCalled();
   });
 
-  it("ignores non-agent and non-running processes", () => {
-    seed([
-      proc("svc", { kind: "service" }, RUNNING),
-      proc("a2", AGENT, { state: "notStarted" }),
-    ]);
+  it("ignores non-running processes", () => {
+    seed([proc("a2", AGENT, { state: "notStarted" })]);
     tick();
     expect(useAgentActivityStore.getState().activity).toEqual({});
+  });
+
+  it("flags a terminal stalled on a sudo password prompt", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("$ sudo systemctl restart api\nPassword:");
+    seed([proc("t1", { kind: "terminal" }, RUNNING, "shell")]);
+
+    tick();
+    expect(useAgentActivityStore.getState().activity.t1).toBe("waiting");
+    expect(notifyAgentWaiting).toHaveBeenCalledWith("shell", false);
+  });
+
+  it("leaves a quiet terminal idle", () => {
+    lastOutput.mockReturnValue(Date.now() - 10_000);
+    viewport.mockReturnValue("tester@host ~/podium %");
+    seed([proc("t1", { kind: "terminal" }, RUNNING)]);
+    tick();
+    expect(useAgentActivityStore.getState().activity.t1).toBe("idle");
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
   });
 
   it("drops agents that are no longer running", () => {

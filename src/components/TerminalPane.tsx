@@ -33,6 +33,8 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
   const running = process.status.state === "running";
   const activity = useAgentActivity(process.id);
   const shells = useAgentShells(process.id);
+  // Non-agents only surface "needs input" (see ProcessRow).
+  const showActivity = isAgent || activity === "waiting";
 
   // Git branch of the focused process's cwd (null when not a git repo). Fetched
   // on demand — it shells out to git, so it's kept off the process_list path.
@@ -62,12 +64,12 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
         <span className={styles.status}>
           <StatusDot
             status={process.status}
-            activity={isAgent ? activity : undefined}
+            activity={showActivity ? activity : undefined}
           />
           <span className={styles.statusText}>
             {statusLabel(process.status)}
           </span>
-          {isAgent && running && (
+          {showActivity && running && (
             <span className={styles.activityText} data-activity={activity}>
               {activityLabel(activity, shells)}
             </span>
