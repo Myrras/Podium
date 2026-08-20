@@ -1386,16 +1386,19 @@ impl Orchestrator {
 
     /// Create a Podium-managed git worktree in the project (name slugified
     /// and de-duplicated). Shells out to git — call from a blocking-friendly
-    /// context.
+    /// context. Emits `WorktreesChanged` for the project.
     pub fn create_worktree(&self, project_id: ProjectId, name: &str) -> CoreResult<WorktreeInfo> {
         let root = self.project_root(project_id)?;
-        crate::worktree::create(&root, name)
+        let info = crate::worktree::create(&root, name)?;
+        self.events
+            .publish(PodiumEvent::WorktreesChanged { project_id });
+        Ok(info)
     }
 
     /// Remove a Podium-managed git worktree. Refused while an active process
     /// runs in it, or while it has uncommitted changes unless `force`; its
     /// `podium/<name>` branch is kept. Shells out to git — call from a
-    /// blocking-friendly context.
+    /// blocking-friendly context. Emits `WorktreesChanged` for the project.
     pub fn remove_worktree(
         &self,
         project_id: ProjectId,
@@ -1410,7 +1413,21 @@ impl Orchestrator {
         if in_use {
             return Err(CoreError::WorktreeInUse);
         }
-        crate::worktree::remove(&root, name, force)
+        crate::worktree::remove(&root, name, force)?;
+        self.events
+            .publish(PodiumEvent::WorktreesChanged { project_id });
+        Ok(())
+    }
+
+    /// Open a worktree's checkout in a new Warp tab via Warp's URI scheme.
+    /// Launches an OS process — call from a blocking-friendly context.
+    pub fn open_worktree_in_warp(&self, project_id: ProjectId, name: &str) -> CoreResult<()> {
+        let entry = self
+            .list_worktrees(project_id)?
+            .into_iter()
+            .find(|w| w.name == name)
+            .ok_or(CoreError::WorktreeNotFound)?;
+        crate::platform::open_in_warp(&entry.path)
     }
 
     /// Whether any agent or terminal process is currently running (or
@@ -2533,5 +2550,78 @@ mod tests {
             rx.try_recv().unwrap(),
             PodiumEvent::ScratchpadsChanged { project_id: pid } if pid == project_id
         ));
+    }
+
+    /// A throwaway git repo with one commit, identity pinned so commits work
+    /// on machines without global git config (mirrors the same helper in
+    /// `worktree.rs`'s own tests and the MCP integration tests).
+    fn init_git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.name", "Test"]);
+        run(&["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.path().join("README.md"), "sample\n").expect("write file");
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+        dir
+    }
+
+    #[tokio::test]
+    async fn create_and_remove_worktree_publish_worktrees_changed_events() {
+        let dir = init_git_repo();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let created = orch.create_worktree(project_id, "Fix Login").unwrap();
+        assert_eq!(created.name, "fix-login");
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            PodiumEvent::WorktreesChanged { project_id: pid } if pid == project_id
+        ));
+
+        orch.remove_worktree(project_id, "fix-login", false)
+            .unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            PodiumEvent::WorktreesChanged { project_id: pid } if pid == project_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_worktree_in_warp_rejects_an_unknown_name() {
+        let dir = init_git_repo();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        // Only the error path is testable — a valid name would launch Warp.
+        assert!(matches!(
+            orch.open_worktree_in_warp(project_id, "nope"),
+            Err(CoreError::WorktreeNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_worktrees_does_not_publish_an_event() {
+        let dir = init_git_repo();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        orch.create_worktree(project_id, "mine").unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let listed = orch.list_worktrees(project_id).unwrap();
+        assert_eq!(listed.len(), 1);
+
+        assert!(rx.try_recv().is_err(), "list must not publish an event");
     }
 }

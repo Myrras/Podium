@@ -7,6 +7,8 @@
 //! `cmd /C`) is written once, not re-derived at each of the PTY-spawn /
 //! adapter-probe / MCP-install call sites.
 
+use std::sync::OnceLock;
+
 use crate::error::{CoreError, CoreResult};
 
 /// The login shell plus the args that precede a command *string*, so that
@@ -137,6 +139,32 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The `git` binary to invoke directly (bypassing the login shell) for
+/// worktree operations, which can spawn several git calls per action
+/// (list/create/remove) — a login shell per call is slow on heavy shell
+/// profiles. Resolved once via the login shell's `command -v git` so
+/// shell-profile PATH edits (e.g. a Homebrew git) are still honoured, then
+/// reused directly; falls back to the bare name if resolution fails.
+/// Windows PATH is process-wide, so no shell round-trip is needed there.
+pub fn git_binary() -> &'static str {
+    static GIT_PATH: OnceLock<String> = OnceLock::new();
+    GIT_PATH
+        .get_or_init(|| {
+            #[cfg(windows)]
+            {
+                "git".to_string()
+            }
+            #[cfg(unix)]
+            {
+                run_shell_stdout(&command_exists_query("git"))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "git".to_string())
+            }
+        })
+        .as_str()
 }
 
 /// The `warp://` URI that opens a new Warp tab at `path` (percent-encoded).
@@ -292,6 +320,16 @@ mod tests {
     #[test]
     fn quote_arg_rejects_nul_bytes() {
         assert!(quote_arg("bad\0arg").is_err());
+    }
+
+    #[test]
+    fn git_binary_resolves_to_something_nonempty() {
+        // Either a resolved absolute-ish path or the "git" fallback — either
+        // way it must be usable directly as a `Command::new` program name.
+        let path = git_binary();
+        assert!(!path.is_empty());
+        // Cached: a second call returns the identical pointer/value.
+        assert_eq!(git_binary(), path);
     }
 
     #[test]
