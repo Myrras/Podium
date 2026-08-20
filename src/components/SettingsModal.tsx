@@ -277,6 +277,7 @@ function AssistantTab() {
   const proactive = useAssistantStore((s) => s.proactive);
   const setProactivity = useAssistantStore((s) => s.setProactivity);
   const loadProactivity = useAssistantStore((s) => s.loadProactivity);
+  const newConversation = useAssistantStore((s) => s.newConversation);
 
   useEffect(() => {
     void loadAutonomy();
@@ -312,6 +313,17 @@ function AssistantTab() {
           value={proactive}
           onChange={(enabled) => void setProactivity(enabled)}
         />
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Conversation</h3>
+        <small className={styles.rowHelp}>
+          Day to day you stay in the one ongoing session. Resetting starts a
+          fresh conversation; the assistant&apos;s memory is kept.
+        </small>
+        <button type="button" onClick={() => void newConversation()}>
+          Reset conversation
+        </button>
       </section>
     </>
   );

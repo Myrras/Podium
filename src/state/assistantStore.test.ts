@@ -90,7 +90,8 @@ describe("assistantStore", () => {
     });
     await useAssistantStore.getState().setProactivity(true);
     expect(useAssistantStore.getState().proactive).toBe(false);
-    const last = useAssistantStore.getState().messages.at(-1);
+    const msgs = useAssistantStore.getState().messages;
+    const last = msgs[msgs.length - 1];
     expect(last?.text).toBe("disk is full");
   });
 });

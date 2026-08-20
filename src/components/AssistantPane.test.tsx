@@ -226,18 +226,15 @@ describe("AssistantPane", () => {
       expect(screen.getByText("list todos")).toBeInTheDocument();
     });
 
-    it("starts a new conversation and clears the log", async () => {
-      const user = userEvent.setup();
+    it("offers no new-conversation control — resetting lives in Settings", async () => {
       vi.mocked(assistantTranscript).mockResolvedValue([
         { role: "user", text: "old turn", at: "2026-01-02T09:00:00Z" },
       ]);
       render(<AssistantPane />);
       expect(await screen.findByText("old turn")).toBeInTheDocument();
 
-      await user.click(screen.getByLabelText("New conversation"));
-
-      expect(assistantNewConversation).toHaveBeenCalled();
-      expect(screen.queryByText("old turn")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("New conversation")).toBeNull();
+      expect(assistantNewConversation).not.toHaveBeenCalled();
     });
 
     it("shows the stored memory and saves an edit", async () => {

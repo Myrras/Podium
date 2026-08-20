@@ -209,6 +209,21 @@ describe("SettingsModal — Assistant tab", () => {
       }),
     );
   });
+
+  it("resets the conversation from the settings tab", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Reset conversation" }),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "assistant_new_conversation",
+        undefined,
+      ),
+    );
+  });
 });
 
 describe("SettingsModal — General tab", () => {

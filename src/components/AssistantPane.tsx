@@ -5,8 +5,9 @@
  * It renders the conversation — the user's turns, the assistant's prose
  * (markdown), the actions it ran, and failures — plus the actions its autonomy
  * mode held back, as cards the user confirms or rejects right here. The log is
- * replayed from the persisted transcript on mount; the header can start a new
- * conversation or open the assistant's memory for editing. Podium's own
+ * replayed from the persisted transcript on mount; the header can open the
+ * assistant's memory for editing (resetting the conversation lives in
+ * Settings → Assistant — day to day you stay in the one session). Podium's own
  * proactive nudges (an agent finished, one looks stuck, a day-start summary)
  * arrive as notice rows, so an unprompted reply always has a visible reason.
  */
@@ -18,13 +19,7 @@ import type { ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { Markdown } from "./Markdown";
-import {
-  AddIcon,
-  AssistantIcon,
-  CloseIcon,
-  MemoryIcon,
-  SendIcon,
-} from "./icons";
+import { AssistantIcon, CloseIcon, MemoryIcon, SendIcon } from "./icons";
 import styles from "./AssistantPane.module.css";
 
 const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
@@ -46,8 +41,8 @@ export function AssistantPane() {
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
   const hydrate = useAssistantStore((s) => s.hydrate);
-  const newConversation = useAssistantStore((s) => s.newConversation);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
+  const width = useLayoutStore((s) => s.assistantWidth);
   const [draft, setDraft] = useState("");
   const [memoryOpen, setMemoryOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
@@ -74,7 +69,11 @@ export function AssistantPane() {
   }
 
   return (
-    <aside className={styles.pane} aria-label="Personal assistant">
+    <aside
+      className={styles.pane}
+      style={{ width, minWidth: width }}
+      aria-label="Personal assistant"
+    >
       <header className={styles.header}>
         <AssistantIcon className={styles.headerIcon} />
         <span className={styles.title}>Assistant</span>
@@ -87,15 +86,6 @@ export function AssistantPane() {
           onClick={() => setMemoryOpen(!memoryOpen)}
         >
           <MemoryIcon />
-        </button>
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label="New conversation"
-          title="Start a new conversation (memory is kept)"
-          onClick={() => void newConversation()}
-        >
-          <AddIcon />
         </button>
         <select
           className={styles.autonomy}

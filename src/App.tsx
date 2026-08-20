@@ -65,6 +65,8 @@ export default function App() {
   const openScratchpad = useLayoutStore((s) => s.openScratchpad);
   const assistantOpen = useLayoutStore((s) => s.assistantOpen);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
+  const assistantWidth = useLayoutStore((s) => s.assistantWidth);
+  const setAssistantWidth = useLayoutStore((s) => s.setAssistantWidth);
 
   const activeProcess = useProcessStore(
     (s) => s.processes.find((p) => p.id === s.activeProcessId) ?? null,
@@ -155,6 +157,28 @@ export default function App() {
       window.addEventListener("mouseup", onUp);
     },
     [sidebarWidth, setSidebarWidth],
+  );
+
+  // Same drag pattern as the sidebar, but the assistant sits on the right:
+  // dragging left makes it wider.
+  const onAssistantResizerDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = assistantWidth;
+      function onMove(ev: MouseEvent) {
+        setAssistantWidth(startW - (ev.clientX - startX));
+      }
+      function onUp() {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+      }
+      document.body.style.cursor = "col-resize";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [assistantWidth, setAssistantWidth],
   );
 
   // Suppress the webview's default right-click menu (the browser-y "Save as /
@@ -272,7 +296,18 @@ export default function App() {
             <WelcomeScreen />
           )}
         </main>
-        {assistantOpen && <AssistantPane />}
+        {assistantOpen && (
+          <>
+            <div
+              className={styles.sidebarResizer}
+              onMouseDown={onAssistantResizerDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize assistant"
+            />
+            <AssistantPane />
+          </>
+        )}
       </div>
 
       <Toasts />
