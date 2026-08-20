@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ProcessInfo } from "../ipc/types";
 import { activityLabel, isActive } from "../lib/processStatus";
-import { useAgentActivity } from "../lib/useAgentActivity";
+import { useAgentActivity, useAgentShells } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
 import { AgentScratchpadList } from "./AgentScratchpadList";
 import { AgentTodoList } from "./AgentTodoList";
@@ -35,6 +35,7 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
   const renamable = isAgent || process.kind.kind === "terminal";
   const running = process.status.state === "running";
   const activity = useAgentActivity(process.id);
+  const shells = useAgentShells(process.id);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(process.name);
@@ -134,7 +135,7 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
         )}
         {isAgent && running && !editing && (
           <span className={styles.activity} data-activity={activity}>
-            {activityLabel(activity)}
+            {activityLabel(activity, shells)}
           </span>
         )}
         <span className={styles.actions} onClick={(e) => e.stopPropagation()}>

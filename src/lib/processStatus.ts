@@ -3,16 +3,20 @@
 import type { ProcessStatus } from "../ipc/types";
 import type { AgentActivity } from "./useAgentActivity";
 
-/** Short human label for an agent's activity (sidebar row / pane hint). */
-export function activityLabel(activity: AgentActivity): string {
-  switch (activity) {
-    case "working":
-      return "working…";
-    case "waiting":
-      return "needs input";
-    case "idle":
-      return "idle";
-  }
+/**
+ * Short human label for an agent's activity (sidebar row / pane hint).
+ * `shells` qualifies it with the agent's background shells — an idle agent
+ * with a build still running reads "idle · 1 shell", not just "idle".
+ */
+export function activityLabel(activity: AgentActivity, shells = 0): string {
+  const base =
+    activity === "working"
+      ? "working…"
+      : activity === "waiting"
+        ? "needs input"
+        : "idle";
+  if (shells === 0) return base;
+  return `${base} · ${shells} ${shells === 1 ? "shell" : "shells"}`;
 }
 
 /** Human-readable one-liner for a process status. */
