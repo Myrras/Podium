@@ -224,11 +224,12 @@ function ProjectGroup({
     if (info) await startProcess(info.id);
   };
 
-  // Quick command from the Commands block: a new terminal running it.
-  const runCommand = async (command: string) => {
+  // Quick command from the Commands block: a new terminal running it, named
+  // after the command's own name (a justfile recipe, or a user-set name).
+  const runCommand = async (command: string, name: string) => {
     setActiveProject(project.id);
     const info = await addProcess(project.id, {
-      name: command,
+      name,
       kind: "terminal",
       command,
     });
@@ -439,7 +440,7 @@ function ProjectGroup({
             projectId={project.id}
             root={project.root}
             onClose={() => setCommandsOpen(false)}
-            onRun={(command) => void runCommand(command)}
+            onRun={(command, name) => void runCommand(command, name)}
           />
           <ScratchpadSubsection
             projectId={project.id}

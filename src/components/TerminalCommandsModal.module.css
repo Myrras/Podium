@@ -56,15 +56,29 @@
   opacity: 1;
 }
 
+/* Name over command line; the command hides when the name IS the command. */
+.label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.name,
 .command {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono, monospace);
 }
 
-/* Hover-revealed remove affordance on user-defined commands. */
-.remove {
+.command {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* Hover-revealed edit/remove affordances on user-defined commands. */
+.iconButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -79,14 +93,18 @@
   opacity: 0;
 }
 
-.item:hover .remove,
-.remove:focus-visible {
+.item:hover .iconButton,
+.iconButton:focus-visible {
   opacity: 1;
+}
+
+.iconButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .remove:hover {
   color: var(--danger);
-  background: var(--surface-2);
 }
 
 .addForm {
@@ -95,12 +113,22 @@
   margin-top: var(--sp-3);
   padding-top: var(--sp-3);
   border-top: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 
+.nameInput,
 .addInput {
-  flex: 1;
   min-width: 0;
   font-size: var(--fs-sm);
   padding: var(--sp-1) var(--sp-2);
+}
+
+/* Name is the shorter field; the command line gets the remaining room. */
+.nameInput {
+  flex: 0 1 9rem;
+}
+
+.addInput {
+  flex: 2 1 10rem;
   font-family: var(--font-mono, monospace);
 }
