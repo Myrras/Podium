@@ -407,7 +407,10 @@ Prefer `just` (run `just` to list recipes). The Tauri CLI is the local
 
 ```
 just dev            # run the app (Vite + Tauri, hot reload)
-just build          # production bundle
+just dev-signed     # debug .app, stable signing identity, no hot reload (macOS)
+just build          # release bundle: .app + .dmg (what CI ships)
+just build-signed   # signed release .app, opens Finder on it (macOS)
+just install-signed # build-signed, then copy into /Applications
 just check          # cargo check --workspace
 just test           # cargo test --workspace + frontend vitest
 just test-core      # podium-core tests only
@@ -416,6 +419,17 @@ just format         # rustfmt + prettier
 just version 0.2.0  # bump + sync version across all manifests
 just version-check  # verify versions are in sync
 ```
+
+`just dev` ad-hoc-signs the binary with a fresh identity on every rebuild, so
+the macOS keychain re-prompts each run and "Always Allow" never sticks. The
+`*-signed` recipes pass `src-tauri/tauri.dev-signed.conf.json`, which only sets
+`bundle.macOS.signingIdentity` — one stable identity across rebuilds, so a
+single "Always Allow" persists and there's no Gatekeeper prompt on this
+machine. They build a bundle, so there is **no hot reload**: use `just dev` for
+iteration, `just dev-signed` when the keychain prompt is in the way, and
+`just install-signed` to put the app in `/Applications`. Only `just build`
+produces the `.dmg` (via `scripts/make-dmg.sh`) — that is the release path CI
+uses; the signed recipes deliberately skip it (`--bundles app`).
 
 Core integration tests (`crates/podium-core/tests/`) exercise **real PTYs**
 and a real MCP server on ephemeral ports — they run in plain `cargo test`
