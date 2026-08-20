@@ -1,4 +1,4 @@
-//! The 26 MCP tools Podium exposes to agents — all thin calls into
+//! The 27 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
 //!
 //! The same surface serves the personal assistant, on its own endpoint
@@ -95,6 +95,13 @@ pub struct SetTodoArchivedParams {
     pub todo_id: String,
     /// `true` to archive, `false` to restore it to the active list.
     pub archived: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateAssistantMemoryParams {
+    /// The full new memory text (markdown). It replaces what is stored, so
+    /// include everything worth keeping; an empty string clears it.
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -711,6 +718,21 @@ impl PodiumTools {
                 .set_scratchpad_archived(project_id, id, p.archived)
                 .map_err(core_error)?,
         )
+    }
+
+    #[tool(
+        description = "Replace the personal assistant's long-term memory (`assistant-memory.md`), which is injected into its system prompt at the start of every conversation. Pass the full new text — it replaces what is stored — and keep it short: preferences, project knowledge and recurring work, not a transcript. Only the assistant should call this."
+    )]
+    pub async fn update_assistant_memory(
+        &self,
+        Parameters(p): Parameters<UpdateAssistantMemoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.orchestrator
+            .set_assistant_memory(&p.content)
+            .map_err(core_error)?;
+        Ok(text_result(
+            "Memory saved. It is in your prompt from the next conversation on.".to_string(),
+        ))
     }
 
     fn find_process(&self, id: ProcessId) -> Result<crate::process::ProcessInfo, McpError> {

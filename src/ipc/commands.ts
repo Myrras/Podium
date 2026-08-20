@@ -30,6 +30,7 @@ import type {
   TermEvent,
   TodoId,
   TodoInfo,
+  TranscriptEntry,
   WorktreeInfo,
 } from "./types";
 
@@ -561,6 +562,29 @@ export function scratchpadUnassign(
  */
 export function assistantSend(text: string): Promise<void> {
   return invoke("assistant_send", { text });
+}
+
+/** The stored chat rows, oldest first — replayed into the panel on startup. */
+export function assistantTranscript(): Promise<TranscriptEntry[]> {
+  return invoke("assistant_transcript");
+}
+
+/**
+ * Drop the conversation (session, transcript and pending proposals) and start
+ * fresh. The assistant's memory is kept.
+ */
+export function assistantNewConversation(): Promise<void> {
+  return invoke("assistant_new_conversation");
+}
+
+/** What the assistant remembers across conversations (markdown, may be ""). */
+export function assistantMemoryGet(): Promise<string> {
+  return invoke("assistant_memory_get");
+}
+
+/** Replace that memory; `""` clears it. */
+export function assistantMemorySet(content: string): Promise<void> {
+  return invoke("assistant_memory_set", { content });
 }
 
 /** The assistant's autonomy mode (how much it may do unasked). */

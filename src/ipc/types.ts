@@ -352,6 +352,21 @@ export type AssistantEvent =
   /** The session ended; the next message starts a fresh one. */
   | { type: "exited" };
 
+/** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */
+export type TranscriptRole = "user" | "assistant" | "tool" | "notice";
+
+/**
+ * One persisted chat row (`podium_core::TranscriptEntry`), replayed into the
+ * assistant panel on startup. Proposals are runtime-only, so they never
+ * appear here.
+ */
+export interface TranscriptEntry {
+  role: TranscriptRole;
+  text: string;
+  /** RFC 3339 timestamp. */
+  at: string;
+}
+
 /**
  * How much the assistant may do without asking (`podium_core::AutonomyMode`).
  * Kebab-case on the wire, like `RestartPolicy` / `MergeMode`.

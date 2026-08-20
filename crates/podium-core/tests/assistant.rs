@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use podium_core::assistant::AssistantEvent;
+use podium_core::assistant::{AssistantEvent, TranscriptRole};
 use podium_core::{AssistantConfig, McpConnectInfo, Orchestrator, PodiumEvent};
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
@@ -42,16 +42,42 @@ fn write_fake(dir: &Path, script: &str) -> PathBuf {
     path
 }
 
-fn setup(script: &str) -> (Orchestrator, tempfile::TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
+/// An orchestrator whose assistant runs `script` and persists its
+/// conversation in `dir` — the same dir twice stands in for an app restart.
+fn setup_in(dir: &Path, script: &str) -> Orchestrator {
     let orch = Orchestrator::new();
     orch.configure_assistant(AssistantConfig {
-        command: write_fake(dir.path(), script)
-            .to_string_lossy()
-            .into_owned(),
-        cwd: Some(dir.path().to_path_buf()),
+        command: write_fake(dir, script).to_string_lossy().into_owned(),
+        cwd: Some(dir.to_path_buf()),
+        data_dir: Some(dir.to_path_buf()),
     });
+    orch
+}
+
+fn setup(script: &str) -> (Orchestrator, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), script);
     (orch, dir)
+}
+
+/// The arguments the fake CLI was launched with (it records them on spawn).
+async fn recorded_argv(dir: &Path) -> Vec<String> {
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(argv) = std::fs::read_to_string(dir.join("argv.txt")) {
+                return argv.lines().map(str::to_string).collect();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake cli records its argv")
+}
+
+/// The value that follows `flag` in `args`, if the flag was passed.
+fn arg_after(args: &[String], flag: &str) -> Option<String> {
+    let at = args.iter().position(|a| a == flag)?;
+    args.get(at + 1).cloned()
 }
 
 /// Collect assistant events until `stop` matches (or the test times out).
@@ -169,35 +195,129 @@ async fn the_session_is_launched_against_podiums_own_mcp_endpoint() {
     });
 
     orch.assistant_send("hello").await.expect("send");
-    let argv = timeout(TEST_TIMEOUT, async {
-        loop {
-            if let Ok(argv) = std::fs::read_to_string(dir.path().join("argv.txt")) {
-                return argv;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("fake cli records its argv");
-
-    let args: Vec<&str> = argv.lines().collect();
+    let args = recorded_argv(dir.path()).await;
     // The assistant's own (gated) MCP config, and an identity prompt telling
     // it what it is. `--strict-mcp-config` is deliberately absent: the user's
     // own MCP servers (mail, Slack, …) must stay available.
-    let at = args
-        .iter()
-        .position(|a| *a == "--mcp-config")
-        .expect("--mcp-config passed");
     assert_eq!(
-        args[at + 1],
-        config_dir.join("assistant.json").to_string_lossy()
+        arg_after(&args, "--mcp-config"),
+        Some(
+            config_dir
+                .join("assistant.json")
+                .to_string_lossy()
+                .into_owned()
+        ),
     );
-    let at = args
-        .iter()
-        .position(|a| *a == "--append-system-prompt")
-        .expect("identity prompt passed");
-    assert!(args[at + 1].contains("Podium"), "{}", args[at + 1]);
-    assert!(!args.contains(&"--strict-mcp-config"));
+    let prompt = arg_after(&args, "--append-system-prompt").expect("identity prompt passed");
+    assert!(prompt.contains("Podium"), "{prompt}");
+    assert!(!args.iter().any(|a| a == "--strict-mcp-config"));
 
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_transcript_and_session_survive_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), FAKE_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("what is open?").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    orch.shutdown().await;
+
+    // A second orchestrator over the same data dir is what a restart looks
+    // like: the panel replays these rows.
+    let restarted = setup_in(dir.path(), ARGV_RECORDING_CLAUDE);
+    let rows: Vec<(TranscriptRole, String)> = restarted
+        .assistant_transcript()
+        .into_iter()
+        .map(|e| (e.role, e.text))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (TranscriptRole::User, "what is open?".to_string()),
+            (TranscriptRole::Assistant, "hi there".to_string()),
+            (TranscriptRole::Tool, "list_todos".to_string()),
+        ]
+    );
+
+    // …and the next turn picks Claude's own session back up rather than
+    // starting a stranger.
+    restarted.assistant_send("and now?").await.expect("send");
+    let args = recorded_argv(dir.path()).await;
+    assert_eq!(
+        arg_after(&args, "--resume"),
+        Some("fake-session".to_string())
+    );
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_new_conversation_drops_the_transcript_and_the_session_quietly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), FAKE_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(!orch.assistant_transcript().is_empty());
+
+    orch.assistant_new_conversation().await;
+    assert!(orch.assistant_transcript().is_empty());
+    // Killing the old session is Podium's doing, so it must not surface as
+    // "the assistant session ended" in the freshly cleared panel.
+    let quiet = timeout(Duration::from_millis(500), rx.recv()).await;
+    assert!(quiet.is_err(), "unexpected event after a new conversation");
+
+    // Nothing left to resume either.
+    let fresh = setup_in(dir.path(), ARGV_RECORDING_CLAUDE);
+    fresh.assistant_send("hello again").await.expect("send");
+    let args = recorded_argv(dir.path()).await;
+    assert_eq!(arg_after(&args, "--resume"), None);
+    fresh.shutdown().await;
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_session_id_that_no_longer_starts_is_forgotten() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A stored id Claude has since pruned: resuming it fails at launch.
+    std::fs::write(
+        dir.path().join("assistant.json"),
+        r#"{"sessionId":"stale-session","transcript":[]}"#,
+    )
+    .expect("seed conversation");
+    let orch = setup_in(dir.path(), DYING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Exited)).await;
+
+    // The next attempt must not carry the same doomed `--resume` forever.
+    let stored = std::fs::read_to_string(dir.path().join("assistant.json")).expect("read");
+    assert!(!stored.contains("stale-session"), "{stored}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_memory_file_is_injected_into_the_session_prompt() {
+    let (orch, dir) = setup(ARGV_RECORDING_CLAUDE);
+
+    orch.set_assistant_memory("Prefers short answers. Ships on Fridays.")
+        .expect("store memory");
+    assert_eq!(
+        orch.assistant_memory(),
+        "Prefers short answers. Ships on Fridays."
+    );
+    assert!(dir.path().join("assistant-memory.md").exists());
+
+    orch.assistant_send("hello").await.expect("send");
+    recorded_argv(dir.path()).await;
+    // The memory is a multi-line block inside the identity prompt, so assert
+    // on the whole recorded argv rather than one line of it.
+    let argv = std::fs::read_to_string(dir.path().join("argv.txt")).expect("read argv");
+    assert!(argv.contains("# Your memory"), "{argv}");
+    assert!(argv.contains("Ships on Fridays"), "{argv}");
     orch.shutdown().await;
 }

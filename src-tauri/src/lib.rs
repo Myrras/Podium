@@ -147,12 +147,15 @@ pub fn run() {
                 .set_agent_settings_path(app.path().app_data_dir()?.join("agents.json"));
             // The personal assistant's headless CLI child runs in the app
             // data dir: a stable, writable cwd that is not one of the user's
-            // projects (it is workspace-wide, not per project).
+            // projects (it is workspace-wide, not per project). Its
+            // transcript (`assistant.json`) and memory
+            // (`assistant-memory.md`) live there too.
             state
                 .orchestrator
                 .configure_assistant(podium_core::AssistantConfig {
                     command: "claude".to_string(),
                     cwd: Some(app.path().app_data_dir()?),
+                    data_dir: Some(app.path().app_data_dir()?),
                 });
             // Start the built-in MCP server (ephemeral localhost port, per-run
             // bearer token). Agents get the URL + token via 0600 config files
@@ -197,6 +200,10 @@ pub fn run() {
             commands::process::process_resize,
             commands::process::process_attach,
             commands::assistant::assistant_send,
+            commands::assistant::assistant_transcript,
+            commands::assistant::assistant_new_conversation,
+            commands::assistant::assistant_memory_get,
+            commands::assistant::assistant_memory_set,
             commands::assistant::assistant_autonomy_get,
             commands::assistant::assistant_autonomy_set,
             commands::assistant::assistant_resolve_proposal,

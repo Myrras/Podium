@@ -30,6 +30,7 @@ pub use agent::{
 pub use assignment::AssignedAgent;
 pub use assistant::{
     AssistantConfig, AssistantEvent, AssistantSettings, AutonomyMode, ProposalInfo,
+    TranscriptEntry, TranscriptRole,
 };
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};

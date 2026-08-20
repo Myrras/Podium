@@ -19,6 +19,7 @@ import {
   ArrowUp,
   Bold,
   Bot,
+  Brain,
   Code,
   Code2,
   Heading1,
@@ -89,6 +90,7 @@ function icon(Glyph: LucideIcon, defaults?: Partial<LucideProps>) {
 
 // The personal assistant: panel toggle + its send button.
 export const AssistantIcon = icon(Sparkles);
+export const MemoryIcon = icon(Brain);
 export const SendIcon = icon(ArrowUp, { size: 15 });
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.

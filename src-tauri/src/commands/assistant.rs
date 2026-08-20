@@ -1,10 +1,11 @@
-//! Personal-assistant commands: sending a turn, the autonomy setting, and
-//! deciding on a proposed action. Replies (and the outcome of a proposal)
+//! Personal-assistant commands: sending a turn, replaying the stored
+//! transcript, starting over, its memory, the autonomy setting, and deciding
+//! on a proposed action. Replies (and the outcome of a proposal)
 //! stream back as global `assistant:event` events (see `events.rs`).
 
 use tauri::State;
 
-use podium_core::{AutonomyMode, ProposalId};
+use podium_core::{AutonomyMode, ProposalId, TranscriptEntry};
 
 use crate::error::IpcError;
 use crate::state::AppState;
@@ -15,6 +16,39 @@ use crate::state::AppState;
 #[tauri::command]
 pub async fn assistant_send(state: State<'_, AppState>, text: String) -> Result<(), IpcError> {
     state.orchestrator.assistant_send(&text).await?;
+    Ok(())
+}
+
+/// The stored chat rows, oldest first — what the panel replays on startup.
+#[tauri::command]
+pub async fn assistant_transcript(
+    state: State<'_, AppState>,
+) -> Result<Vec<TranscriptEntry>, IpcError> {
+    Ok(state.orchestrator.assistant_transcript())
+}
+
+/// Drop the conversation (session, transcript and pending proposals) and
+/// start fresh. The assistant's memory is deliberately kept.
+#[tauri::command]
+pub async fn assistant_new_conversation(state: State<'_, AppState>) -> Result<(), IpcError> {
+    state.orchestrator.assistant_new_conversation().await;
+    Ok(())
+}
+
+/// What the assistant remembers across conversations (empty when it has
+/// written nothing yet).
+#[tauri::command]
+pub async fn assistant_memory_get(state: State<'_, AppState>) -> Result<String, IpcError> {
+    Ok(state.orchestrator.assistant_memory())
+}
+
+/// Replace that memory; an empty `content` clears it.
+#[tauri::command]
+pub async fn assistant_memory_set(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<(), IpcError> {
+    state.orchestrator.set_assistant_memory(&content)?;
     Ok(())
 }
 

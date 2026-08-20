@@ -1,11 +1,13 @@
 /**
  * The personal assistant's chat log.
  *
- * In-memory only for now (phase 3 adds a persisted transcript). Turns are
- * appended locally when the user sends, and from the `assistant:event` stream
- * as the backend parses the headless session's output. Actions the assistant
- * ran show as cards in the same log, and actions the autonomy gate held back
- * show as proposal cards the user confirms or rejects here.
+ * The backend persists the conversation, so the log is *hydrated* from the
+ * stored transcript on startup and grows from there: turns are appended
+ * locally when the user sends, and from the `assistant:event` stream as the
+ * backend parses the headless session's output. Actions the assistant ran show
+ * as cards in the same log, and actions the autonomy gate held back show as
+ * proposal cards the user confirms or rejects here. Starting a new
+ * conversation clears both sides.
  */
 
 import { create } from "zustand";
@@ -13,8 +15,12 @@ import { create } from "zustand";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
+  assistantMemoryGet,
+  assistantMemorySet,
+  assistantNewConversation,
   assistantResolveProposal,
   assistantSend,
+  assistantTranscript,
   toIpcError,
 } from "../ipc/commands";
 import type { AssistantEvent, AutonomyMode } from "../ipc/types";
@@ -47,6 +53,18 @@ interface AssistantState {
   busy: boolean;
   /** How much the assistant may do unasked; mirrors the persisted setting. */
   autonomy: AutonomyMode;
+  /** What the assistant remembers across conversations; `null` until loaded. */
+  memory: string | null;
+  /** Whether the stored transcript was already replayed this app run. */
+  hydrated: boolean;
+  /** Replay the persisted transcript into the log (once, on mount). */
+  hydrate: () => Promise<void>;
+  /** Drop the conversation and start over (memory is kept). */
+  newConversation: () => Promise<void>;
+  /** Load the stored memory (when the user opens the memory view). */
+  loadMemory: () => Promise<void>;
+  /** Replace the memory; `""` clears it. */
+  saveMemory: (content: string) => Promise<void>;
   /** Send a turn; returns whether it was accepted (the input clears then). */
   send: (text: string) => Promise<boolean>;
   /** Load the stored autonomy mode (on mount). */
@@ -85,6 +103,57 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   messages: [],
   busy: false,
   autonomy: "confirm-destructive",
+  memory: null,
+  hydrated: false,
+  hydrate: async () => {
+    // Once per app run: the panel remounts every time it is reopened, and the
+    // log it already holds is the same conversation.
+    if (get().hydrated) return;
+    set({ hydrated: true });
+    try {
+      const stored = await assistantTranscript();
+      // Prepended, not assigned: a turn may have streamed in while this was
+      // in flight, and it belongs after the stored rows.
+      set((s) => ({
+        messages: [
+          ...stored.map((e) => message(e.role, e.text)),
+          ...s.messages,
+        ],
+      }));
+    } catch {
+      // An empty panel is a fine fallback — the conversation is still there.
+    }
+  },
+  newConversation: async () => {
+    try {
+      await assistantNewConversation();
+      set({ messages: [], busy: false });
+    } catch (e) {
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  loadMemory: async () => {
+    try {
+      set({ memory: await assistantMemoryGet() });
+    } catch (e) {
+      set((s) => ({
+        memory: "",
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  saveMemory: async (content) => {
+    try {
+      await assistantMemorySet(content);
+      set({ memory: content });
+    } catch (e) {
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
   send: async (text) => {
     const trimmed = text.trim();
     if (!trimmed) return false;
@@ -208,8 +277,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               ),
             ],
           };
-        // `started` carries Claude's session id — only phase 3 (resume) needs
-        // it, and it is not chat content.
+        // `started` carries Claude's session id: the backend stores it to
+        // resume the conversation later, and it is not chat content.
         case "started":
           return s;
       }

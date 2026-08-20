@@ -52,7 +52,7 @@
   border-color: var(--accent);
 }
 
-.closeBtn {
+.iconBtn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -65,9 +65,47 @@
   color: var(--text-muted);
 }
 
-.closeBtn:hover {
+.iconBtn:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+
+.iconBtn[aria-pressed="true"] {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+/* The memory view: an editable panel above the log, not a modal — it is
+   reference material for the conversation next to it. */
+.memory {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.memoryText {
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-2);
+}
+
+.memoryText:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.memoryActions {
+  display: flex;
+  gap: var(--sp-2);
 }
 
 .log {

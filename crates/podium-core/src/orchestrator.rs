@@ -13,7 +13,7 @@ use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode}
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
-    AssistantConfig, AssistantManager, AutonomyMode, ProposalAction, ProposalInfo,
+    AssistantConfig, AssistantManager, AutonomyMode, ProposalAction, ProposalInfo, TranscriptEntry,
 };
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
@@ -215,8 +215,10 @@ impl Orchestrator {
         self.scratchpads.set_path(path);
     }
 
-    /// Point the assistant at its CLI binary and working directory. Until
-    /// this is called it uses the `claude` on `PATH` and Podium's own cwd.
+    /// Point the assistant at its CLI binary, working directory and the dir
+    /// holding its transcript + memory. Until this is called it uses the
+    /// `claude` on `PATH`, Podium's own cwd, and keeps the conversation in
+    /// memory only.
     pub fn configure_assistant(&self, config: AssistantConfig) {
         self.assistant.configure(config);
     }
@@ -226,6 +228,29 @@ impl Orchestrator {
     pub async fn assistant_send(&self, text: &str) -> CoreResult<()> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.send(text, mcp).await
+    }
+
+    /// The persisted chat rows the panel replays after a restart.
+    pub fn assistant_transcript(&self) -> Vec<TranscriptEntry> {
+        self.assistant.store().transcript()
+    }
+
+    /// Start a fresh conversation: the session is killed and the transcript,
+    /// session id and pending proposals are dropped. Memory is kept — that is
+    /// the point of it.
+    pub async fn assistant_new_conversation(&self) {
+        self.assistant.new_conversation().await;
+    }
+
+    /// What the assistant remembers across conversations (`assistant-memory.md`).
+    pub fn assistant_memory(&self) -> String {
+        self.assistant.store().memory()
+    }
+
+    /// Replace that memory; an empty `content` clears it. The running session
+    /// keeps the prompt it started with — the new text lands on its next spawn.
+    pub fn set_assistant_memory(&self, content: &str) -> CoreResult<()> {
+        self.assistant.store().set_memory(content)
     }
 
     /// How much the assistant may do without asking (Settings → Assistant).

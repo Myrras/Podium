@@ -13,14 +13,22 @@
 //! then execute. File-editing tools are refused at the CLI so the assistant
 //! cannot write code — implementation work is delegated to spawned agents.
 //!
-//! Not here yet: transcript/memory persistence (phase 3) and proactive nudges
-//! (phase 4), so proposals live in memory and are lost on restart.
+//! The conversation itself is persisted: an [`AssistantStore`] keeps the
+//! transcript and Claude's session id in `assistant.json`, so a restart
+//! replays the chat and resumes the same session (`--resume`). A separate
+//! `assistant-memory.md` — injected into the system prompt, updated by the
+//! assistant over MCP and editable by the user — is what it remembers across
+//! conversations.
+//!
+//! Not here yet: proactive nudges (phase 4). Proposals still live in memory
+//! only, so a pending one is lost on restart.
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,7 +65,10 @@ to-do describing it and spawn an agent on that to-do, then report back. Some \
 actions need the user's confirmation: the tool then answers that a proposal is \
 awaiting them, which means a card is shown in the chat — never retry such a \
 call, just carry on and you will be told the outcome. Keep answers short and \
-concrete; the panel is narrow.";
+concrete; the panel is narrow. What you learn about the user and their work \
+belongs in the memory below: call update_assistant_memory with the full new \
+text (it replaces what is there) whenever something is worth having next \
+time.";
 
 /// Tools that only read state. Never gated — in any mode.
 const READ_ONLY_TOOLS: &[&str] = &[
@@ -173,6 +184,214 @@ pub enum AssistantEvent {
     Exited,
 }
 
+/// Who spoke in one persisted transcript row. A subset of the live event
+/// stream: proposals are runtime-only, and turn/session bookkeeping is not
+/// conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TranscriptRole {
+    User,
+    Assistant,
+    /// An action the assistant ran (the tool name).
+    Tool,
+    /// Something Podium reports, e.g. an action that failed.
+    Notice,
+}
+
+/// One persisted chat row, replayed into the panel after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptEntry {
+    pub role: TranscriptRole,
+    pub text: String,
+    pub at: DateTime<Utc>,
+}
+
+/// Rows kept in `assistant.json`. The conversation itself lives in Claude's
+/// own session (which `--resume` picks up); this is only what the panel
+/// replays, so dropping the oldest rows loses nothing the assistant knows.
+// ponytail: flat cap, oldest-first drop. Paginate if a user ever wants the
+// full history back.
+const MAX_TRANSCRIPT_ENTRIES: usize = 500;
+
+/// The conversation as persisted: Claude's session id (to `--resume` after a
+/// restart) plus the rows the panel replays.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredConversation {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    transcript: Vec<TranscriptEntry>,
+}
+
+struct StoreInner {
+    /// `assistant.json`; `None` keeps the conversation in memory (tests, or a
+    /// data dir that failed to resolve).
+    path: Option<PathBuf>,
+    /// `assistant-memory.md`; `None` means the assistant has no memory file.
+    memory_path: Option<PathBuf>,
+    conversation: StoredConversation,
+}
+
+/// The assistant's persisted state: the transcript + session id (one JSON
+/// file, atomic writes, exactly like [`crate::todo::TodoStore`]) and the
+/// memory the user can also edit by hand (one markdown file, always read
+/// fresh from disk rather than cached).
+pub struct AssistantStore {
+    inner: StdMutex<StoreInner>,
+}
+
+impl AssistantStore {
+    fn new() -> Self {
+        Self {
+            inner: StdMutex::new(StoreInner {
+                path: None,
+                memory_path: None,
+                conversation: StoredConversation::default(),
+            }),
+        }
+    }
+
+    /// Point the store at `dir` (the app data dir) and load what is there.
+    /// Anything accumulated in memory before this call is replaced.
+    fn set_dir(&self, dir: &Path) {
+        let path = dir.join("assistant.json");
+        let conversation = load_conversation(&path);
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.path = Some(path);
+        inner.memory_path = Some(dir.join("assistant-memory.md"));
+        inner.conversation = conversation;
+    }
+
+    /// The rows the panel replays, oldest first.
+    pub fn transcript(&self) -> Vec<TranscriptEntry> {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .conversation
+            .transcript
+            .clone()
+    }
+
+    /// Claude's session id for the ongoing conversation, if one was started.
+    fn session_id(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .conversation
+            .session_id
+            .clone()
+    }
+
+    /// Forget the session id, keeping the transcript: used when a session
+    /// never came up, so a stale id cannot wedge every later turn.
+    fn forget_session(&self) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        if inner.conversation.session_id.take().is_some() {
+            let _ = save_conversation(&inner);
+        }
+    }
+
+    /// Start over: no transcript, no session to resume.
+    fn clear(&self) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.conversation = StoredConversation::default();
+        let _ = save_conversation(&inner);
+    }
+
+    fn append(&self, role: TranscriptRole, text: String) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let transcript = &mut inner.conversation.transcript;
+        transcript.push(TranscriptEntry {
+            role,
+            text,
+            at: Utc::now(),
+        });
+        if transcript.len() > MAX_TRANSCRIPT_ENTRIES {
+            let drop = transcript.len() - MAX_TRANSCRIPT_ENTRIES;
+            transcript.drain(..drop);
+        }
+        // Best effort: a chat row that cannot be saved must not fail the turn.
+        let _ = save_conversation(&inner);
+    }
+
+    /// Record whatever of `event` belongs in the persisted conversation.
+    fn record(&self, event: &AssistantEvent) {
+        match event {
+            AssistantEvent::Started { session_id } => {
+                let mut inner = self.inner.lock().expect(LOCK_POISONED);
+                if inner.conversation.session_id.as_deref() != Some(session_id.as_str()) {
+                    inner.conversation.session_id = Some(session_id.clone());
+                    let _ = save_conversation(&inner);
+                }
+            }
+            AssistantEvent::Message { text } => {
+                self.append(TranscriptRole::Assistant, text.clone())
+            }
+            AssistantEvent::Tool { name } => self.append(TranscriptRole::Tool, name.clone()),
+            AssistantEvent::ToolFailed { message } => {
+                self.append(TranscriptRole::Notice, message.clone())
+            }
+            // Proposals, turn ends and exits are runtime signals, not chat.
+            _ => {}
+        }
+    }
+
+    /// What the assistant remembers across conversations (empty when there is
+    /// no memory file yet). Read from disk every time — the user may edit the
+    /// file by hand.
+    pub fn memory(&self) -> String {
+        let path = self.inner.lock().expect(LOCK_POISONED).memory_path.clone();
+        path.and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    }
+
+    /// Replace the memory; an empty `content` clears it. Takes effect in the
+    /// running session's prompt only on its next (re)spawn.
+    pub fn set_memory(&self, content: &str) -> CoreResult<()> {
+        let Some(path) = self.inner.lock().expect(LOCK_POISONED).memory_path.clone() else {
+            return Err(CoreError::InvalidInput(
+                "the assistant has no memory file".to_string(),
+            ));
+        };
+        write_atomically(&path, content.as_bytes())
+    }
+}
+
+/// Read the conversation from disk; a missing or corrupt file starts empty.
+fn load_conversation(path: &Path) -> StoredConversation {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return StoredConversation::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        tracing::warn!("assistant conversation file is corrupt, starting fresh: {e}");
+        StoredConversation::default()
+    })
+}
+
+/// Persist the conversation atomically. A store without a path is a no-op.
+fn save_conversation(inner: &StoreInner) -> CoreResult<()> {
+    let Some(path) = &inner.path else {
+        return Ok(());
+    };
+    let json = serde_json::to_string_pretty(&inner.conversation).map_err(|e| {
+        CoreError::InvalidInput(format!("failed to encode the assistant conversation: {e}"))
+    })?;
+    write_atomically(path, json.as_bytes())
+}
+
+/// Temp file + rename, so a crash mid-write can never tear the file.
+fn write_atomically(path: &Path, bytes: &[u8]) -> CoreResult<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// Where the assistant session comes from. Injectable so tests can point at a
 /// fake `claude` binary instead of the real CLI.
 #[derive(Debug, Clone)]
@@ -181,6 +400,10 @@ pub struct AssistantConfig {
     pub command: String,
     /// Working directory for the child; `None` inherits Podium's own.
     pub cwd: Option<PathBuf>,
+    /// Where `assistant.json` (transcript + session id) and
+    /// `assistant-memory.md` live; `None` keeps the conversation in memory
+    /// and leaves the assistant without a memory file.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl Default for AssistantConfig {
@@ -188,6 +411,7 @@ impl Default for AssistantConfig {
         Self {
             command: "claude".to_string(),
             cwd: None,
+            data_dir: None,
         }
     }
 }
@@ -195,6 +419,10 @@ impl Default for AssistantConfig {
 struct Session {
     child: Child,
     stdin: ChildStdin,
+    /// Set before Podium kills the child on purpose (starting a new
+    /// conversation), so its output task stays quiet instead of reporting the
+    /// session as having ended under the user.
+    quiet_exit: Arc<AtomicBool>,
 }
 
 /// Owns the assistant session, its lazy (re)spawn, and the proposals its
@@ -206,6 +434,9 @@ pub struct AssistantManager {
     /// proposal never expires on its own, but does not survive a restart
     /// (phase 3 persists the conversation).
     proposals: StdMutex<Vec<(ProposalInfo, ProposalAction)>>,
+    /// The persisted conversation (transcript + session id) and the memory
+    /// file. Shared with the output task, which records what it publishes.
+    store: Arc<AssistantStore>,
     events: EventBus,
 }
 
@@ -215,13 +446,22 @@ impl AssistantManager {
             config: StdMutex::new(AssistantConfig::default()),
             session: Mutex::new(None),
             proposals: StdMutex::new(Vec::new()),
+            store: Arc::new(AssistantStore::new()),
             events,
         }
+    }
+
+    /// The persisted conversation and memory.
+    pub fn store(&self) -> &AssistantStore {
+        &self.store
     }
 
     /// Point the manager at a binary / working directory (the app data dir in
     /// the real app, a fake CLI in tests).
     pub fn configure(&self, config: AssistantConfig) {
+        if let Some(dir) = &config.data_dir {
+            self.store.set_dir(dir);
+        }
         *self.config.lock().expect(LOCK_POISONED) = config;
     }
 
@@ -248,7 +488,29 @@ impl AssistantManager {
             let config = self.config.lock().expect(LOCK_POISONED).clone();
             *guard = Some(self.spawn(&config, mcp.as_ref())?);
         }
-        write_turn(guard.as_mut().expect("session present"), text).await
+        write_turn(guard.as_mut().expect("session present"), text).await?;
+        self.store.append(TranscriptRole::User, text.to_string());
+        Ok(())
+    }
+
+    /// Drop the conversation: kill the session, forget the transcript and the
+    /// session id, and discard proposals that belonged to it. The next turn
+    /// starts a session with no `--resume`.
+    pub async fn new_conversation(&self) {
+        if let Some(mut session) = self.session.lock().await.take() {
+            // A deliberate kill: the panel is being cleared, so the output
+            // task must not report the session as having ended by itself.
+            session.quiet_exit.store(true, Ordering::Relaxed);
+            let _ = session.child.kill().await;
+        }
+        self.proposals.lock().expect(LOCK_POISONED).clear();
+        self.store.clear();
+    }
+
+    /// Publish one event and persist whatever of it belongs in the transcript.
+    fn publish(&self, event: AssistantEvent) {
+        self.store.record(&event);
+        self.events.publish(PodiumEvent::AssistantEvent { event });
     }
 
     /// Park a gated tool call and tell the UI about it. Returns the id the
@@ -261,12 +523,10 @@ impl AssistantManager {
             created_at: Utc::now(),
         };
         let id = info.id;
-        self.events.publish(PodiumEvent::AssistantEvent {
-            event: AssistantEvent::Proposal {
-                id,
-                tool: info.tool.clone(),
-                summary: info.summary.clone(),
-            },
+        self.publish(AssistantEvent::Proposal {
+            id,
+            tool: info.tool.clone(),
+            summary: info.summary.clone(),
         });
         self.proposals
             .lock()
@@ -305,12 +565,10 @@ impl AssistantManager {
             Some(Err(message)) => Some(message.clone()),
             _ => None,
         };
-        self.events.publish(PodiumEvent::AssistantEvent {
-            event: AssistantEvent::ProposalResolved {
-                id,
-                approved,
-                error,
-            },
+        self.publish(AssistantEvent::ProposalResolved {
+            id,
+            approved,
+            error,
         });
         self.notify(&outcome_notice(&info.tool, outcome)).await;
         Ok(())
@@ -359,13 +617,25 @@ impl AssistantManager {
             })
             .transpose()?
             .unwrap_or_default();
+        // Pick the stored conversation back up, so a restart continues where
+        // the panel left off instead of starting a stranger.
+        let resume = self
+            .store
+            .session_id()
+            .map(|id| {
+                Ok::<String, CoreError>(format!(" --resume {}", crate::platform::quote_arg(&id)?))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let resumed = !resume.is_empty();
         let command = format!(
             "exec {} -p --input-format stream-json --output-format stream-json \
-             --verbose --disallowedTools {}{} --append-system-prompt {}",
+             --verbose --disallowedTools {}{}{} --append-system-prompt {}",
             crate::platform::quote_arg(&config.command)?,
             DISALLOWED_TOOLS,
             mcp_config,
-            crate::platform::quote_arg(IDENTITY_PROMPT)?,
+            resume,
+            crate::platform::quote_arg(&identity_prompt(&self.store.memory()))?,
         );
         let mut cmd = Command::new(shell);
         cmd.args(prefix)
@@ -383,20 +653,50 @@ impl AssistantManager {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let events = self.events.clone();
+        let store = Arc::clone(&self.store);
+        let quiet_exit = Arc::new(AtomicBool::new(false));
+        let quiet = Arc::clone(&quiet_exit);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
+            let mut started = false;
             // Non-JSON noise (a chatty shell profile) is skipped, not fatal.
             while let Ok(Some(line)) = lines.next_line().await {
                 for event in parse_stream_line(&line) {
+                    started |= matches!(event, AssistantEvent::Started { .. });
+                    store.record(&event);
                     events.publish(PodiumEvent::AssistantEvent { event });
                 }
             }
-            events.publish(PodiumEvent::AssistantEvent {
-                event: AssistantEvent::Exited,
-            });
+            // A session that never announced itself is a session that never
+            // came up. If we asked to resume one, the stored id is the likely
+            // culprit (Claude prunes old sessions) — drop it so the next turn
+            // starts fresh instead of failing forever.
+            if !started && resumed {
+                store.forget_session();
+            }
+            if !quiet.load(Ordering::Relaxed) {
+                events.publish(PodiumEvent::AssistantEvent {
+                    event: AssistantEvent::Exited,
+                });
+            }
         });
-        Ok(Session { child, stdin })
+        Ok(Session {
+            child,
+            stdin,
+            quiet_exit,
+        })
     }
+}
+
+/// The system prompt the session is spawned with: who it is, plus whatever it
+/// has written into its memory. Memory changes only reach a *new* session —
+/// the running one already knows what it just wrote.
+fn identity_prompt(memory: &str) -> String {
+    let memory = memory.trim();
+    if memory.is_empty() {
+        return IDENTITY_PROMPT.to_string();
+    }
+    format!("{IDENTITY_PROMPT}\n\n# Your memory\n\n{memory}")
 }
 
 /// Parse one line of Claude Code's `stream-json` output. One line can carry
@@ -542,6 +842,120 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store backed by a real (temporary) data dir.
+    fn store_in(dir: &Path) -> AssistantStore {
+        let store = AssistantStore::new();
+        store.set_dir(dir);
+        store
+    }
+
+    #[test]
+    fn the_store_records_prose_actions_and_failures_but_not_proposals() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+
+        store.append(TranscriptRole::User, "what is open?".to_string());
+        store.record(&AssistantEvent::Message {
+            text: "two to-dos".to_string(),
+        });
+        store.record(&AssistantEvent::Tool {
+            name: "list_todos".to_string(),
+        });
+        store.record(&AssistantEvent::ToolFailed {
+            message: "project not found".to_string(),
+        });
+        store.record(&AssistantEvent::Proposal {
+            id: ProposalId::new(),
+            tool: "set_todo_archived".to_string(),
+            summary: "{}".to_string(),
+        });
+        store.record(&AssistantEvent::TurnEnd { error: None });
+        store.record(&AssistantEvent::Exited);
+
+        let rows: Vec<_> = store
+            .transcript()
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (TranscriptRole::User, "what is open?".to_string()),
+                (TranscriptRole::Assistant, "two to-dos".to_string()),
+                (TranscriptRole::Tool, "list_todos".to_string()),
+                (TranscriptRole::Notice, "project not found".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reloaded_store_sees_the_persisted_conversation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        store.append(TranscriptRole::User, "remember this".to_string());
+        store.record(&AssistantEvent::Started {
+            session_id: "sess-7".to_string(),
+        });
+
+        let reloaded = store_in(dir.path());
+        assert_eq!(reloaded.transcript().len(), 1);
+        assert_eq!(reloaded.session_id(), Some("sess-7".to_string()));
+
+        // Forgetting the session keeps the rows; clearing drops both.
+        reloaded.forget_session();
+        assert_eq!(reloaded.session_id(), None);
+        assert_eq!(reloaded.transcript().len(), 1);
+        reloaded.clear();
+        assert!(store_in(dir.path()).transcript().is_empty());
+    }
+
+    #[test]
+    fn the_transcript_keeps_only_the_most_recent_rows() {
+        let store = AssistantStore::new();
+        for i in 0..MAX_TRANSCRIPT_ENTRIES + 3 {
+            store.append(TranscriptRole::User, i.to_string());
+        }
+        let rows = store.transcript();
+        assert_eq!(rows.len(), MAX_TRANSCRIPT_ENTRIES);
+        assert_eq!(rows[0].text, "3");
+    }
+
+    #[test]
+    fn a_corrupt_conversation_file_starts_empty_instead_of_failing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("assistant.json"), "{not json").expect("write");
+        let store = store_in(dir.path());
+        assert!(store.transcript().is_empty());
+        assert_eq!(store.session_id(), None);
+    }
+
+    #[test]
+    fn memory_round_trips_through_the_file_and_can_be_cleared() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        assert_eq!(store.memory(), "");
+
+        store.set_memory("Prefers short answers.").expect("set");
+        assert_eq!(store.memory(), "Prefers short answers.");
+        store.set_memory("").expect("clear");
+        assert_eq!(store.memory(), "");
+    }
+
+    #[test]
+    fn a_store_without_a_data_dir_cannot_hold_memory() {
+        let store = AssistantStore::new();
+        assert!(store.set_memory("anything").is_err());
+    }
+
+    #[test]
+    fn memory_is_appended_to_the_identity_prompt_when_there_is_some() {
+        assert_eq!(identity_prompt("   "), IDENTITY_PROMPT);
+        let prompt = identity_prompt("Ships on Fridays.");
+        assert!(prompt.starts_with(IDENTITY_PROMPT));
+        assert!(prompt.contains("# Your memory"));
+        assert!(prompt.ends_with("Ships on Fridays."));
+    }
 
     #[test]
     fn init_line_yields_the_session_id() {

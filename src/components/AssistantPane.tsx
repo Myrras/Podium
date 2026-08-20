@@ -4,8 +4,10 @@
  *
  * It renders the conversation — the user's turns, the assistant's prose
  * (markdown), the actions it ran, and failures — plus the actions its autonomy
- * mode held back, as cards the user confirms or rejects right here.
- * Persistence and proactive nudges come later.
+ * mode held back, as cards the user confirms or rejects right here. The log is
+ * replayed from the persisted transcript on mount; the header can start a new
+ * conversation or open the assistant's memory for editing. Proactive nudges
+ * come later.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -15,7 +17,13 @@ import type { ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { Markdown } from "./Markdown";
-import { AssistantIcon, CloseIcon, SendIcon } from "./icons";
+import {
+  AddIcon,
+  AssistantIcon,
+  CloseIcon,
+  MemoryIcon,
+  SendIcon,
+} from "./icons";
 import styles from "./AssistantPane.module.css";
 
 const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
@@ -36,14 +44,18 @@ export function AssistantPane() {
   const autonomy = useAssistantStore((s) => s.autonomy);
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
+  const hydrate = useAssistantStore((s) => s.hydrate);
+  const newConversation = useAssistantStore((s) => s.newConversation);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const [draft, setDraft] = useState("");
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
-  // The mode is persisted server-side; the store only mirrors it.
+  // Both are persisted server-side; the store only mirrors them.
   useEffect(() => {
     void loadAutonomy();
-  }, [loadAutonomy]);
+    void hydrate();
+  }, [loadAutonomy, hydrate]);
 
   // Follow the tail as turns stream in.
   useEffect(() => {
@@ -65,6 +77,25 @@ export function AssistantPane() {
       <header className={styles.header}>
         <AssistantIcon className={styles.headerIcon} />
         <span className={styles.title}>Assistant</span>
+        <button
+          type="button"
+          className={styles.iconBtn}
+          aria-label="Assistant memory"
+          title="What the assistant remembers"
+          aria-pressed={memoryOpen}
+          onClick={() => setMemoryOpen(!memoryOpen)}
+        >
+          <MemoryIcon />
+        </button>
+        <button
+          type="button"
+          className={styles.iconBtn}
+          aria-label="New conversation"
+          title="Start a new conversation (memory is kept)"
+          onClick={() => void newConversation()}
+        >
+          <AddIcon />
+        </button>
         <select
           className={styles.autonomy}
           aria-label="Autonomy"
@@ -80,7 +111,7 @@ export function AssistantPane() {
         </select>
         <button
           type="button"
-          className={styles.closeBtn}
+          className={styles.iconBtn}
           aria-label="Hide assistant"
           title="Hide assistant"
           onClick={() => setAssistantOpen(false)}
@@ -88,6 +119,8 @@ export function AssistantPane() {
           <CloseIcon />
         </button>
       </header>
+
+      {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
 
       <div className={styles.log} ref={logRef}>
         {messages.length === 0 && (
@@ -148,6 +181,68 @@ export function AssistantPane() {
         </button>
       </form>
     </aside>
+  );
+}
+
+/**
+ * The assistant's long-term memory, as plain text the user can rewrite or
+ * clear. It is markdown the assistant maintains itself, so editing it by hand
+ * is a correction — not the main way it grows.
+ */
+function MemoryEditor({ onClose }: { onClose: () => void }) {
+  const memory = useAssistantStore((s) => s.memory);
+  const loadMemory = useAssistantStore((s) => s.loadMemory);
+  const saveMemory = useAssistantStore((s) => s.saveMemory);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadMemory();
+  }, [loadMemory]);
+
+  // Start from whatever is stored, then let the user's edits win.
+  const value = draft ?? memory ?? "";
+
+  return (
+    <section className={styles.memory} aria-label="Assistant memory">
+      <textarea
+        className={styles.memoryText}
+        rows={8}
+        value={value}
+        placeholder="The assistant has not written anything down yet."
+        aria-label="Memory"
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className={styles.memoryActions}>
+        <button
+          type="button"
+          className={styles.confirmBtn}
+          onClick={async () => {
+            await saveMemory(value);
+            setDraft(null);
+            onClose();
+          }}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          className={styles.rejectBtn}
+          onClick={() => setDraft("")}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          className={styles.rejectBtn}
+          onClick={() => {
+            setDraft(null);
+            onClose();
+          }}
+        >
+          Close
+        </button>
+      </div>
+    </section>
   );
 }
 

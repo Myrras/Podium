@@ -53,10 +53,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 26 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 27 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **63 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **67 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -69,8 +69,9 @@ them in sync when you add a command or MCP tool.
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible right-side assistant chat
-  panel (action + proposal cards, autonomy picker), Zustand stores, typed IPC
-  wrappers over all 63 commands.
+  panel (replayed transcript, action + proposal cards, autonomy picker,
+  memory view, new conversation), Zustand stores, typed IPC
+  wrappers over all 67 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -103,8 +104,8 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 26 tools (tools.rs) + stdio bridge (bridge.rs)
-│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 27 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -177,8 +178,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `PODIUM_PROCESS_ID` to reflect what the session is about), the
   scratchpad tools `list_scratchpads`, `create_scratchpad`,
   `update_scratchpad`, `add_scratchpad_tag`, `remove_scratchpad_tag`,
-  `set_scratchpad_archived`, and the worktree tools `create_worktree`,
-  `list_worktrees`, `remove_worktree`.
+  `set_scratchpad_archived`, the worktree tools `create_worktree`,
+  `list_worktrees`, `remove_worktree`, and `update_assistant_memory` (the
+  personal assistant rewriting its own long-term memory).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -286,15 +288,34 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   nothing; `confirm-destructive` gates the stopping/archiving/removing tools;
   `propose-all` gates everything that is not read-only (an *unknown* tool counts
   as state-changing, so a tool added later cannot slip through). Proposals live
-  in memory (never expiring, but lost on restart until phase 3) and surface as
+  in memory (never expiring, but lost on restart) and surface as
   `assistant:event` `proposal` / `proposalResolved`; the user's Confirm/Reject
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
   become a `toolFailed` event.
 
-  Still to come: transcript/memory persistence (phase 3) and proactive nudges
-  (phase 4).
+  **Persistence** is one `assistant.json` in the app data dir (atomic writes,
+  the same kind of store as `todos.json`): Claude's own session id plus the
+  chat rows the panel replays — user turns, assistant prose, actions run and
+  actions that failed, capped at the most recent 500. On the next spawn that id
+  comes back as `--resume`, so a restart continues the same conversation
+  instead of meeting a stranger; a session that dies without ever announcing
+  itself makes Podium drop the stored id, so a pruned session cannot wedge
+  every later turn. The panel's **new-conversation** button
+  (`assistant_new_conversation`) kills the session and drops transcript,
+  session id and pending proposals — that kill is deliberate, so it is not
+  reported as `exited`.
+
+  **Memory** is a separate `assistant-memory.md` in the same dir: free-form
+  markdown appended to the identity prompt at spawn under `# Your memory`, so
+  it survives new conversations. The assistant maintains it itself through the
+  `update_assistant_memory` MCP tool (full replace — an empty string clears
+  it), and the user can read, edit or clear it in the panel's memory view. It
+  is read fresh from disk on every spawn, so hand-editing the file works; a
+  change reaches a *running* session only on its next spawn.
+
+  Still to come: proactive nudges (phase 4).
 
 ### Tauri IPC contract
 
@@ -363,6 +384,10 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `assistant_send`        | `{ text }`                                  | – (reply streams as `assistant:event`) |
+| `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
+| `assistant_new_conversation` | –                                      | –                 |
+| `assistant_memory_get`  | –                                           | `string`          |
+| `assistant_memory_set`  | `{ content }` (blank clears)                | –                 |
 | `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
 | `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
 | `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |

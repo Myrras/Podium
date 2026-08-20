@@ -8,6 +8,10 @@ vi.mock("../ipc/commands", () => ({
   assistantAutonomyGet: vi.fn(() => Promise.resolve("confirm-destructive")),
   assistantAutonomySet: vi.fn((mode: string) => Promise.resolve(mode)),
   assistantResolveProposal: vi.fn(() => Promise.resolve()),
+  assistantTranscript: vi.fn(() => Promise.resolve([])),
+  assistantNewConversation: vi.fn(() => Promise.resolve()),
+  assistantMemoryGet: vi.fn(() => Promise.resolve("")),
+  assistantMemorySet: vi.fn(() => Promise.resolve()),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
       return e as { kind: string; message: string };
@@ -19,8 +23,12 @@ vi.mock("../ipc/commands", () => ({
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
+  assistantMemoryGet,
+  assistantMemorySet,
+  assistantNewConversation,
   assistantResolveProposal,
   assistantSend,
+  assistantTranscript,
 } from "../ipc/commands";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
@@ -38,10 +46,20 @@ describe("AssistantPane", () => {
     );
     vi.mocked(assistantResolveProposal).mockReset();
     vi.mocked(assistantResolveProposal).mockResolvedValue(undefined);
+    vi.mocked(assistantTranscript).mockReset();
+    vi.mocked(assistantTranscript).mockResolvedValue([]);
+    vi.mocked(assistantNewConversation).mockReset();
+    vi.mocked(assistantNewConversation).mockResolvedValue(undefined);
+    vi.mocked(assistantMemoryGet).mockReset();
+    vi.mocked(assistantMemoryGet).mockResolvedValue("");
+    vi.mocked(assistantMemorySet).mockReset();
+    vi.mocked(assistantMemorySet).mockResolvedValue(undefined);
     useAssistantStore.setState({
       messages: [],
       busy: false,
       autonomy: "confirm-destructive",
+      memory: null,
+      hydrated: false,
     });
   });
 
@@ -191,5 +209,71 @@ describe("AssistantPane", () => {
     await user.click(screen.getByLabelText("Hide assistant"));
 
     expect(useLayoutStore.getState().assistantOpen).toBe(false);
+  });
+
+  describe("persistence and memory", () => {
+    it("replays the stored transcript into the log on mount", async () => {
+      vi.mocked(assistantTranscript).mockResolvedValue([
+        { role: "user", text: "what is open?", at: "2026-01-02T09:00:00Z" },
+        { role: "assistant", text: "Two to-dos.", at: "2026-01-02T09:00:01Z" },
+        { role: "tool", text: "list_todos", at: "2026-01-02T09:00:02Z" },
+      ]);
+
+      render(<AssistantPane />);
+
+      expect(await screen.findByText("what is open?")).toBeInTheDocument();
+      expect(screen.getByText("Two to-dos.")).toBeInTheDocument();
+      expect(screen.getByText("list todos")).toBeInTheDocument();
+    });
+
+    it("starts a new conversation and clears the log", async () => {
+      const user = userEvent.setup();
+      vi.mocked(assistantTranscript).mockResolvedValue([
+        { role: "user", text: "old turn", at: "2026-01-02T09:00:00Z" },
+      ]);
+      render(<AssistantPane />);
+      expect(await screen.findByText("old turn")).toBeInTheDocument();
+
+      await user.click(screen.getByLabelText("New conversation"));
+
+      expect(assistantNewConversation).toHaveBeenCalled();
+      expect(screen.queryByText("old turn")).not.toBeInTheDocument();
+    });
+
+    it("shows the stored memory and saves an edit", async () => {
+      const user = userEvent.setup();
+      vi.mocked(assistantMemoryGet).mockResolvedValue("Prefers short answers.");
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Assistant memory"));
+      const box = await screen.findByLabelText("Memory");
+      expect(box).toHaveValue("Prefers short answers.");
+
+      await user.type(box, " Ships on Fridays.");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(assistantMemorySet).toHaveBeenCalledWith(
+        "Prefers short answers. Ships on Fridays.",
+      );
+      // Saving closes the view again.
+      expect(screen.queryByLabelText("Memory")).not.toBeInTheDocument();
+    });
+
+    it("clears the memory box, then persists the clear on save", async () => {
+      const user = userEvent.setup();
+      vi.mocked(assistantMemoryGet).mockResolvedValue("Something old.");
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Assistant memory"));
+      expect(await screen.findByLabelText("Memory")).toHaveValue(
+        "Something old.",
+      );
+
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(screen.getByLabelText("Memory")).toHaveValue("");
+
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(assistantMemorySet).toHaveBeenCalledWith("");
+    });
   });
 });

@@ -8,8 +8,8 @@ use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
     CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
     ListWorktreesParams, PodiumTools, RemoveWorktreeParams, RenameSessionParams,
-    ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams, UpdateScratchpadParams,
-    UpdateTodoParams,
+    ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
@@ -539,6 +539,38 @@ async fn create_scratchpad_round_trip_via_mcp() {
         .await
         .expect("set_scratchpad_archived");
     assert!(first_text(&archived).contains("\"archived\": true"));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_assistant_memory_round_trip_via_mcp() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: "claude".to_string(),
+        cwd: None,
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let saved = tools
+        .update_assistant_memory(Parameters(UpdateAssistantMemoryParams {
+            content: "The user ships on Fridays.".to_string(),
+        }))
+        .await
+        .expect("update_assistant_memory");
+    assert!(first_text(&saved).contains("Memory saved"));
+    assert_eq!(orch.assistant_memory(), "The user ships on Fridays.");
+
+    // The same tool clears it, so the assistant can drop stale notes.
+    tools
+        .update_assistant_memory(Parameters(UpdateAssistantMemoryParams {
+            content: String::new(),
+        }))
+        .await
+        .expect("clear memory");
+    assert_eq!(orch.assistant_memory(), "");
 
     orch.shutdown().await;
 }
@@ -2053,6 +2085,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("add_scratchpad_tag", false, false),
     ("remove_scratchpad_tag", false, true),
     ("set_scratchpad_archived", false, true),
+    ("update_assistant_memory", false, false),
     ("create_worktree", false, false),
     ("remove_worktree", false, true),
 ];
