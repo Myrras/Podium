@@ -247,10 +247,26 @@ pub(crate) fn write_private(path: &Path, contents: &str) -> std::io::Result<()> 
 /// and Auggie both consume the same `--mcp-config <file>` shape, so this is
 /// shared across those adapters.
 pub(crate) fn write_mcp_config(mcp: &McpConnectInfo, process_id: ProcessId) -> CoreResult<PathBuf> {
-    let url = if mcp.url.ends_with("/mcp") {
-        mcp.url.clone()
+    write_client_config(mcp, &format!("agent-{process_id}.json"), "/mcp")
+}
+
+/// Write the personal assistant's MCP client config and return its path.
+/// It points at the **assistant** endpoint, whose tool calls go through the
+/// autonomy gate — that endpoint *is* the assistant's identity on the server.
+pub(crate) fn write_assistant_mcp_config(mcp: &McpConnectInfo) -> CoreResult<PathBuf> {
+    write_client_config(mcp, "assistant.json", crate::mcp::ASSISTANT_PATH)
+}
+
+fn write_client_config(
+    mcp: &McpConnectInfo,
+    file_name: &str,
+    endpoint: &str,
+) -> CoreResult<PathBuf> {
+    let base = mcp.url.trim_end_matches('/');
+    let url = if base.ends_with(endpoint) {
+        base.to_string()
     } else {
-        format!("{}/mcp", mcp.url.trim_end_matches('/'))
+        format!("{base}{endpoint}")
     };
     let config = serde_json::json!({
         "mcpServers": {
@@ -262,7 +278,7 @@ pub(crate) fn write_mcp_config(mcp: &McpConnectInfo, process_id: ProcessId) -> C
         }
     });
     fs::create_dir_all(&mcp.config_dir)?;
-    let path = mcp.config_dir.join(format!("agent-{process_id}.json"));
+    let path = mcp.config_dir.join(file_name);
     write_private(&path, &config.to_string())?;
     Ok(path)
 }
@@ -479,6 +495,32 @@ mod tests {
         assert!(plan
             .env
             .contains(&("PODIUM_PROCESS_ID".to_string(), process_id.to_string())));
+    }
+
+    #[test]
+    fn the_assistant_config_points_at_the_gated_endpoint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:39217/".to_string(),
+            token: "sekret-token".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let path = write_assistant_mcp_config(&mcp).expect("write assistant config");
+        assert_eq!(path, dir.path().join("assistant.json"));
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("config written"))
+                .expect("valid json");
+        assert_eq!(
+            written["mcpServers"]["podium"]["url"],
+            "http://127.0.0.1:39217/mcp-assistant"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("metadata").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "config must be private");
+        }
     }
 
     #[test]

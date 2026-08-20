@@ -12,6 +12,7 @@ import type {
   AdapterInfo,
   AgentSettingsDto,
   AgentSpawnOptions,
+  AutonomyMode,
   CommentId,
   IpcError,
   LinkId,
@@ -560,6 +561,29 @@ export function scratchpadUnassign(
  */
 export function assistantSend(text: string): Promise<void> {
   return invoke("assistant_send", { text });
+}
+
+/** The assistant's autonomy mode (how much it may do unasked). */
+export function assistantAutonomyGet(): Promise<AutonomyMode> {
+  return invoke("assistant_autonomy_get");
+}
+
+/** Change the autonomy mode; resolves with what was stored. */
+export function assistantAutonomySet(
+  mode: AutonomyMode,
+): Promise<AutonomyMode> {
+  return invoke("assistant_autonomy_set", { mode });
+}
+
+/**
+ * Confirm or reject one action the assistant proposed. A confirmed proposal
+ * runs right away; the outcome streams back as `assistant:event`.
+ */
+export function assistantResolveProposal(
+  id: string,
+  approved: boolean,
+): Promise<void> {
+  return invoke("assistant_resolve_proposal", { id, approved });
 }
 
 // ---------------------------------------------------------------------------

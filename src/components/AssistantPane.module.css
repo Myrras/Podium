@@ -34,6 +34,24 @@
   font-weight: 600;
 }
 
+/* Autonomy picker: present but quiet — it is a setting, not an action. */
+.autonomy {
+  flex-shrink: 0;
+  max-width: 130px;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--sp-1);
+}
+
+.autonomy:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .closeBtn {
   display: flex;
   align-items: center;
@@ -87,12 +105,84 @@
   padding: 0;
 }
 
-/* Tool calls are bookkeeping, not conversation: one quiet monospace line. */
+/* Executed actions are bookkeeping, not conversation: one quiet line, marked
+   so it reads as something that happened rather than something said. */
 .message[data-role="tool"] {
   padding: 0 var(--sp-2);
   color: var(--text-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+}
+
+.message[data-role="tool"]::before {
+  content: "✓ ";
+}
+
+.message[data-role="proposal"] {
+  padding: 0;
+}
+
+/* A held-back action: the one thing in the log that wants a decision. */
+.proposal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+
+.proposal[data-status="rejected"],
+.proposal[data-status="approved"],
+.proposal[data-status="failed"] {
+  border-color: var(--border);
+}
+
+.proposalTool {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.proposalArgs {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.proposalActions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.proposalStatus {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.confirmBtn,
+.rejectBtn {
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.confirmBtn {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: transparent;
+}
+
+.rejectBtn {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.rejectBtn:hover {
+  background: var(--surface-hover);
 }
 
 .message[data-role="notice"] {

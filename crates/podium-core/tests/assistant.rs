@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use podium_core::assistant::AssistantEvent;
-use podium_core::{AssistantConfig, Orchestrator, PodiumEvent};
+use podium_core::{AssistantConfig, McpConnectInfo, Orchestrator, PodiumEvent};
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
 
@@ -26,6 +26,13 @@ done
 
 /// A fake CLI that dies immediately — stands in for "claude is not installed".
 const DYING_CLAUDE: &str = "#!/bin/sh\nexit 1\n";
+
+/// A fake CLI that records the arguments Podium launched it with, so the
+/// spawn flags can be asserted without a real Claude Code.
+const ARGV_RECORDING_CLAUDE: &str = r#"#!/bin/sh
+printf '%s\n' "$@" > "$(dirname "$0")/argv.txt"
+sleep 5
+"#;
 
 fn write_fake(dir: &Path, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -149,4 +156,48 @@ async fn shutdown_kills_the_session() {
 
     let events = collect_until(&mut rx, |e| matches!(e, AssistantEvent::Exited)).await;
     assert_eq!(events, vec![AssistantEvent::Exited]);
+}
+
+#[tokio::test]
+async fn the_session_is_launched_against_podiums_own_mcp_endpoint() {
+    let (orch, dir) = setup(ARGV_RECORDING_CLAUDE);
+    let config_dir = dir.path().join("mcp");
+    orch.set_mcp_connect_info(McpConnectInfo {
+        url: "http://127.0.0.1:39217".to_string(),
+        token: "sekret-token".to_string(),
+        config_dir: config_dir.clone(),
+    });
+
+    orch.assistant_send("hello").await.expect("send");
+    let argv = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(argv) = std::fs::read_to_string(dir.path().join("argv.txt")) {
+                return argv;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake cli records its argv");
+
+    let args: Vec<&str> = argv.lines().collect();
+    // The assistant's own (gated) MCP config, and an identity prompt telling
+    // it what it is. `--strict-mcp-config` is deliberately absent: the user's
+    // own MCP servers (mail, Slack, …) must stay available.
+    let at = args
+        .iter()
+        .position(|a| *a == "--mcp-config")
+        .expect("--mcp-config passed");
+    assert_eq!(
+        args[at + 1],
+        config_dir.join("assistant.json").to_string_lossy()
+    );
+    let at = args
+        .iter()
+        .position(|a| *a == "--append-system-prompt")
+        .expect("identity prompt passed");
+    assert!(args[at + 1].contains("Podium"), "{}", args[at + 1]);
+    assert!(!args.contains(&"--strict-mcp-config"));
+
+    orch.shutdown().await;
 }

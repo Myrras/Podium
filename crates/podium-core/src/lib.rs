@@ -28,10 +28,12 @@ pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, McpConnectInfo,
 };
 pub use assignment::AssignedAgent;
-pub use assistant::{AssistantConfig, AssistantEvent};
+pub use assistant::{
+    AssistantConfig, AssistantEvent, AssistantSettings, AutonomyMode, ProposalInfo,
+};
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
-pub use ids::{CommentId, LinkId, ProcessId, ProjectId, ScratchpadId, TodoId};
+pub use ids::{CommentId, LinkId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId};
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use process::pty::TermChunk;

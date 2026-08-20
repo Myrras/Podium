@@ -11,10 +11,11 @@ use podium_core::mcp::tools::{
     ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams, UpdateScratchpadParams,
     UpdateTodoParams,
 };
-use podium_core::mcp::{self, McpServer};
+use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
-    AdapterRegistry, AgentAdapter, AgentLaunchCtx, CoreError, CoreResult, LaunchPlan, Orchestrator,
-    ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy, TodoId,
+    AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
+    Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
+    TodoId,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -39,11 +40,33 @@ async fn http_post_mcp(base_url: &str, token: Option<&str>, body: &str) -> (u16,
     http_post_mcp_with_session(base_url, token, None, body).await
 }
 
+/// Like [`http_post_mcp_with_session`], but against any endpoint — the
+/// assistant has its own (`ASSISTANT_PATH`).
+async fn http_post_path(
+    base_url: &str,
+    path: &str,
+    token: Option<&str>,
+    session_id: Option<&str>,
+    body: &str,
+) -> (u16, String) {
+    http_post_inner(base_url, path, token, session_id, body).await
+}
+
 /// Like [`http_post_mcp`], but able to carry an `Mcp-Session-Id` header (the
 /// streamable-HTTP transport ties `tools/list`/`tools/call` to the session
 /// opened by `initialize`).
 async fn http_post_mcp_with_session(
     base_url: &str,
+    token: Option<&str>,
+    session_id: Option<&str>,
+    body: &str,
+) -> (u16, String) {
+    http_post_inner(base_url, "/mcp", token, session_id, body).await
+}
+
+async fn http_post_inner(
+    base_url: &str,
+    path: &str,
     token: Option<&str>,
     session_id: Option<&str>,
     body: &str,
@@ -57,7 +80,7 @@ async fn http_post_mcp_with_session(
         .map(|s| format!("Mcp-Session-Id: {s}\r\n"))
         .unwrap_or_default();
     let request = format!(
-        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -1744,4 +1767,347 @@ async fn assign_todo_is_blocked_when_already_owned_by_another_session() {
     assert_ne!(c1, c2, "concurrent sessions get distinct colours");
 
     orch.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// The personal assistant's endpoint and its autonomy gate
+// ---------------------------------------------------------------------------
+
+fn tools_call_request(id: u64, name: &str, arguments: serde_json::Value) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    })
+    .to_string()
+}
+
+/// Open an MCP session on `path` (initialize + initialized) and return its id.
+async fn open_session(server: &McpServer, path: &str) -> String {
+    let (status, response) =
+        http_post_path(server.url(), path, Some(server.token()), None, INITIALIZE).await;
+    assert_eq!(status, 200, "initialize on {path}: {response}");
+    let session_id = extract_session_id(&response);
+    let (status, _) = http_post_path(
+        server.url(),
+        path,
+        Some(server.token()),
+        Some(&session_id),
+        INITIALIZED,
+    )
+    .await;
+    assert_eq!(status, 202);
+    session_id
+}
+
+/// Call one tool over `path` and return the text of its first content block.
+async fn call_tool_text(
+    server: &McpServer,
+    path: &str,
+    session_id: &str,
+    id: u64,
+    name: &str,
+    arguments: serde_json::Value,
+) -> String {
+    let (status, response) = http_post_path(
+        server.url(),
+        path,
+        Some(server.token()),
+        Some(session_id),
+        &tools_call_request(id, name, arguments),
+    )
+    .await;
+    assert_eq!(status, 200, "{name} on {path}: {response}");
+    let body = extract_json_body(&response);
+    body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("text content in {body}"))
+        .to_string()
+}
+
+/// A project with one to-do, and the to-do's id.
+async fn project_with_todo(orch: &Orchestrator, dir: &std::path::Path) -> (ProjectId, TodoId) {
+    let project_id = orch
+        .open_project(dir.to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "review the onboarding copy")
+        .expect("add todo");
+    (project_id, todo.id)
+}
+
+fn active_todo_count(orch: &Orchestrator, project_id: ProjectId) -> usize {
+    orch.list_todos(project_id).expect("list todos").len()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_destructive_assistant_call_waits_for_the_user_and_then_runs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let (project_id, todo_id) = project_with_todo(&orch, dir.path()).await;
+    let server = mcp::start(Arc::clone(&orch), dir.path().join("mcp"))
+        .await
+        .expect("mcp server starts");
+    // Default mode: destructive actions need a confirmation.
+    assert_eq!(orch.assistant_autonomy(), AutonomyMode::ConfirmDestructive);
+    let session = open_session(&server, ASSISTANT_PATH).await;
+
+    let answer = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &session,
+        2,
+        "set_todo_archived",
+        serde_json::json!({
+            "project_id": project_id.to_string(),
+            "todo_id": todo_id.to_string(),
+            "archived": true,
+        }),
+    )
+    .await;
+    assert!(
+        answer.contains("waiting for the user"),
+        "gated call must not report success: {answer}"
+    );
+    // Nothing happened yet — that is the whole point of the gate.
+    assert_eq!(active_todo_count(&orch, project_id), 1);
+
+    let pending = orch.assistant_proposals();
+    assert_eq!(pending.len(), 1, "one proposal is waiting");
+    assert_eq!(pending[0].tool, "set_todo_archived");
+    assert!(
+        pending[0].summary.contains(&todo_id.to_string()),
+        "the card must show what is being approved: {}",
+        pending[0].summary
+    );
+
+    // A non-destructive call is not held back in this mode.
+    let added = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &session,
+        3,
+        "add_todo",
+        serde_json::json!({ "project_id": project_id.to_string(), "text": "ship the changelog" }),
+    )
+    .await;
+    assert!(added.contains("ship the changelog"), "{added}");
+    assert_eq!(active_todo_count(&orch, project_id), 2);
+
+    orch.resolve_assistant_proposal(pending[0].id, true)
+        .await
+        .expect("confirm");
+    assert!(orch.assistant_proposals().is_empty());
+    assert_eq!(
+        active_todo_count(&orch, project_id),
+        1,
+        "the confirmed action archived the to-do"
+    );
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_assistant_proposal_never_runs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let (project_id, todo_id) = project_with_todo(&orch, dir.path()).await;
+    let server = mcp::start(Arc::clone(&orch), dir.path().join("mcp"))
+        .await
+        .expect("mcp server starts");
+    let session = open_session(&server, ASSISTANT_PATH).await;
+
+    call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &session,
+        2,
+        "set_todo_archived",
+        serde_json::json!({
+            "project_id": project_id.to_string(),
+            "todo_id": todo_id.to_string(),
+            "archived": true,
+        }),
+    )
+    .await;
+    let id = orch.assistant_proposals()[0].id;
+    orch.resolve_assistant_proposal(id, false)
+        .await
+        .expect("reject");
+
+    assert!(orch.assistant_proposals().is_empty());
+    assert_eq!(active_todo_count(&orch, project_id), 1, "to-do untouched");
+    // The decision is final: the proposal is gone, not re-runnable.
+    assert!(orch.resolve_assistant_proposal(id, true).await.is_err());
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_autonomy_mode_decides_what_is_gated_and_agents_never_are() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let (project_id, todo_id) = project_with_todo(&orch, dir.path()).await;
+    let server = mcp::start(Arc::clone(&orch), dir.path().join("mcp"))
+        .await
+        .expect("mcp server starts");
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+
+    // propose-all: even adding a to-do is proposed first.
+    orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .expect("set autonomy");
+    let answer = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        2,
+        "add_todo",
+        serde_json::json!({ "project_id": project_id.to_string(), "text": "draft the release note" }),
+    )
+    .await;
+    assert!(answer.contains("waiting for the user"), "{answer}");
+    assert_eq!(active_todo_count(&orch, project_id), 1);
+    let id = orch.assistant_proposals()[0].id;
+    orch.resolve_assistant_proposal(id, true)
+        .await
+        .expect("confirm");
+    assert_eq!(active_todo_count(&orch, project_id), 2);
+
+    // …while an agent on the ungated endpoint archives without asking, in the
+    // very same mode.
+    let agent = open_session(&server, "/mcp").await;
+    call_tool_text(
+        &server,
+        "/mcp",
+        &agent,
+        3,
+        "set_todo_archived",
+        serde_json::json!({
+            "project_id": project_id.to_string(),
+            "todo_id": todo_id.to_string(),
+            "archived": true,
+        }),
+    )
+    .await;
+    assert!(
+        orch.assistant_proposals().is_empty(),
+        "agents are not gated"
+    );
+    assert_eq!(active_todo_count(&orch, project_id), 1);
+
+    // full autonomy: the assistant archives straight away too.
+    orch.set_assistant_autonomy(AutonomyMode::Full)
+        .expect("set autonomy");
+    let remaining = orch.list_todos(project_id).expect("list todos")[0].id;
+    call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        4,
+        "set_todo_archived",
+        serde_json::json!({
+            "project_id": project_id.to_string(),
+            "todo_id": remaining.to_string(),
+            "archived": true,
+        }),
+    )
+    .await;
+    assert!(orch.assistant_proposals().is_empty());
+    assert_eq!(active_todo_count(&orch, project_id), 0);
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+/// Every tool, and whether it is read-only / destructive for the gate. This
+/// table is the guard: a newly added tool fails this test until it is
+/// classified in `assistant.rs`, so it can never silently escape
+/// "confirm destructive".
+const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
+    // (tool, read_only, destructive)
+    ("list_projects", true, false),
+    ("list_processes", true, false),
+    ("get_process_status", true, false),
+    ("get_process_output", true, false),
+    ("list_todos", true, false),
+    ("list_scratchpads", true, false),
+    ("list_worktrees", true, false),
+    ("spawn_agent", false, false),
+    ("start_process", false, false),
+    ("stop_process", false, true),
+    ("restart_process", false, true),
+    ("add_todo", false, false),
+    ("complete_todo", false, false),
+    ("update_todo", false, false),
+    ("comment_todo", false, false),
+    ("add_todo_link", false, false),
+    ("set_todo_archived", false, true),
+    ("assign_todo", false, false),
+    ("rename_session", false, false),
+    ("create_scratchpad", false, false),
+    ("update_scratchpad", false, false),
+    ("add_scratchpad_tag", false, false),
+    ("remove_scratchpad_tag", false, true),
+    ("set_scratchpad_archived", false, true),
+    ("create_worktree", false, false),
+    ("remove_worktree", false, true),
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_tool_is_classified_for_the_autonomy_gate() {
+    use podium_core::assistant::requires_proposal;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_orch, server) = start_server(dir.path().join("mcp")).await;
+    let session = open_session(&server, ASSISTANT_PATH).await;
+
+    let (status, response) = http_post_path(
+        server.url(),
+        ASSISTANT_PATH,
+        Some(server.token()),
+        Some(&session),
+        &tools_list_request(2),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    let tools: Vec<String> = body["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        tools.len(),
+        TOOL_CLASSIFICATION.len(),
+        "classify every tool for the gate; listed: {tools:?}"
+    );
+
+    for name in &tools {
+        let (_, read_only, destructive) = TOOL_CLASSIFICATION
+            .iter()
+            .find(|(tool, _, _)| tool == name)
+            .unwrap_or_else(|| panic!("{name} is not classified for the autonomy gate"));
+        assert!(!(*read_only && *destructive), "{name}");
+        assert!(
+            !requires_proposal(AutonomyMode::Full, name),
+            "{name} must run in full autonomy"
+        );
+        assert_eq!(
+            requires_proposal(AutonomyMode::ConfirmDestructive, name),
+            *destructive,
+            "{name} under confirm-destructive"
+        );
+        assert_eq!(
+            requires_proposal(AutonomyMode::ProposeAll, name),
+            !*read_only,
+            "{name} under propose-all"
+        );
+    }
+
+    server.stop();
 }

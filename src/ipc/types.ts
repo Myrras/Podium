@@ -336,10 +336,27 @@ export type AssistantEvent =
   | { type: "message"; text: string }
   /** The assistant invoked a tool — name only, never its arguments. */
   | { type: "tool"; name: string }
+  /** A tool call came back as an error, so no action fails silently. */
+  | { type: "toolFailed"; message: string }
+  /** A tool call the autonomy gate held back: it needs the user's decision. */
+  | { type: "proposal"; id: string; tool: string; summary: string }
+  /** That decision landed; `error` is set when the confirmed action failed. */
+  | {
+      type: "proposalResolved";
+      id: string;
+      approved: boolean;
+      error: string | null;
+    }
   /** The turn finished; `error` is set when it ended badly. */
   | { type: "turnEnd"; error: string | null }
   /** The session ended; the next message starts a fresh one. */
   | { type: "exited" };
+
+/**
+ * How much the assistant may do without asking (`podium_core::AutonomyMode`).
+ * Kebab-case on the wire, like `RestartPolicy` / `MergeMode`.
+ */
+export type AutonomyMode = "full" | "confirm-destructive" | "propose-all";
 
 /** Structured error every IPC command can reject with (`IpcError`). */
 export interface IpcError {

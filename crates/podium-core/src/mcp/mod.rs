@@ -32,6 +32,12 @@ use crate::error::CoreResult;
 use crate::orchestrator::Orchestrator;
 use tools::PodiumTools;
 
+/// Endpoint the personal assistant connects to. Same tools and same bearer
+/// token as the agents' `/mcp`, but calls arriving here go through the
+/// autonomy gate (see [`crate::assistant`]) — the route is the assistant's
+/// identity on this server.
+pub const ASSISTANT_PATH: &str = "/mcp-assistant";
+
 /// Handle to the running MCP server. Dropping it (or calling [`stop`])
 /// shuts the server down, terminating all active sessions.
 ///
@@ -88,12 +94,21 @@ pub async fn start(orchestrator: Arc<Orchestrator>, config_dir: PathBuf) -> Core
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
     );
+    let assistant_service = StreamableHttpService::new(
+        {
+            let orchestrator = Arc::clone(&orchestrator);
+            move || Ok(PodiumTools::new_assistant(Arc::clone(&orchestrator)))
+        },
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
+    );
 
     let auth = AuthState {
         token: Arc::from(token.as_str()),
     };
     let router = Router::new()
         .nest_service("/mcp", service)
+        .nest_service(ASSISTANT_PATH, assistant_service)
         .layer(middleware::from_fn_with_state(auth, require_bearer));
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;

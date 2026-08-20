@@ -53,10 +53,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 25 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 26 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **60 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **63 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -69,7 +69,8 @@ them in sync when you add a command or MCP tool.
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible right-side assistant chat
-  panel, Zustand stores, typed IPC wrappers over all 60 commands.
+  panel (action + proposal cards, autonomy picker), Zustand stores, typed IPC
+  wrappers over all 63 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -102,8 +103,8 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 25 tools (tools.rs) + stdio bridge (bridge.rs)
-│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 26 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -169,7 +170,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `spawn_agent`, `start_process`, `stop_process`, `restart_process`,
   `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`,
   `add_todo_link` (pin an issue/PR URL to the top of a to-do),
-  `assign_todo` (a running agent self-assigns a to-do via its
+  `set_todo_archived`, `assign_todo` (a running agent self-assigns a to-do via its
   `PODIUM_PROCESS_ID`, so the user sees who owns it — blocked if the to-do is
   already owned by another live session),
   `rename_session` (a running agent renames itself via its
@@ -178,6 +179,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `update_scratchpad`, `add_scratchpad_tag`, `remove_scratchpad_tag`,
   `set_scratchpad_archived`, and the worktree tools `create_worktree`,
   `list_worktrees`, `remove_worktree`.
+  The same surface is served a second time at **`/mcp-assistant`**
+  (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
+  route is its identity, and `PodiumTools::call_tool` puts calls arriving there
+  through the autonomy gate (see _Personal assistant_).
   Spawned agents get the URL + token via 0600 per-agent config files under
   `{app_data_dir}/mcp` (wiped on every start); the same dir holds
   `server.json` (current URL + token, 0600) for the **stdio bridge**:
@@ -258,14 +263,38 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   shutdown; a session that died is replaced on the next turn. User turns are
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
-  `turnEnd` / `exited`) published on the `EventBus` and forwarded to the
+  `toolFailed` / `proposal` / `proposalResolved` / `turnEnd` / `exited`)
+  published on the `EventBus` and forwarded to the
   webview as `assistant:event`. Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
   (`AssistantConfig`) so integration tests drive a fake `claude` script. The
   assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
   refused at the CLI, and implementation work is meant to go out as a to-do +
-  spawned agent. Phase 1 covers the chat slice only — Podium MCP tools,
-  autonomy/proposals, persistence and proactive nudges are still to come.
+  spawned agent (its `--append-system-prompt` identity says so).
+
+  It reaches Podium over its **own MCP endpoint** (`/mcp-assistant`), wired in
+  via a 0600 `assistant.json` next to the per-agent configs — the whole tool
+  surface, workspace-wide. `--strict-mcp-config` is deliberately *not* passed,
+  so the user's own MCP servers (mail, Slack, …) stay available.
+
+  **Autonomy** (`AutonomyMode`, stored in `agents.json` under `assistant`,
+  default `confirm-destructive`) is enforced **server-side**, not by prompt
+  wording: `PodiumTools::call_tool` asks `assistant::requires_proposal` whether
+  this tool needs the user, and a gated call never runs. Instead it is parked as
+  a `ProposalInfo` — carrying a closure that replays that very dispatch later —
+  and the tool answers that a proposal is awaiting the user. `full` gates
+  nothing; `confirm-destructive` gates the stopping/archiving/removing tools;
+  `propose-all` gates everything that is not read-only (an *unknown* tool counts
+  as state-changing, so a tool added later cannot slip through). Proposals live
+  in memory (never expiring, but lost on restart until phase 3) and surface as
+  `assistant:event` `proposal` / `proposalResolved`; the user's Confirm/Reject
+  in the chat calls `assistant_resolve_proposal`, which runs the stored action
+  and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
+  A failed tool call is never silent: `tool_result` blocks flagged `is_error`
+  become a `toolFailed` event.
+
+  Still to come: transcript/memory persistence (phase 3) and proactive nudges
+  (phase 4).
 
 ### Tauri IPC contract
 
@@ -334,6 +363,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `assistant_send`        | `{ text }`                                  | – (reply streams as `assistant:event`) |
+| `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
+| `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
+| `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:
@@ -380,8 +412,10 @@ output never travels this path): `process:added` / `process:removed` /
 > (`notStarted`/`running {pid, since}`/`stopping`/`exited {code, crashed, …}`),
 > `TermEvent` by `type` (`snapshot`/`data`/`lagged`). The one exception:
 > `RestartPolicy` values are **kebab-case** (`never`/`on-crash`/`always`) —
-> matching `podium.yml`'s `auto_restart`. Match these exactly in the
-> hand-written types in `src/ipc/types.ts`.
+> matching `podium.yml`'s `auto_restart` — and so are `MergeMode` and
+> `AutonomyMode` (`full`/`confirm-destructive`/`propose-all`), which share the
+> settings file with it. Match these exactly in the hand-written types in
+> `src/ipc/types.ts`.
 
 ### `podium.yml`
 

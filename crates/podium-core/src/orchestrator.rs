@@ -12,12 +12,14 @@ use tokio::sync::broadcast;
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
-use crate::assistant::{AssistantConfig, AssistantManager};
+use crate::assistant::{
+    AssistantConfig, AssistantManager, AutonomyMode, ProposalAction, ProposalInfo,
+};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{ProcessId, ProjectId, ScratchpadId};
+use crate::ids::{ProcessId, ProjectId, ProposalId, ScratchpadId};
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::supervisor::{RestartState, SupervisorConfig};
@@ -222,7 +224,48 @@ impl Orchestrator {
     /// Send a chat turn to the personal assistant, spawning its session on
     /// first use. Replies arrive as [`PodiumEvent::AssistantEvent`]s.
     pub async fn assistant_send(&self, text: &str) -> CoreResult<()> {
-        self.assistant.send(text).await
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.send(text, mcp).await
+    }
+
+    /// How much the assistant may do without asking (Settings → Assistant).
+    pub fn assistant_autonomy(&self) -> AutonomyMode {
+        self.agent_settings.get().assistant.autonomy
+    }
+
+    /// Change the assistant's autonomy mode; returns what was stored.
+    pub fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AutonomyMode> {
+        Ok(self
+            .agent_settings
+            .set_assistant_autonomy(mode)?
+            .assistant
+            .autonomy)
+    }
+
+    /// Park a tool call the autonomy gate held back, for the user to decide
+    /// on. Called from the MCP layer, which owns the deferred action.
+    pub fn propose_assistant_action(
+        &self,
+        tool: String,
+        summary: String,
+        action: ProposalAction,
+    ) -> ProposalId {
+        self.assistant.propose(tool, summary, action)
+    }
+
+    /// The assistant's proposals still awaiting the user, oldest first.
+    pub fn assistant_proposals(&self) -> Vec<ProposalInfo> {
+        self.assistant.proposals()
+    }
+
+    /// Confirm or reject one assistant proposal. A confirmed proposal runs its
+    /// stored action now; the assistant is told the outcome either way.
+    pub async fn resolve_assistant_proposal(
+        &self,
+        id: ProposalId,
+        approved: bool,
+    ) -> CoreResult<()> {
+        self.assistant.resolve_proposal(id, approved).await
     }
 
     /// Point the global agent settings at their backing file (app data dir)

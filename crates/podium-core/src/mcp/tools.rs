@@ -1,19 +1,30 @@
-//! The 25 MCP tools Podium exposes to agents — all thin calls into
+//! The 26 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
+//!
+//! The same surface serves the personal assistant, on its own endpoint
+//! ([`crate::mcp::ASSISTANT_PATH`], built via [`PodiumTools::new_assistant`]).
+//! There, [`PodiumTools::call_tool`] first puts the call through the autonomy
+//! gate: a gated call is parked as a proposal for the user instead of running.
 
 use std::str::FromStr;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::assistant::{requires_proposal, ProposalAction};
 use crate::error::CoreError;
 use crate::ids::{ProcessId, ProjectId, ScratchpadId, TodoId};
 use crate::orchestrator::Orchestrator;
+
+/// Longest argument blob shown on a proposal card.
+const MAX_SUMMARY_CHARS: usize = 300;
 
 /// Default number of trailing lines returned by `get_process_output`.
 const DEFAULT_OUTPUT_LINES: usize = 100;
@@ -74,6 +85,16 @@ pub struct UpdateTodoParams {
     pub text: Option<String>,
     /// New description (omit to leave unchanged; blank clears it).
     pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetTodoArchivedParams {
+    /// Project UUID the to-do belongs to.
+    pub project_id: String,
+    /// To-do UUID (from `list_todos`).
+    pub todo_id: String,
+    /// `true` to archive, `false` to restore it to the active list.
+    pub archived: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -241,6 +262,9 @@ pub struct SetScratchpadArchivedParams {
 pub struct PodiumTools {
     orchestrator: Arc<Orchestrator>,
     tool_router: ToolRouter<Self>,
+    /// True for the personal assistant's endpoint: its calls go through the
+    /// autonomy gate. Agents are never gated.
+    assistant: bool,
 }
 
 #[tool_router]
@@ -249,6 +273,15 @@ impl PodiumTools {
         Self {
             orchestrator,
             tool_router: Self::tool_router(),
+            assistant: false,
+        }
+    }
+
+    /// The same tools for the personal assistant, gated by its autonomy mode.
+    pub fn new_assistant(orchestrator: Arc<Orchestrator>) -> Self {
+        Self {
+            assistant: true,
+            ..Self::new(orchestrator)
         }
     }
 
@@ -475,6 +508,23 @@ impl PodiumTools {
     }
 
     #[tool(
+        description = "Archive a to-do (it drops out of the active list into the Archive) or restore it with archived=false. Returns the updated to-do."
+    )]
+    pub async fn set_todo_archived(
+        &self,
+        Parameters(p): Parameters<SetTodoArchivedParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let todo_id = parse_todo_id(&p.todo_id)?;
+        json_result(
+            &self
+                .orchestrator
+                .set_todo_archived(project_id, todo_id, p.archived)
+                .map_err(core_error)?,
+        )
+    }
+
+    #[tool(
         description = "Claim a to-do as the one you (a running agent) are working on, so the user sees it under your agent in Podium. Pass your own process_id from the PODIUM_PROCESS_ID environment variable. Returns the updated to-do."
     )]
     pub async fn assign_todo(
@@ -673,9 +723,54 @@ impl PodiumTools {
 }
 
 // rmcp 1.8's default router expression is `Self::tool_router()` (rebuilt per
-// call); point it at the field so the router is built once per instance.
+// call); point it at the field so the router is built once per instance. The
+// macro leaves our own `call_tool` alone and only fills in `list_tools`.
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for PodiumTools {
+    /// Dispatch one tool call — through the autonomy gate first when this is
+    /// the assistant's endpoint.
+    ///
+    /// A gated call does **not** run: it is parked as a proposal (carrying a
+    /// closure that runs this very same dispatch later) and the assistant is
+    /// told the user has to decide. This is the server-side half of the
+    /// autonomy setting: prompt wording alone would not hold.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        if self.assistant
+            && requires_proposal(
+                self.orchestrator.assistant_autonomy(),
+                request.name.as_ref(),
+            )
+        {
+            let tool = request.name.to_string();
+            let summary = summarize_arguments(&request);
+            let tools = self.clone();
+            let params = request;
+            let action: ProposalAction = Box::new(move || {
+                Box::pin(async move {
+                    let tcc = ToolCallContext::new(&tools, params, context);
+                    match tools.tool_router.call(tcc).await {
+                        Ok(result) => Ok(result_text(&result)),
+                        Err(e) => Err(e.message.to_string()),
+                    }
+                })
+            });
+            let id = self
+                .orchestrator
+                .propose_assistant_action(tool, summary, action);
+            return Ok(text_result(format!(
+                "Proposal {id} is waiting for the user to confirm it in the chat. \
+                 Nothing has happened yet and retrying will only queue another \
+                 proposal — carry on; you will be told the outcome."
+            )));
+        }
+        let tcc = ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
     fn get_info(&self) -> ServerInfo {
         // `ServerInfo` is `#[non_exhaustive]`, so it cannot be built with a
         // struct expression — mutate a default instance instead.
@@ -687,8 +782,8 @@ impl ServerHandler for PodiumTools {
              discover ids, get_process_output to read terminal output, \
              and spawn_agent to launch sibling agents (pass todo_id to put \
              an agent on a specific to-do). Each project has a shared to-do \
-             list (list_todos/add_todo/complete_todo) visible to the user \
-             and every agent. When you are working on a to-do, keep it \
+             list (list_todos/add_todo/complete_todo/set_todo_archived) \
+             visible to the user and every agent. When you are working on a to-do, keep it \
              current: comment_todo with a short overview of what you did as \
              you progress (small notes, not full write-ups, no code), \
              update_todo if the text/description needs revising, and \
@@ -722,6 +817,29 @@ fn json_result<T: serde::Serialize>(value: &T) -> Result<CallToolResult, McpErro
 
 fn text_result(text: String) -> CallToolResult {
     CallToolResult::success(vec![Content::text(text)])
+}
+
+/// The text of a tool result, for echoing a confirmed proposal's outcome back
+/// to the assistant. Shape-agnostic: whatever the content blocks serialize to.
+fn result_text(result: &CallToolResult) -> String {
+    serde_json::to_value(result)
+        .ok()
+        .and_then(|v| v["content"][0]["text"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "done".to_string())
+}
+
+/// One-line rendering of a call's arguments for its proposal card, so the user
+/// can see *what* they are approving. Arguments are the assistant's own words
+/// (never terminal output or secrets), so showing them is safe.
+fn summarize_arguments(request: &CallToolRequestParams) -> String {
+    let Some(arguments) = &request.arguments else {
+        return String::new();
+    };
+    let rendered = serde_json::to_string(arguments).unwrap_or_default();
+    match rendered.char_indices().nth(MAX_SUMMARY_CHARS) {
+        None => rendered,
+        Some((cut, _)) => format!("{}…", &rendered[..cut]),
+    }
 }
 
 fn parse_project_id(s: &str) -> Result<ProjectId, McpError> {
@@ -789,5 +907,41 @@ mod tests {
         assert_eq!(tail_lines("a\nb\nc\nd", 2), "c\nd");
         assert_eq!(tail_lines("a\nb", 10), "a\nb");
         assert_eq!(tail_lines("", 3), "");
+    }
+
+    #[test]
+    fn summarize_arguments_renders_the_call_and_clips_it() {
+        let mut request = CallToolRequestParams::new("add_todo");
+        assert_eq!(summarize_arguments(&request), "");
+
+        request.arguments = Some(
+            serde_json::json!({ "text": "Fix the login redirect" })
+                .as_object()
+                .cloned()
+                .expect("object"),
+        );
+        assert_eq!(
+            summarize_arguments(&request),
+            r#"{"text":"Fix the login redirect"}"#
+        );
+
+        request.arguments = Some(
+            serde_json::json!({ "text": "x".repeat(MAX_SUMMARY_CHARS + 50) })
+                .as_object()
+                .cloned()
+                .expect("object"),
+        );
+        let summary = summarize_arguments(&request);
+        assert!(summary.ends_with('…'));
+        assert_eq!(summary.chars().count(), MAX_SUMMARY_CHARS + 1);
+    }
+
+    #[test]
+    fn result_text_reads_the_first_content_block() {
+        assert_eq!(
+            result_text(&text_result("archived".to_string())),
+            "archived"
+        );
+        assert_eq!(result_text(&CallToolResult::success(vec![])), "done");
     }
 }
