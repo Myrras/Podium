@@ -161,11 +161,16 @@ pub fn run() {
             // finished or crashed, one that looks stuck, lingering to-dos and
             // a day-start summary become chat nudges. Silent while the
             // proactivity setting is off, and it never spawns the assistant's
-            // CLI just to deliver one.
-            podium_core::proactivity::spawn(
-                &state.orchestrator,
-                podium_core::ProactivityConfig::default(),
-            );
+            // CLI just to deliver one. Spawned from inside the async runtime:
+            // `setup` runs on the main thread, where the watcher's
+            // `tokio::spawn` has no reactor and aborts the app.
+            let orchestrator = Arc::clone(&state.orchestrator);
+            tauri::async_runtime::spawn(async move {
+                podium_core::proactivity::spawn(
+                    &orchestrator,
+                    podium_core::ProactivityConfig::default(),
+                );
+            });
             // Start the built-in MCP server (ephemeral localhost port, per-run
             // bearer token). Agents get the URL + token via 0600 config files
             // under `{app_data_dir}/mcp`, which is wiped on every start. A
