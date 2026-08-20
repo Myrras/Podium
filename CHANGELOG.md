@@ -8,6 +8,19 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.4.4] - 2026-08-20
+
+### Changed
+
+- **Terminal commands can be renamed and edited.** Your own quick commands in
+  the Terminals "Commands" list were add-or-delete only, and a terminal started
+  from one was named after the raw command line. Each command now takes an
+  optional name — shown above the command line in the list — and an edit button
+  loads it back into the form to change either. A terminal launched from a
+  command inherits its name, and a justfile recipe now opens a terminal called
+  `build` rather than `just build`. Existing commands keep working and simply
+  start out unnamed.
+
 ## [1.4.3] - 2026-08-20
 
 ### Added
