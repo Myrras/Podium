@@ -8,13 +8,47 @@ default:
 dev:
     pnpm tauri dev
 
-# Build the production desktop bundle (.app + .dmg).
+# Build + launch a debug .app signed with a STABLE identity (macOS).
+# `just dev` ad-hoc-signs the binary with a fresh identity every rebuild, so the
+# keychain re-prompts each run and "Always Allow" never sticks. This recipe
+# keeps one signing identity across rebuilds, so a single "Always Allow"
+# persists. Tradeoff: runs a bundle, so there's NO hot reload — use `just dev`
+# for fast iteration and this when the keychain prompt is in your way.
+# The identity lives in src-tauri/tauri.dev-signed.conf.json; edit it to use
+# your own.
+[doc("Build + launch a debug .app with a stable signing identity (macOS)")]
+dev-signed:
+    pnpm tauri build --debug --bundles app --config src-tauri/tauri.dev-signed.conf.json
+    open target/debug/bundle/macos/Podium.app
+
+# RELEASE build (.app + .dmg) — this is what CI ships. For a local install use
+# `just install-signed` instead.
 # Tauri's own dmg step uses HFS+, which is broken on macOS 26+, so we build
 # the .app here and package the .dmg ourselves (APFS) via scripts/make-dmg.sh.
+[doc("Release build: .app + .dmg (what CI ships)")]
 build:
     pnpm install
     pnpm tauri build --bundles app
     ./scripts/make-dmg.sh
+
+# Build a SIGNED release .app for personal install (macOS), then open Finder on
+# it so you can drag it to /Applications. Reuses the stable identity in
+# tauri.dev-signed.conf.json (that file only sets bundle.macOS.signingIdentity,
+# so it's equally valid for release), which means keychain "Always Allow"
+# persists and there's no Gatekeeper prompt on this machine.
+# Only the .app is built (--bundles app) — no .dmg is needed for a personal
+# install.
+[doc("Build a signed release .app and open Finder on it (macOS)")]
+build-signed:
+    pnpm install
+    pnpm tauri build --bundles app --config src-tauri/tauri.dev-signed.conf.json
+    open target/release/bundle/macos
+
+# Build the signed release and copy it straight into /Applications.
+install-signed: build-signed
+    rm -rf "/Applications/Podium.app"
+    cp -R target/release/bundle/macos/Podium.app "/Applications/Podium.app"
+    @echo "Installed → /Applications/Podium.app"
 
 # Type-check the whole Rust workspace without building.
 check:
@@ -41,6 +75,7 @@ format:
 
 # Set the version and sync it across Cargo.toml, tauri.conf.json, package.json.
 # Usage: just version 0.2.0
+[doc("Set the version and sync it across all manifests")]
 version new:
     bash ./scripts/sync-version.sh --set {{new}}
 
