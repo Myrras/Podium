@@ -119,23 +119,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         await projectOpen(path);
       } catch (e) {
         let toastId = -1;
-        toastId = toastError(`Could not restore ${path}`, toIpcError(e).message, {
-          sticky: true,
-          action: {
-            label: "Remove from workspace",
-            onClick: async () => {
-              try {
-                await workspaceRemove(path);
-                useToastStore.getState().requestDismiss(toastId);
-              } catch (removeErr) {
-                toastError(
-                  "Could not remove from workspace",
-                  toIpcError(removeErr).message,
-                );
-              }
+        toastId = toastError(
+          `Could not restore ${path}`,
+          toIpcError(e).message,
+          {
+            sticky: true,
+            action: {
+              label: "Remove from workspace",
+              onClick: async () => {
+                try {
+                  await workspaceRemove(path);
+                  useToastStore.getState().requestDismiss(toastId);
+                } catch (removeErr) {
+                  toastError(
+                    "Could not remove from workspace",
+                    toIpcError(removeErr).message,
+                  );
+                }
+              },
             },
           },
-        });
+        );
       }
     }
     await get().refresh();

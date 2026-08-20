@@ -50,17 +50,17 @@ if (
   }
 }
 
-
 // jsdom has no layout engine, so `Range`/`Element` never report real
 // geometry — stub them out to zero-sized rects so ProseMirror's
 // `coordsAtPos`/`scrollToSelection` (used by Tiptap's `focus()` and content
 // commands) have something to call instead of throwing.
 if (typeof Range !== "undefined" && !Range.prototype.getClientRects) {
-  Range.prototype.getClientRects = () => ({
-    length: 0,
-    item: () => null,
-    [Symbol.iterator]: function* () {},
-  }) as unknown as DOMRectList;
+  Range.prototype.getClientRects = () =>
+    ({
+      length: 0,
+      item: () => null,
+      [Symbol.iterator]: function* () {},
+    }) as unknown as DOMRectList;
 }
 if (typeof Range !== "undefined" && !Range.prototype.getBoundingClientRect) {
   Range.prototype.getBoundingClientRect = () =>
