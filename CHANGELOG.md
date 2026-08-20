@@ -8,6 +8,17 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.4.3] - 2026-08-20
+
+### Added
+
+- **An idle agent now shows the shells still running behind it.** A session can
+  be done talking to you while a build or test run continues in the background,
+  which looked no different from a finished agent. Its status now carries the
+  count — `idle · 1 shell`, `working… · 2 shells` — on both the sidebar row and
+  the terminal-pane header, so you can tell a session that is waiting on you
+  from one that is waiting on a build.
+
 ## [1.4.2] - 2026-08-20
 
 ### Changed

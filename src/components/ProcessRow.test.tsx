@@ -10,7 +10,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 // Activity polling is timer-driven and irrelevant to these assertions.
-vi.mock("../lib/useAgentActivity", () => ({ useAgentActivity: () => "idle" }));
+vi.mock("../lib/useAgentActivity", () => ({
+  useAgentActivity: () => "idle",
+  useAgentShells: () => 0,
+}));
 
 import type { ProcessInfo, ProcessKind } from "../ipc/types";
 import { useProcessStore } from "../state/processStore";

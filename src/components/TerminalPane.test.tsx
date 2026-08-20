@@ -17,7 +17,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 // Activity polling is timer-driven and irrelevant to these assertions.
-vi.mock("../lib/useAgentActivity", () => ({ useAgentActivity: () => "idle" }));
+vi.mock("../lib/useAgentActivity", () => ({
+  useAgentActivity: () => "idle",
+  useAgentShells: () => 0,
+}));
 
 // xterm needs a real canvas; the pane's header is what's under test.
 vi.mock("./TerminalView", () => ({

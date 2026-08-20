@@ -7,7 +7,9 @@
  * user); everything else is "idle" (done or paused). Computing this in one
  * place — rather than per row/pane — means the state is derived once and the
  * "needs input" alert fires exactly once per transition, no matter how many
- * views show the same agent.
+ * views show the same agent. The same screen read also yields the agent's
+ * background-shell count, so "idle" can be qualified with the work still
+ * running behind the prompt.
  *
  * Detection is a frontend heuristic (see `detectInputPrompt`): coding-agent
  * CLIs emit no structured PTY events, and the existing "working" signal is
@@ -19,7 +21,7 @@
 import { create } from "zustand";
 
 import type { ProcessId } from "../ipc/types";
-import { detectInputPrompt } from "../lib/agentPrompt";
+import { detectBackgroundShells, detectInputPrompt } from "../lib/agentPrompt";
 import { notifyAgentWaiting } from "../lib/notify";
 import { getLastOutputAt, readViewportText } from "../lib/terminalRegistry";
 import { useLayoutStore } from "./layoutStore";
@@ -38,13 +40,16 @@ function computeActivity(processId: ProcessId): {
   /** Whether the screen shows an input prompt right now, regardless of
    * recent output — one prompt on screen = one notification episode. */
   prompting: boolean;
+  /** Background shells the agent reports on screen (0 when none). */
+  shells: number;
 } {
   const screen = readViewportText(processId);
   const prompting = screen !== null && detectInputPrompt(screen);
+  const shells = screen === null ? 0 : detectBackgroundShells(screen);
   const last = getLastOutputAt(processId);
   if (last !== null && Date.now() - last <= WORKING_WINDOW_MS)
-    return { activity: "working", prompting };
-  return { activity: prompting ? "waiting" : "idle", prompting };
+    return { activity: "working", prompting, shells };
+  return { activity: prompting ? "waiting" : "idle", prompting, shells };
 }
 
 /**
@@ -63,6 +68,13 @@ interface AgentActivityState {
   /** Latest activity per running-agent process id. */
   activity: Record<string, AgentActivity>;
   /**
+   * Background shells per running-agent process id — an agent reading "idle"
+   * may still have a build or test run going behind its prompt. Replaced
+   * wholesale every tick: consumers select a plain number out of it, so the
+   * map's identity churn never costs a re-render.
+   */
+  shells: Record<string, number>;
+  /**
    * Agents already alerted (pinged, or seen by the user) for the prompt
    * currently on their screen. Kept out of `activity` (which drives UI) —
    * this only gates the notification. The flag lives as long as the prompt
@@ -76,19 +88,22 @@ interface AgentActivityState {
 
 export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   activity: {},
+  shells: {},
   notified: {},
   tick: () => {
     const { processes } = useProcessStore.getState();
     const prev = get().activity;
     const prevNotified = get().notified;
     const next: Record<string, AgentActivity> = {};
+    const shells: Record<string, number> = {};
     const notified: Record<string, true> = {};
     let changed = false;
 
     for (const p of processes) {
       if (p.kind.kind !== "agent" || p.status.state !== "running") continue;
-      const { activity, prompting } = computeActivity(p.id);
+      const { activity, prompting, shells: count } = computeActivity(p.id);
       next[p.id] = activity;
+      if (count > 0) shells[p.id] = count;
       if (prev[p.id] !== activity) changed = true;
 
       if (!prompting) {
@@ -116,6 +131,7 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 
     set((s) => ({
       activity: changed ? next : s.activity,
+      shells,
       notified,
     }));
   },

@@ -58,7 +58,7 @@ function tick() {
 describe("agentActivityStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAgentActivityStore.setState({ activity: {}, notified: {} });
+    useAgentActivityStore.setState({ activity: {}, shells: {}, notified: {} });
     useProcessStore.setState({ activeProcessId: null });
     lastOutput.mockReturnValue(null);
     viewport.mockReturnValue(null);
@@ -208,5 +208,29 @@ describe("agentActivityStore", () => {
     viewport.mockReturnValue("Overwrite file? (y/n)");
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(2);
+  });
+
+  it("tracks the background-shell count from the footer", () => {
+    lastOutput.mockReturnValue(null);
+    viewport.mockReturnValue(
+      "⏵⏵ auto mode on (shift+tab to cycle) · 2 shells · ↓ to manage",
+    );
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    // Idle agent, but work is still running behind its prompt.
+    expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
+    expect(useAgentActivityStore.getState().shells.a1).toBe(2);
+  });
+
+  it("clears the shell count once the footer stops reporting one", () => {
+    lastOutput.mockReturnValue(null);
+    viewport.mockReturnValue("⏵⏵ auto mode on · 1 shell · ↓ to manage");
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    expect(useAgentActivityStore.getState().shells.a1).toBe(1);
+
+    viewport.mockReturnValue("⏵⏵ auto mode on (shift+tab to cycle)");
+    tick();
+    expect(useAgentActivityStore.getState().shells.a1).toBeUndefined();
   });
 });
