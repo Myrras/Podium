@@ -8,6 +8,24 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.4.1] - 2026-08-20
+
+### Changed
+
+- **The agent makes its own worktree now.** Ticking "Work in a git worktree"
+  when spawning an agent no longer creates the checkout up front: the agent
+  starts in the project root — with the tooling and caches you set up there —
+  and is told to create the worktree itself before its first code change. The
+  worktree name is optional; leave it blank and the agent names it (and its
+  `podium/<name>` branch) after the work, including when it is spawned across
+  several to-dos.
+
+### Removed
+
+- **The per-worktree branch choice.** With the agent creating the worktree,
+  "let the agent name the branch" is simply leaving the worktree name blank, so
+  the detached-HEAD option is gone.
+
 ## [1.4.0] - 2026-08-20
 
 ### Added
