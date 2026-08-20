@@ -22,6 +22,16 @@ describe("detectInputPrompt", () => {
     expect(detectInputPrompt("[sudo] password for tester: \n")).toBe(true);
   });
 
+  it("flags an ssh password prompt with its host prefix", () => {
+    const screen = [
+      "% ssh tester@example-host",
+      "** WARNING: connection is not using a post-quantum key exchange algorithm.",
+      "(tester@example-host) Password:",
+    ].join("\n");
+    expect(detectInputPrompt(screen)).toBe(true);
+    expect(detectInputPrompt("tester@example-host's password:")).toBe(true);
+  });
+
   it("flags an ssh passphrase prompt", () => {
     expect(
       detectInputPrompt(
@@ -30,10 +40,19 @@ describe("detectInputPrompt", () => {
     ).toBe(true);
   });
 
+  it("flags a git credential prompt", () => {
+    expect(detectInputPrompt("Username for 'https://example.test':")).toBe(
+      true,
+    );
+  });
+
   it("does not flag output that merely mentions a password", () => {
     expect(detectInputPrompt("warn: password rotation is due in 3 days")).toBe(
       false,
     );
+    expect(
+      detectInputPrompt("POST /login 200 — password: [redacted] in body"),
+    ).toBe(false);
   });
 
   it("flags a numbered selection pointer", () => {

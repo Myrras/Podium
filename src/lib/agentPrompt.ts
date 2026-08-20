@@ -38,14 +38,14 @@ const PROMPT_PATTERNS: RegExp[] = [
   /permission (to|required|needed|request)/i,
   /awaiting (your )?(input|confirmation|approval)/i,
   // Credential prompts from ordinary commands run in a terminal: sudo
-  // ("[sudo] password for x:" on Linux, plain "Password:" on macOS), ssh /
-  // git passphrase requests. Anchored to a line end because the prompt is
-  // where the cursor sits — a log line merely mentioning a password does not
-  // end there.
-  /\[sudo\] password for /i,
-  /^\s*(\S+'s )?password( for \S+)?:[ \t]*$/im,
-  /enter passphrase for [^:\n]*:[ \t]*$/im,
-  /^\s*passphrase:[ \t]*$/im,
+  // ("[sudo] password for x:", plain "Password:" on macOS), ssh
+  // ("(user@host) Password:", "user@host's password:"), key passphrases, git
+  // credentials. Anchored only to the END of the line — that is where the
+  // cursor sits, while the start is whatever host/user the tool prefixes —
+  // so a log line merely mentioning a password does not trip them.
+  /\bpasswords?( for [^\n:]*)?:[ \t]*$/im,
+  /\bpassphrase( for [^\n:]*)?:[ \t]*$/im,
+  /\busername for [^\n]*:[ \t]*$/im,
 ];
 
 /**
