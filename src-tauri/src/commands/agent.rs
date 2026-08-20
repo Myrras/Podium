@@ -28,10 +28,9 @@ pub async fn adapters_list(state: State<'_, AppState>) -> Result<Vec<AdapterInfo
 /// `todo_ids` seeds the agent's prompt with one or more to-dos to work on
 /// (multiple are handed over as one combined task). `scratchpad_ids` does the
 /// same for scratchpads, and is only used when `todo_ids` is empty.
-/// `worktree` runs the agent in a fresh git worktree; `worktree_name` names it
-/// (the New agent dialog forces one for multi-to-do/scratchpad spawns, where
-/// deriving it from one arbitrary to-do would be misleading), and
-/// `worktree_on_head` checks it out detached so the agent names its own branch.
+/// `worktree` tells the agent to create a git worktree over MCP and work
+/// inside it (Podium does not create one, so the agent starts in the project
+/// root); `worktree_name` names it, or the agent picks a name when blank.
 /// `args`, when present, replaces the global default CLI args for this spawn
 /// only.
 #[allow(clippy::too_many_arguments)] // mirrors the core's flat spawn API
@@ -46,7 +45,6 @@ pub async fn agent_spawn(
     scratchpad_ids: Option<Vec<ScratchpadId>>,
     worktree: Option<bool>,
     worktree_name: Option<String>,
-    worktree_on_head: Option<bool>,
     args: Option<Vec<String>>,
 ) -> Result<ProcessInfo, IpcError> {
     let id = state
@@ -60,7 +58,6 @@ pub async fn agent_spawn(
             scratchpad_ids.unwrap_or_default(),
             worktree.unwrap_or(false),
             worktree_name,
-            worktree_on_head.unwrap_or(false),
             args,
         )
         .await?;

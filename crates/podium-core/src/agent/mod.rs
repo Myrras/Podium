@@ -38,13 +38,15 @@ pub struct AgentLaunchCtx<'a> {
     /// in its system prompt to rename itself right after the first user
     /// message — models never act on the buried MCP-server instruction alone.
     pub named: bool,
-    /// Whether the agent's cwd is already a Podium-managed worktree; wins
-    /// over `suggest_worktree` (no point offering another one).
-    pub in_worktree: bool,
-    /// Whether that worktree is on a detached HEAD, so the agent must create
-    /// and name its own git branch before committing. Only meaningful when
-    /// [`Self::in_worktree`] is true.
-    pub worktree_needs_branch: bool,
+    /// Whether this session's work must happen in a Podium-managed git
+    /// worktree the agent creates itself (`create_worktree` over MCP).
+    /// Podium does not create it up front — the agent starts in the project
+    /// root, so its tooling/caches are the ones the user set up. Wins over
+    /// `suggest_worktree`: the user already decided at spawn.
+    pub worktree: bool,
+    /// Name for that worktree; `None` = the agent picks one that fits the
+    /// work. Only meaningful when [`Self::worktree`] is true.
+    pub worktree_name: Option<&'a str>,
     /// Whether the system prompt should tell the agent to offer an isolated
     /// git worktree before its first code change (Settings → Agents toggle).
     pub suggest_worktree: bool,
@@ -192,20 +194,20 @@ fn identity_prompt(ctx: &AgentLaunchCtx) -> String {
              short name describing the session, then continue with the task.",
         );
     }
-    if ctx.in_worktree {
+    if ctx.worktree {
         prompt.push_str(
-            " This session runs in a dedicated git worktree: your working \
-             directory is an isolated checkout. Do all work inside it, and do \
-             not create another worktree for this session.",
+            " This session's work belongs in an isolated git worktree: \
+             before your first code change, call the podium create_worktree \
+             tool (pass your project_id and ",
         );
-        if ctx.worktree_needs_branch {
-            prompt.push_str(
-                " The checkout is on a detached HEAD — before you commit, \
-                 create a git branch with a short name that fits the work.",
-            );
-        } else {
-            prompt.push_str(" It is already on its own branch.");
+        match ctx.worktree_name {
+            Some(name) => prompt.push_str(&format!("the name \"{name}\"")),
+            None => prompt.push_str("a short name that fits the work"),
         }
+        prompt.push_str(
+            "), then make all file changes under the path it returns. Do not \
+             ask the user first — they already asked for a worktree.",
+        );
     } else if ctx.suggest_worktree {
         prompt.push_str(
             " Before you first modify code in this session, ask the user \
@@ -426,8 +428,8 @@ mod tests {
             command_override,
             mcp,
             named: false,
-            in_worktree: false,
-            worktree_needs_branch: false,
+            worktree: false,
+            worktree_name: None,
             suggest_worktree: false,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -558,8 +560,8 @@ mod tests {
             command_override: None,
             mcp: None,
             named: false,
-            in_worktree: false,
-            worktree_needs_branch: false,
+            worktree: false,
+            worktree_name: None,
             suggest_worktree: false,
         };
         assert_eq!(
@@ -602,8 +604,8 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: true,
-            in_worktree: false,
-            worktree_needs_branch: false,
+            worktree: false,
+            worktree_name: None,
             suggest_worktree: false,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -630,8 +632,8 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: true,
-            in_worktree: false,
-            worktree_needs_branch: false,
+            worktree: false,
+            worktree_name: None,
             suggest_worktree: true,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -642,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn in_worktree_wins_over_the_suggest_instruction() {
+    fn worktree_wins_over_the_suggest_instruction() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mcp = McpConnectInfo {
             url: "http://127.0.0.1:1".to_string(),
@@ -658,22 +660,21 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: true,
-            in_worktree: true,
-            worktree_needs_branch: false,
+            worktree: true,
+            worktree_name: Some("auth-refactor"),
             suggest_worktree: true,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
         let blurb = &tokens[tokens.len() - 1];
-        assert!(blurb.contains("dedicated git worktree"));
-        assert!(!blurb.contains("create_worktree"));
-        // Not detached → told it is already on its own branch.
-        assert!(blurb.contains("already on its own branch"));
-        assert!(!blurb.contains("detached HEAD"));
+        // Told to create it itself, with the given name, without asking.
+        assert!(blurb.contains("create_worktree"));
+        assert!(blurb.contains("auth-refactor"));
+        assert!(!blurb.contains("ask the user whether"));
     }
 
     #[test]
-    fn detached_worktree_tells_the_agent_to_create_a_branch() {
+    fn unnamed_worktree_lets_the_agent_pick_the_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mcp = McpConnectInfo {
             url: "http://127.0.0.1:1".to_string(),
@@ -689,17 +690,15 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: true,
-            in_worktree: true,
-            worktree_needs_branch: true,
+            worktree: true,
+            worktree_name: None,
             suggest_worktree: false,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
         let blurb = &tokens[tokens.len() - 1];
-        assert!(blurb.contains("dedicated git worktree"));
-        assert!(blurb.contains("detached HEAD"));
-        assert!(blurb.contains("create a git branch"));
-        assert!(!blurb.contains("already on its own branch"));
+        assert!(blurb.contains("create_worktree"));
+        assert!(blurb.contains("a short name that fits the work"));
     }
 
     #[test]
@@ -719,8 +718,8 @@ mod tests {
             command_override: None,
             mcp: Some(&mcp),
             named: false,
-            in_worktree: false,
-            worktree_needs_branch: false,
+            worktree: false,
+            worktree_name: None,
             suggest_worktree: true,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");

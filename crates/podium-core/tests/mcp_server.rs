@@ -601,7 +601,6 @@ async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -618,7 +617,6 @@ async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -656,7 +654,6 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -672,7 +669,6 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -700,7 +696,6 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -740,7 +735,6 @@ async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -790,7 +784,6 @@ async fn removing_an_agent_clears_its_todo_assignment() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -829,7 +822,6 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -886,7 +878,6 @@ async fn rename_session_tool_renames_the_calling_agent() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -950,7 +941,6 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
             scratchpad_ids: None,
             worktree: None,
             worktree_name: None,
-            worktree_on_head: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -999,7 +989,6 @@ async fn spawning_on_a_scratchpad_assigns_the_agent_and_unassign_clears_it() {
             vec![pad.id],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1056,7 +1045,6 @@ async fn spawning_on_both_todo_and_scratchpad_ignores_the_scratchpad() {
             vec![pad.id],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1097,7 +1085,6 @@ async fn spawning_on_a_todo_with_a_bogus_scratchpad_still_succeeds() {
             vec![bogus_id],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1132,7 +1119,6 @@ async fn removing_an_agent_clears_its_scratchpad_assignment() {
             vec![pad.id],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1170,7 +1156,6 @@ async fn list_scratchpads_enriches_assigned_agent() {
             vec![pad.id],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1216,7 +1201,6 @@ async fn spawn_agent_tool_accepts_scratchpad_ids() {
             scratchpad_ids: Some(vec![a.id.to_string(), b.id.to_string()]),
             worktree: None,
             worktree_name: None,
-            worktree_on_head: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -1350,7 +1334,6 @@ async fn bare_spawn_uses_the_global_default_adapter() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1391,7 +1374,6 @@ async fn project_default_adapter_overrides_the_global_one() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1428,7 +1410,6 @@ async fn spawn_agent_applies_global_override_and_default_args() {
             vec![],
             false,
             None,
-            false,
             None,
         )
         .await
@@ -1473,7 +1454,6 @@ async fn spawn_agent_args_override_replaces_global_default_args() {
             vec![],
             false,
             None,
-            false,
             Some(vec!["--model".to_string(), "haiku".to_string()]),
         )
         .await
@@ -1575,7 +1555,7 @@ async fn worktree_tools_round_trip_create_list_remove() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn spawn_agent_tool_with_worktree_reports_it_in_the_snapshot() {
+async fn spawn_agent_with_worktree_does_not_create_one() {
     let dir = init_git_repo();
     let orch = Arc::new(
         Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
@@ -1597,16 +1577,15 @@ async fn spawn_agent_tool_with_worktree_reports_it_in_the_snapshot() {
             scratchpad_id: None,
             scratchpad_ids: None,
             worktree: Some(true),
-            worktree_name: None,
-            worktree_on_head: None,
+            worktree_name: Some("isolated work".to_string()),
         }))
         .await
         .expect("spawn_agent with worktree over MCP");
     let snapshot =
         serde_json::from_str::<serde_json::Value>(&first_text(&spawned)).expect("process json");
-    assert_eq!(snapshot["worktree"], "isolated-work");
-
-    // The worktree shows up in list_worktrees as in use.
+    // The worktree is the agent's job now: it starts in the project root and
+    // is only told to create one, so Podium made nothing up front.
+    assert!(snapshot["worktree"].is_null());
     let listed = tools
         .list_worktrees(Parameters(ListWorktreesParams {
             project_id: project_id.to_string(),
@@ -1615,20 +1594,13 @@ async fn spawn_agent_tool_with_worktree_reports_it_in_the_snapshot() {
         .expect("list_worktrees over MCP");
     let listed_json =
         serde_json::from_str::<serde_json::Value>(&first_text(&listed)).expect("list json");
-    let entry = listed_json
-        .as_array()
-        .expect("array")
-        .iter()
-        .find(|w| w["name"] == "isolated-work")
-        .expect("spawned worktree listed")
-        .clone();
-    assert_eq!(entry["inUse"], true);
+    assert!(listed_json.as_array().expect("array").is_empty());
 
     orch.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn spawn_agent_in_worktree_on_a_non_git_project_fails_cleanly() {
+async fn spawn_agent_with_worktree_works_on_a_non_git_project() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch =
         Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
@@ -1637,69 +1609,70 @@ async fn spawn_agent_in_worktree_on_a_non_git_project_fails_cleanly() {
         .await
         .expect("open project");
 
-    let err = orch
-        .spawn_agent(
-            project_id,
-            Some("fake".to_string()),
-            None,
-            None,
-            vec![],
-            vec![],
-            true,
-            None,
-            false,
-            None,
-        )
-        .await
-        .expect_err("worktree spawn on a non-git project must fail");
-    assert!(matches!(err, CoreError::NotAGitRepo), "got: {err}");
-    // The failure happened before any process was created.
-    assert!(orch.list_processes(Some(project_id)).is_empty());
+    // Nothing git-related happens at spawn any more, so a non-git project no
+    // longer fails: the agent gets the instruction and can refuse/adapt.
+    orch.spawn_agent(
+        project_id,
+        Some("fake".to_string()),
+        None,
+        None,
+        vec![],
+        vec![],
+        true,
+        None,
+        None,
+    )
+    .await
+    .expect("worktree spawn on a non-git project still spawns");
+    assert_eq!(orch.list_processes(Some(project_id)).len(), 1);
 
     orch.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn remove_worktree_is_refused_while_an_agent_runs_in_it() {
+async fn remove_worktree_is_refused_while_a_process_runs_in_it() {
     let dir = init_git_repo();
-    let orch =
-        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)]));
+    let orch = Arc::new(Orchestrator::new());
     let project_id = orch
         .open_project(dir.path().to_path_buf())
         .await
         .expect("open project");
 
-    let agent = orch
-        .spawn_agent(
+    let wt = orch
+        .create_worktree(project_id, "busy")
+        .expect("create worktree");
+    let pid = orch
+        .add_process(
             project_id,
-            Some("fake".to_string()),
-            Some("busy".to_string()),
-            None,
-            vec![],
-            vec![],
-            true,
-            None,
-            false,
-            None,
+            ProcessSpec {
+                name: "busy-shell".to_string(),
+                command: "sleep 30".to_string(),
+                cwd: wt.path.clone(),
+                env: Vec::new(),
+                kind: ProcessKind::Terminal,
+                restart_policy: RestartPolicy::Never,
+                color: None,
+            },
         )
         .await
-        .expect("spawn agent in worktree");
+        .expect("add process");
+    orch.start_process(pid).await.expect("start process");
     let info = orch
         .list_processes(Some(project_id))
         .into_iter()
-        .find(|p| p.id == agent)
-        .expect("agent listed");
+        .find(|p| p.id == pid)
+        .expect("process listed");
     assert_eq!(info.worktree.as_deref(), Some("busy"));
 
     let err = orch
         .remove_worktree(project_id, "busy", false)
-        .expect_err("removal must be refused while the agent runs in it");
+        .expect_err("removal must be refused while a process runs in it");
     assert!(matches!(err, CoreError::WorktreeInUse), "got: {err}");
 
-    // Once the agent is gone, removal succeeds.
-    orch.remove_process(agent).await.expect("remove agent");
+    // Once the process is gone, removal succeeds.
+    orch.remove_process(pid).await.expect("remove process");
     orch.remove_worktree(project_id, "busy", false)
-        .expect("remove worktree after agent stopped");
+        .expect("remove worktree after the process stopped");
 
     orch.shutdown().await;
 }
@@ -1726,7 +1699,6 @@ async fn assign_todo_is_blocked_when_already_owned_by_another_session() {
             vec![],
             false,
             None,
-            false,
             None,
         )
     };
