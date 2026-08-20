@@ -1,0 +1,106 @@
+/* Quick-commands modal opened from the Terminals subsection header. */
+
+.empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.item:hover {
+  background: var(--surface-hover);
+}
+
+/* The command itself: click to run it in a new terminal. */
+.run {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.run:hover {
+  color: var(--text);
+}
+
+.runIcon {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.item:hover .runIcon {
+  opacity: 1;
+}
+
+.command {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+}
+
+/* Hover-revealed remove affordance on user-defined commands. */
+.remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: var(--sp-1);
+  margin-right: var(--sp-1);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.item:hover .remove,
+.remove:focus-visible {
+  opacity: 1;
+}
+
+.remove:hover {
+  color: var(--danger);
+  background: var(--surface-2);
+}
+
+.addForm {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.addInput {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--font-mono, monospace);
+}

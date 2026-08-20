@@ -20,14 +20,17 @@ import type {
   ScratchpadId,
   TodoId,
 } from "../ipc/types";
+import { projectOpenInWarp, toIpcError } from "../ipc/commands";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSettingsStore } from "../state/settingsStore";
+import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
+import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
 import { WorktreesModal } from "./WorktreesModal";
 import {
@@ -38,6 +41,7 @@ import {
   CloseIcon,
   EditIcon,
   ErrorIcon,
+  ExternalLinkIcon,
   FolderOpenIcon,
   GripIcon,
   RestartIcon,
@@ -54,8 +58,8 @@ interface SubsectionProps {
   empty?: string;
   /** Header add button; omitted for sections without a create action. */
   add?: { label: string; onClick: () => void };
-  /** Optional second header action, rendered before the add button. */
-  extra?: { label: string; Icon: typeof AgentIcon; onClick: () => void };
+  /** Extra header actions, rendered before the add button. */
+  extra?: { label: string; Icon: typeof AgentIcon; onClick: () => void }[];
 }
 
 /** One entity subsection (Agents / Processes / Terminals) in a group. */
@@ -65,17 +69,18 @@ function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
       <div className={styles.sectionHeader}>
         <Icon className={styles.panelIcon} />
         <span className={styles.panelTitle}>{title}</span>
-        {extra && (
+        {extra?.map((action) => (
           <button
+            key={action.label}
             type="button"
             className={styles.addBtn}
-            aria-label={extra.label}
-            title={extra.label}
-            onClick={extra.onClick}
+            aria-label={action.label}
+            title={action.label}
+            onClick={action.onClick}
           >
-            <extra.Icon size={13} />
+            <action.Icon size={13} />
           </button>
-        )}
+        ))}
         {add && (
           <button
             type="button"
@@ -166,6 +171,7 @@ function ProjectGroup({
   const startProcess = useProcessStore((s) => s.startProcess);
 
   const [editing, setEditing] = useState(false);
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -212,6 +218,24 @@ function ProjectGroup({
       ...(shell ? { command: shell } : {}),
     });
     if (info) await startProcess(info.id);
+  };
+
+  // Quick command from the Commands block: a new terminal running it.
+  const runCommand = async (command: string) => {
+    setActiveProject(project.id);
+    const info = await addProcess(project.id, {
+      name: command,
+      kind: "terminal",
+      command,
+    });
+    if (info) await startProcess(info.id);
+  };
+
+  const openInWarp = () => {
+    setActiveProject(project.id);
+    projectOpenInWarp(project.id).catch((e: unknown) =>
+      toastError("Could not open Warp", toIpcError(e).message),
+    );
   };
 
   return (
@@ -370,14 +394,16 @@ function ProjectGroup({
                 onNewAgent(project.id);
               },
             }}
-            extra={{
-              label: "Worktrees",
-              Icon: BranchIcon,
-              onClick: () => {
-                setActiveProject(project.id);
-                onOpenWorktrees(project.id);
+            extra={[
+              {
+                label: "Worktrees",
+                Icon: BranchIcon,
+                onClick: () => {
+                  setActiveProject(project.id);
+                  onOpenWorktrees(project.id);
+                },
               },
-            }}
+            ]}
           />
           {services.length > 0 && (
             <Subsection title="Processes" Icon={RunIcon} rows={services} />
@@ -388,6 +414,28 @@ function ProjectGroup({
             rows={terminals}
             empty="No terminals yet."
             add={{ label: "New terminal", onClick: () => void addTerminal() }}
+            extra={[
+              {
+                label: "Open in Warp",
+                Icon: ExternalLinkIcon,
+                onClick: openInWarp,
+              },
+              {
+                label: "Commands",
+                Icon: RunIcon,
+                onClick: () => {
+                  setActiveProject(project.id);
+                  setCommandsOpen(true);
+                },
+              },
+            ]}
+          />
+          <TerminalCommandsModal
+            open={commandsOpen}
+            projectId={project.id}
+            root={project.root}
+            onClose={() => setCommandsOpen(false)}
+            onRun={(command) => void runCommand(command)}
           />
           <ScratchpadSubsection
             projectId={project.id}

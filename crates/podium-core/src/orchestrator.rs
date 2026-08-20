@@ -1365,6 +1365,21 @@ impl Orchestrator {
         Ok(infos)
     }
 
+    /// Public recipe names from the project root's justfile (empty when
+    /// there is none). Read fresh on every call — cheap, and always current
+    /// after the user edits the file.
+    pub fn project_just_recipes(&self, project_id: ProjectId) -> CoreResult<Vec<String>> {
+        let root = self.project_root(project_id)?;
+        Ok(crate::justfile::recipes(&root))
+    }
+
+    /// Open the project root in a new Warp tab via Warp's URI scheme.
+    /// Launches an OS process — call from a blocking-friendly context.
+    pub fn open_project_in_warp(&self, project_id: ProjectId) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        crate::platform::open_in_warp(&root)
+    }
+
     /// The git branch currently checked out in a process's working
     /// directory, or `None` when its cwd is not a git repo / detached. Feeds
     /// the focused-process header. Shells out to git — call from a
