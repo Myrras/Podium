@@ -48,7 +48,8 @@ describe("TerminalCommandsModal", () => {
     fireEvent.click(
       await screen.findByTitle('Run "just build" in a new terminal'),
     );
-    expect(onRun).toHaveBeenCalledWith("just build");
+    // Recipes launch a terminal named after the recipe, not `just <recipe>`.
+    expect(onRun).toHaveBeenCalledWith("just build", "build");
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -60,7 +61,7 @@ describe("TerminalCommandsModal", () => {
 
     expect(screen.getByText("pnpm dev")).toBeInTheDocument();
     expect(useTerminalCommandsStore.getState().customByRoot[ROOT]).toEqual([
-      "pnpm dev",
+      { command: "pnpm dev" },
     ]);
     expect(localStorage.getItem("podium.terminalCommands")).toContain(
       "pnpm dev",
@@ -71,6 +72,62 @@ describe("TerminalCommandsModal", () => {
     );
     expect(screen.queryByText("pnpm dev")).not.toBeInTheDocument();
     expect(useTerminalCommandsStore.getState().customByRoot[ROOT]).toEqual([]);
+  });
+
+  it("names a custom command and launches the terminal under that name", async () => {
+    const { onRun } = renderModal();
+    fireEvent.change(await screen.findByLabelText("Command name"), {
+      target: { value: "Web dev" },
+    });
+    const input = screen.getByLabelText("New command");
+    fireEvent.change(input, { target: { value: "pnpm dev" } });
+    fireEvent.submit(input.closest("form")!);
+
+    expect(useTerminalCommandsStore.getState().customByRoot[ROOT]).toEqual([
+      { command: "pnpm dev", name: "Web dev" },
+    ]);
+    // Both the name and the command line show; the terminal takes the name.
+    expect(screen.getByText("Web dev")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Run "pnpm dev" in a new terminal'));
+    expect(onRun).toHaveBeenCalledWith("pnpm dev", "Web dev");
+  });
+
+  it("edits an existing custom command in place", async () => {
+    useTerminalCommandsStore.setState({
+      customByRoot: { [ROOT]: [{ command: "pnpm dev" }] },
+    });
+    renderModal();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: 'Edit command "pnpm dev"' }),
+    );
+    const command = screen.getByLabelText("Command");
+    expect((command as HTMLInputElement).value).toBe("pnpm dev");
+    fireEvent.change(screen.getByLabelText("Command name"), {
+      target: { value: "API" },
+    });
+    fireEvent.change(command, { target: { value: "pnpm dev:api" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(useTerminalCommandsStore.getState().customByRoot[ROOT]).toEqual([
+      { command: "pnpm dev:api", name: "API" },
+    ]);
+    // Back to add mode with an empty draft.
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
+  });
+
+  it("migrates commands stored as bare strings", async () => {
+    localStorage.setItem(
+      "podium.terminalCommands",
+      JSON.stringify({ customByRoot: { [ROOT]: ["pnpm dev"] } }),
+    );
+    // The store reads localStorage at module init, so re-import it to run the
+    // loader against the legacy payload.
+    vi.resetModules();
+    const fresh = await import("../state/terminalCommandsStore");
+    expect(
+      fresh.useTerminalCommandsStore.getState().customByRoot[ROOT],
+    ).toEqual([{ command: "pnpm dev" }]);
   });
 
   it("shows a hint when there are no commands at all", async () => {
