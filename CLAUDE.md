@@ -237,17 +237,30 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   its identity prompt tell it to create one itself via the `create_worktree`
   MCP tool before its first code change, named `worktreeName` when given, else
   a name the agent picks. So every worktree comes from `create_worktree`,
-  whether at the start of a session or mid-session. `git worktree list
-  --porcelain` is the source of truth (no persistence, no events);
-  `ProcessInfo.worktree` is derived from the process cwd and feeds the sidebar
-  badge, `in_use` and the removal guard — an agent that creates its own
-  worktree keeps the root as cwd, so it does not light those up. Removal is
-  refused while an active process runs in the worktree (`WorktreeInUse`) or
-  while it has uncommitted changes unless forced (`WorktreeDirty`); the branch
-  is always kept. The global `suggest_worktree` setting (default on) makes
-  agent identity prompts *ask* the user about a worktree before the first code
-  change; the spawn flag is the same instruction without the asking, and wins
-  over the setting.
+  whether at the start of a session or mid-session. Every worktree git call
+  runs `platform::git_binary()` directly (a path resolved once via the login
+  shell, then reused — not a login shell per call, which was slow on heavy
+  shell profiles) rather than through the shell. `git worktree list
+  --porcelain` is the source of truth and `list` has no events, but
+  `create`/`remove` emit `WorktreesChanged` for the project, which the
+  frontend's `worktreeStore` uses (alongside a background load on project
+  open) to keep its cache warm, so the Worktrees modal and the Commands
+  modal's target picker render from cache instantly instead of showing
+  "Loading…" — the modal still kicks off its own refresh on open to catch
+  out-of-band changes. `ProcessInfo.worktree` is derived from the process cwd
+  and feeds the
+  sidebar badge, `in_use` and the removal guard — an agent that creates its
+  own worktree keeps the root as cwd, so it does not light those up. Removal
+  is refused while an active process runs in the worktree (`WorktreeInUse`)
+  or while it has uncommitted changes unless forced (`WorktreeDirty`); the
+  branch is always kept. The global `suggest_worktree` setting (default on)
+  makes agent identity prompts *ask* the user about a worktree before the
+  first code change; the spawn flag is the same instruction without the
+  asking, and wins over the setting. Terminals and the Commands modal's quick
+  commands can also target a worktree directly (its `cwd` is
+  `.podium/worktrees/<name>`, relative to the project root like any other
+  process `cwd`) via the Worktrees modal's per-row terminal button and the
+  Commands modal's target picker.
 
 ### Tauri IPC contract
 
@@ -351,7 +364,8 @@ a partial stream would corrupt the terminal. Payloads are base64 both ways
 output never travels this path): `process:added` / `process:removed` /
 `process:updated` `{projectId, processId}`, `process:status`
 `{projectId, processId, status}`, `project:opened` / `project:updated` /
-`project:closed` / `todo:changed` `{projectId}`.
+`project:closed` / `todo:changed` / `scratchpad:changed` /
+`worktree:changed` `{projectId}`.
 
 > ⚠️ **Field casing for the frontend:** everything on the wire is
 > **camelCase** — DTO fields (`projectId`, `dataB64`, `configError`, …) and

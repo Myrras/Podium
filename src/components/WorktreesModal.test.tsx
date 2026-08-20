@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The modal talks to the IPC command layer directly; mock it per file.
+// The modal (via the worktree store) talks to the IPC command layer; mock it
+// per file.
 vi.mock("../ipc/commands", () => ({
   worktreeList: vi.fn(),
   worktreeRemove: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../state/toastStore", () => ({ toastError: vi.fn() }));
 import type { WorktreeInfo } from "../ipc/types";
 import { worktreeList, worktreeRemove } from "../ipc/commands";
 import { toastError } from "../state/toastStore";
+import { useWorktreeStore } from "../state/worktreeStore";
 import { WorktreesModal } from "./WorktreesModal";
 
 const worktreeListMock = vi.mocked(worktreeList);
@@ -34,14 +36,27 @@ function wt(name: string, inUse = false): WorktreeInfo {
   };
 }
 
+function renderModal(onOpenTerminal = vi.fn()) {
+  render(
+    <WorktreesModal
+      open
+      projectId={PROJECT}
+      onClose={() => {}}
+      onOpenTerminal={onOpenTerminal}
+    />,
+  );
+  return { onOpenTerminal };
+}
+
 describe("WorktreesModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useWorktreeStore.setState({ worktreesByProject: {} }, false);
   });
 
   it("lists worktrees fetched on open", async () => {
     worktreeListMock.mockResolvedValue([wt("fix-login"), wt("busy", true)]);
-    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+    renderModal();
 
     expect(await screen.findByText("fix-login")).toBeInTheDocument();
     expect(screen.getByText("podium/fix-login")).toBeInTheDocument();
@@ -49,9 +64,21 @@ describe("WorktreesModal", () => {
     expect(worktreeListMock).toHaveBeenCalledWith(PROJECT);
   });
 
+  it("renders instantly from a warm cache, then refreshes in the background", async () => {
+    useWorktreeStore.setState({
+      worktreesByProject: { [PROJECT]: [wt("cached")] },
+    });
+    worktreeListMock.mockResolvedValue([wt("cached")]);
+    renderModal();
+
+    // No "Loading…" — the cached row is there immediately.
+    expect(screen.getByText("cached")).toBeInTheDocument();
+    await waitFor(() => expect(worktreeListMock).toHaveBeenCalledWith(PROJECT));
+  });
+
   it("disables delete for a worktree in use", async () => {
     worktreeListMock.mockResolvedValue([wt("busy", true)]);
-    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+    renderModal();
 
     const btn = await screen.findByRole("button", {
       name: "Delete worktree busy",
@@ -59,10 +86,23 @@ describe("WorktreesModal", () => {
     expect(btn).toBeDisabled();
   });
 
+  it("opens a terminal for a worktree and closes the modal", async () => {
+    worktreeListMock.mockResolvedValue([wt("fix-login")]);
+    const { onOpenTerminal } = renderModal();
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Open terminal in fix-login",
+      }),
+    );
+
+    expect(onOpenTerminal).toHaveBeenCalledWith(wt("fix-login"));
+  });
+
   it("deletes a clean worktree and replaces the list", async () => {
     worktreeListMock.mockResolvedValue([wt("done")]);
     worktreeRemoveMock.mockResolvedValue([]);
-    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+    renderModal();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete worktree done" }),
@@ -83,7 +123,7 @@ describe("WorktreesModal", () => {
         resolve = r;
       }),
     );
-    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+    renderModal();
 
     const btn = await screen.findByRole("button", {
       name: "Delete worktree slow",
@@ -107,7 +147,7 @@ describe("WorktreesModal", () => {
       .mockRejectedValueOnce({ kind: "worktreeDirty", message: "dirty" })
       .mockResolvedValueOnce([]);
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+    renderModal();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete worktree dirty" }),
@@ -128,7 +168,7 @@ describe("WorktreesModal", () => {
       message: "dirty",
     });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<WorktreesModal open projectId={PROJECT} onClose={() => {}} />);
+    renderModal();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete worktree dirty" }),

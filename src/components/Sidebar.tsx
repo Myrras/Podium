@@ -23,6 +23,7 @@ import type {
   ProjectInfo,
   ScratchpadId,
   TodoId,
+  WorktreeInfo,
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
 import { useLayoutStore } from "../state/layoutStore";
@@ -226,12 +227,15 @@ function ProjectGroup({
 
   // Quick command from the Commands block: a new terminal running it, named
   // after the command's own name (a justfile recipe, or a user-set name).
-  const runCommand = async (command: string, name: string) => {
+  // `cwd` is set when the Commands modal's target picker chose a worktree
+  // instead of the project root.
+  const runCommand = async (command: string, name: string, cwd?: string) => {
     setActiveProject(project.id);
     const info = await addProcess(project.id, {
       name,
       kind: "terminal",
       command,
+      ...(cwd ? { cwd } : {}),
     });
     if (info) await startProcess(info.id);
   };
@@ -440,7 +444,7 @@ function ProjectGroup({
             projectId={project.id}
             root={project.root}
             onClose={() => setCommandsOpen(false)}
-            onRun={(command, name) => void runCommand(command, name)}
+            onRun={(command, name, cwd) => void runCommand(command, name, cwd)}
           />
           <ScratchpadSubsection
             projectId={project.id}
@@ -483,6 +487,27 @@ export function Sidebar() {
   const reorderProjects = useProjectStore((s) => s.reorderProjects);
 
   const processes = useProcessStore((s) => s.processes);
+  const addProcess = useProcessStore((s) => s.addProcess);
+  const startProcess = useProcessStore((s) => s.startProcess);
+
+  // Open a terminal rooted in a Podium-managed worktree (from the Worktrees
+  // modal's per-row action). `cwd` is relative to the project root, so the
+  // worktree's own dir under `.podium/worktrees/` resolves the same way any
+  // other relative cwd does.
+  const openWorktreeTerminal = async (
+    projectId: ProjectId,
+    wt: WorktreeInfo,
+  ) => {
+    const shell = useSettingsStore.getState().terminal.shell.trim();
+    const info = await addProcess(projectId, {
+      name: `Terminal (${wt.name})`,
+      kind: "terminal",
+      cwd: `.podium/worktrees/${wt.name}`,
+      ...(shell ? { command: shell } : {}),
+    });
+    if (info) await startProcess(info.id);
+    setWorktreesFor(null);
+  };
 
   // Drag-to-reorder state: the id being dragged and the id it's hovering over
   // (the drop lands the dragged project just before the hovered one).
@@ -578,6 +603,7 @@ export function Sidebar() {
           open
           projectId={worktreesFor}
           onClose={() => setWorktreesFor(null)}
+          onOpenTerminal={(wt) => void openWorktreeTerminal(worktreesFor, wt)}
         />
       )}
     </aside>

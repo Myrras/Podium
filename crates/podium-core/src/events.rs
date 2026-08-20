@@ -55,6 +55,12 @@ pub enum PodiumEvent {
     ScratchpadsChanged {
         project_id: ProjectId,
     },
+    /// A project's git worktrees changed (created / removed); the UI
+    /// re-pulls the list via `worktree_list`. Listing itself never publishes
+    /// this — `git worktree list --porcelain` stays the source of truth.
+    WorktreesChanged {
+        project_id: ProjectId,
+    },
 }
 
 /// Fan-out bus for [`PodiumEvent`]s, backed by a tokio broadcast channel.
