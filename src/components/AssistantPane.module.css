@@ -12,6 +12,14 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-md);
   overflow: hidden;
+  animation: islandIn var(--dur-3) var(--ease-out);
+}
+
+@keyframes islandIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
 }
 
 .header {
@@ -170,6 +178,9 @@
   background: var(--surface-2);
   border: 1px solid var(--accent);
   border-radius: var(--radius-md);
+  transition:
+    border-color var(--dur-3) var(--ease-out),
+    background var(--dur-3) var(--ease-out);
 }
 
 .proposal[data-status="rejected"],
@@ -231,8 +242,40 @@
 }
 
 .working {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
   color: var(--text-faint);
   font-size: var(--fs-sm);
+}
+
+/* Three dots pulsing in sequence — opacity-only, same reasoning as the
+   sidebar's agent-activity dot in StatusDot.module.css. */
+.workingDots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.workingDots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentcolor;
+  animation: dotPulse 0.9s var(--ease-in-out) infinite;
+}
+
+.workingDots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.workingDots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes dotPulse {
+  50% {
+    opacity: 0.2;
+  }
 }
 
 @keyframes messageIn {
@@ -255,6 +298,8 @@
   flex: 1;
   min-width: 0;
   resize: none;
+  overflow-y: auto;
+  max-height: 40vh;
   font-family: inherit;
   font-size: var(--fs-md);
   color: var(--text);
@@ -281,6 +326,17 @@
   color: var(--accent-contrast);
   border: none;
   border-radius: var(--radius-md);
+  transition:
+    background var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.sendBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.sendBtn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .sendBtn:disabled {

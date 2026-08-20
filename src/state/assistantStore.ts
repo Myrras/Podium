@@ -53,6 +53,8 @@ interface AssistantState {
   messages: ChatMessage[];
   /** True from sending a turn until the assistant's reply ends. */
   busy: boolean;
+  /** The tool currently running, or `null` between tool calls (still busy). */
+  activity: string | null;
   /** How much the assistant may do unasked; mirrors the persisted setting. */
   autonomy: AutonomyMode;
   /** Whether Podium nudges the assistant unprompted; mirrors the setting. */
@@ -110,6 +112,7 @@ function patchProposal(
 export const useAssistantStore = create<AssistantState>((set, get) => ({
   messages: [],
   busy: false,
+  activity: null,
   autonomy: "confirm-destructive",
   proactive: true,
   memory: null,
@@ -136,7 +139,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   newConversation: async () => {
     try {
       await assistantNewConversation();
-      set({ messages: [], busy: false });
+      set({ messages: [], busy: false, activity: null });
     } catch (e) {
       set((s) => ({
         messages: [...s.messages, message("notice", toIpcError(e).message)],
@@ -252,6 +255,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           };
         case "tool":
           return {
+            activity: event.name,
             messages: [...s.messages, message("tool", event.name)],
           };
         // Podium speaking: shown as-is, so an unprompted reply has a reason.
@@ -292,6 +296,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "turnEnd":
           return {
             busy: false,
+            activity: null,
             messages: event.error
               ? [
                   ...s.messages,
@@ -302,6 +307,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "exited":
           return {
             busy: false,
+            activity: null,
             messages: [
               ...s.messages,
               message(

@@ -36,6 +36,7 @@ function actionLabel(tool: string): string {
 export function AssistantPane() {
   const messages = useAssistantStore((s) => s.messages);
   const busy = useAssistantStore((s) => s.busy);
+  const activity = useAssistantStore((s) => s.activity);
   const send = useAssistantStore((s) => s.send);
   const autonomy = useAssistantStore((s) => s.autonomy);
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
@@ -46,6 +47,7 @@ export function AssistantPane() {
   const [draft, setDraft] = useState("");
   const [memoryOpen, setMemoryOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Both are persisted server-side; the store only mirrors them.
   useEffect(() => {
@@ -58,6 +60,16 @@ export function AssistantPane() {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
   }, [messages, busy]);
+
+  // Grow the composer with the draft, up to the CSS max-height cap (where it
+  // starts scrolling instead). Re-runs on every keystroke and on submit()
+  // clearing the draft, so the box shrinks back too.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
 
   async function submit() {
     const text = draft.trim();
@@ -134,7 +146,12 @@ export function AssistantPane() {
         ))}
         {busy && (
           <div className={styles.working} role="status">
-            working…
+            <span>{activity ? `${actionLabel(activity)}…` : "thinking…"}</span>
+            <span className={styles.workingDots} aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
           </div>
         )}
       </div>
@@ -147,6 +164,7 @@ export function AssistantPane() {
         }}
       >
         <textarea
+          ref={inputRef}
           className={styles.input}
           value={draft}
           rows={2}

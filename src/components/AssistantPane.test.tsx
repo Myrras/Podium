@@ -57,6 +57,7 @@ describe("AssistantPane", () => {
     useAssistantStore.setState({
       messages: [],
       busy: false,
+      activity: null,
       autonomy: "confirm-destructive",
       memory: null,
       hydrated: false,
@@ -77,7 +78,32 @@ describe("AssistantPane", () => {
     expect(screen.getByText("what is open?")).toBeInTheDocument();
     // The composer clears so the next turn starts empty.
     expect(screen.getByLabelText("Message the assistant")).toHaveValue("");
-    expect(screen.getByRole("status")).toHaveTextContent("working…");
+    expect(screen.getByRole("status")).toHaveTextContent("thinking…");
+  });
+
+  it("grows the composer with the draft and shrinks back after send", async () => {
+    // jsdom does no layout, so scrollHeight is always 0 — stub it so the
+    // resize effect has something real to react to. This only proves the
+    // effect runs and writes the style; the visual max-height cap (CSS
+    // `max-height` + `overflow-y: auto` on `.input`) is not covered here.
+    let scrollHeight = 32;
+    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    const user = userEvent.setup();
+    render(<AssistantPane />);
+    const input = screen.getByLabelText(
+      "Message the assistant",
+    ) as HTMLTextAreaElement;
+
+    scrollHeight = 96;
+    await user.type(input, "a long draft that wraps several lines");
+    expect(input.style.height).toBe("96px");
+
+    scrollHeight = 32;
+    await user.click(screen.getByLabelText("Send"));
+    expect(input.style.height).toBe("32px");
   });
 
   it("sends on Enter but not on Shift+Enter", async () => {
@@ -113,6 +139,22 @@ describe("AssistantPane", () => {
       screen.getByText("The turn failed: error_max_turns"),
     ).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("shows the running tool in the busy row while it is active", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPane />);
+
+    await user.type(screen.getByLabelText("Message the assistant"), "hi");
+    await user.click(screen.getByLabelText("Send"));
+    expect(screen.getByRole("status")).toHaveTextContent("thinking…");
+
+    act(() => {
+      useAssistantStore
+        .getState()
+        .apply({ type: "tool", name: "mcp__podium__list_todos" });
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("list todos…");
   });
 
   it("reports a failed send in the log instead of losing it", async () => {
@@ -156,7 +198,7 @@ describe("AssistantPane", () => {
     expect(
       screen.queryByRole("button", { name: "Confirm" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("working…");
+    expect(screen.getByRole("status")).toHaveTextContent("thinking…");
   });
 
   it("rejects a proposed action and shows the outcome", async () => {

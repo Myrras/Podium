@@ -30,7 +30,12 @@ describe("assistantStore", () => {
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
       Promise.resolve(enabled),
     );
-    useAssistantStore.setState({ messages: [], busy: false, proactive: true });
+    useAssistantStore.setState({
+      messages: [],
+      busy: false,
+      activity: null,
+      proactive: true,
+    });
   });
 
   it("refuses a blank turn without touching the backend", async () => {
@@ -51,6 +56,17 @@ describe("assistantStore", () => {
     expect(
       useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
     ).toEqual([["user", "hello"]]);
+  });
+
+  it("tracks the running tool as activity, cleared at turn end", () => {
+    const { apply } = useAssistantStore.getState();
+    apply({ type: "tool", name: "mcp__podium__list_todos" });
+    expect(useAssistantStore.getState().activity).toBe(
+      "mcp__podium__list_todos",
+    );
+
+    apply({ type: "turnEnd", error: null });
+    expect(useAssistantStore.getState().activity).toBeNull();
   });
 
   it("ignores the session-id event but reports an ended session", () => {
