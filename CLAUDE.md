@@ -398,7 +398,11 @@ terminals on theme change. The agent **activity indicator** is a frontend
 heuristic: the registry timestamps incoming output, and `useAgentActivity`
 (`src/lib/useAgentActivity.ts`) polls it (1s) — a running agent with output
 in the last 2.5s shows as "working…" (pulsing dot), otherwise "idle". No
-extra IPC.
+extra IPC. A quiet screen showing a permission/confirmation prompt or a
+credential request (`sudo` password, ssh passphrase) reads as **"needs
+input"** instead — derived for **every** running process, not just agents, so
+a terminal stalled on `sudo` surfaces the same way; non-agents only show that
+state ("working…"/"idle" is noise for a plain shell).
 
 ## Build, run, test
 

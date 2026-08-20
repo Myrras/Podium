@@ -1,18 +1,21 @@
 /**
- * Centralized agent activity: "working" / "waiting" / "idle".
+ * Centralized process activity: "working" / "waiting" / "idle".
  *
- * A single polling loop (started once from App) derives each running agent's
- * state from its terminal — recent output means "working"; an otherwise quiet
+ * A single polling loop (started once from App) derives each running
+ * process's state from its terminal — recent output means "working"; an otherwise quiet
  * screen showing a permission/confirmation prompt means "waiting" (needs the
  * user); everything else is "idle" (done or paused). Computing this in one
  * place — rather than per row/pane — means the state is derived once and the
  * "needs input" alert fires exactly once per transition, no matter how many
- * views show the same agent. The same screen read also yields the agent's
- * background-shell count, so "idle" can be qualified with the work still
+ * views show the same process. Every running process is tracked, not just
+ * agents: a terminal stalled on a `sudo` password or a `[y/N]` confirmation
+ * needs the user exactly as much as an agent does (the UI only surfaces
+ * "waiting" for non-agents — "working"/"idle" is noise for a plain shell).
+ * The same screen read also yields an agent's background-shell count, so "idle" can be qualified with the work still
  * running behind the prompt.
  *
- * Detection is a frontend heuristic (see `detectInputPrompt`): coding-agent
- * CLIs emit no structured PTY events, and the existing "working" signal is
+ * Detection is a frontend heuristic (see `detectInputPrompt`): neither
+ * coding-agent CLIs nor ordinary commands emit structured PTY events, and the existing "working" signal is
  * already output-timestamp based, so this only reads what the agent has
  * printed — no extra IPC. Like that signal, it only covers agents whose
  * terminal has been opened at least once (otherwise there's no buffer to read).
@@ -100,7 +103,7 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
     let changed = false;
 
     for (const p of processes) {
-      if (p.kind.kind !== "agent" || p.status.state !== "running") continue;
+      if (p.status.state !== "running") continue;
       const { activity, prompting, shells: count } = computeActivity(p.id);
       next[p.id] = activity;
       if (count > 0) shells[p.id] = count;
@@ -117,11 +120,11 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
         // (also covers the working↔waiting flicker of a live prompt).
         notified[p.id] = true;
       } else if (activity === "waiting") {
-        notifyAgentWaiting(p.name);
+        notifyAgentWaiting(p.name, p.kind.kind === "agent");
         notified[p.id] = true;
       }
     }
-    // Agents that stopped/were removed drop out of both maps.
+    // Processes that stopped/were removed drop out of both maps.
     for (const id of Object.keys(prev)) {
       if (!(id in next)) {
         changed = true;
