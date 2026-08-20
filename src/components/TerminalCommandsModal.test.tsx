@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The component fetches justfile recipes over IPC; jsdom has no Tauri bridge.
+// The modal fetches justfile recipes over IPC; jsdom has no Tauri bridge.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string) =>
     cmd === "project_just_recipes"
@@ -11,50 +11,49 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { useTerminalCommandsStore } from "../state/terminalCommandsStore";
-import { TerminalCommands } from "./TerminalCommands";
+import { TerminalCommandsModal } from "./TerminalCommandsModal";
 
 const initial = useTerminalCommandsStore.getState();
 const ROOT = "/tmp/fixture-project";
 
-function renderCommands(onRun = vi.fn()) {
-  render(<TerminalCommands projectId="proj-1" root={ROOT} onRun={onRun} />);
-  return onRun;
+function renderModal(onRun = vi.fn(), onClose = vi.fn()) {
+  render(
+    <TerminalCommandsModal
+      open
+      projectId="proj-1"
+      root={ROOT}
+      onClose={onClose}
+      onRun={onRun}
+    />,
+  );
+  return { onRun, onClose };
 }
 
 beforeEach(() => {
   localStorage.clear();
-  useTerminalCommandsStore.setState(
-    { ...initial, customByRoot: {}, expandedByRoot: {} },
-    true,
-  );
+  useTerminalCommandsStore.setState({ ...initial, customByRoot: {} }, true);
 });
 
-describe("TerminalCommands", () => {
-  it("starts collapsed and expands to show justfile recipes", async () => {
-    renderCommands();
-    const header = screen.getByRole("button", { name: /commands/i });
-    expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("just build")).not.toBeInTheDocument();
-
-    fireEvent.click(header);
-    expect(header).toHaveAttribute("aria-expanded", "true");
+describe("TerminalCommandsModal", () => {
+  it("lists the project's justfile recipes", async () => {
+    renderModal();
     await waitFor(() =>
       expect(screen.getByText("just build")).toBeInTheDocument(),
     );
     expect(screen.getByText("just test")).toBeInTheDocument();
   });
 
-  it("runs a command via the onRun callback", async () => {
-    const onRun = renderCommands();
-    fireEvent.click(screen.getByRole("button", { name: /commands/i }));
-    const row = await screen.findByTitle('Run "just build" in a new terminal');
-    fireEvent.click(row);
+  it("runs a command and closes", async () => {
+    const { onRun, onClose } = renderModal();
+    fireEvent.click(
+      await screen.findByTitle('Run "just build" in a new terminal'),
+    );
     expect(onRun).toHaveBeenCalledWith("just build");
+    expect(onClose).toHaveBeenCalled();
   });
 
   it("adds and removes a custom command, persisting per project root", async () => {
-    renderCommands();
-    fireEvent.click(screen.getByRole("button", { name: "Add command" }));
+    renderModal();
     const input = await screen.findByLabelText("New command");
     fireEvent.change(input, { target: { value: "pnpm dev" } });
     fireEvent.submit(input.closest("form")!);
@@ -77,8 +76,7 @@ describe("TerminalCommands", () => {
   it("shows a hint when there are no commands at all", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockResolvedValueOnce([]);
-    renderCommands();
-    fireEvent.click(screen.getByRole("button", { name: /commands/i }));
+    renderModal();
     await waitFor(() =>
       expect(screen.getByText(/no justfile recipes/i)).toBeInTheDocument(),
     );

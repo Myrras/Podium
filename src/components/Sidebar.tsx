@@ -30,7 +30,7 @@ import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
-import { TerminalCommands } from "./TerminalCommands";
+import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
 import { WorktreesModal } from "./WorktreesModal";
 import {
@@ -58,38 +58,29 @@ interface SubsectionProps {
   empty?: string;
   /** Header add button; omitted for sections without a create action. */
   add?: { label: string; onClick: () => void };
-  /** Optional second header action, rendered before the add button. */
-  extra?: { label: string; Icon: typeof AgentIcon; onClick: () => void };
-  /** Extra content rendered below the rows (e.g. the Commands block). */
-  children?: React.ReactNode;
+  /** Extra header actions, rendered before the add button. */
+  extra?: { label: string; Icon: typeof AgentIcon; onClick: () => void }[];
 }
 
 /** One entity subsection (Agents / Processes / Terminals) in a group. */
-function Subsection({
-  title,
-  Icon,
-  rows,
-  empty,
-  add,
-  extra,
-  children,
-}: SubsectionProps) {
+function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
   return (
     <div className={styles.subsection}>
       <div className={styles.sectionHeader}>
         <Icon className={styles.panelIcon} />
         <span className={styles.panelTitle}>{title}</span>
-        {extra && (
+        {extra?.map((action) => (
           <button
+            key={action.label}
             type="button"
             className={styles.addBtn}
-            aria-label={extra.label}
-            title={extra.label}
-            onClick={extra.onClick}
+            aria-label={action.label}
+            title={action.label}
+            onClick={action.onClick}
           >
-            <extra.Icon size={13} />
+            <action.Icon size={13} />
           </button>
-        )}
+        ))}
         {add && (
           <button
             type="button"
@@ -111,7 +102,6 @@ function Subsection({
       ) : empty ? (
         <div className={styles.placeholder}>{empty}</div>
       ) : null}
-      {children}
     </div>
   );
 }
@@ -181,6 +171,7 @@ function ProjectGroup({
   const startProcess = useProcessStore((s) => s.startProcess);
 
   const [editing, setEditing] = useState(false);
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -403,14 +394,16 @@ function ProjectGroup({
                 onNewAgent(project.id);
               },
             }}
-            extra={{
-              label: "Worktrees",
-              Icon: BranchIcon,
-              onClick: () => {
-                setActiveProject(project.id);
-                onOpenWorktrees(project.id);
+            extra={[
+              {
+                label: "Worktrees",
+                Icon: BranchIcon,
+                onClick: () => {
+                  setActiveProject(project.id);
+                  onOpenWorktrees(project.id);
+                },
               },
-            }}
+            ]}
           />
           {services.length > 0 && (
             <Subsection title="Processes" Icon={RunIcon} rows={services} />
@@ -421,18 +414,29 @@ function ProjectGroup({
             rows={terminals}
             empty="No terminals yet."
             add={{ label: "New terminal", onClick: () => void addTerminal() }}
-            extra={{
-              label: "Open in Warp",
-              Icon: ExternalLinkIcon,
-              onClick: openInWarp,
-            }}
-          >
-            <TerminalCommands
-              projectId={project.id}
-              root={project.root}
-              onRun={(command) => void runCommand(command)}
-            />
-          </Subsection>
+            extra={[
+              {
+                label: "Open in Warp",
+                Icon: ExternalLinkIcon,
+                onClick: openInWarp,
+              },
+              {
+                label: "Commands",
+                Icon: RunIcon,
+                onClick: () => {
+                  setActiveProject(project.id);
+                  setCommandsOpen(true);
+                },
+              },
+            ]}
+          />
+          <TerminalCommandsModal
+            open={commandsOpen}
+            projectId={project.id}
+            root={project.root}
+            onClose={() => setCommandsOpen(false)}
+            onRun={(command) => void runCommand(command)}
+          />
           <ScratchpadSubsection
             projectId={project.id}
             onOpenScratchpad={onOpenScratchpad}
