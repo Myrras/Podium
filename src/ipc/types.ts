@@ -154,23 +154,16 @@ export interface AgentSpawnOptions {
    */
   scratchpadIds?: ScratchpadId[];
   /**
-   * Run the agent in a fresh git worktree under `.podium/worktrees/`
-   * (requires the project to be a git repository).
+   * Tell the agent to move its work into a git worktree it creates itself
+   * (`create_worktree` over MCP) before its first code change. Podium does
+   * not create one, so the agent still starts in the project root.
    */
   worktree?: boolean;
   /**
-   * Explicit worktree/branch name; defaults to the agent's name. The New
-   * agent dialog forces one for multi-to-do/scratchpad spawns, where deriving
-   * it from one arbitrary to-do would be misleading. Ignored unless
-   * `worktree` is set.
+   * Name to hand the agent for that worktree; blank/absent lets the agent
+   * pick one. Ignored unless `worktree` is set.
    */
   worktreeName?: string;
-  /**
-   * Check the worktree out on a detached HEAD so the agent creates and names
-   * its own branch, instead of a fresh `podium/<name>` branch. Ignored unless
-   * `worktree` is set.
-   */
-  worktreeOnHead?: boolean;
   /**
    * CLI args for this spawn only; replaces the global Settings → Agents
    * default args (still merged with the project's `agents.extra_args`).

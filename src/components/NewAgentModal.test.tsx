@@ -82,7 +82,7 @@ describe("NewAgentModal worktree checkbox", () => {
     );
     await screen.findByText("Claude Code");
 
-    fireEvent.click(screen.getByLabelText("Run in a git worktree"));
+    fireEvent.click(screen.getByLabelText("Work in a git worktree"));
     fireEvent.click(screen.getByRole("button", { name: "Start agent" }));
 
     await waitFor(() =>
@@ -107,7 +107,7 @@ describe("NewAgentModal worktree checkbox", () => {
     expect(options.worktree).toBeUndefined();
   });
 
-  it("forces a worktree name for multiple to-dos and passes the branch choice", async () => {
+  it("passes an explicit worktree name and keeps it optional", async () => {
     const { spawnAgent } = seedSpawn();
     render(
       <NewAgentModal
@@ -119,21 +119,16 @@ describe("NewAgentModal worktree checkbox", () => {
     );
     await screen.findByText("Claude Code");
 
-    // No worktree fields until the checkbox is ticked.
+    // No name field until the checkbox is ticked.
     expect(screen.queryByLabelText("Worktree name")).toBeNull();
-    fireEvent.click(screen.getByLabelText("Run in a git worktree"));
+    fireEvent.click(screen.getByLabelText("Work in a git worktree"));
 
-    // Name is required — Start is blocked until it is filled.
+    // The name is optional — the agent picks one when blank — so Start stays
+    // enabled even with several to-dos.
     const nameInput = screen.getByLabelText("Worktree name");
-    expect(screen.getByRole("button", { name: "Start agent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start agent" })).toBeEnabled();
 
     fireEvent.change(nameInput, { target: { value: "auth-refactor" } });
-    // Opt into letting the agent name the branch.
-    fireEvent.click(
-      screen.getByLabelText(/Let the agent name the branch/, {
-        selector: "input",
-      }),
-    );
     fireEvent.click(screen.getByRole("button", { name: "Start agent" }));
 
     await waitFor(() =>
@@ -142,7 +137,6 @@ describe("NewAgentModal worktree checkbox", () => {
         expect.objectContaining({
           worktree: true,
           worktreeName: "auth-refactor",
-          worktreeOnHead: true,
         }),
       ),
     );
