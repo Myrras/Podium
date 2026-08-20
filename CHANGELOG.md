@@ -8,6 +8,19 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.4.0] - 2026-08-20
+
+### Added
+
+- **Terminal quick commands.** The Terminals section header has a Commands
+  button opening a per-project Commands modal. It lists the public recipes found
+  in the project root's `justfile` (re-scanned every time you open it, no `just`
+  binary needed) plus any commands you add yourself, and clicking one launches a
+  new terminal running it. Your own commands are saved per project and can be
+  removed on hover.
+- **Open in Warp.** The Terminals section header can open the project root in a
+  new Warp tab. If Warp isn't installed you get a toast instead.
+
 ## [1.3.0] - 2026-07-23
 
 ### Added

@@ -94,6 +94,16 @@ export function projectReorder(ordered: ProjectId[]): Promise<ProjectInfo[]> {
   return invoke("project_reorder", { ordered });
 }
 
+/** Public recipe names from the project root's justfile (empty when none). */
+export function projectJustRecipes(projectId: ProjectId): Promise<string[]> {
+  return invoke("project_just_recipes", { projectId });
+}
+
+/** Open the project root in a new Warp tab (via Warp's URI scheme). */
+export function projectOpenInWarp(projectId: ProjectId): Promise<void> {
+  return invoke("project_open_in_warp", { projectId });
+}
+
 // ---------------------------------------------------------------------------
 // Recent projects
 // ---------------------------------------------------------------------------

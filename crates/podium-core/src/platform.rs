@@ -139,6 +139,41 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The `warp://` URI that opens a new Warp tab at `path` (percent-encoded).
+pub fn warp_uri(path: &std::path::Path) -> String {
+    let mut encoded = String::new();
+    for b in path.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                encoded.push(b as char)
+            }
+            _ => encoded.push_str(&format!("%{b:02X}")),
+        }
+    }
+    format!("warp://action/new_tab?path={encoded}")
+}
+
+/// Open a new Warp tab at `path` via the OS URI handler. A missing Warp
+/// install surfaces as a launcher failure (nothing handles the scheme).
+pub fn open_in_warp(path: &std::path::Path) -> CoreResult<()> {
+    let uri = warp_uri(path);
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(&uri).status();
+    #[cfg(windows)]
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &uri])
+        .status();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = std::process::Command::new("xdg-open").arg(&uri).status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        // The launcher's own output never reaches the message.
+        _ => Err(CoreError::InvalidInput(
+            "could not open Warp — is it installed?".to_string(),
+        )),
+    }
+}
+
 /// Reverses [`quote_arg_windows`]'s escaping, mirroring the documented
 /// `CommandLineToArgvW` / C-runtime argv-parsing algorithm.
 ///
@@ -257,5 +292,13 @@ mod tests {
     #[test]
     fn quote_arg_rejects_nul_bytes() {
         assert!(quote_arg("bad\0arg").is_err());
+    }
+
+    #[test]
+    fn warp_uri_percent_encodes_the_path() {
+        assert_eq!(
+            warp_uri(std::path::Path::new("/Users/me/My Project")),
+            "warp://action/new_tab?path=/Users/me/My%20Project"
+        );
     }
 }

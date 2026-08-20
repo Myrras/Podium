@@ -133,3 +133,29 @@ pub async fn project_close(
 pub fn project_list(state: State<'_, AppState>) -> Vec<ProjectInfo> {
     state.orchestrator.list_projects()
 }
+
+/// Public recipe names from the project root's justfile (empty when there is
+/// none). Feeds the Terminals section's quick-commands list.
+#[tauri::command]
+pub fn project_just_recipes(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+) -> Result<Vec<String>, IpcError> {
+    state
+        .orchestrator
+        .project_just_recipes(project_id)
+        .map_err(Into::into)
+}
+
+/// Open the project root in a new Warp tab via Warp's URI scheme.
+#[tauri::command]
+pub async fn project_open_in_warp(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+) -> Result<(), IpcError> {
+    let orchestrator = std::sync::Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || orchestrator.open_project_in_warp(project_id))
+        .await
+        .map_err(|e| IpcError::new("io", format!("open-in-Warp task failed: {e}")))?
+        .map_err(Into::into)
+}

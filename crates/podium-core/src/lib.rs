@@ -12,6 +12,7 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod ids;
+pub mod justfile;
 pub mod mcp;
 pub mod orchestrator;
 pub mod platform;
