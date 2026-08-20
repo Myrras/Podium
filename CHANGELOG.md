@@ -8,6 +8,19 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.5.0] - 2026-08-20
+
+### Added
+
+- **A terminal waiting on input now says so, just like an agent does.** A shell
+  stalled on a `sudo` password, an `ssh` login, a key passphrase, a git
+  credential request or a plain `[y/N]` confirmation looked exactly like an idle
+  one, so you only found out by opening it. Every running process is now checked
+  for a prompt on a quiet screen — its sidebar row and pane header show
+  `needs input` with the blue dot, and you get a "Terminal needs your input"
+  notification. Non-agents show only that state: `working…`/`idle` says nothing
+  useful about a plain shell.
+
 ## [1.4.4] - 2026-08-20
 
 ### Changed
