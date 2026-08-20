@@ -44,3 +44,20 @@ pub async fn worktree_remove(
     .map_err(|e| IpcError::new("io", format!("worktree task failed: {e}")))?
     .map_err(IpcError::from)
 }
+
+/// Open a worktree's checkout in a new Warp tab. Launches an OS process, so
+/// it runs on a blocking thread.
+#[tauri::command]
+pub async fn worktree_open_in_warp(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    name: String,
+) -> Result<(), IpcError> {
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || {
+        orchestrator.open_worktree_in_warp(project_id, &name)
+    })
+    .await
+    .map_err(|e| IpcError::new("io", format!("worktree task failed: {e}")))?
+    .map_err(IpcError::from)
+}

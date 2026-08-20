@@ -24,6 +24,7 @@ import {
   onScratchpadsChanged,
   onTodosChanged,
   onWindowCloseRequested,
+  onWorktreesChanged,
 } from "./ipc/events";
 import { isMac, isWindows } from "./lib/platform";
 import {
@@ -39,6 +40,7 @@ import { useScratchpadStore } from "./state/scratchpadStore";
 import { useSettingsStore } from "./state/settingsStore";
 import { useThemeStore } from "./state/themeStore";
 import { useTodoStore } from "./state/todoStore";
+import { useWorktreeStore } from "./state/worktreeStore";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
 import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
@@ -86,9 +88,12 @@ export default function App() {
         useProcessStore.getState().applyStatus(e.processId, e.status),
       ),
       onProcessUpdated(() => void useProcessStore.getState().refresh()),
-      onProjectOpened(() => {
+      onProjectOpened((e) => {
         void useProjectStore.getState().refresh();
         void useProjectStore.getState().refreshRecents();
+        // Background-load worktrees so the modal/picker render instantly
+        // instead of showing "Loading…" on first open.
+        void useWorktreeStore.getState().refresh(e.projectId);
       }),
       onProjectUpdated(() => void useProjectStore.getState().refresh()),
       onProjectClosed((e) => {
@@ -96,10 +101,14 @@ export default function App() {
         void useProcessStore.getState().refresh();
         useTodoStore.getState().dropProject(e.projectId);
         useScratchpadStore.getState().dropProject(e.projectId);
+        useWorktreeStore.getState().dropProject(e.projectId);
       }),
       onTodosChanged((e) => void useTodoStore.getState().refresh(e.projectId)),
       onScratchpadsChanged(
         (e) => void useScratchpadStore.getState().refresh(e.projectId),
+      ),
+      onWorktreesChanged(
+        (e) => void useWorktreeStore.getState().refresh(e.projectId),
       ),
       // The backend blocked a quit because agents/terminals are still
       // running — surface the warning so the user can confirm or cancel.

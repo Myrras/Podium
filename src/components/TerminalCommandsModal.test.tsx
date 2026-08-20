@@ -10,18 +10,34 @@ vi.mock("@tauri-apps/api/core", () => ({
   ),
 }));
 
+import type { WorktreeInfo } from "../ipc/types";
 import { useTerminalCommandsStore } from "../state/terminalCommandsStore";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 
 const initial = useTerminalCommandsStore.getState();
 const ROOT = "/tmp/fixture-project";
+const PROJECT = "proj-1";
 
-function renderModal(onRun = vi.fn(), onClose = vi.fn()) {
+function wt(name: string): WorktreeInfo {
+  return {
+    name,
+    path: `/repo/.podium/worktrees/${name}`,
+    branch: `podium/${name}`,
+    inUse: false,
+  };
+}
+
+function renderModal(
+  onRun = vi.fn(),
+  onClose = vi.fn(),
+  worktree?: WorktreeInfo | null,
+) {
   render(
     <TerminalCommandsModal
       open
-      projectId="proj-1"
+      projectId={PROJECT}
       root={ROOT}
+      worktree={worktree}
       onClose={onClose}
       onRun={onRun}
     />,
@@ -137,5 +153,36 @@ describe("TerminalCommandsModal", () => {
     await waitFor(() =>
       expect(screen.getByText(/no justfile recipes/i)).toBeInTheDocument(),
     );
+  });
+
+  it("titles the modal plainly when opened for the project root", async () => {
+    renderModal();
+    await screen.findByText("just build");
+    expect(screen.getByText("Commands")).toBeInTheDocument();
+  });
+
+  it("titles the modal with the worktree name and runs commands there", async () => {
+    const { onRun } = renderModal(undefined, undefined, wt("fix-login"));
+
+    expect(screen.getByText("Commands — fix-login")).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByTitle('Run "just build" in a new terminal'),
+    );
+
+    expect(onRun).toHaveBeenCalledWith(
+      "just build",
+      "build",
+      ".podium/worktrees/fix-login",
+    );
+  });
+
+  it("runs a command with no cwd when opened for the project root", async () => {
+    const { onRun } = renderModal(undefined, undefined, null);
+
+    fireEvent.click(
+      await screen.findByTitle('Run "just build" in a new terminal'),
+    );
+
+    expect(onRun).toHaveBeenCalledWith("just build", "build");
   });
 });
