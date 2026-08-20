@@ -9,6 +9,10 @@
  * buttons); Processes appears only when the project has service processes. A
  * pinned footer below the scrollable groups adds new projects. Group collapse
  * state persists via layoutStore.
+ *
+ * Secondary actions stay out of the way: a section header shows only its "+"
+ * at rest and reveals its other actions on hover/focus, and the project
+ * header's own actions (rename / reload / remove) are hidden the same way.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -73,7 +77,7 @@ function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
           <button
             key={action.label}
             type="button"
-            className={styles.addBtn}
+            className={`${styles.addBtn} ${styles.hoverAction}`}
             aria-label={action.label}
             title={action.label}
             onClick={action.onClick}

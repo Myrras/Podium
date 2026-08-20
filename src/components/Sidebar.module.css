@@ -172,6 +172,11 @@
   box-shadow: inset 0 2px 0 0 var(--accent);
 }
 
+/*
+ * Project row actions (rename / reload / remove). Hidden at rest so the
+ * sidebar reads as project names only; the slot stays reserved (opacity,
+ * not display) so revealing them never reflows the row.
+ */
 .projectAction {
   display: flex;
   align-items: center;
@@ -185,9 +190,18 @@
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
   transition:
     background var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out);
+    color var(--dur-1) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out);
+}
+
+.projectHeader:hover .projectAction,
+.projectHeader:focus-within .projectAction {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .projectAction:hover {
@@ -292,6 +306,22 @@
 .addBtn:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+
+/*
+ * Secondary section-header action (archive, worktrees, warp, commands).
+ * Same button, hidden at rest so only the "+" stays permanently visible.
+ */
+.hoverAction {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.sectionHeader:hover .hoverAction,
+.sectionHeader:focus-within .hoverAction {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* List of process rows inside a subsection (the groups area scrolls). */
