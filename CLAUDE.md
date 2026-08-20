@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 25 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **59 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **60 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -69,7 +69,7 @@ them in sync when you add a command or MCP tool.
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, Zustand stores, typed IPC wrappers over
-  all 59 commands.
+  all 60 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -257,10 +257,12 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   **Sidebar** (`WorktreeSubsection.tsx`): a "Worktrees" subsection directly
   under Terminals, reading from `worktreeStore` — hidden entirely when the
   project has none (no header "+"; worktrees only ever come from
-  `create_worktree`, never a sidebar action). Each row carries three actions:
-  open a terminal rooted in it (`cwd: .podium/worktrees/<name>`), open the
-  Commands modal targeted at it (its quick commands then run there instead
-  of the project root), and remove it (`worktreeRemove(force=false)`; a
+  `create_worktree`, never a sidebar action). Each row carries four actions:
+  open a terminal rooted in it (`cwd: .podium/worktrees/<name>`), open it in
+  Warp (`worktree_open_in_warp`, same URI scheme as the project-level
+  button), open the Commands modal targeted at it (its quick commands then
+  run there instead of the project root), and remove it
+  (`worktreeRemove(force=false)`; a
   `worktreeDirty` rejection prompts a confirm before retrying with
   `force=true`). A worktree's own terminal processes (`p.worktree ===
   wt.name`) render nested under its row via the shared `ProcessRow` and are
@@ -337,6 +339,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
+| `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:

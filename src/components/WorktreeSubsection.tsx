@@ -20,7 +20,11 @@
 
 import { useEffect, useState } from "react";
 
-import { toIpcError, worktreeRemove } from "../ipc/commands";
+import {
+  toIpcError,
+  worktreeOpenInWarp,
+  worktreeRemove,
+} from "../ipc/commands";
 import type { ProcessInfo, ProjectId, WorktreeInfo } from "../ipc/types";
 import { isActive } from "../lib/processStatus";
 import { useProcessStore } from "../state/processStore";
@@ -29,7 +33,13 @@ import { useSettingsStore } from "../state/settingsStore";
 import { toastError } from "../state/toastStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { ProcessRow } from "./ProcessRow";
-import { BranchIcon, DeleteIcon, RunIcon, TerminalIcon } from "./icons";
+import {
+  BranchIcon,
+  DeleteIcon,
+  ExternalLinkIcon,
+  RunIcon,
+  TerminalIcon,
+} from "./icons";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 import ownStyles from "./WorktreeSubsection.module.css";
@@ -139,6 +149,23 @@ export function WorktreeSubsection({
                     onClick={() => void openTerminal(wt)}
                   >
                     <TerminalIcon size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.action}
+                    aria-label={`Open ${wt.name} in Warp`}
+                    title="Open in Warp"
+                    onClick={() =>
+                      worktreeOpenInWarp(projectId, wt.name).catch(
+                        (e: unknown) =>
+                          toastError(
+                            "Could not open Warp",
+                            toIpcError(e).message,
+                          ),
+                      )
+                    }
+                  >
+                    <ExternalLinkIcon size={13} />
                   </button>
                   <button
                     type="button"

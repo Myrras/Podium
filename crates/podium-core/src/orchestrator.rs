@@ -1419,6 +1419,17 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Open a worktree's checkout in a new Warp tab via Warp's URI scheme.
+    /// Launches an OS process — call from a blocking-friendly context.
+    pub fn open_worktree_in_warp(&self, project_id: ProjectId, name: &str) -> CoreResult<()> {
+        let entry = self
+            .list_worktrees(project_id)?
+            .into_iter()
+            .find(|w| w.name == name)
+            .ok_or(CoreError::WorktreeNotFound)?;
+        crate::platform::open_in_warp(&entry.path)
+    }
+
     /// Whether any agent or terminal process is currently running (or
     /// stopping). The shell uses this to warn before the app closes, since
     /// exiting SIGTERMs/SIGKILLs every managed process group — losing an
@@ -2585,6 +2596,18 @@ mod tests {
         assert!(matches!(
             rx.try_recv().unwrap(),
             PodiumEvent::WorktreesChanged { project_id: pid } if pid == project_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_worktree_in_warp_rejects_an_unknown_name() {
+        let dir = init_git_repo();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        // Only the error path is testable — a valid name would launch Warp.
+        assert!(matches!(
+            orch.open_worktree_in_warp(project_id, "nope"),
+            Err(CoreError::WorktreeNotFound)
         ));
     }
 

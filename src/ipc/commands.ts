@@ -299,6 +299,14 @@ export function worktreeRemove(
   return invoke("worktree_remove", { projectId, name, force });
 }
 
+/** Open a worktree's checkout in a new Warp tab. */
+export function worktreeOpenInWarp(
+  projectId: ProjectId,
+  name: string,
+): Promise<void> {
+  return invoke("worktree_open_in_warp", { projectId, name });
+}
+
 // ---------------------------------------------------------------------------
 // To-dos
 // ---------------------------------------------------------------------------

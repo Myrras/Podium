@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../ipc/commands", () => ({
   worktreeList: vi.fn(),
   worktreeRemove: vi.fn(),
+  worktreeOpenInWarp: vi.fn(),
   processAdd: vi.fn(),
   processStart: vi.fn(),
   toIpcError: (e: unknown) => {
@@ -23,6 +24,7 @@ import {
   processAdd,
   processStart,
   worktreeList,
+  worktreeOpenInWarp,
   worktreeRemove,
 } from "../ipc/commands";
 import { toastError } from "../state/toastStore";
@@ -121,6 +123,20 @@ describe("WorktreeSubsection", () => {
       }),
     );
     expect(processStartMock).toHaveBeenCalledWith("t1");
+  });
+
+  it("opens the worktree in Warp", async () => {
+    worktreeListMock.mockResolvedValue([wt("fix-login")]);
+    vi.mocked(worktreeOpenInWarp).mockResolvedValue();
+    renderSubsection();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open fix-login in Warp" }),
+    );
+
+    await waitFor(() =>
+      expect(worktreeOpenInWarp).toHaveBeenCalledWith(PROJECT, "fix-login"),
+    );
   });
 
   it("opens the Commands modal targeted at the worktree", async () => {
