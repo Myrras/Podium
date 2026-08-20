@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 25 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **59 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **60 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -68,8 +68,8 @@ them in sync when you add a command or MCP tool.
   modal, agent activity ("working…"/idle) heuristic, to-do and scratchpad
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
-  theme (dark/light/retro) + toasts, Zustand stores, typed IPC wrappers over
-  all 59 commands.
+  theme (dark/light/retro) + toasts, a collapsible right-side assistant chat
+  panel, Zustand stores, typed IPC wrappers over all 60 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -103,6 +103,7 @@ podium/
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 25 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -113,7 +114,7 @@ podium/
 │  ├─ state.rs                 # AppState: Arc<Orchestrator> + McpServer handle
 │  ├─ events.rs                # PodiumEvent → global Tauri events ("process:status", …)
 │  ├─ error.rs                 # IpcError { kind, message } ← CoreError
-│  └─ commands/{project,recents,workspace,process,agent,mcp,todo}.rs
+│  └─ commands/{project,recents,workspace,process,agent,assistant,mcp,todo}.rs
 └─ src/                        # React + Vite frontend
    ├─ components/              # Sidebar, ProcessRow, TodoSubsection, TerminalPane/View, StatusDot, modals, …
    ├─ state/                   # Zustand stores (project, process, todo, layout, settings, theme, toast)
@@ -249,6 +250,23 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   change; the spawn flag is the same instruction without the asking, and wins
   over the setting.
 
+- **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
+  by **one long-lived headless Claude Code child** — a plain piped process
+  (`$SHELL -lic 'exec claude -p --input-format stream-json --output-format
+  stream-json --verbose --disallowedTools …'`), not a PTY, not in the sidebar
+  process list. It is spawned lazily on the first message and killed on
+  shutdown; a session that died is replaced on the next turn. User turns are
+  written to its stdin as one JSON line each; its stdout stream is parsed by
+  `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
+  `turnEnd` / `exited`) published on the `EventBus` and forwarded to the
+  webview as `assistant:event`. Unparseable lines (a chatty shell profile) are
+  skipped, stderr is dropped, and the binary + cwd are injectable
+  (`AssistantConfig`) so integration tests drive a fake `claude` script. The
+  assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
+  refused at the CLI, and implementation work is meant to go out as a to-do +
+  spawned agent. Phase 1 covers the chat slice only — Podium MCP tools,
+  autonomy/proposals, persistence and proactive nudges are still to come.
+
 ### Tauri IPC contract
 
 Commands return `Result<T, IpcError>` where `IpcError = { kind, message }`
@@ -315,6 +333,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
+| `assistant_send`        | `{ text }`                                  | – (reply streams as `assistant:event`) |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:
@@ -351,7 +370,8 @@ a partial stream would corrupt the terminal. Payloads are base64 both ways
 output never travels this path): `process:added` / `process:removed` /
 `process:updated` `{projectId, processId}`, `process:status`
 `{projectId, processId, status}`, `project:opened` / `project:updated` /
-`project:closed` / `todo:changed` `{projectId}`.
+`project:closed` / `todo:changed` `{projectId}`, plus `assistant:event`
+(the assistant's chat stream — a bare, `type`-tagged `AssistantEvent`).
 
 > ⚠️ **Field casing for the frontend:** everything on the wire is
 > **camelCase** — DTO fields (`projectId`, `dataB64`, `configError`, …) and

@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod assignment;
+pub mod assistant;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -27,6 +28,7 @@ pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, McpConnectInfo,
 };
 pub use assignment::AssignedAgent;
+pub use assistant::{AssistantConfig, AssistantEvent};
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
 pub use ids::{CommentId, LinkId, ProcessId, ProjectId, ScratchpadId, TodoId};

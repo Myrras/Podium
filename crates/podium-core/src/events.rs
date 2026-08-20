@@ -3,6 +3,7 @@
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::assistant::AssistantEvent;
 use crate::ids::{ProcessId, ProjectId};
 use crate::process::ProcessStatus;
 
@@ -54,6 +55,10 @@ pub enum PodiumEvent {
     /// UI re-pulls the list via `list_scratchpads`.
     ScratchpadsChanged {
         project_id: ProjectId,
+    },
+    /// One item from the personal assistant's output stream (chat panel).
+    AssistantEvent {
+        event: AssistantEvent,
     },
 }
 

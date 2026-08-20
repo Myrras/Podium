@@ -10,8 +10,9 @@ authors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# `io-std` on top of the shared features: the MCP bridge proxies stdio.
-tokio = { workspace = true, features = ["io-std"] }
+# On top of the shared features: `io-std` for the MCP stdio bridge, `process`
+# for the assistant's piped headless-CLI child.
+tokio = { workspace = true, features = ["io-std", "process"] }
 tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true

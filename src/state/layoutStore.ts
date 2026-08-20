@@ -9,6 +9,8 @@ interface LayoutPersisted {
   sidebarWidth: number;
   /** Collapsed project groups, keyed by project root path (default expanded). */
   collapsedProjects: Record<string, boolean>;
+  /** Whether the assistant chat panel is expanded on the right. */
+  assistantOpen: boolean;
 }
 
 const STORAGE_KEY = "podium.layout";
@@ -16,6 +18,7 @@ const STORAGE_KEY = "podium.layout";
 const DEFAULTS: LayoutPersisted = {
   sidebarWidth: 280,
   collapsedProjects: {},
+  assistantOpen: false,
 };
 
 function load(): LayoutPersisted {
@@ -33,6 +36,7 @@ function load(): LayoutPersisted {
         saved.collapsedProjects && typeof saved.collapsedProjects === "object"
           ? saved.collapsedProjects
           : {},
+      assistantOpen: saved.assistantOpen === true,
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -45,6 +49,15 @@ function persist(state: LayoutPersisted) {
   } catch {
     /* quota exceeded */
   }
+}
+
+/** The persisted subset of the layout state, for writing it back. */
+function persistable(state: LayoutPersisted): LayoutPersisted {
+  return {
+    sidebarWidth: state.sidebarWidth,
+    collapsedProjects: state.collapsedProjects,
+    assistantOpen: state.assistantOpen,
+  };
 }
 
 /** The to-do currently filling the work area (opened from the sidebar). */
@@ -75,6 +88,8 @@ export interface LayoutState extends LayoutPersisted {
   openScratchpad: OpenScratchpad | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
+  /** Show or hide the assistant chat panel (persisted). */
+  setAssistantOpen: (open: boolean) => void;
   /** Fill the work area with a to-do (clears the focused process/scratchpad). */
   openTodoInWorkArea: (projectId: ProjectId, todoId: TodoId) => void;
   /** Clear the open to-do (e.g. when a process takes the work area). */
@@ -97,7 +112,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     setSidebarWidth: (w) => {
       const sidebarWidth = Math.min(600, Math.max(160, w));
       const s = get();
-      persist({ sidebarWidth, collapsedProjects: s.collapsedProjects });
+      persist({ ...persistable(s), sidebarWidth });
       set({ sidebarWidth });
     },
     toggleProjectCollapsed: (root) => {
@@ -106,8 +121,12 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         ...s.collapsedProjects,
         [root]: !s.collapsedProjects[root],
       };
-      persist({ sidebarWidth: s.sidebarWidth, collapsedProjects });
+      persist({ ...persistable(s), collapsedProjects });
       set({ collapsedProjects });
+    },
+    setAssistantOpen: (assistantOpen) => {
+      persist({ ...persistable(get()), assistantOpen });
+      set({ assistantOpen });
     },
     openTodoInWorkArea: (projectId, todoId) => {
       // A to-do, a scratchpad, and a process are mutually exclusive in the

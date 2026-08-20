@@ -550,6 +550,19 @@ export function scratchpadUnassign(
 }
 
 // ---------------------------------------------------------------------------
+// Assistant
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a chat turn to the personal assistant (spawning its headless session
+ * on first use). The reply streams back as `assistant:event` events, not as
+ * this promise's value.
+ */
+export function assistantSend(text: string): Promise<void> {
+  return invoke("assistant_send", { text });
+}
+
+// ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
 

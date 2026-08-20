@@ -324,6 +324,23 @@ export interface ScratchpadInfo {
   assignedAgent: AssignedAgent | null;
 }
 
+/**
+ * One item from the personal assistant's output stream
+ * (`podium_core::AssistantEvent`), delivered as the `assistant:event`
+ * payload. Tagged by `type`, camelCase like every other wire shape.
+ */
+export type AssistantEvent =
+  /** The session is up; `sessionId` is Claude's own id for it. */
+  | { type: "started"; sessionId: string }
+  /** A chunk of assistant prose (markdown). */
+  | { type: "message"; text: string }
+  /** The assistant invoked a tool — name only, never its arguments. */
+  | { type: "tool"; name: string }
+  /** The turn finished; `error` is set when it ended badly. */
+  | { type: "turnEnd"; error: string | null }
+  /** The session ended; the next message starts a fresh one. */
+  | { type: "exited" };
+
 /** Structured error every IPC command can reject with (`IpcError`). */
 export interface IpcError {
   /** Human-readable, sanitized description. */

@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
+use crate::assistant::{AssistantConfig, AssistantManager};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
@@ -157,6 +158,8 @@ pub struct Orchestrator {
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
+    /// The workspace-wide personal assistant session (chat panel).
+    assistant: AssistantManager,
 }
 
 impl Default for Orchestrator {
@@ -172,9 +175,11 @@ impl Orchestrator {
 
     /// Build with custom supervisor timings (tests use millisecond backoffs).
     pub fn with_supervisor_config(supervisor: SupervisorConfig) -> Self {
+        let events = EventBus::new();
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
-            events: EventBus::new(),
+            assistant: AssistantManager::new(events.clone()),
+            events,
             supervisor,
             adapters: AdapterRegistry::default(),
             mcp: Mutex::new(None),
@@ -206,6 +211,18 @@ impl Orchestrator {
     /// load it. Until this is called, scratchpads are held in memory only.
     pub fn set_scratchpads_path(&self, path: PathBuf) {
         self.scratchpads.set_path(path);
+    }
+
+    /// Point the assistant at its CLI binary and working directory. Until
+    /// this is called it uses the `claude` on `PATH` and Podium's own cwd.
+    pub fn configure_assistant(&self, config: AssistantConfig) {
+        self.assistant.configure(config);
+    }
+
+    /// Send a chat turn to the personal assistant, spawning its session on
+    /// first use. Replies arrive as [`PodiumEvent::AssistantEvent`]s.
+    pub async fn assistant_send(&self, text: &str) -> CoreResult<()> {
+        self.assistant.send(text).await
     }
 
     /// Point the global agent settings at their backing file (app data dir)
@@ -1584,6 +1601,7 @@ impl Orchestrator {
     /// Stop every running process (SIGTERM its group now, SIGKILL after the
     /// grace period) and cancel all pending supervised restarts.
     pub async fn shutdown(&self) {
+        self.assistant.shutdown().await;
         let stopped: Vec<(ProjectId, ProcessId)> = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             let mut stopped = Vec::new();

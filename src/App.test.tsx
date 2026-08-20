@@ -23,6 +23,9 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
 
+import userEvent from "@testing-library/user-event";
+
+import { useLayoutStore } from "./state/layoutStore";
 import App from "./App";
 
 describe("App", () => {
@@ -41,5 +44,20 @@ describe("App", () => {
 
     expect(screen.getByText("Add Project…")).toBeInTheDocument();
     expect(screen.getByText("Add project…")).toBeInTheDocument();
+  });
+
+  it("toggles the assistant panel from the title bar", async () => {
+    useLayoutStore.setState({ assistantOpen: false });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+    const toggle = screen.getByLabelText("Assistant");
+    await user.click(toggle);
+    expect(screen.getByLabelText("Personal assistant")).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByLabelText("Hide assistant"));
+    expect(screen.queryByLabelText("Personal assistant")).toBeNull();
   });
 });

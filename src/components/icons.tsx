@@ -16,6 +16,7 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowUp,
   Bold,
   Bot,
   Code,
@@ -50,6 +51,7 @@ import {
   Check,
   X,
   Minus,
+  Sparkles,
   Sun,
   Moon,
   Monitor,
@@ -84,6 +86,10 @@ function icon(Glyph: LucideIcon, defaults?: Partial<LucideProps>) {
   Icon.displayName = `Icon(${Glyph.displayName ?? "lucide"})`;
   return Icon;
 }
+
+// The personal assistant: panel toggle + its send button.
+export const AssistantIcon = icon(Sparkles);
+export const SendIcon = icon(ArrowUp, { size: 15 });
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.
 export const AgentIcon = icon(Bot);
