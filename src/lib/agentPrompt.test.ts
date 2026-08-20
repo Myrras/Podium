@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectInputPrompt } from "./agentPrompt";
+import { detectBackgroundShells, detectInputPrompt } from "./agentPrompt";
 
 describe("detectInputPrompt", () => {
   it("flags a Claude Code permission menu", () => {
@@ -53,5 +53,37 @@ describe("detectInputPrompt", () => {
     expect(detectInputPrompt(prompt + noise)).toBe(false);
     // Prompt at the bottom is caught.
     expect(detectInputPrompt(noise + prompt)).toBe(true);
+  });
+});
+
+describe("detectBackgroundShells", () => {
+  // Verbatim shape of Claude Code's footer while background bash tasks run.
+  const footer = (segment: string) =>
+    `⏵⏵ auto mode on (shift+tab to cycle)${segment} · esc to interrupt · ← for agents · ↓ to manage`;
+
+  it("reads the singular and plural counts off the footer", () => {
+    expect(detectBackgroundShells(footer(" · 1 shell"))).toBe(1);
+    expect(detectBackgroundShells(footer(" · 3 shells"))).toBe(3);
+  });
+
+  it("is 0 when the footer reports no shells", () => {
+    expect(detectBackgroundShells(footer(""))).toBe(0);
+    expect(detectBackgroundShells("")).toBe(0);
+  });
+
+  it("ignores a count that is not a footer segment", () => {
+    // Ordinary output mentioning shells must not read as background work.
+    expect(detectBackgroundShells("Rewrote 2 shells in src/shell.ts")).toBe(0);
+    expect(detectBackgroundShells("shells: 4")).toBe(0);
+    // Claude Code's own tool summary line is the nastiest look-alike.
+    expect(detectBackgroundShells("· Ran 2 shell commands")).toBe(0);
+    expect(detectBackgroundShells("· 2 shell commands ·")).toBe(0);
+  });
+
+  it("only considers the tail of a long screen", () => {
+    const marker = " · 1 shell · ↓ to manage";
+    const noise = "x".repeat(5000);
+    expect(detectBackgroundShells(marker + noise)).toBe(0);
+    expect(detectBackgroundShells(noise + marker)).toBe(1);
   });
 });

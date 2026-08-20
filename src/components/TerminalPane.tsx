@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { processGitBranch } from "../ipc/commands";
 import type { ProcessId, ProcessInfo } from "../ipc/types";
 import { activityLabel, isActive, statusLabel } from "../lib/processStatus";
-import { useAgentActivity } from "../lib/useAgentActivity";
+import { useAgentActivity, useAgentShells } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
 import { StatusDot } from "./StatusDot";
 import { TerminalView } from "./TerminalView";
@@ -32,6 +32,7 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
   const isAgent = process.kind.kind === "agent";
   const running = process.status.state === "running";
   const activity = useAgentActivity(process.id);
+  const shells = useAgentShells(process.id);
 
   // Git branch of the focused process's cwd (null when not a git repo). Fetched
   // on demand — it shells out to git, so it's kept off the process_list path.
@@ -68,7 +69,7 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
           </span>
           {isAgent && running && (
             <span className={styles.activityText} data-activity={activity}>
-              {activityLabel(activity)}
+              {activityLabel(activity, shells)}
             </span>
           )}
         </span>
