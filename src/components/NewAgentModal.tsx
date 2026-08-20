@@ -43,8 +43,6 @@ export function NewAgentModal({
   const [prompt, setPrompt] = useState("");
   const [worktree, setWorktree] = useState(false);
   const [worktreeName, setWorktreeName] = useState("");
-  /** true = agent names the branch (detached HEAD); false = use worktree name. */
-  const [agentNamesBranch, setAgentNamesBranch] = useState(false);
   const [busy, setBusy] = useState(false);
   /** Per-adapter default args from settings, to seed the editable args field. */
   const [settingsAdapters, setSettingsAdapters] = useState<
@@ -63,7 +61,6 @@ export function NewAgentModal({
     setPrompt("");
     setWorktree(false);
     setWorktreeName("");
-    setAgentNamesBranch(false);
     setBusy(false);
     setSettingsAdapters([]);
     setArgsText("");
@@ -101,15 +98,7 @@ export function NewAgentModal({
   }, [adapterId, settingsAdapters]);
 
   const selected = adapters?.find((a) => a.id === adapterId) ?? null;
-  // With several to-dos the window name is one arbitrary to-do's text, so a
-  // worktree named after it is misleading — force an explicit name instead.
-  const multi = (todoIds?.length ?? 0) > 1;
-  const needsWorktreeName = worktree && multi;
-  const canStart =
-    !busy &&
-    projectId !== null &&
-    selected?.available === true &&
-    (!needsWorktreeName || worktreeName.trim().length > 0);
+  const canStart = !busy && projectId !== null && selected?.available === true;
 
   const handleStart = async () => {
     if (!canStart || projectId === null) return;
@@ -120,8 +109,7 @@ export function NewAgentModal({
       prompt: prompt.trim() || undefined,
       todoIds: todoIds && todoIds.length > 0 ? todoIds : undefined,
       worktree: worktree || undefined,
-      worktreeName: needsWorktreeName ? worktreeName.trim() : undefined,
-      worktreeOnHead: needsWorktreeName ? agentNamesBranch : undefined,
+      worktreeName: (worktree && worktreeName.trim()) || undefined,
       // Split on whitespace; the core trims and drops empties too.
       args: argsText.split(/\s+/).filter(Boolean),
     });
@@ -227,53 +215,29 @@ export function NewAgentModal({
               checked={worktree}
               onChange={(e) => setWorktree(e.target.checked)}
             />
-            Run in a git worktree
+            Work in a git worktree
           </label>
           <p className={styles.help}>
-            Creates an isolated checkout under .podium/worktrees so the agent's
-            changes don't touch your working tree.
+            The agent creates an isolated checkout under .podium/worktrees
+            itself, before its first change, so your working tree stays put.
           </p>
         </div>
 
-        {needsWorktreeName && (
-          <>
-            <div className={styles.field}>
-              <label htmlFor="agent-worktree-name">Worktree name</label>
-              <input
-                id="agent-worktree-name"
-                type="text"
-                value={worktreeName}
-                placeholder="e.g. auth-refactor"
-                onChange={(e) => setWorktreeName(e.target.value)}
-              />
-              <p className={styles.help}>
-                Required for multiple to-dos — naming it after one of them would
-                be misleading.
-              </p>
-            </div>
-
-            <div className={styles.field}>
-              <label>Branch</label>
-              <label className={styles.checkboxLabel}>
-                <input
-                  type="radio"
-                  name="agent-branch"
-                  checked={!agentNamesBranch}
-                  onChange={() => setAgentNamesBranch(false)}
-                />
-                Use the worktree name (podium/{worktreeName.trim() || "…"})
-              </label>
-              <label className={styles.checkboxLabel}>
-                <input
-                  type="radio"
-                  name="agent-branch"
-                  checked={agentNamesBranch}
-                  onChange={() => setAgentNamesBranch(true)}
-                />
-                Let the agent name the branch (starts on a detached HEAD)
-              </label>
-            </div>
-          </>
+        {worktree && (
+          <div className={styles.field}>
+            <label htmlFor="agent-worktree-name">Worktree name</label>
+            <input
+              id="agent-worktree-name"
+              type="text"
+              value={worktreeName}
+              placeholder="e.g. auth-refactor"
+              onChange={(e) => setWorktreeName(e.target.value)}
+            />
+            <p className={styles.help}>
+              Optional — leave blank and the agent names it (and its
+              podium/&lt;name&gt; branch) after the work.
+            </p>
+          </div>
         )}
 
         {/* Hidden submit so Enter in the inputs starts the agent. Inline

@@ -1092,11 +1092,13 @@ impl Orchestrator {
     /// complete when done); multiple to-dos are handed over as one combined
     /// task. `scratchpad_ids` works the same way for scratchpads, but only
     /// when `todo_ids` is empty — to-dos win if both are somehow populated.
-    /// When `worktree` is true a fresh git worktree named after the agent is
-    /// created under `.podium/worktrees/` and used as the agent's cwd (the
-    /// project must be a git repo). `args_override`, when `Some`, replaces the
-    /// global Settings → Agents default args for this spawn only (still merged
-    /// with the project's `agents.extra_args` per the merge mode). On a start
+    /// When `worktree` is true the agent is *told* to move its work into a
+    /// Podium-managed git worktree it creates itself (`create_worktree` over
+    /// MCP), optionally named `worktree_name`; Podium does not create one, so
+    /// the agent still starts in the project root. `args_override`, when
+    /// `Some`, replaces the global Settings → Agents default args for this
+    /// spawn only (still merged with the project's `agents.extra_args` per the
+    /// merge mode). On a start
     /// failure the process stays listed as `NotStarted` so the user can retry
     /// from the UI.
     #[allow(clippy::too_many_arguments)] // deliberate: one flat spawn API
@@ -1110,7 +1112,6 @@ impl Orchestrator {
         scratchpad_ids: Vec<ScratchpadId>,
         worktree: bool,
         worktree_name: Option<String>,
-        worktree_on_head: bool,
         args_override: Option<Vec<String>>,
     ) -> CoreResult<ProcessId> {
         let (root, agents, existing_names, session_color) = {
@@ -1215,23 +1216,14 @@ impl Orchestrator {
         } else {
             base_prompt.map(str::to_string)
         };
-        // A requested worktree is created before the launch plan so the
-        // identity prompt can say the agent already runs in one. Its name is
-        // an explicit `worktree_name` when given (the New agent dialog forces
-        // one for multi-to-do/scratchpad spawns, where the window name would
-        // otherwise be one arbitrary to-do's text), else the window name.
-        // `worktree_on_head` leaves the checkout on a detached HEAD so the
-        // agent picks the branch name itself.
-        let wt = worktree
-            .then(|| {
-                let wt_name = worktree_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(name.as_str());
-                crate::worktree::create(&root, wt_name, worktree_on_head)
-            })
-            .transpose()?;
+        // A requested worktree is the agent's job, not Podium's: it starts in
+        // the project root (where the user's tooling and caches live) and its
+        // identity prompt tells it to create the worktree over MCP before the
+        // first code change. An empty `worktree_name` means "you pick".
+        let wt_name = worktree_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         // Combine the global default args (Settings → Agents) with the
         // project's `agents.extra_args` per the user's merge mode, and apply
         // any global command override for this adapter. A per-session
@@ -1253,15 +1245,14 @@ impl Orchestrator {
             command_override,
             mcp: mcp.as_ref(),
             named,
-            in_worktree: wt.is_some(),
-            // A detached worktree has no branch yet — the agent names it.
-            worktree_needs_branch: wt.is_some() && worktree_on_head,
-            suggest_worktree: global.suggest_worktree && wt.is_none(),
+            worktree,
+            worktree_name: wt_name,
+            suggest_worktree: global.suggest_worktree && !worktree,
         })?;
         let spec = ProcessSpec {
             name,
             command: plan.command,
-            cwd: wt.as_ref().map(|w| w.path.clone()).unwrap_or(root.clone()),
+            cwd: root.clone(),
             env: plan.env,
             kind: ProcessKind::Agent {
                 adapter: adapter.id().to_string(),
@@ -1281,11 +1272,6 @@ impl Orchestrator {
                 None
             };
             if let Some(err) = guard {
-                drop(inner);
-                // Best-effort: don't leak the just-created worktree.
-                if let Some(w) = &wt {
-                    let _ = crate::worktree::remove(&root, &w.name, true);
-                }
                 return Err(err);
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
@@ -1403,7 +1389,7 @@ impl Orchestrator {
     /// context.
     pub fn create_worktree(&self, project_id: ProjectId, name: &str) -> CoreResult<WorktreeInfo> {
         let root = self.project_root(project_id)?;
-        crate::worktree::create(&root, name, false)
+        crate::worktree::create(&root, name)
     }
 
     /// Remove a Podium-managed git worktree. Refused while an active process

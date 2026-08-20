@@ -138,16 +138,11 @@ fn is_dirty(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Create a worktree named after `name` (slugified, de-duplicated with
-/// `-2`, `-3`, … when the directory — or, in branch mode, a leftover
-/// `podium/<name>` branch — already exists) at `.podium/worktrees/<name>`.
-///
-/// `detached` picks the branch strategy: `false` checks out a fresh
-/// `podium/<name>` branch from HEAD (the default); `true` checks out HEAD in
-/// a detached state so the agent can create and name its own branch (used
-/// when the user asks the agent to decide the branch name — the checkout
-/// starts on whatever HEAD points at, i.e. the current branch's commit).
-pub fn create(root: &Path, name: &str, detached: bool) -> CoreResult<WorktreeInfo> {
+/// Create a worktree named after `name` (slugified, de-duplicated with `-2`,
+/// `-3`, … when the directory — or a leftover `podium/<name>` branch —
+/// already exists) at `.podium/worktrees/<name>`, on a fresh `podium/<name>`
+/// branch off HEAD.
+pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     ensure_git_repo(&root)?;
     let slug = slugify(name)?;
@@ -156,19 +151,18 @@ pub fn create(root: &Path, name: &str, detached: bool) -> CoreResult<WorktreeInf
     let mut n = 1usize;
     loop {
         let dir_taken = dir.join(&candidate).exists();
-        // In detached mode no branch is created, so only the directory needs
-        // to be free; in branch mode a leftover `podium/<name>` also bumps it.
-        let branch_taken = !detached
-            && git(
-                &root,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/podium/{candidate}"),
-                ],
-            )
-            .is_some();
+        // A leftover `podium/<name>` branch (checkout removed, branch kept)
+        // bumps the name too.
+        let branch_taken = git(
+            &root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/podium/{candidate}"),
+            ],
+        )
+        .is_some();
         if !dir_taken && !branch_taken {
             break;
         }
@@ -180,12 +174,7 @@ pub fn create(root: &Path, name: &str, detached: bool) -> CoreResult<WorktreeInf
     std::fs::create_dir_all(&dir)?;
     let path_str = path.to_string_lossy().into_owned();
     let branch = format!("podium/{candidate}");
-    let add_args: Vec<&str> = if detached {
-        vec!["worktree", "add", "--detach", &path_str]
-    } else {
-        vec!["worktree", "add", &path_str, "-b", &branch]
-    };
-    if git(&root, &add_args).is_none() {
+    if git(&root, &["worktree", "add", &path_str, "-b", &branch]).is_none() {
         return Err(CoreError::Git(
             "git worktree add failed (does the repository have at least one commit?)".to_string(),
         ));
@@ -193,12 +182,7 @@ pub fn create(root: &Path, name: &str, detached: bool) -> CoreResult<WorktreeInf
     Ok(WorktreeInfo {
         name: candidate,
         path,
-        // A detached checkout has no branch yet — the agent creates one.
-        branch: if detached {
-            "(detached)".to_string()
-        } else {
-            branch
-        },
+        branch,
         in_use: false,
     })
 }
@@ -333,7 +317,7 @@ mod tests {
     #[test]
     fn create_makes_worktree_branch_and_exclude() {
         let repo = init_repo();
-        let wt = create(repo.path(), "Fix Login", false).expect("create");
+        let wt = create(repo.path(), "Fix Login").expect("create");
         assert_eq!(wt.name, "fix-login");
         assert_eq!(wt.branch, "podium/fix-login");
         assert!(wt.path.is_dir());
@@ -353,8 +337,8 @@ mod tests {
     #[test]
     fn exclude_append_is_idempotent() {
         let repo = init_repo();
-        create(repo.path(), "one", false).unwrap();
-        create(repo.path(), "two", false).unwrap();
+        create(repo.path(), "one").unwrap();
+        create(repo.path(), "two").unwrap();
         let root = std::fs::canonicalize(repo.path()).unwrap();
         let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
         let hits = exclude.lines().filter(|l| l.trim() == ".podium/").count();
@@ -364,37 +348,20 @@ mod tests {
     #[test]
     fn create_dedupes_against_dir_and_leftover_branch() {
         let repo = init_repo();
-        let first = create(repo.path(), "task", false).unwrap();
+        let first = create(repo.path(), "task").unwrap();
         assert_eq!(first.name, "task");
-        let second = create(repo.path(), "task", false).unwrap();
+        let second = create(repo.path(), "task").unwrap();
         assert_eq!(second.name, "task-2");
         // Remove task-2's checkout; its branch stays → next create skips it.
         remove(repo.path(), "task-2", false).unwrap();
-        let third = create(repo.path(), "task", false).unwrap();
+        let third = create(repo.path(), "task").unwrap();
         assert_eq!(third.name, "task-3");
-    }
-
-    #[test]
-    fn create_detached_has_no_branch_and_agent_can_branch() {
-        let repo = init_repo();
-        let wt = create(repo.path(), "Decide Later", true).expect("create detached");
-        assert_eq!(wt.name, "decide-later");
-        assert_eq!(wt.branch, "(detached)");
-        assert!(wt.path.is_dir());
-        // No podium/<name> branch was created.
-        let branches = git_stdout(repo.path(), &["branch", "--list", "podium/decide-later"]);
-        assert!(branches.trim().is_empty());
-        // The checkout starts on HEAD's commit in a detached state.
-        assert_eq!(current_branch(&wt.path), None);
-        // The agent can create its own branch inside it.
-        run(&wt.path, &["checkout", "-b", "my-feature"]);
-        assert_eq!(current_branch(&wt.path).as_deref(), Some("my-feature"));
     }
 
     #[test]
     fn list_only_reports_podium_worktrees() {
         let repo = init_repo();
-        create(repo.path(), "mine", false).unwrap();
+        create(repo.path(), "mine").unwrap();
         // A non-Podium worktree elsewhere must not show up.
         let other = tempfile::tempdir().unwrap();
         run(
@@ -417,7 +384,7 @@ mod tests {
     #[test]
     fn remove_refuses_dirty_unless_forced() {
         let repo = init_repo();
-        let wt = create(repo.path(), "dirty", false).unwrap();
+        let wt = create(repo.path(), "dirty").unwrap();
         // An untracked file counts as dirty.
         std::fs::write(wt.path.join("scratch.txt"), "wip\n").unwrap();
         assert!(matches!(
@@ -434,7 +401,7 @@ mod tests {
     #[test]
     fn remove_clean_worktree_and_missing_name() {
         let repo = init_repo();
-        create(repo.path(), "clean", false).unwrap();
+        create(repo.path(), "clean").unwrap();
         remove(repo.path(), "clean", false).unwrap();
         assert!(list(repo.path()).unwrap().is_empty());
         assert!(matches!(
@@ -446,7 +413,7 @@ mod tests {
     #[test]
     fn remove_prunes_a_manually_deleted_checkout() {
         let repo = init_repo();
-        let wt = create(repo.path(), "gone", false).unwrap();
+        let wt = create(repo.path(), "gone").unwrap();
         std::fs::remove_dir_all(&wt.path).unwrap();
         remove(repo.path(), "gone", false).unwrap();
         assert!(list(repo.path()).unwrap().is_empty());
@@ -456,7 +423,7 @@ mod tests {
     fn current_branch_reports_head_and_worktree_branches() {
         let repo = init_repo();
         assert_eq!(current_branch(repo.path()).as_deref(), Some("main"));
-        let wt = create(repo.path(), "feature", false).unwrap();
+        let wt = create(repo.path(), "feature").unwrap();
         assert_eq!(current_branch(&wt.path).as_deref(), Some("podium/feature"));
         // A non-git dir has no branch.
         let plain = tempfile::tempdir().unwrap();
@@ -467,7 +434,7 @@ mod tests {
     fn non_git_dir_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
-            create(dir.path(), "x", false),
+            create(dir.path(), "x"),
             Err(CoreError::NotAGitRepo)
         ));
         assert!(matches!(list(dir.path()), Err(CoreError::NotAGitRepo)));

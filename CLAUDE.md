@@ -228,26 +228,26 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   choice rather than a toast.
 - **Worktrees** (`worktree.rs`): Podium-managed git worktrees for agent
   isolation, at `<project_root>/.podium/worktrees/<name>` (name slugified,
-  auto-de-duplicated with `-2`, `-3`, …). `create(root, name, detached)`
-  picks the branch strategy: `detached=false` (default) checks out a fresh
-  `podium/<name>` branch from HEAD; `detached=true` checks out HEAD detached
-  so the agent creates and names its own branch. `.podium/` is excluded via
-  `.git/info/exclude` (never `.gitignore`). Created via the spawn checkbox
-  (`agent_spawn`'s `worktree` flag — the worktree becomes the agent's cwd,
-  named after the agent, or after `worktreeName` when given; `worktreeOnHead`
-  selects the detached strategy) or the `create_worktree` MCP tool
-  mid-session. The New agent dialog **forces** an explicit `worktreeName` for
-  multi-to-do spawns — deriving the name from one arbitrary to-do's text is
-  misleading (and can hit the 40-char slug cap) — and offers the branch
-  choice there. `git worktree list --porcelain` is the source of truth (no
-  persistence, no events); `ProcessInfo.worktree` is derived from the process
-  cwd and feeds the sidebar badge, `in_use` and the removal guard. Removal is
+  auto-de-duplicated with `-2`, `-3`, …). `create(root, name)` checks out a
+  fresh `podium/<name>` branch off HEAD. `.podium/` is excluded via
+  `.git/info/exclude` (never
+  `.gitignore`). **Podium never creates a worktree at spawn time**: an agent
+  always starts in the project root (where the user's tooling and caches
+  live), and `agent_spawn`'s `worktree` flag — the spawn checkbox — only makes
+  its identity prompt tell it to create one itself via the `create_worktree`
+  MCP tool before its first code change, named `worktreeName` when given, else
+  a name the agent picks. So every worktree comes from `create_worktree`,
+  whether at the start of a session or mid-session. `git worktree list
+  --porcelain` is the source of truth (no persistence, no events);
+  `ProcessInfo.worktree` is derived from the process cwd and feeds the sidebar
+  badge, `in_use` and the removal guard — an agent that creates its own
+  worktree keeps the root as cwd, so it does not light those up. Removal is
   refused while an active process runs in the worktree (`WorktreeInUse`) or
   while it has uncommitted changes unless forced (`WorktreeDirty`); the branch
   is always kept. The global `suggest_worktree` setting (default on) makes
-  agent identity prompts ask the user about a worktree before the first code
-  change; an agent spawned into a worktree is told it already runs in one
-  (and, when detached, to create its own branch).
+  agent identity prompts *ask* the user about a worktree before the first code
+  change; the spawn flag is the same instruction without the asking, and wins
+  over the setting.
 
 ### Tauri IPC contract
 
@@ -281,7 +281,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_resize`        | `{ processId, cols, rows }`                 | –                 |
 | `process_attach`        | `{ processId, channel: Channel<TermEvent> }`| –                 |
 | `adapters_list`         | –                                           | `AdapterInfo[]`   |
-| `agent_spawn`           | `{ projectId, adapterId?, name?, prompt?, todoIds?, scratchpadIds?, worktree?, worktreeName?, worktreeOnHead?, args? }` | `ProcessInfo` |
+| `agent_spawn`           | `{ projectId, adapterId?, name?, prompt?, todoIds?, scratchpadIds?, worktree?, worktreeName?, args? }` | `ProcessInfo` |
 | `agent_settings_get`    | –                                           | `AgentSettingsDto` |
 | `agent_settings_set_adapter` | `{ adapterId, command?, defaultArgs }` | `AgentSettingsDto` |
 | `agent_settings_set_default_adapter` | `{ adapterId? }` (blank clears) | `AgentSettingsDto` |
