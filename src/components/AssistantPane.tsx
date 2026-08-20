@@ -6,8 +6,9 @@
  * (markdown), the actions it ran, and failures — plus the actions its autonomy
  * mode held back, as cards the user confirms or rejects right here. The log is
  * replayed from the persisted transcript on mount; the header can start a new
- * conversation or open the assistant's memory for editing. Proactive nudges
- * come later.
+ * conversation or open the assistant's memory for editing. Podium's own
+ * proactive nudges (an agent finished, one looks stuck, a day-start summary)
+ * arrive as notice rows, so an unprompted reply always has a visible reason.
  */
 
 import { useEffect, useRef, useState } from "react";

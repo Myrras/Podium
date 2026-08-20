@@ -1,8 +1,9 @@
 /**
- * App settings dialog with three tabs: General (appearance, terminal), Agents
+ * App settings dialog with four tabs: General (appearance, terminal), Agents
  * (per-adapter command override + default arguments, plus the argument merge
- * mode), and MCP (one-click registration of the stdio bridge with external
- * clients like Claude Code and Auggie).
+ * mode), Assistant (autonomy mode + proactive nudges), and MCP (one-click
+ * registration of the stdio bridge with external clients like Claude Code and
+ * Auggie).
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -10,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { useThemeStore, type ThemeMode } from "../state/themeStore";
 import { useSettingsStore } from "../state/settingsStore";
+import { useAssistantStore } from "../state/assistantStore";
 import {
   agentSettingsGet,
   agentSettingsSetAdapter,
@@ -23,6 +25,7 @@ import {
 import type {
   AgentAdapterConfig,
   AgentSettingsDto,
+  AutonomyMode,
   McpClientInfo,
   MergeMode,
 } from "../ipc/types";
@@ -36,7 +39,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "agents" | "mcp";
+type SettingsTab = "general" | "agents" | "assistant" | "mcp";
 
 const THEMES: {
   mode: ThemeMode;
@@ -204,6 +207,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           [
             ["general", "General"],
             ["agents", "Agents"],
+            ["assistant", "Assistant"],
             ["mcp", "MCP"],
           ] as [SettingsTab, string][]
         ).map(([id, label]) => (
@@ -246,10 +250,70 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </section>
       ) : tab === "agents" ? (
         <AgentsTab />
+      ) : tab === "assistant" ? (
+        <AssistantTab />
       ) : (
         <GeneralTab />
       )}
     </Modal>
+  );
+}
+
+const AUTONOMY_MODES: { value: AutonomyMode; label: string }[] = [
+  { value: "full", label: "Act on its own" },
+  { value: "confirm-destructive", label: "Confirm destructive actions" },
+  { value: "propose-all", label: "Propose everything" },
+];
+
+/**
+ * Assistant tab: the same autonomy setting the chat panel's header exposes
+ * (both mirror the one persisted value), plus whether Podium may nudge the
+ * assistant unprompted.
+ */
+function AssistantTab() {
+  const autonomy = useAssistantStore((s) => s.autonomy);
+  const setAutonomy = useAssistantStore((s) => s.setAutonomy);
+  const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
+  const proactive = useAssistantStore((s) => s.proactive);
+  const setProactivity = useAssistantStore((s) => s.setProactivity);
+  const loadProactivity = useAssistantStore((s) => s.loadProactivity);
+
+  useEffect(() => {
+    void loadAutonomy();
+    void loadProactivity();
+  }, [loadAutonomy, loadProactivity]);
+
+  return (
+    <>
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Autonomy</h3>
+        <small className={styles.rowHelp}>
+          How much the assistant may do without asking. Anything it may not do
+          on its own shows up as a card to confirm in the chat.
+        </small>
+        <select
+          aria-label="Assistant autonomy"
+          value={autonomy}
+          onChange={(e) => void setAutonomy(e.target.value as AutonomyMode)}
+        >
+          {AUTONOMY_MODES.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Proactivity</h3>
+        <SettingToggle
+          label="Let the assistant speak first"
+          help="When on, it reports agents that finished, crashed or look stuck, sweeps for lingering to-dos, and gives a day-start summary."
+          value={proactive}
+          onChange={(enabled) => void setProactivity(enabled)}
+        />
+      </section>
+    </>
   );
 }
 

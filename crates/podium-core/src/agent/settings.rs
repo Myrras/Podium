@@ -178,6 +178,15 @@ impl AgentSettingsStore {
         Ok(inner.settings.clone())
     }
 
+    /// Turn the assistant's proactive nudges on or off; returns the updated
+    /// settings.
+    pub fn set_assistant_proactive(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.assistant.proactive = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
     /// Set (or clear) the global default adapter; returns the updated settings.
     /// A blank id clears it (back to the built-in default).
     pub fn set_default_adapter(&self, adapter_id: Option<String>) -> CoreResult<AgentSettings> {

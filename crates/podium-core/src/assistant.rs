@@ -20,8 +20,12 @@
 //! assistant over MCP and editable by the user — is what it remembers across
 //! conversations.
 //!
-//! Not here yet: proactive nudges (phase 4). Proposals still live in memory
-//! only, so a pending one is lost on restart.
+//! Podium can also speak first: [`AssistantManager::nudge`] writes a tagged
+//! `[Podium]` turn into the session (see [`crate::proactivity`] for what
+//! triggers one). A nudge never spawns a session — with nobody chatting there
+//! is no conversation to nudge — it queues until the next turn does.
+//!
+//! Proposals still live in memory only, so a pending one is lost on restart.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -30,7 +34,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -39,13 +43,16 @@ use tokio::sync::Mutex;
 use crate::agent::McpConnectInfo;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
-use crate::ids::ProposalId;
+use crate::ids::{ProjectId, ProposalId};
 
 /// Tools the assistant is never allowed to run: it delegates implementation
 /// work to spawned agents instead of touching the filesystem itself.
 const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash";
 
 const LOCK_POISONED: &str = "assistant config lock poisoned";
+
+/// Why a proposal was dropped without the user deciding on it.
+const PROJECT_CLOSED: &str = "its project was closed";
 
 /// Longest tool result echoed back to the assistant after a confirmed
 /// proposal — enough to see what happened without pasting a whole listing
@@ -108,11 +115,29 @@ pub enum AutonomyMode {
 }
 
 /// Assistant preferences, persisted alongside the agent settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantSettings {
     #[serde(default)]
     pub autonomy: AutonomyMode,
+    /// Whether Podium may nudge the assistant unprompted (an agent finished,
+    /// one looks stuck, to-dos are lingering, a new day started). Defaults to
+    /// on — also for an `agents.json` written before this field existed.
+    #[serde(default = "default_true")]
+    pub proactive: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self {
+            autonomy: AutonomyMode::default(),
+            proactive: true,
+        }
+    }
 }
 
 /// Whether `tool` needs the user's confirmation under `mode`.
@@ -133,6 +158,19 @@ pub fn requires_proposal(mode: AutonomyMode, tool: &str) -> bool {
 /// tool's own result text, or its error message.
 pub type ProposalAction =
     Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>> + Send>;
+
+/// Longest a queued nudge list may grow while nobody is chatting: what
+/// happened hours ago is not worth replaying.
+// ponytail: flat cap, oldest dropped.
+const MAX_QUEUED_NUDGES: usize = 20;
+
+/// A parked proposal: what the user sees, the project it acts on (`None` for
+/// a workspace-wide call) and the call itself.
+struct PendingProposal {
+    info: ProposalInfo,
+    project: Option<ProjectId>,
+    action: ProposalAction,
+}
 
 /// UI-facing snapshot of a pending proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -163,6 +201,10 @@ pub enum AssistantEvent {
     Tool { name: String },
     /// A tool call came back as an error, so a failed action is never silent.
     ToolFailed { message: String },
+    /// Podium said something in the chat itself — a proactive nudge it just
+    /// handed the session. Shown as-is, so the user knows why the assistant
+    /// is about to speak unprompted.
+    Notice { text: String },
     /// A tool call was held back by the autonomy gate: it runs only once the
     /// user confirms this proposal in the chat.
     Proposal {
@@ -223,6 +265,10 @@ struct StoredConversation {
     session_id: Option<String>,
     #[serde(default)]
     transcript: Vec<TranscriptEntry>,
+    /// The last day Podium asked for a day-start summary, so restarting the
+    /// app three times in one afternoon does not ask three more times.
+    #[serde(default)]
+    last_day_start: Option<NaiveDate>,
 }
 
 struct StoreInner {
@@ -293,10 +339,14 @@ impl AssistantStore {
         }
     }
 
-    /// Start over: no transcript, no session to resume.
+    /// Start over: no transcript, no session to resume. The day-start claim
+    /// survives — it is about the day, not the conversation.
     fn clear(&self) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.conversation = StoredConversation::default();
+        inner.conversation = StoredConversation {
+            last_day_start: inner.conversation.last_day_start,
+            ..StoredConversation::default()
+        };
         let _ = save_conversation(&inner);
     }
 
@@ -333,9 +383,23 @@ impl AssistantStore {
             AssistantEvent::ToolFailed { message } => {
                 self.append(TranscriptRole::Notice, message.clone())
             }
+            AssistantEvent::Notice { text } => self.append(TranscriptRole::Notice, text.clone()),
             // Proposals, turn ends and exits are runtime signals, not chat.
             _ => {}
         }
+    }
+
+    /// Claim today's day-start summary: true the first time it is called on a
+    /// given (local) day, false afterwards — including after a restart.
+    pub fn claim_day_start(&self) -> bool {
+        let today = chrono::Local::now().date_naive();
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        if inner.conversation.last_day_start == Some(today) {
+            return false;
+        }
+        inner.conversation.last_day_start = Some(today);
+        let _ = save_conversation(&inner);
+        true
     }
 
     /// What the assistant remembers across conversations (empty when there is
@@ -430,10 +494,15 @@ struct Session {
 pub struct AssistantManager {
     config: StdMutex<AssistantConfig>,
     session: Mutex<Option<Session>>,
-    /// Gated tool calls awaiting the user, oldest first. In memory only: a
-    /// proposal never expires on its own, but does not survive a restart
-    /// (phase 3 persists the conversation).
-    proposals: StdMutex<Vec<(ProposalInfo, ProposalAction)>>,
+    /// Gated tool calls awaiting the user, oldest first, each with the
+    /// project it acts on (so closing that project can invalidate it). In
+    /// memory only: a proposal never expires on its own, but does not survive
+    /// a restart.
+    proposals: StdMutex<Vec<PendingProposal>>,
+    /// Nudges waiting for a session to exist. Podium never spawns the child
+    /// just to deliver one — a fresh session would not know what it is about
+    /// — so they ride along with the user's next turn.
+    queued_nudges: StdMutex<Vec<String>>,
     /// The persisted conversation (transcript + session id) and the memory
     /// file. Shared with the output task, which records what it publishes.
     store: Arc<AssistantStore>,
@@ -446,6 +515,7 @@ impl AssistantManager {
             config: StdMutex::new(AssistantConfig::default()),
             session: Mutex::new(None),
             proposals: StdMutex::new(Vec::new()),
+            queued_nudges: StdMutex::new(Vec::new()),
             store: Arc::new(AssistantStore::new()),
             events,
         }
@@ -488,7 +558,16 @@ impl AssistantManager {
             let config = self.config.lock().expect(LOCK_POISONED).clone();
             *guard = Some(self.spawn(&config, mcp.as_ref())?);
         }
-        write_turn(guard.as_mut().expect("session present"), text).await?;
+        let session = guard.as_mut().expect("session present");
+        // Whatever happened while nobody was chatting goes in first, so the
+        // assistant reads it as context for this turn.
+        let queued = std::mem::take(&mut *self.queued_nudges.lock().expect(LOCK_POISONED));
+        for nudge in queued {
+            if write_turn(session, &nudge).await.is_ok() {
+                self.publish(AssistantEvent::Notice { text: nudge });
+            }
+        }
+        write_turn(session, text).await?;
         self.store.append(TranscriptRole::User, text.to_string());
         Ok(())
     }
@@ -504,6 +583,7 @@ impl AssistantManager {
             let _ = session.child.kill().await;
         }
         self.proposals.lock().expect(LOCK_POISONED).clear();
+        self.queued_nudges.lock().expect(LOCK_POISONED).clear();
         self.store.clear();
     }
 
@@ -513,9 +593,16 @@ impl AssistantManager {
         self.events.publish(PodiumEvent::AssistantEvent { event });
     }
 
-    /// Park a gated tool call and tell the UI about it. Returns the id the
-    /// user's confirm/reject refers to.
-    pub fn propose(&self, tool: String, summary: String, action: ProposalAction) -> ProposalId {
+    /// Park a gated tool call and tell the UI about it. `project` is the
+    /// project the call acts on, if any, so closing it can invalidate the
+    /// proposal. Returns the id the user's confirm/reject refers to.
+    pub fn propose(
+        &self,
+        tool: String,
+        summary: String,
+        project: Option<ProjectId>,
+        action: ProposalAction,
+    ) -> ProposalId {
         let info = ProposalInfo {
             id: ProposalId::new(),
             tool,
@@ -531,7 +618,11 @@ impl AssistantManager {
         self.proposals
             .lock()
             .expect(LOCK_POISONED)
-            .push((info, action));
+            .push(PendingProposal {
+                info,
+                project,
+                action,
+            });
         id
     }
 
@@ -541,8 +632,34 @@ impl AssistantManager {
             .lock()
             .expect(LOCK_POISONED)
             .iter()
-            .map(|(info, _)| info.clone())
+            .map(|p| p.info.clone())
             .collect()
+    }
+
+    /// Drop the proposals that act on `project`, because it just closed:
+    /// confirming one could only fail. The user sees the cards resolve with
+    /// the reason, and the assistant is told so it stops waiting.
+    pub async fn invalidate_proposals_for_project(&self, project: ProjectId) {
+        let dropped: Vec<ProposalInfo> = {
+            let mut pending = self.proposals.lock().expect(LOCK_POISONED);
+            let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+                .into_iter()
+                .partition(|p| p.project == Some(project));
+            *pending = kept;
+            gone.into_iter().map(|p| p.info).collect()
+        };
+        for info in dropped {
+            self.publish(AssistantEvent::ProposalResolved {
+                id: info.id,
+                approved: false,
+                error: Some(PROJECT_CLOSED.to_string()),
+            });
+            self.notify(&format!(
+                "[Podium] Your proposed `{}` action was dropped: {PROJECT_CLOSED}.",
+                info.tool
+            ))
+            .await;
+        }
     }
 
     /// Confirm (`approved`) or reject one proposal. A confirmed proposal runs
@@ -555,11 +672,11 @@ impl AssistantManager {
             let mut pending = self.proposals.lock().expect(LOCK_POISONED);
             let at = pending
                 .iter()
-                .position(|(info, _)| info.id == id)
+                .position(|p| p.info.id == id)
                 .ok_or(CoreError::ProposalNotFound)?;
             pending.remove(at)
         };
-        let (info, action) = taken;
+        let PendingProposal { info, action, .. } = taken;
         let outcome = if approved { Some(action().await) } else { None };
         let error = match &outcome {
             Some(Err(message)) => Some(message.clone()),
@@ -572,6 +689,34 @@ impl AssistantManager {
         });
         self.notify(&outcome_notice(&info.tool, outcome)).await;
         Ok(())
+    }
+
+    /// Hand the assistant something Podium noticed (an agent finished, a
+    /// to-do is lingering, …). A live session gets it straight away; with no
+    /// session running it is queued for the user's next turn — Podium never
+    /// starts the CLI just to deliver a nudge.
+    pub async fn nudge(&self, text: String) {
+        {
+            let mut guard = self.session.lock().await;
+            if let Some(session) = guard.as_mut() {
+                match write_turn(session, &text).await {
+                    Ok(()) => {
+                        self.publish(AssistantEvent::Notice { text });
+                        return;
+                    }
+                    // A broken pipe means the session is gone; queue instead.
+                    Err(e) => tracing::warn!("could not nudge the assistant: {e}"),
+                }
+            }
+        }
+        {
+            let mut queue = self.queued_nudges.lock().expect(LOCK_POISONED);
+            queue.push(text);
+            if queue.len() > MAX_QUEUED_NUDGES {
+                let drop = queue.len() - MAX_QUEUED_NUDGES;
+                queue.drain(..drop);
+            }
+        }
     }
 
     /// Write a Podium-side message into a *live* session. Unlike [`send`] this
@@ -1132,6 +1277,7 @@ mod tests {
         let id = manager.propose(
             "set_todo_archived".to_string(),
             "{\"todoId\":\"t-1\"}".to_string(),
+            None,
             action(ran.clone(), Ok("archived".to_string())),
         );
         assert_eq!(manager.proposals().len(), 1);
@@ -1157,6 +1303,7 @@ mod tests {
         let id = manager.propose(
             "stop_process".to_string(),
             "{}".to_string(),
+            None,
             action(ran.clone(), Ok("stopped".to_string())),
         );
         manager.resolve_proposal(id, false).await.expect("rejected");
@@ -1193,6 +1340,7 @@ mod tests {
         let id = manager.propose(
             "remove_worktree".to_string(),
             "{}".to_string(),
+            None,
             action(
                 std::sync::Arc::new(AtomicBool::new(false)),
                 Err("worktree has uncommitted changes".to_string()),
@@ -1219,6 +1367,77 @@ mod tests {
                 .contains("confirmed")
         );
         assert!(outcome_notice("add_todo", Some(Err("nope".to_string()))).contains("failed"));
+    }
+
+    #[test]
+    fn proactivity_defaults_to_on_including_for_older_settings_files() {
+        assert!(AssistantSettings::default().proactive);
+        // An `agents.json` written before the field existed must not read as
+        // "the user switched nudges off".
+        let legacy: AssistantSettings =
+            serde_json::from_str(r#"{"autonomy":"full"}"#).expect("legacy settings");
+        assert!(legacy.proactive);
+        assert_eq!(legacy.autonomy, AutonomyMode::Full);
+    }
+
+    #[test]
+    fn the_day_start_summary_is_claimed_once_per_day() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        assert!(store.claim_day_start());
+        assert!(!store.claim_day_start());
+
+        // A restart must not re-ask, and neither must a new conversation.
+        let reloaded = store_in(dir.path());
+        assert!(!reloaded.claim_day_start());
+        reloaded.clear();
+        assert!(!reloaded.claim_day_start());
+    }
+
+    #[test]
+    fn a_notice_is_recorded_as_what_podium_said() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        store.record(&AssistantEvent::Notice {
+            text: "[Podium] The agent \"fix-login\" finished.".to_string(),
+        });
+        let rows: Vec<_> = store
+            .transcript()
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(
+                TranscriptRole::Notice,
+                "[Podium] The agent \"fix-login\" finished.".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nudge_without_a_session_is_queued_rather_than_dropped() {
+        let manager = AssistantManager::new(EventBus::new());
+        let mut rx = manager.events.subscribe();
+
+        // No session: nothing is published yet (and nothing is spawned).
+        manager
+            .nudge("[Podium] an agent finished".to_string())
+            .await;
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            manager.queued_nudges.lock().expect(LOCK_POISONED).len(),
+            1,
+            "the nudge must wait for a session, not vanish"
+        );
+
+        // …and it is dropped along with the conversation it was meant for.
+        manager.new_conversation().await;
+        assert!(manager
+            .queued_nudges
+            .lock()
+            .expect(LOCK_POISONED)
+            .is_empty());
     }
 
     #[test]

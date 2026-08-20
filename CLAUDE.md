@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 27 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **67 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **69 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -70,8 +70,8 @@ them in sync when you add a command or MCP tool.
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible right-side assistant chat
   panel (replayed transcript, action + proposal cards, autonomy picker,
-  memory view, new conversation), Zustand stores, typed IPC
-  wrappers over all 67 commands.
+  memory view, new conversation, proactive `[Podium]` notices), Zustand
+  stores, typed IPC wrappers over all 69 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -105,7 +105,8 @@ podium/
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 27 tools (tools.rs) + stdio bridge (bridge.rs)
-│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store
+│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -265,9 +266,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   shutdown; a session that died is replaced on the next turn. User turns are
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
-  `toolFailed` / `proposal` / `proposalResolved` / `turnEnd` / `exited`)
-  published on the `EventBus` and forwarded to the
-  webview as `assistant:event`. Unparseable lines (a chatty shell profile) are
+  `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
+  `exited`) published on the `EventBus` and forwarded to the webview as
+  `assistant:event`. Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
   (`AssistantConfig`) so integration tests drive a fake `claude` script. The
   assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
@@ -315,7 +316,29 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   is read fresh from disk on every spawn, so hand-editing the file works; a
   change reaches a *running* session only on its next spawn.
 
-  Still to come: proactive nudges (phase 4).
+  **Proactivity** (`proactivity.rs`, setting `proactive` in the same
+  `assistant` block, default **on**) lets Podium speak first. One task watches
+  the `EventBus` and, on a slow tick, the process/to-do state: an agent that
+  exited (finished or crashed), a running agent that has printed nothing for
+  5 minutes (so it is probably waiting on a question — `Orchestrator::idle_agents`,
+  measured from the scrollback's last append, or from the process start when it
+  never printed), a 6-hourly sweep for to-dos open longer than a week, and one
+  day-start summary the first time Podium opens on a given day (claimed in
+  `assistant.json`, so restarts do not re-ask). Each becomes one `[Podium] …`
+  turn plus a `notice` event, so the chat says why the assistant is speaking
+  unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
+  milliseconds. A nudge **never spawns the CLI child**: with no conversation
+  running it queues (newest 20) and rides along with the user's next turn — a
+  fresh session would have no idea what the nudge was about. Switching the
+  setting off silences all of it, day-start claim included. The watcher holds
+  only a weak reference, so it ends with the orchestrator. **Settings →
+  Assistant** holds this toggle plus the autonomy mode (the chat header keeps
+  its own autonomy picker — both mirror the one stored value).
+
+  A pending proposal is also dropped when **its project closes**
+  (`invalidate_proposals_for_project`, keyed off the call's `project_id`
+  argument): confirming it later could only fail, so the card resolves itself
+  with the reason and the assistant is told.
 
 ### Tauri IPC contract
 
@@ -390,6 +413,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_memory_set`  | `{ content }` (blank clears)                | –                 |
 | `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
 | `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
+| `assistant_proactivity_get` | –                                       | `boolean`         |
+| `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
 | `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |
 | `window_confirm_close`  | –                                           | –                 |
 

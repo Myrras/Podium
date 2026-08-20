@@ -5,10 +5,14 @@
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use podium_core::assistant::{AssistantEvent, TranscriptRole};
-use podium_core::{AssistantConfig, McpConnectInfo, Orchestrator, PodiumEvent};
+use podium_core::{
+    AssistantConfig, McpConnectInfo, Orchestrator, PodiumEvent, ProactivityConfig, ProcessKind,
+    ProcessSpec, RestartPolicy,
+};
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
 
@@ -78,6 +82,40 @@ async fn recorded_argv(dir: &Path) -> Vec<String> {
 fn arg_after(args: &[String], flag: &str) -> Option<String> {
     let at = args.iter().position(|a| a == flag)?;
     args.get(at + 1).cloned()
+}
+
+/// Watcher timings a test can wait on: everything in milliseconds.
+fn fast_proactivity() -> ProactivityConfig {
+    ProactivityConfig {
+        tick: Duration::from_millis(20),
+        idle_after: Duration::from_millis(50),
+        lingering_after: Duration::from_millis(10),
+        sweep_every: Duration::from_millis(30),
+    }
+}
+
+/// An agent process running `command`, so its exit can be observed.
+fn agent_spec(command: &str, cwd: &Path) -> ProcessSpec {
+    ProcessSpec {
+        name: "fix-login".to_string(),
+        command: command.to_string(),
+        cwd: cwd.to_path_buf(),
+        env: Vec::new(),
+        kind: ProcessKind::Agent {
+            adapter: "claude-code".to_string(),
+        },
+        restart_policy: RestartPolicy::Never,
+        color: None,
+    }
+}
+
+/// The text of the first `notice` event, i.e. what Podium said unprompted.
+async fn next_notice(rx: &mut Receiver<PodiumEvent>) -> String {
+    let events = collect_until(rx, |e| matches!(e, AssistantEvent::Notice { .. })).await;
+    match events.last() {
+        Some(AssistantEvent::Notice { text }) => text.clone(),
+        other => panic!("expected a notice, got {other:?}"),
+    }
 }
 
 /// Collect assistant events until `stop` matches (or the test times out).
@@ -319,5 +357,229 @@ async fn the_memory_file_is_injected_into_the_session_prompt() {
     let argv = std::fs::read_to_string(dir.path().join("argv.txt")).expect("read argv");
     assert!(argv.contains("# Your memory"), "{argv}");
     assert!(argv.contains("Ships on Fridays"), "{argv}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_session_may_never_edit_files_itself() {
+    let (orch, dir) = setup(ARGV_RECORDING_CLAUDE);
+
+    orch.assistant_send("hello").await.expect("send");
+    let args = recorded_argv(dir.path()).await;
+
+    // The assistant delegates code work to spawned agents; the CLI itself
+    // refuses the file-editing and shell tools. Loosening this line would let
+    // it write code straight into the user's projects.
+    assert_eq!(
+        arg_after(&args, "--disallowedTools"),
+        Some("Edit,Write,NotebookEdit,Bash".to_string())
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_that_finished_is_reported_in_the_chat() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    // A live session to nudge, and the day-start summary claimed up front so
+    // it is not what we end up asserting on.
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(orch.assistant_claim_day_start());
+    // Only the exit is under test here: a login shell can take longer to
+    // start than the fast idle threshold, which would flag the agent as stuck
+    // first.
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            idle_after: Duration::from_secs(60),
+            ..fast_proactivity()
+        },
+    );
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("exit 0", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("fix-login"), "{notice}");
+    assert!(notice.contains("finished"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stuck_agent_is_reported_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(orch.assistant_claim_day_start());
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    // Silent but alive: exactly what an agent waiting on a question looks like.
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("waiting on input"), "{notice}");
+
+    // Every tick sees the same silent agent; it must be mentioned only once.
+    let repeated = timeout(Duration::from_millis(300), async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Notice { text },
+            }) = rx.recv().await
+            {
+                return text;
+            }
+        }
+    })
+    .await;
+    assert!(repeated.is_err(), "nudged twice about the same agent");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn proactivity_off_keeps_podium_quiet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.set_assistant_proactivity(false).expect("switch off");
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("exit 0", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+
+    // Not the day-start summary, not the exited agent, nothing.
+    let quiet = timeout(Duration::from_millis(400), async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Notice { text },
+            }) = rx.recv().await
+            {
+                return text;
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "nudged while proactivity is off");
+    assert!(
+        orch.assistant_claim_day_start(),
+        "the day-start summary must not be claimed while switched off"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_nudge_with_nobody_chatting_waits_for_the_next_turn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    // No session yet: the day-start nudge must not start the CLI on its own —
+    // a fresh session would not know what the nudge is about.
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!dir.path().join("argv.txt").exists(), "spawned for a nudge");
+
+    // The user's first turn takes it along.
+    orch.assistant_send("morning").await.expect("send");
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("day-start summary"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_pending_proposal_dies_with_its_project() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), FAKE_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+
+    let id = orch.propose_assistant_action(
+        "set_todo_archived".to_string(),
+        "{}".to_string(),
+        Some(project),
+        Box::new(|| Box::pin(async { Ok("archived".to_string()) })),
+    );
+    assert_eq!(orch.assistant_proposals().len(), 1);
+
+    orch.close_project(project).await.expect("close project");
+
+    // Confirming it later could only fail, so the card resolves itself with
+    // the reason instead of waiting for a user who cannot help.
+    assert!(orch.assistant_proposals().is_empty());
+    let events = collect_until(&mut rx, |e| {
+        matches!(e, AssistantEvent::ProposalResolved { .. })
+    })
+    .await;
+    assert_eq!(
+        events.last(),
+        Some(&AssistantEvent::ProposalResolved {
+            id,
+            approved: false,
+            error: Some("its project was closed".to_string()),
+        })
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn to_dos_left_open_are_swept_into_the_chat() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(orch.assistant_claim_day_start());
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    orch.add_todo(project, "Fix the login redirect")
+        .expect("add todo");
+    // Anything older than 10ms counts as lingering here.
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            idle_after: Duration::from_secs(60),
+            ..fast_proactivity()
+        },
+    );
+
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("Fix the login redirect"), "{notice}");
     orch.shutdown().await;
 }

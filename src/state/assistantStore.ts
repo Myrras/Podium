@@ -6,8 +6,8 @@
  * locally when the user sends, and from the `assistant:event` stream as the
  * backend parses the headless session's output. Actions the assistant ran show
  * as cards in the same log, and actions the autonomy gate held back show as
- * proposal cards the user confirms or rejects here. Starting a new
- * conversation clears both sides.
+ * proposal cards the user confirms or rejects here. Podium's proactive nudges
+ * arrive as notice rows. Starting a new conversation clears both sides.
  */
 
 import { create } from "zustand";
@@ -18,6 +18,8 @@ import {
   assistantMemoryGet,
   assistantMemorySet,
   assistantNewConversation,
+  assistantProactivityGet,
+  assistantProactivitySet,
   assistantResolveProposal,
   assistantSend,
   assistantTranscript,
@@ -53,6 +55,8 @@ interface AssistantState {
   busy: boolean;
   /** How much the assistant may do unasked; mirrors the persisted setting. */
   autonomy: AutonomyMode;
+  /** Whether Podium nudges the assistant unprompted; mirrors the setting. */
+  proactive: boolean;
   /** What the assistant remembers across conversations; `null` until loaded. */
   memory: string | null;
   /** Whether the stored transcript was already replayed this app run. */
@@ -71,6 +75,10 @@ interface AssistantState {
   loadAutonomy: () => Promise<void>;
   /** Change the autonomy mode. */
   setAutonomy: (mode: AutonomyMode) => Promise<void>;
+  /** Load the stored proactivity setting (Settings → Assistant). */
+  loadProactivity: () => Promise<void>;
+  /** Turn proactive nudges on or off. */
+  setProactivity: (enabled: boolean) => Promise<void>;
   /** Confirm or reject a proposed action. */
   resolveProposal: (id: string, approved: boolean) => Promise<void>;
   /** Fold one backend stream event into the log. */
@@ -103,6 +111,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   messages: [],
   busy: false,
   autonomy: "confirm-destructive",
+  proactive: true,
   memory: null,
   hydrated: false,
   hydrate: async () => {
@@ -194,6 +203,25 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }));
     }
   },
+  loadProactivity: async () => {
+    try {
+      set({ proactive: await assistantProactivityGet() });
+    } catch {
+      // The panel still works on the default; the backend stays the truth.
+    }
+  },
+  setProactivity: async (enabled) => {
+    const previous = get().proactive;
+    set({ proactive: enabled });
+    try {
+      set({ proactive: await assistantProactivitySet(enabled) });
+    } catch (e) {
+      set((s) => ({
+        proactive: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
   resolveProposal: async (id, approved) => {
     // The decision goes to the assistant as a new turn, so the panel is busy
     // again either way.
@@ -225,6 +253,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "tool":
           return {
             messages: [...s.messages, message("tool", event.name)],
+          };
+        // Podium speaking: shown as-is, so an unprompted reply has a reason.
+        case "notice":
+          return {
+            messages: [...s.messages, message("notice", event.text)],
           };
         case "toolFailed":
           return {

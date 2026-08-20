@@ -1,6 +1,6 @@
 //! Personal-assistant commands: sending a turn, replaying the stored
-//! transcript, starting over, its memory, the autonomy setting, and deciding
-//! on a proposed action. Replies (and the outcome of a proposal)
+//! transcript, starting over, its memory, the autonomy and proactivity
+//! settings, and deciding on a proposed action. Replies (and the outcome of a proposal)
 //! stream back as global `assistant:event` events (see `events.rs`).
 
 use tauri::State;
@@ -65,6 +65,22 @@ pub async fn assistant_autonomy_set(
     mode: AutonomyMode,
 ) -> Result<AutonomyMode, IpcError> {
     Ok(state.orchestrator.set_assistant_autonomy(mode)?)
+}
+
+/// Whether Podium may nudge the assistant unprompted (agent finished, agent
+/// stuck, lingering to-dos, day-start summary).
+#[tauri::command]
+pub async fn assistant_proactivity_get(state: State<'_, AppState>) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.assistant_proactivity())
+}
+
+/// Turn those nudges on or off; returns what was stored.
+#[tauri::command]
+pub async fn assistant_proactivity_set(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.set_assistant_proactivity(enabled)?)
 }
 
 /// Confirm (`approved`) or reject one proposed action. A confirmed proposal

@@ -157,6 +157,15 @@ pub fn run() {
                     cwd: Some(app.path().app_data_dir()?),
                     data_dir: Some(app.path().app_data_dir()?),
                 });
+            // Watch the workspace on the assistant's behalf: an agent that
+            // finished or crashed, one that looks stuck, lingering to-dos and
+            // a day-start summary become chat nudges. Silent while the
+            // proactivity setting is off, and it never spawns the assistant's
+            // CLI just to deliver one.
+            podium_core::proactivity::spawn(
+                &state.orchestrator,
+                podium_core::ProactivityConfig::default(),
+            );
             // Start the built-in MCP server (ephemeral localhost port, per-run
             // bearer token). Agents get the URL + token via 0600 config files
             // under `{app_data_dir}/mcp`, which is wiped on every start. A
@@ -206,6 +215,8 @@ pub fn run() {
             commands::assistant::assistant_memory_set,
             commands::assistant::assistant_autonomy_get,
             commands::assistant::assistant_autonomy_set,
+            commands::assistant::assistant_proactivity_get,
+            commands::assistant::assistant_proactivity_set,
             commands::assistant::assistant_resolve_proposal,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,

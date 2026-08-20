@@ -267,15 +267,70 @@ impl Orchestrator {
             .autonomy)
     }
 
+    /// Whether Podium may nudge the assistant unprompted (Settings →
+    /// Assistant). Off silences [`crate::proactivity`] entirely.
+    pub fn assistant_proactivity(&self) -> bool {
+        self.agent_settings.get().assistant.proactive
+    }
+
+    /// Turn proactive nudges on or off; returns what was stored.
+    pub fn set_assistant_proactivity(&self, enabled: bool) -> CoreResult<bool> {
+        Ok(self
+            .agent_settings
+            .set_assistant_proactive(enabled)?
+            .assistant
+            .proactive)
+    }
+
+    /// Hand the assistant something Podium noticed. Delivered to a live
+    /// session, or queued for the user's next turn — never worth spawning the
+    /// CLI for on its own.
+    pub async fn assistant_nudge(&self, text: String) {
+        self.assistant.nudge(text).await;
+    }
+
+    /// Claim today's day-start summary; true only the first time on a given
+    /// day, so restarts do not re-ask.
+    pub fn assistant_claim_day_start(&self) -> bool {
+        self.assistant.store().claim_day_start()
+    }
+
+    /// Running agents that have printed nothing for at least `min_idle` —
+    /// what [`crate::proactivity`] reads as "probably waiting on input".
+    pub fn idle_agents(&self, min_idle: Duration) -> Vec<ProcessInfo> {
+        let now = Instant::now();
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
+            .processes
+            .iter()
+            .filter(|(_, p)| matches!(p.spec.kind, ProcessKind::Agent { .. }))
+            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+            .filter_map(|(id, p)| {
+                // An agent that never printed anything is measured from its
+                // start, so a session stuck on its first prompt still counts.
+                let last = p
+                    .scrollback
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .last_append_at()
+                    .or(p.started_at)?;
+                (now.duration_since(last) >= min_idle).then(|| p.info(*id))
+            })
+            .collect()
+    }
+
     /// Park a tool call the autonomy gate held back, for the user to decide
     /// on. Called from the MCP layer, which owns the deferred action.
+    /// `project` is the project the call acts on, if any, so closing that
+    /// project can invalidate the proposal.
     pub fn propose_assistant_action(
         &self,
         tool: String,
         summary: String,
+        project: Option<ProjectId>,
         action: ProposalAction,
     ) -> ProposalId {
-        self.assistant.propose(tool, summary, action)
+        self.assistant.propose(tool, summary, project, action)
     }
 
     /// The assistant's proposals still awaiting the user, oldest first.
@@ -474,6 +529,9 @@ impl Orchestrator {
                 process_id: pid,
             });
         }
+        // A proposal against a project that is gone could only ever fail on
+        // confirm, so drop it now and say why.
+        self.assistant.invalidate_proposals_for_project(id).await;
         self.events
             .publish(PodiumEvent::ProjectClosed { project_id: id });
         Ok(())

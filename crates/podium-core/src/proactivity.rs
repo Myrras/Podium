@@ -1,0 +1,299 @@
+//! Podium speaking first: the watcher that turns things happening in the
+//! workspace into nudges for the personal assistant.
+//!
+//! It subscribes to the [`EventBus`](crate::events::EventBus) and, on a slow
+//! tick, looks at processes and to-dos:
+//!
+//! - an agent exited — finished or crashed;
+//! - a running agent has been silent long enough to look stuck on a question;
+//! - to-dos that have been open for a long time (a periodic sweep);
+//! - a day-start summary, once per day, when Podium opens.
+//!
+//! Each of those becomes one `[Podium] …` turn handed to the assistant, which
+//! answers in the chat panel like it would to the user. Nudges never spawn the
+//! assistant's CLI child: with no conversation running they queue and ride
+//! along with the user's next message (see [`crate::assistant::AssistantManager::nudge`]).
+//!
+//! The whole thing is silent while the `proactive` setting is off — the switch
+//! is checked per nudge, so flipping it takes effect immediately.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::events::PodiumEvent;
+use crate::ids::ProcessId;
+use crate::orchestrator::Orchestrator;
+use crate::process::{ProcessInfo, ProcessKind, ProcessStatus};
+
+/// How many lingering to-dos are named in a nudge before it just counts them.
+const MAX_LINGERING_NAMED: usize = 5;
+
+/// Timings of the watcher. Injectable so tests run in milliseconds instead of
+/// hours (same spirit as [`crate::process::supervisor::SupervisorConfig`]).
+#[derive(Debug, Clone)]
+pub struct ProactivityConfig {
+    /// How often the idle-agent check and the sweep clock run.
+    pub tick: Duration,
+    /// Silence after which a running agent is assumed to be waiting on input.
+    pub idle_after: Duration,
+    /// How old an open to-do must be to count as lingering.
+    pub lingering_after: Duration,
+    /// How often the lingering-to-do sweep runs.
+    pub sweep_every: Duration,
+}
+
+impl Default for ProactivityConfig {
+    fn default() -> Self {
+        Self {
+            tick: Duration::from_secs(30),
+            // Long enough that a thinking agent is not "stuck": Claude Code
+            // prints tokens as it works, so real silence means a prompt.
+            idle_after: Duration::from_secs(5 * 60),
+            lingering_after: Duration::from_secs(7 * 24 * 60 * 60),
+            sweep_every: Duration::from_secs(6 * 60 * 60),
+        }
+    }
+}
+
+/// Start watching. The task holds only a weak reference, so it ends by
+/// itself when the app drops the orchestrator.
+pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
+    let weak = Arc::downgrade(orchestrator);
+    let mut events = orchestrator.subscribe_events();
+    let mut watcher = Watcher {
+        config,
+        idle_nudged: HashSet::new(),
+        // The day-start nudge is this run's opening summary; the first sweep
+        // comes a whole interval later so the two do not pile up.
+        last_sweep: Instant::now(),
+    };
+    tokio::spawn(async move {
+        if let Some(orchestrator) = weak.upgrade() {
+            watcher.day_start(&orchestrator).await;
+        }
+        let mut ticker = tokio::time::interval(watcher.config.tick);
+        loop {
+            let event = tokio::select! {
+                received = events.recv() => match received {
+                    Ok(event) => Some(event),
+                    // Lagging means we missed events, not that we should stop.
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
+                },
+                _ = ticker.tick() => None,
+            };
+            let Some(orchestrator) = weak.upgrade() else {
+                return;
+            };
+            match event {
+                Some(event) => watcher.on_event(&orchestrator, event).await,
+                None => watcher.on_tick(&orchestrator).await,
+            }
+        }
+    });
+}
+
+struct Watcher {
+    config: ProactivityConfig,
+    /// Agents already flagged as possibly waiting, so one stuck agent is
+    /// mentioned once and not on every tick. An agent that speaks again (or
+    /// exits) drops out and can be flagged afresh.
+    idle_nudged: HashSet<ProcessId>,
+    last_sweep: Instant,
+}
+
+impl Watcher {
+    /// Hand `text` to the assistant, unless the user switched proactivity off.
+    async fn nudge(&self, orchestrator: &Orchestrator, text: String) {
+        if !orchestrator.assistant_proactivity() {
+            return;
+        }
+        orchestrator.assistant_nudge(text).await;
+    }
+
+    /// Ask for a summary of the workspace, at most once per day.
+    async fn day_start(&mut self, orchestrator: &Orchestrator) {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_claim_day_start() {
+            return;
+        }
+        self.nudge(
+            orchestrator,
+            "[Podium] Podium just opened, and this is the first time today. Give the user \
+             a short day-start summary: what is open across their projects (to-dos, running \
+             agents) and what looks worth picking up first."
+                .to_string(),
+        )
+        .await;
+    }
+
+    async fn on_event(&mut self, orchestrator: &Orchestrator, event: PodiumEvent) {
+        let PodiumEvent::ProcessStatusChanged {
+            process_id, status, ..
+        } = event
+        else {
+            return;
+        };
+        let ProcessStatus::Exited { code, crashed, .. } = status else {
+            return;
+        };
+        // A dead agent cannot be waiting on input any more.
+        self.idle_nudged.remove(&process_id);
+        let Some(process) = find_agent(orchestrator, process_id) else {
+            return;
+        };
+        let where_ = describe(orchestrator, &process);
+        let text = if crashed {
+            format!(
+                "[Podium] The agent {where_} crashed ({}). Look at its last output and tell \
+                 the user what went wrong and what it leaves unfinished.",
+                exit_code(code)
+            )
+        } else {
+            format!(
+                "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
+                 last output — and tell the user in a line or two.",
+                exit_code(code)
+            )
+        };
+        self.nudge(orchestrator, text).await;
+    }
+
+    async fn on_tick(&mut self, orchestrator: &Orchestrator) {
+        self.check_idle_agents(orchestrator).await;
+        if self.last_sweep.elapsed() >= self.config.sweep_every {
+            self.last_sweep = Instant::now();
+            self.sweep_lingering_todos(orchestrator).await;
+        }
+    }
+
+    /// Flag running agents that have gone quiet: a Claude Code session that
+    /// stops printing is usually waiting for an answer.
+    async fn check_idle_agents(&mut self, orchestrator: &Orchestrator) {
+        let idle = orchestrator.idle_agents(self.config.idle_after);
+        let ids: HashSet<ProcessId> = idle.iter().map(|p| p.id).collect();
+        // An agent that spoke again is no longer stuck, so it may be flagged
+        // again later.
+        self.idle_nudged.retain(|id| ids.contains(id));
+        for process in idle {
+            if !self.idle_nudged.insert(process.id) {
+                continue;
+            }
+            let text = format!(
+                "[Podium] The agent {} has printed nothing for {}. It is probably waiting on \
+                 input — read its last output and tell the user what it needs.",
+                describe(orchestrator, &process),
+                minutes(self.config.idle_after),
+            );
+            self.nudge(orchestrator, text).await;
+        }
+    }
+
+    /// Nudge about to-dos nobody has touched in a long time.
+    async fn sweep_lingering_todos(&mut self, orchestrator: &Orchestrator) {
+        let Ok(max_age) = chrono::Duration::from_std(self.config.lingering_after) else {
+            return;
+        };
+        let cutoff = chrono::Utc::now() - max_age;
+        let mut lingering: Vec<String> = Vec::new();
+        for project in orchestrator.list_projects() {
+            let todos = orchestrator.list_todos(project.id).unwrap_or_default();
+            lingering.extend(
+                todos
+                    .into_iter()
+                    .filter(|t| !t.done && !t.archived && t.created_at < cutoff)
+                    .map(|t| format!("{} ({})", t.text, project.name)),
+            );
+        }
+        if lingering.is_empty() {
+            return;
+        }
+        let named = lingering
+            .iter()
+            .take(MAX_LINGERING_NAMED)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let rest = lingering.len().saturating_sub(MAX_LINGERING_NAMED);
+        let more = if rest > 0 {
+            format!(" and {rest} more")
+        } else {
+            String::new()
+        };
+        self.nudge(
+            orchestrator,
+            format!(
+                "[Podium] {} to-do(s) have been open for over {}: {named}{more}. Ask the user \
+                 whether to drop them, or to put an agent on one.",
+                lingering.len(),
+                days(self.config.lingering_after),
+            ),
+        )
+        .await;
+    }
+}
+
+/// The agent process with this id, or `None` when it is gone or not an agent.
+fn find_agent(orchestrator: &Orchestrator, id: ProcessId) -> Option<ProcessInfo> {
+    orchestrator
+        .list_processes(None)
+        .into_iter()
+        .find(|p| p.id == id && matches!(p.kind, ProcessKind::Agent { .. }))
+}
+
+/// `"name" in project "project"` — how a nudge points at an agent.
+fn describe(orchestrator: &Orchestrator, process: &ProcessInfo) -> String {
+    let project = orchestrator
+        .list_projects()
+        .into_iter()
+        .find(|p| p.id == process.project_id)
+        .map(|p| p.name)
+        .unwrap_or_else(|| "a closed project".to_string());
+    format!("\"{}\" in project \"{project}\"", process.name)
+}
+
+fn exit_code(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("exit code {code}"),
+        None => "no exit code".to_string(),
+    }
+}
+
+fn minutes(d: Duration) -> String {
+    let minutes = d.as_secs() / 60;
+    if minutes == 0 {
+        format!("{} seconds", d.as_secs().max(1))
+    } else {
+        format!("{minutes} minutes")
+    }
+}
+
+fn days(d: Duration) -> String {
+    let days = d.as_secs() / (24 * 60 * 60);
+    if days == 0 {
+        format!("{} hours", (d.as_secs() / 3600).max(1))
+    } else {
+        format!("{days} days")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_read_as_prose() {
+        assert_eq!(minutes(Duration::from_secs(300)), "5 minutes");
+        assert_eq!(minutes(Duration::from_millis(200)), "1 seconds");
+        assert_eq!(days(Duration::from_secs(7 * 24 * 3600)), "7 days");
+        assert_eq!(days(Duration::from_secs(3 * 3600)), "3 hours");
+    }
+
+    #[test]
+    fn an_exit_without_a_code_is_still_reported() {
+        assert_eq!(exit_code(Some(0)), "exit code 0");
+        assert_eq!(exit_code(None), "no exit code");
+    }
+}

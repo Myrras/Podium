@@ -769,6 +769,7 @@ impl ServerHandler for PodiumTools {
         {
             let tool = request.name.to_string();
             let summary = summarize_arguments(&request);
+            let project = proposal_project(&request);
             let tools = self.clone();
             let params = request;
             let action: ProposalAction = Box::new(move || {
@@ -782,7 +783,7 @@ impl ServerHandler for PodiumTools {
             });
             let id = self
                 .orchestrator
-                .propose_assistant_action(tool, summary, action);
+                .propose_assistant_action(tool, summary, project, action);
             return Ok(text_result(format!(
                 "Proposal {id} is waiting for the user to confirm it in the chat. \
                  Nothing has happened yet and retrying will only queue another \
@@ -853,6 +854,19 @@ fn result_text(result: &CallToolResult) -> String {
 /// One-line rendering of a call's arguments for its proposal card, so the user
 /// can see *what* they are approving. Arguments are the assistant's own words
 /// (never terminal output or secrets), so showing them is safe.
+/// The project a gated call acts on, from its `project_id` argument. Closing
+/// that project invalidates the proposal, so an unparseable or absent id
+/// simply means "not tied to a project".
+fn proposal_project(request: &CallToolRequestParams) -> Option<ProjectId> {
+    let raw = request
+        .arguments
+        .as_ref()?
+        .get("project_id")?
+        .as_str()?
+        .to_string();
+    ProjectId::from_str(&raw).ok()
+}
+
 fn summarize_arguments(request: &CallToolRequestParams) -> String {
     let Some(arguments) = &request.arguments else {
         return String::new();

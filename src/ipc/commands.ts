@@ -599,6 +599,16 @@ export function assistantAutonomySet(
   return invoke("assistant_autonomy_set", { mode });
 }
 
+/** Whether Podium may nudge the assistant unprompted. */
+export function assistantProactivityGet(): Promise<boolean> {
+  return invoke("assistant_proactivity_get");
+}
+
+/** Turn those nudges on or off; returns what was stored. */
+export function assistantProactivitySet(enabled: boolean): Promise<boolean> {
+  return invoke("assistant_proactivity_set", { enabled });
+}
+
 /**
  * Confirm or reject one action the assistant proposed. A confirmed proposal
  * runs right away; the outcome streams back as `assistant:event`.

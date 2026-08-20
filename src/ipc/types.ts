@@ -338,6 +338,8 @@ export type AssistantEvent =
   | { type: "tool"; name: string }
   /** A tool call came back as an error, so no action fails silently. */
   | { type: "toolFailed"; message: string }
+  /** Podium nudged the assistant itself (an agent finished, to-dos linger, …). */
+  | { type: "notice"; text: string }
   /** A tool call the autonomy gate held back: it needs the user's decision. */
   | { type: "proposal"; id: string; tool: string; summary: string }
   /** That decision landed; `error` is set when the confirmed action failed. */
