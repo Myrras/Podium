@@ -9,9 +9,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-// Activity polling is timer-driven and irrelevant to these assertions.
+// Activity polling is timer-driven; tests set the value they need directly.
+let activity = "idle";
 vi.mock("../lib/useAgentActivity", () => ({
-  useAgentActivity: () => "idle",
+  useAgentActivity: () => activity,
   useAgentShells: () => 0,
 }));
 
@@ -40,6 +41,7 @@ function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
 describe("ProcessRow worktree badge", () => {
   beforeEach(() => {
     useProcessStore.setState(initialProcess, true);
+    activity = "idle";
   });
 
   it("shows a branch badge for a process running in a worktree", () => {
@@ -182,5 +184,28 @@ describe("ProcessRow lifecycle actions", () => {
     expect(screen.queryByRole("button", { name: "Stop claude" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Restart claude" })).toBeNull();
     expect(screen.getByRole("button", { name: "Remove claude" })).toBeVisible();
+  });
+});
+
+describe("ProcessRow activity", () => {
+  beforeEach(() => {
+    useProcessStore.setState(initialProcess, true);
+    activity = "idle";
+  });
+
+  const running = (kind: ProcessKind): ProcessInfo => ({
+    ...process("p1", "shell", kind),
+    status: { state: "running", pid: 42, since: "now" },
+  });
+
+  it("shows 'needs input' for a terminal waiting on input", () => {
+    activity = "waiting";
+    render(<ProcessRow process={running({ kind: "terminal" })} />);
+    expect(screen.getByText("needs input")).toBeInTheDocument();
+  });
+
+  it("shows no activity hint for an idle terminal", () => {
+    render(<ProcessRow process={running({ kind: "terminal" })} />);
+    expect(screen.queryByText("idle")).not.toBeInTheDocument();
   });
 });

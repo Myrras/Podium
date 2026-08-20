@@ -1,10 +1,11 @@
 /**
- * Heuristics read off an agent's terminal screen: "waiting for
- * input/permission", and how many background shells it has running.
+ * Heuristics read off a process's terminal screen: "waiting for
+ * input/permission", and how many background shells an agent has running.
  *
- * Coding-agent CLIs (Claude Code, Auggie, …) don't emit structured events
- * over the PTY — when they stall on a permission prompt or a question, the
- * only signal is what's drawn on the terminal. This module holds the pure
+ * Neither coding-agent CLIs (Claude Code, Auggie, …) nor ordinary commands
+ * emit structured events over the PTY — when they stall on a permission
+ * prompt, a question, or a `sudo` password, the only signal is what's drawn
+ * on the terminal. This module holds the pure
  * pattern-matching over that on-screen text so it stays unit-testable; the
  * terminal registry supplies the current viewport text (see
  * `readViewportText`) and the activity store only asks about a prompt while
@@ -36,10 +37,19 @@ const PROMPT_PATTERNS: RegExp[] = [
   /waiting for (your )?(input|confirmation|response|approval)/i,
   /permission (to|required|needed|request)/i,
   /awaiting (your )?(input|confirmation|approval)/i,
+  // Credential prompts from ordinary commands run in a terminal: sudo
+  // ("[sudo] password for x:", plain "Password:" on macOS), ssh
+  // ("(user@host) Password:", "user@host's password:"), key passphrases, git
+  // credentials. Anchored only to the END of the line — that is where the
+  // cursor sits, while the start is whatever host/user the tool prefixes —
+  // so a log line merely mentioning a password does not trip them.
+  /\bpasswords?( for [^\n:]*)?:[ \t]*$/im,
+  /\bpassphrase( for [^\n:]*)?:[ \t]*$/im,
+  /\busername for [^\n]*:[ \t]*$/im,
 ];
 
 /**
- * Whether the given on-screen terminal text looks like the agent is waiting
+ * Whether the given on-screen terminal text looks like the process is waiting
  * on the user. `text` should be the current viewport (a screenful), not the
  * whole scrollback; only its tail is examined so a stale prompt scrolled off
  * the top no longer counts.
