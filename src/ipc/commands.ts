@@ -223,7 +223,6 @@ export function agentSpawn(
     scratchpadIds: options.scratchpadIds ?? null,
     worktree: options.worktree ?? null,
     worktreeName: options.worktreeName ?? null,
-    worktreeOnHead: options.worktreeOnHead ?? null,
     args: options.args ?? null,
   });
 }
