@@ -8,6 +8,17 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.4.2] - 2026-08-20
+
+### Changed
+
+- **A quieter sidebar: secondary icons appear on hover.** Section headers now
+  show only their "+" at rest — archive, worktrees, Open in Warp and Commands
+  fade in when you hover the header. A project's rename, reload and remove
+  buttons stay hidden until you hover that project's row, the way its drag
+  handle already did. Nothing moves as the icons appear, and every button is
+  still reachable by keyboard.
+
 ## [1.4.1] - 2026-08-20
 
 ### Changed

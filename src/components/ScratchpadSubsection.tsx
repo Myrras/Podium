@@ -224,7 +224,7 @@ export function ScratchpadSubsection({
         <span className={sidebarStyles.panelTitle}>Scratchpads</span>
         <button
           type="button"
-          className={sidebarStyles.addBtn}
+          className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
           aria-label="View archived scratchpads"
           title="Archived scratchpads"
           onClick={() => setArchiveOpen(true)}

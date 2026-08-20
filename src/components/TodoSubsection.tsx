@@ -292,7 +292,7 @@ export function TodoSubsection({
         <span className={sidebarStyles.panelTitle}>To-dos</span>
         <button
           type="button"
-          className={sidebarStyles.addBtn}
+          className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
           aria-label="View archived to-dos"
           title="Archived to-dos"
           onClick={() => {
