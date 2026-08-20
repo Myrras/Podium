@@ -6,22 +6,6 @@
   color: var(--text-faint);
 }
 
-.targetPicker {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-3);
-  font-size: var(--fs-sm);
-  color: var(--text-faint);
-}
-
-.targetSelect {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-sm);
-  padding: var(--sp-1) var(--sp-2);
-}
-
 .list {
   display: flex;
   flex-direction: column;

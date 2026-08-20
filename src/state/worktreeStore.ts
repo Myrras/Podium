@@ -2,10 +2,10 @@
  * Per-project Podium-managed git worktree lists, keyed by project id.
  *
  * `git worktree list` is still the source of truth (no local mutation
- * tracking), but the cache lets callers (the Worktrees modal, the Commands
- * modal's target picker) render instantly instead of showing "Loading…"
- * every time. `refresh` re-pulls from the backend; the `worktree:changed`
- * event (create/remove, from this UI or an agent over MCP) triggers it.
+ * tracking), but the cache lets callers (the sidebar's Worktrees subsection)
+ * render instantly instead of showing "Loading…" every time. `refresh`
+ * re-pulls from the backend; the `worktree:changed` event (create/remove,
+ * from this UI or an agent over MCP) triggers it.
  */
 
 import { create } from "zustand";

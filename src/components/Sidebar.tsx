@@ -37,11 +37,10 @@ import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
-import { WorktreesModal } from "./WorktreesModal";
+import { WorktreeSubsection } from "./WorktreeSubsection";
 import {
   AddIcon,
   AgentIcon,
-  BranchIcon,
   CaretIcon,
   CloseIcon,
   EditIcon,
@@ -132,8 +131,6 @@ interface ProjectGroupProps {
     scratchpadIds: ScratchpadId[],
     initialName: string,
   ) => void;
-  /** Open the Worktrees modal for this project. */
-  onOpenWorktrees: (projectId: ProjectId) => void;
   /** Drag-to-reorder wiring, owned by the Sidebar (tracks the drop target). */
   dragging: boolean;
   dropTarget: boolean;
@@ -152,7 +149,6 @@ function ProjectGroup({
   onPickAgent,
   onOpenScratchpad,
   onPickScratchpadAgent,
-  onOpenWorktrees,
   dragging,
   dropTarget,
   onDragStart,
@@ -176,7 +172,12 @@ function ProjectGroup({
   const startProcess = useProcessStore((s) => s.startProcess);
 
   const [editing, setEditing] = useState(false);
-  const [commandsOpen, setCommandsOpen] = useState(false);
+  // `undefined` = closed; `null` = open targeting the project root; a
+  // `WorktreeInfo` = open targeting that worktree (from its row's Commands
+  // action).
+  const [commandsTarget, setCommandsTarget] = useState<
+    WorktreeInfo | null | undefined
+  >(undefined);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -227,7 +228,7 @@ function ProjectGroup({
 
   // Quick command from the Commands block: a new terminal running it, named
   // after the command's own name (a justfile recipe, or a user-set name).
-  // `cwd` is set when the Commands modal's target picker chose a worktree
+  // `cwd` is set when the Commands modal was opened targeting a worktree
   // instead of the project root.
   const runCommand = async (command: string, name: string, cwd?: string) => {
     setActiveProject(project.id);
@@ -403,16 +404,6 @@ function ProjectGroup({
                 onNewAgent(project.id);
               },
             }}
-            extra={[
-              {
-                label: "Worktrees",
-                Icon: BranchIcon,
-                onClick: () => {
-                  setActiveProject(project.id);
-                  onOpenWorktrees(project.id);
-                },
-              },
-            ]}
           />
           {services.length > 0 && (
             <Subsection title="Processes" Icon={RunIcon} rows={services} />
@@ -420,7 +411,7 @@ function ProjectGroup({
           <Subsection
             title="Terminals"
             Icon={TerminalIcon}
-            rows={terminals}
+            rows={terminals.filter((p) => p.worktree == null)}
             empty="No terminals yet."
             add={{ label: "New terminal", onClick: () => void addTerminal() }}
             extra={[
@@ -434,16 +425,25 @@ function ProjectGroup({
                 Icon: RunIcon,
                 onClick: () => {
                   setActiveProject(project.id);
-                  setCommandsOpen(true);
+                  setCommandsTarget(null);
                 },
               },
             ]}
           />
+          <WorktreeSubsection
+            projectId={project.id}
+            terminals={terminals}
+            onOpenCommands={(wt) => {
+              setActiveProject(project.id);
+              setCommandsTarget(wt);
+            }}
+          />
           <TerminalCommandsModal
-            open={commandsOpen}
+            open={commandsTarget !== undefined}
             projectId={project.id}
             root={project.root}
-            onClose={() => setCommandsOpen(false)}
+            worktree={commandsTarget ?? null}
+            onClose={() => setCommandsTarget(undefined)}
             onRun={(command, name, cwd) => void runCommand(command, name, cwd)}
           />
           <ScratchpadSubsection
@@ -475,7 +475,6 @@ export function Sidebar() {
   const [agentModal, setAgentModal] = useState<AgentModalTarget | null>(null);
   const [scratchpadAgentModal, setScratchpadAgentModal] =
     useState<ScratchpadAgentModalTarget | null>(null);
-  const [worktreesFor, setWorktreesFor] = useState<ProjectId | null>(null);
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const openTodoInWorkArea = useLayoutStore((s) => s.openTodoInWorkArea);
   const openScratchpadInWorkArea = useLayoutStore(
@@ -487,27 +486,6 @@ export function Sidebar() {
   const reorderProjects = useProjectStore((s) => s.reorderProjects);
 
   const processes = useProcessStore((s) => s.processes);
-  const addProcess = useProcessStore((s) => s.addProcess);
-  const startProcess = useProcessStore((s) => s.startProcess);
-
-  // Open a terminal rooted in a Podium-managed worktree (from the Worktrees
-  // modal's per-row action). `cwd` is relative to the project root, so the
-  // worktree's own dir under `.podium/worktrees/` resolves the same way any
-  // other relative cwd does.
-  const openWorktreeTerminal = async (
-    projectId: ProjectId,
-    wt: WorktreeInfo,
-  ) => {
-    const shell = useSettingsStore.getState().terminal.shell.trim();
-    const info = await addProcess(projectId, {
-      name: `Terminal (${wt.name})`,
-      kind: "terminal",
-      cwd: `.podium/worktrees/${wt.name}`,
-      ...(shell ? { command: shell } : {}),
-    });
-    if (info) await startProcess(info.id);
-    setWorktreesFor(null);
-  };
 
   // Drag-to-reorder state: the id being dragged and the id it's hovering over
   // (the drop lands the dragged project just before the hovered one).
@@ -563,7 +541,6 @@ export function Sidebar() {
                   initialName,
                 })
               }
-              onOpenWorktrees={setWorktreesFor}
             />
           ))
         ) : (
@@ -598,14 +575,6 @@ export function Sidebar() {
         initialName={scratchpadAgentModal?.initialName}
         onClose={() => setScratchpadAgentModal(null)}
       />
-      {worktreesFor !== null && (
-        <WorktreesModal
-          open
-          projectId={worktreesFor}
-          onClose={() => setWorktreesFor(null)}
-          onOpenTerminal={(wt) => void openWorktreeTerminal(worktreesFor, wt)}
-        />
-      )}
     </aside>
   );
 }

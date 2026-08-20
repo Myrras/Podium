@@ -12,7 +12,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { WorktreeInfo } from "../ipc/types";
 import { useTerminalCommandsStore } from "../state/terminalCommandsStore";
-import { useWorktreeStore } from "../state/worktreeStore";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 
 const initial = useTerminalCommandsStore.getState();
@@ -28,12 +27,17 @@ function wt(name: string): WorktreeInfo {
   };
 }
 
-function renderModal(onRun = vi.fn(), onClose = vi.fn()) {
+function renderModal(
+  onRun = vi.fn(),
+  onClose = vi.fn(),
+  worktree?: WorktreeInfo | null,
+) {
   render(
     <TerminalCommandsModal
       open
       projectId={PROJECT}
       root={ROOT}
+      worktree={worktree}
       onClose={onClose}
       onRun={onRun}
     />,
@@ -44,7 +48,6 @@ function renderModal(onRun = vi.fn(), onClose = vi.fn()) {
 beforeEach(() => {
   localStorage.clear();
   useTerminalCommandsStore.setState({ ...initial, customByRoot: {} }, true);
-  useWorktreeStore.setState({ worktreesByProject: {} }, false);
 });
 
 describe("TerminalCommandsModal", () => {
@@ -152,37 +155,16 @@ describe("TerminalCommandsModal", () => {
     );
   });
 
-  it("hides the target picker when the project has no worktrees", async () => {
+  it("titles the modal plainly when opened for the project root", async () => {
     renderModal();
     await screen.findByText("just build");
-    expect(screen.queryByLabelText("Run in")).not.toBeInTheDocument();
+    expect(screen.getByText("Commands")).toBeInTheDocument();
   });
 
-  it("shows a target picker when the project has worktrees, defaulting to the project root", async () => {
-    useWorktreeStore.setState({
-      worktreesByProject: { [PROJECT]: [wt("fix-login")] },
-    });
-    renderModal();
+  it("titles the modal with the worktree name and runs commands there", async () => {
+    const { onRun } = renderModal(undefined, undefined, wt("fix-login"));
 
-    const select = await screen.findByLabelText<HTMLSelectElement>("Run in");
-    expect(select.value).toBe("");
-    expect(
-      screen.getByRole("option", { name: "Project root" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: "fix-login" }),
-    ).toBeInTheDocument();
-  });
-
-  it("runs a command in the chosen worktree's cwd", async () => {
-    useWorktreeStore.setState({
-      worktreesByProject: { [PROJECT]: [wt("fix-login")] },
-    });
-    const { onRun } = renderModal();
-
-    fireEvent.change(await screen.findByLabelText("Run in"), {
-      target: { value: ".podium/worktrees/fix-login" },
-    });
+    expect(screen.getByText("Commands — fix-login")).toBeInTheDocument();
     fireEvent.click(
       await screen.findByTitle('Run "just build" in a new terminal'),
     );
@@ -194,11 +176,8 @@ describe("TerminalCommandsModal", () => {
     );
   });
 
-  it("runs a command with no cwd when the project root stays selected", async () => {
-    useWorktreeStore.setState({
-      worktreesByProject: { [PROJECT]: [wt("fix-login")] },
-    });
-    const { onRun } = renderModal();
+  it("runs a command with no cwd when opened for the project root", async () => {
+    const { onRun } = renderModal(undefined, undefined, null);
 
     fireEvent.click(
       await screen.findByTitle('Run "just build" in a new terminal'),

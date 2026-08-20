@@ -62,7 +62,7 @@ them in sync when you add a command or MCP tool.
   persistence, an app-quit close guard while agents/terminals run
   (`window_confirm_close`), dialog + log plugins, locked-down CSP.
 - ✅ **Frontend** (`src/`): project switcher + sidebar (To-dos / Agents /
-  Processes / Terminals / Scratchpads), xterm.js terminals living **outside
+  Processes / Terminals / Worktrees / Scratchpads), xterm.js terminals living **outside
   React** (registry keyed by processId; scrollback survives tab switches and
   StrictMode), snapshot+seq attach protocol with lag re-attach, new-agent
   modal, agent activity ("working…"/idle) heuristic, to-do and scratchpad
@@ -244,23 +244,32 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   --porcelain` is the source of truth and `list` has no events, but
   `create`/`remove` emit `WorktreesChanged` for the project, which the
   frontend's `worktreeStore` uses (alongside a background load on project
-  open) to keep its cache warm, so the Worktrees modal and the Commands
-  modal's target picker render from cache instantly instead of showing
-  "Loading…" — the modal still kicks off its own refresh on open to catch
-  out-of-band changes. `ProcessInfo.worktree` is derived from the process cwd
-  and feeds the
-  sidebar badge, `in_use` and the removal guard — an agent that creates its
-  own worktree keeps the root as cwd, so it does not light those up. Removal
-  is refused while an active process runs in the worktree (`WorktreeInUse`)
-  or while it has uncommitted changes unless forced (`WorktreeDirty`); the
-  branch is always kept. The global `suggest_worktree` setting (default on)
-  makes agent identity prompts *ask* the user about a worktree before the
-  first code change; the spawn flag is the same instruction without the
-  asking, and wins over the setting. Terminals and the Commands modal's quick
-  commands can also target a worktree directly (its `cwd` is
-  `.podium/worktrees/<name>`, relative to the project root like any other
-  process `cwd`) via the Worktrees modal's per-row terminal button and the
-  Commands modal's target picker.
+  open) to keep its cache warm. `ProcessInfo.worktree` is derived from the
+  process cwd and feeds the sidebar badge, `in_use` and the removal guard —
+  an agent that creates its own worktree keeps the root as cwd, so it does
+  not light those up. Removal is refused while an active process runs in the
+  worktree (`WorktreeInUse`) or while it has uncommitted changes unless
+  forced (`WorktreeDirty`); the branch is always kept. The global
+  `suggest_worktree` setting (default on) makes agent identity prompts *ask*
+  the user about a worktree before the first code change; the spawn flag is
+  the same instruction without the asking, and wins over the setting.
+
+  **Sidebar** (`WorktreeSubsection.tsx`): a "Worktrees" subsection directly
+  under Terminals, reading from `worktreeStore` — hidden entirely when the
+  project has none (no header "+"; worktrees only ever come from
+  `create_worktree`, never a sidebar action). Each row carries three actions:
+  open a terminal rooted in it (`cwd: .podium/worktrees/<name>`), open the
+  Commands modal targeted at it (its quick commands then run there instead
+  of the project root), and remove it (`worktreeRemove(force=false)`; a
+  `worktreeDirty` rejection prompts a confirm before retrying with
+  `force=true`). A worktree's own terminal processes (`p.worktree ===
+  wt.name`) render nested under its row via the shared `ProcessRow` and are
+  excluded from the plain Terminals list above. "In use" for the delete
+  button is derived live from the process store (any non-exited process with
+  that `worktree`) rather than the worktree's own cached `inUse` field, which
+  can go stale between backend refreshes while the sidebar stays live; the
+  backend's `WorktreeInUse` guard remains the authority and surfaces as a
+  toast if it fires anyway.
 
 ### Tauri IPC contract
 
