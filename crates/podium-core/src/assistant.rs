@@ -773,9 +773,18 @@ impl AssistantManager {
             .transpose()?
             .unwrap_or_default();
         let resumed = !resume.is_empty();
+        // `-p`/stream-json mode has no TTY for an interactive permission
+        // prompt, so without --permission-mode the CLI would hang asking
+        // approval for every Podium MCP tool it never gets to answer.
+        // bypassPermissions is safe here because deny rules still win:
+        // DISALLOWED_TOOLS above keeps Edit/Write/NotebookEdit/Bash refused
+        // regardless of permission mode, so the assistant still can't touch
+        // the filesystem itself (autonomy gating happens server-side, in
+        // Podium's own MCP layer, not via CLI prompts).
         let command = format!(
             "exec {} -p --input-format stream-json --output-format stream-json \
-             --verbose --disallowedTools {}{}{} --append-system-prompt {}",
+             --verbose --permission-mode bypassPermissions --disallowedTools {}{}{} \
+             --append-system-prompt {}",
             crate::platform::quote_arg(&config.command)?,
             DISALLOWED_TOOLS,
             mcp_config,

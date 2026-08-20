@@ -374,6 +374,13 @@ async fn the_session_may_never_edit_files_itself() {
         arg_after(&args, "--disallowedTools"),
         Some("Edit,Write,NotebookEdit,Bash".to_string())
     );
+    // bypassPermissions is required for -p/stream-json mode to make any
+    // progress (no TTY for an interactive prompt) — safe only because the
+    // disallowed-tools deny list above still wins over it.
+    assert_eq!(
+        arg_after(&args, "--permission-mode"),
+        Some("bypassPermissions".to_string())
+    );
     orch.shutdown().await;
 }
 

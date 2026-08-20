@@ -286,8 +286,13 @@ one lock acquisition, atomically, before the async `podium.yml` load.
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
   (`$SHELL -lic 'exec claude -p --input-format stream-json --output-format
-  stream-json --verbose --disallowedTools …'`), not a PTY, not in the sidebar
-  process list. It is spawned lazily on the first message and killed on
+  stream-json --verbose --permission-mode bypassPermissions --disallowedTools
+  …'`), not a PTY, not in the sidebar process list. `--permission-mode
+  bypassPermissions` is required because `-p`/stream-json mode has no TTY for
+  an interactive permission prompt — without it the CLI would stall asking
+  approval for every Podium MCP tool it can never answer; deny rules still
+  take precedence over it (see below), so this does not loosen what the
+  assistant can touch. It is spawned lazily on the first message and killed on
   shutdown; a session that died is replaced on the next turn. User turns are
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
@@ -297,8 +302,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   skipped, stderr is dropped, and the binary + cwd are injectable
   (`AssistantConfig`) so integration tests drive a fake `claude` script. The
   assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
-  refused at the CLI, and implementation work is meant to go out as a to-do +
-  spawned agent (its `--append-system-prompt` identity says so).
+  refused at the CLI regardless of permission mode, and implementation work is
+  meant to go out as a to-do + spawned agent (its `--append-system-prompt`
+  identity says so).
 
   It reaches Podium over its **own MCP endpoint** (`/mcp-assistant`), wired in
   via a 0600 `assistant.json` next to the per-agent configs — the whole tool
