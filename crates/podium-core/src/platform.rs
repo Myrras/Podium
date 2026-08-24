@@ -106,6 +106,56 @@ fn quote_arg_windows(arg: &str) -> String {
     out
 }
 
+/// Resolve `program` to an absolute executable path by walking `PATH`
+/// looking for a *file* — unlike portable-pty's own internal Windows PATH
+/// search (used by `process::pty` to spawn agent binaries directly, bypassing
+/// `cmd.exe`), which resolves a bare name to the first `PATH` entry that
+/// merely `exists()`, directory or not. A same-named data/log folder earlier
+/// in `PATH` than the real executable — e.g. Claude Code's own
+/// `%LOCALAPPDATA%\claude\` ahead of `claude.exe` further down `PATH` — makes
+/// portable-pty hand that *directory* to `CreateProcessW` as
+/// `lpApplicationName`, which Windows rejects with `ERROR_ACCESS_DENIED`
+/// (the process never even starts). Falls back to `program` unresolved (today's
+/// behaviour, buggy PATH order and all) when no file match is found, so a
+/// binary that truly isn't installed still fails the same way it always has.
+#[cfg(windows)]
+pub fn resolve_windows_executable(program: &str) -> String {
+    if program.contains(['\\', '/']) {
+        return program.to_string(); // already a path; nothing to search.
+    }
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return program.to_string();
+    };
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    resolve_in_path(program, &path_var, &pathext)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.to_string())
+}
+
+/// The testable core of [`resolve_windows_executable`]: `path_var`/`pathext`
+/// injected rather than read from the environment, so tests don't have to
+/// mutate real process-global env vars (racy under parallel test execution).
+#[cfg(windows)]
+fn resolve_in_path(
+    program: &str,
+    path_var: &std::ffi::OsStr,
+    pathext: &str,
+) -> Option<std::path::PathBuf> {
+    for dir in std::env::split_paths(path_var) {
+        let candidate = dir.join(program);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        for ext in pathext.split(';').filter(|e| !e.is_empty()) {
+            let with_ext = dir.join(format!("{program}{ext}"));
+            if with_ext.is_file() {
+                return Some(with_ext);
+            }
+        }
+    }
+    None
+}
+
 /// Run `cmd` through the login shell, discarding all output; returns whether
 /// it exited successfully. Output is never captured, so nothing the command
 /// prints can leak into logs or errors.
@@ -320,6 +370,61 @@ mod tests {
     #[test]
     fn quote_arg_rejects_nul_bytes() {
         assert!(quote_arg("bad\0arg").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_in_path_skips_a_same_named_directory_and_finds_the_real_exe() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A directory that merely happens to share the program's name (e.g.
+        // Claude Code's own %LOCALAPPDATA%\claude\ data folder) sits in an
+        // earlier PATH entry than the real executable.
+        let decoy_dir = tmp.path().join("decoy");
+        std::fs::create_dir_all(decoy_dir.join("myprog")).unwrap();
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::write(real_dir.join("myprog.EXE"), "").unwrap();
+
+        let path_var = std::env::join_paths([&decoy_dir, &real_dir]).unwrap();
+        let resolved = resolve_in_path("myprog", &path_var, ".EXE").unwrap();
+
+        assert_eq!(resolved, real_dir.join("myprog.EXE"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_in_path_finds_an_extensionless_match_directly() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("myprog"), "").unwrap();
+
+        let path_var = std::env::join_paths([tmp.path()]).unwrap();
+        let resolved = resolve_in_path("myprog", &path_var, ".EXE").unwrap();
+
+        assert_eq!(resolved, tmp.path().join("myprog"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_in_path_returns_none_when_nothing_file_shaped_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("myprog")).unwrap();
+
+        let path_var = std::env::join_paths([tmp.path()]).unwrap();
+        assert!(resolve_in_path("myprog", &path_var, ".EXE").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_windows_executable_falls_back_to_the_bare_name_when_unresolved() {
+        assert_eq!(
+            resolve_windows_executable("podium-nonexistent-binary-xyz"),
+            "podium-nonexistent-binary-xyz"
+        );
+        // Already a path — passed through untouched, no PATH search.
+        assert_eq!(
+            resolve_windows_executable(r"C:\already\a\path.exe"),
+            r"C:\already\a\path.exe"
+        );
     }
 
     #[test]
