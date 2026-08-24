@@ -32,6 +32,10 @@ tokio-util = "0.7"
 # HTTP client for the stdio MCP bridge (`mcp/bridge.rs`). Localhost plain
 # HTTP only, so no TLS backend is needed.
 reqwest = { version = "0.13.3", default-features = false }
+# `canonicalize` without Windows' `\\?\` verbatim prefix, which
+# `CreateProcessW`'s `lpCurrentDirectory` (portable-pty's `CommandBuilder::cwd`)
+# rejects with `ERROR_ACCESS_DENIED`. A plain passthrough on other platforms.
+dunce = "1"
 
 # Unix-only: process-group signalling for graceful stop (killpg SIGTERM →
 # SIGKILL). Windows kills the ConPTY child via portable-pty's ChildKiller.

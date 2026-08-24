@@ -262,7 +262,15 @@ impl Orchestrator {
         }
         // Canonicalize so the same folder reached via different spellings
         // (symlinks, trailing slash, `..` segments) maps to one identity.
-        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        // `dunce::canonicalize`, not `std::fs::canonicalize`: on Windows the
+        // std version returns a `\\?\`-prefixed verbatim path, and that path
+        // becomes this project's (and its agents') spawn `cwd`
+        // (`process::pty::PtyProcess::spawn` → `CommandBuilder::cwd`).
+        // `CreateProcessW`'s `lpCurrentDirectory` does not accept the `\\?\`
+        // prefix, so every agent launch failed with `ERROR_ACCESS_DENIED`
+        // (os error 5). `dunce` resolves symlinks the same way but keeps the
+        // legacy path form when the verbatim form isn't required.
+        let path = dunce::canonicalize(&path).unwrap_or(path);
         // Idempotent: opening an already-open folder returns the existing
         // project rather than minting a duplicate record. This is what keeps
         // a double startup restore (e.g. React StrictMode invoking the effect
@@ -2332,6 +2340,28 @@ mod tests {
         assert_eq!(reordered, vec![idc, ida, idb]);
         let ids: Vec<_> = orch.list_projects().into_iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![idc, ida, idb], "list reflects the new order");
+    }
+
+    // A `\\?\`-prefixed root breaks agent spawn on Windows: it becomes the
+    // agent's `cwd` (`process::pty::PtyProcess::spawn` → portable-pty's
+    // `CommandBuilder::cwd`), and `CreateProcessW`'s `lpCurrentDirectory`
+    // rejects that prefix with `ERROR_ACCESS_DENIED` (os error 5).
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn opened_project_root_has_no_verbatim_prefix_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let info = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert!(
+            !info.root.to_string_lossy().starts_with(r"\\?\"),
+            "project root must not be a verbatim path: {:?}",
+            info.root
+        );
     }
 
     #[tokio::test]
