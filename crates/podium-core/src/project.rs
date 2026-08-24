@@ -10,6 +10,20 @@ use crate::process::{ProcessKind, ProcessSpec};
 /// File name of the optional per-project configuration.
 pub const CONFIG_FILE_NAME: &str = "podium.yml";
 
+/// The pre-`dunce` canonical form of `path` (what `std::fs::canonicalize`
+/// alone produces), if it differs from `dunce::canonicalize`'s simplified
+/// form. On Windows this is the old `\\?\`-prefixed identity that
+/// per-project state (to-dos, scratchpads, the workspace/recents lists) was
+/// keyed under before the switch to `dunce` (see
+/// `Orchestrator::open_project`) — callers use it to migrate that state onto
+/// the new key. Always `None` on non-Windows platforms, where the two forms
+/// are identical, and when canonicalization fails.
+pub fn legacy_canonical_root(path: &Path) -> Option<PathBuf> {
+    let legacy = std::fs::canonicalize(path).ok()?;
+    let current = dunce::canonicalize(path).ok()?;
+    (legacy != current).then_some(legacy)
+}
+
 /// Effective, validated project configuration.
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
