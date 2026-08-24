@@ -76,6 +76,14 @@ impl PtyProcess {
             let program = tokens
                 .next()
                 .ok_or_else(|| CoreError::Pty("empty agent command".to_string()))?;
+            // Resolve to an absolute path ourselves: portable-pty's own
+            // Windows PATH search accepts the first same-named *directory*
+            // it finds as readily as a real executable, which makes
+            // `CreateProcessW` fail with `ERROR_ACCESS_DENIED` when a CLI's
+            // own data folder (e.g. Claude Code's `%LOCALAPPDATA%\claude\`)
+            // sits earlier in `PATH` than its actual binary. See
+            // `platform::resolve_windows_executable`.
+            let program = crate::platform::resolve_windows_executable(&program);
             let mut cmd = CommandBuilder::new(program);
             for arg in tokens {
                 cmd.arg(arg);
