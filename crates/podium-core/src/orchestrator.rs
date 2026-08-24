@@ -260,6 +260,10 @@ impl Orchestrator {
                 path.display()
             )));
         }
+        // Before switching to `dunce` below, note this folder's old (pre-fix)
+        // canonical identity, if different — any to-dos/scratchpads stored
+        // under it are migrated onto the new one once `path` is known.
+        let legacy_root = project::legacy_canonical_root(&path);
         // Canonicalize so the same folder reached via different spellings
         // (symlinks, trailing slash, `..` segments) maps to one identity.
         // `dunce::canonicalize`, not `std::fs::canonicalize`: on Windows the
@@ -271,6 +275,10 @@ impl Orchestrator {
         // (os error 5). `dunce` resolves symlinks the same way but keeps the
         // legacy path form when the verbatim form isn't required.
         let path = dunce::canonicalize(&path).unwrap_or(path);
+        if let Some(legacy_root) = &legacy_root {
+            self.todos.migrate_legacy_root(&path, legacy_root);
+            self.scratchpads.migrate_legacy_root(&path, legacy_root);
+        }
         // Idempotent: opening an already-open folder returns the existing
         // project rather than minting a duplicate record. This is what keeps
         // a double startup restore (e.g. React StrictMode invoking the effect
@@ -2362,6 +2370,33 @@ mod tests {
             "project root must not be a verbatim path: {:?}",
             info.root
         );
+    }
+
+    // The `dunce` switch above changes an existing Windows project's
+    // canonical identity, which would otherwise orphan its to-dos and
+    // scratchpads (stored keyed by that identity's string) under the old
+    // `\\?\`-prefixed key. `open_project` must migrate them onto the new key.
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn open_project_migrates_legacy_keyed_todos_and_scratchpads() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed data under the pre-fix (verbatim) key, as an older build would
+        // have stored it.
+        let legacy_root = std::fs::canonicalize(dir.path()).unwrap();
+        let orch = Orchestrator::new();
+        orch.todos
+            .add(ProjectId::new(), &legacy_root, "pre-existing todo")
+            .unwrap();
+        orch.scratchpads
+            .add(ProjectId::new(), &legacy_root, "tester")
+            .unwrap();
+
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        let todos = orch.list_todos(id).unwrap();
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].text, "pre-existing todo");
+        assert_eq!(orch.list_scratchpads(id).unwrap().len(), 1);
     }
 
     #[tokio::test]
