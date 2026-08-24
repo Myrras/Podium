@@ -127,6 +127,27 @@ impl ScratchpadStore {
         inner.scratchpads = scratchpads;
     }
 
+    /// Merge any scratchpads stored under `legacy_root`'s key into `root`'s
+    /// key (appended, then re-sorted by `created_at`) and drop the legacy
+    /// entry. A no-op when the two keys are equal or nothing is stored under
+    /// `legacy_root`. See `TodoStore::migrate_legacy_root` /
+    /// `project::legacy_canonical_root` for why this exists.
+    pub fn migrate_legacy_root(&self, root: &Path, legacy_root: &Path) {
+        let new_key = key(root);
+        let legacy_key = key(legacy_root);
+        if new_key == legacy_key {
+            return;
+        }
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let Some(mut legacy) = inner.scratchpads.remove(&legacy_key) else {
+            return;
+        };
+        let merged = inner.scratchpads.entry(new_key).or_default();
+        merged.append(&mut legacy);
+        merged.sort_by_key(|s| s.created_at);
+        let _ = save(&inner);
+    }
+
     /// The active (non-archived) scratchpads for a project.
     pub fn list(&self, project_id: ProjectId, root: &Path) -> Vec<ScratchpadInfo> {
         let inner = self.inner.lock().expect(LOCK_POISONED);
@@ -410,6 +431,41 @@ mod tests {
 
     fn ids() -> (ProjectId, PathBuf) {
         (ProjectId::new(), PathBuf::from("/tmp/fixture-project"))
+    }
+
+    #[test]
+    fn migrate_legacy_root_merges_sorts_by_created_at_and_drops_legacy_key() {
+        let store = ScratchpadStore::new();
+        let (project, root) = ids();
+        let legacy_root = PathBuf::from("/tmp/fixture-project-legacy");
+
+        let newer = store.add(project, &root, "User").unwrap();
+        let older = store.add(project, &legacy_root, "User").unwrap();
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.scratchpads.get_mut(&key(&root)).unwrap()[0].created_at +=
+                chrono::Duration::hours(1);
+        }
+
+        store.migrate_legacy_root(&root, &legacy_root);
+
+        let listed = store.list(project, &root);
+        assert_eq!(
+            listed.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![older.id, newer.id]
+        );
+        assert!(store.list(project, &legacy_root).is_empty());
+    }
+
+    #[test]
+    fn migrate_legacy_root_is_a_no_op_when_nothing_is_stored_under_the_legacy_key() {
+        let store = ScratchpadStore::new();
+        let (project, root) = ids();
+        store.add(project, &root, "User").unwrap();
+
+        store.migrate_legacy_root(&root, &PathBuf::from("/tmp/never-opened"));
+
+        assert_eq!(store.list(project, &root).len(), 1);
     }
 
     #[test]

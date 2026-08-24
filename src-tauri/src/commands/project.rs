@@ -19,7 +19,13 @@ pub async fn project_open(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<ProjectInfo, IpcError> {
-    let id = state.orchestrator.open_project(PathBuf::from(path)).await?;
+    let raw_path = PathBuf::from(path);
+    // Before the folder is canonicalized (see `Orchestrator::open_project`),
+    // note its old (pre-`dunce`) identity, if different — on Windows, a
+    // project that was opened by an older build persisted its workspace and
+    // recents entries under that `\\?\`-prefixed path.
+    let legacy_root = podium_core::project::legacy_canonical_root(&raw_path);
+    let id = state.orchestrator.open_project(raw_path).await?;
     let root = state
         .orchestrator
         .list_projects()
@@ -27,6 +33,14 @@ pub async fn project_open(
         .find(|p| p.id == id)
         .map(|p| p.root)
         .ok_or_else(|| IpcError::new("projectNotFound", "project vanished after open"))?;
+    if let Some(legacy_root) = &legacy_root {
+        if let Err(e) = workspace::migrate_legacy_path(&app, legacy_root, &root) {
+            tracing::warn!("failed to migrate legacy workspace entry: {e}");
+        }
+        if let Err(e) = recents::migrate_legacy_path(&app, legacy_root, &root) {
+            tracing::warn!("failed to migrate legacy recents entry: {e}");
+        }
+    }
     // Re-apply any persisted display-name override before returning, so a
     // renamed project comes back with its user-chosen name after a restart.
     if let Ok(Some(name)) = workspace::name_for(&app, &root) {

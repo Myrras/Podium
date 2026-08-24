@@ -102,6 +102,28 @@ fn remove_entry(entries: &mut Vec<WorkspaceEntry>, path: &Path) {
     entries.retain(|e| e.path != path);
 }
 
+/// If an entry exists for `legacy` and it differs from `new`, either rename
+/// it in place to `new` (preserving its sidebar position and name override),
+/// or — when `new` is already present too (both spellings were opened at
+/// some point) — drop the stale `legacy` one and keep the modern entry as-is.
+/// See `podium_core::project::legacy_canonical_root`: on Windows, switching
+/// project-root canonicalization from `std::fs::canonicalize` to
+/// `dunce::canonicalize` left existing workspace entries under their old
+/// `\\?\`-prefixed path, which this reconciles back onto the new one.
+fn migrate_legacy_entry(entries: &mut Vec<WorkspaceEntry>, legacy: &Path, new: &Path) {
+    if legacy == new {
+        return;
+    }
+    let Some(pos) = entries.iter().position(|e| e.path == legacy) else {
+        return;
+    };
+    if entries.iter().any(|e| e.path == new) {
+        entries.remove(pos);
+    } else {
+        entries[pos].path = new.to_path_buf();
+    }
+}
+
 /// Set (or clear) the display-name override for `path`; a blank name clears
 /// it. Creates the entry if it is somehow absent.
 fn set_entry_name(entries: &mut Vec<WorkspaceEntry>, path: &Path, name: Option<String>) {
@@ -144,6 +166,20 @@ pub fn remove(app: &AppHandle, path: &Path) -> Result<(), IpcError> {
     let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
     let mut entries = load(&file);
     remove_entry(&mut entries, path);
+    save(&file, &entries)
+}
+
+/// Reconcile a project's old, pre-`dunce` workspace entry (if any) onto its
+/// current canonical path. Call before `add` so a fresh `project_open` for an
+/// already-known folder doesn't leave a stale duplicate sidebar entry behind.
+pub fn migrate_legacy_path(app: &AppHandle, legacy: &Path, new: &Path) -> Result<(), IpcError> {
+    if legacy == new {
+        return Ok(());
+    }
+    let file = workspace_path(app)?;
+    let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
+    let mut entries = load(&file);
+    migrate_legacy_entry(&mut entries, legacy, new);
     save(&file, &entries)
 }
 
@@ -239,6 +275,60 @@ mod tests {
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
         );
         assert_eq!(entries[0].name.as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn migrate_legacy_entry_renames_in_place_when_new_is_absent() {
+        let mut entries = vec![WorkspaceEntry {
+            path: PathBuf::from(r"\\?\C:\Meridian"),
+            name: Some("Meridian".into()),
+        }];
+        migrate_legacy_entry(
+            &mut entries,
+            Path::new(r"\\?\C:\Meridian"),
+            Path::new(r"C:\Meridian"),
+        );
+        assert_eq!(paths(&entries), vec![PathBuf::from(r"C:\Meridian")]);
+        assert_eq!(
+            entries[0].name.as_deref(),
+            Some("Meridian"),
+            "position and name override survive the rename"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_entry_drops_the_legacy_duplicate_when_new_already_exists() {
+        let mut entries = vec![
+            WorkspaceEntry {
+                path: PathBuf::from(r"\\?\C:\Meridian"),
+                name: None,
+            },
+            WorkspaceEntry {
+                path: PathBuf::from(r"C:\Meridian"),
+                name: Some("Meridian".into()),
+            },
+        ];
+        migrate_legacy_entry(
+            &mut entries,
+            Path::new(r"\\?\C:\Meridian"),
+            Path::new(r"C:\Meridian"),
+        );
+        assert_eq!(paths(&entries), vec![PathBuf::from(r"C:\Meridian")]);
+        assert_eq!(entries[0].name.as_deref(), Some("Meridian"));
+    }
+
+    #[test]
+    fn migrate_legacy_entry_is_a_no_op_when_legacy_is_absent() {
+        let mut entries = vec![WorkspaceEntry {
+            path: PathBuf::from(r"C:\Other"),
+            name: None,
+        }];
+        migrate_legacy_entry(
+            &mut entries,
+            Path::new(r"\\?\C:\Meridian"),
+            Path::new(r"C:\Meridian"),
+        );
+        assert_eq!(paths(&entries), vec![PathBuf::from(r"C:\Other")]);
     }
 
     #[test]

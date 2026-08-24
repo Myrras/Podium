@@ -89,6 +89,40 @@ pub fn push(app: &AppHandle, project_path: &Path, name: &str) -> Result<(), IpcE
     save(&file, &recents)
 }
 
+/// If an entry exists for `legacy` and it differs from `new`, either rename
+/// it in place to `new`, or — when `new` is already present too (both
+/// spellings were opened at some point) — drop the stale `legacy` one and
+/// keep the modern entry as-is. See `workspace::migrate_legacy_entry` for
+/// why this exists.
+fn migrate_legacy_entry(recents: &mut Vec<RecentProject>, legacy: &Path, new: &Path) {
+    if legacy == new {
+        return;
+    }
+    let Some(pos) = recents.iter().position(|r| r.path == legacy) else {
+        return;
+    };
+    if recents.iter().any(|r| r.path == new) {
+        recents.remove(pos);
+    } else {
+        recents[pos].path = new.to_path_buf();
+    }
+}
+
+/// Reconcile a project's old, pre-`dunce` recents entry (if any) onto its
+/// current canonical path. Call before `push` so a fresh `project_open` for
+/// an already-known folder doesn't leave a stale duplicate recents entry
+/// behind.
+pub fn migrate_legacy_path(app: &AppHandle, legacy: &Path, new: &Path) -> Result<(), IpcError> {
+    if legacy == new {
+        return Ok(());
+    }
+    let file = recents_path(app)?;
+    let _guard = RECENTS_LOCK.lock().expect("recents lock poisoned");
+    let mut recents = load(&file);
+    migrate_legacy_entry(&mut recents, legacy, new);
+    save(&file, &recents)
+}
+
 #[tauri::command]
 pub fn recents_list(app: AppHandle) -> Result<Vec<RecentProject>, IpcError> {
     let file = recents_path(&app)?;
@@ -105,4 +139,57 @@ pub fn recents_remove(app: AppHandle, path: String) -> Result<Vec<RecentProject>
     recents.retain(|r| r.path != Path::new(&path));
     save(&file, &recents)?;
     Ok(recents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, opened_at: u64) -> RecentProject {
+        RecentProject {
+            path: PathBuf::from(path),
+            name: "Meridian".to_string(),
+            last_opened_at: opened_at,
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_entry_renames_in_place_when_new_is_absent() {
+        let mut recents = vec![entry(r"\\?\C:\Meridian", 1)];
+        migrate_legacy_entry(
+            &mut recents,
+            Path::new(r"\\?\C:\Meridian"),
+            Path::new(r"C:\Meridian"),
+        );
+        assert_eq!(recents.len(), 1);
+        assert_eq!(recents[0].path, PathBuf::from(r"C:\Meridian"));
+    }
+
+    #[test]
+    fn migrate_legacy_entry_drops_the_legacy_duplicate_when_new_already_exists() {
+        let mut recents = vec![entry(r"\\?\C:\Meridian", 1), entry(r"C:\Meridian", 2)];
+        migrate_legacy_entry(
+            &mut recents,
+            Path::new(r"\\?\C:\Meridian"),
+            Path::new(r"C:\Meridian"),
+        );
+        assert_eq!(recents.len(), 1);
+        assert_eq!(recents[0].path, PathBuf::from(r"C:\Meridian"));
+        assert_eq!(
+            recents[0].last_opened_at, 2,
+            "the modern entry is kept as-is"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_entry_is_a_no_op_when_legacy_is_absent() {
+        let mut recents = vec![entry(r"C:\Other", 1)];
+        migrate_legacy_entry(
+            &mut recents,
+            Path::new(r"\\?\C:\Meridian"),
+            Path::new(r"C:\Meridian"),
+        );
+        assert_eq!(recents.len(), 1);
+        assert_eq!(recents[0].path, PathBuf::from(r"C:\Other"));
+    }
 }
