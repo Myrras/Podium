@@ -22,6 +22,8 @@ import {
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
+  assistantQueueMessagesGet,
+  assistantQueueMessagesSet,
   assistantQueueRemove,
   assistantResolveProposal,
   assistantSend,
@@ -77,6 +79,12 @@ interface AssistantState {
   autonomy: AutonomyMode;
   /** Whether Podium nudges the assistant unprompted; mirrors the setting. */
   proactive: boolean;
+  /**
+   * Whether a message typed while a turn is running waits its turn instead
+   * of going straight into the live session; mirrors the setting. Default
+   * off — governs only the user's own messages.
+   */
+  queueMessages: boolean;
   /** What the assistant remembers across conversations; `null` until loaded. */
   memory: string | null;
   /** Whether the stored transcript was already replayed this app run. */
@@ -106,6 +114,10 @@ interface AssistantState {
   loadProactivity: () => Promise<void>;
   /** Turn proactive nudges on or off. */
   setProactivity: (enabled: boolean) => Promise<void>;
+  /** Load the stored message-queue setting (Settings → Assistant). */
+  loadQueueMessages: () => Promise<void>;
+  /** Turn the message queue on or off. */
+  setQueueMessages: (enabled: boolean) => Promise<void>;
   /** Confirm or reject a proposed action. */
   resolveProposal: (id: string, approved: boolean) => Promise<void>;
   /** Change a waiting user message's text before it is delivered. */
@@ -146,6 +158,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   activity: null,
   autonomy: "confirm-destructive",
   proactive: true,
+  queueMessages: false,
   memory: null,
   hydrated: false,
   pending: [],
@@ -270,6 +283,25 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     } catch (e) {
       set((s) => ({
         proactive: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  loadQueueMessages: async () => {
+    try {
+      set({ queueMessages: await assistantQueueMessagesGet() });
+    } catch {
+      // The panel still works on the default; the backend stays the truth.
+    }
+  },
+  setQueueMessages: async (enabled) => {
+    const previous = get().queueMessages;
+    set({ queueMessages: enabled });
+    try {
+      set({ queueMessages: await assistantQueueMessagesSet(enabled) });
+    } catch (e) {
+      set((s) => ({
+        queueMessages: previous,
         messages: [...s.messages, message("notice", toIpcError(e).message)],
       }));
     }

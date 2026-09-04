@@ -70,6 +70,10 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
       return Promise.resolve(true);
     case "assistant_proactivity_set":
       return Promise.resolve((args as { enabled: boolean }).enabled);
+    case "assistant_queue_messages_get":
+      return Promise.resolve(false);
+    case "assistant_queue_messages_set":
+      return Promise.resolve((args as { enabled: boolean }).enabled);
     default:
       return Promise.resolve(null);
   }
@@ -206,6 +210,22 @@ describe("SettingsModal — Assistant tab", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("assistant_proactivity_set", {
         enabled: false,
+      }),
+    );
+  });
+
+  it("saves the message-queue toggle, default off", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Wait for a reply before sending your next message",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "false"); // default off
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_queue_messages_set", {
+        enabled: true,
       }),
     );
   });

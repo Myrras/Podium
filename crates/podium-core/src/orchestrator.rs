@@ -227,7 +227,8 @@ impl Orchestrator {
     /// first use. Replies arrive as [`PodiumEvent::AssistantEvent`]s.
     pub async fn assistant_send(&self, text: &str) -> CoreResult<()> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        self.assistant.send(text, mcp).await
+        let queue_messages = self.agent_settings.get().assistant.queue_messages;
+        self.assistant.send(text, mcp, queue_messages).await
     }
 
     /// The persisted chat rows the panel replays after a restart.
@@ -280,6 +281,23 @@ impl Orchestrator {
             .set_assistant_proactive(enabled)?
             .assistant
             .proactive)
+    }
+
+    /// Whether a message typed while a turn is running waits its turn
+    /// (queued) instead of going straight into the live session (Settings →
+    /// Assistant). Default off — governs only the user's own messages; a
+    /// proactivity nudge or a proposal-outcome notice always queues.
+    pub fn assistant_queue_messages(&self) -> bool {
+        self.agent_settings.get().assistant.queue_messages
+    }
+
+    /// Turn the message queue on or off; returns what was stored.
+    pub fn set_assistant_queue_messages(&self, enabled: bool) -> CoreResult<bool> {
+        Ok(self
+            .agent_settings
+            .set_assistant_queue_messages(enabled)?
+            .assistant
+            .queue_messages)
     }
 
     /// Hand the assistant something Podium noticed. Delivered to a live

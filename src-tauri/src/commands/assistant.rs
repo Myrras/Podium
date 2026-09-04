@@ -1,9 +1,9 @@
 //! Personal-assistant commands: sending a turn, replaying the stored
-//! transcript, starting over, its memory, the autonomy and proactivity
-//! settings, deciding on a proposed action, and managing the pending-input
-//! queue (edit/remove a waiting message, interrupt the running turn). Replies
-//! (and the outcome of a proposal, and queue changes) stream back as global
-//! `assistant:event` events (see `events.rs`).
+//! transcript, starting over, its memory, the autonomy, proactivity and
+//! message-queue settings, deciding on a proposed action, and managing the
+//! pending-input queue (edit/remove a waiting message, interrupt the running
+//! turn). Replies (and the outcome of a proposal, and queue changes) stream
+//! back as global `assistant:event` events (see `events.rs`).
 
 use tauri::State;
 
@@ -83,6 +83,23 @@ pub async fn assistant_proactivity_set(
     enabled: bool,
 ) -> Result<bool, IpcError> {
     Ok(state.orchestrator.set_assistant_proactivity(enabled)?)
+}
+
+/// Whether a message typed while a turn is running waits its turn (queued)
+/// instead of going straight into the live session. Governs only the user's
+/// own messages.
+#[tauri::command]
+pub async fn assistant_queue_messages_get(state: State<'_, AppState>) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.assistant_queue_messages())
+}
+
+/// Turn the message queue on or off; returns what was stored.
+#[tauri::command]
+pub async fn assistant_queue_messages_set(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.set_assistant_queue_messages(enabled)?)
 }
 
 /// Confirm (`approved`) or reject one proposed action. A confirmed proposal

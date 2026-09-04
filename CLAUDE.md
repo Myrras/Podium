@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 29 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **73 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **75 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with edit/remove and an interrupt control while a turn
   runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 73 commands.
+  IPC wrappers over all 75 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -355,12 +355,21 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   **Message queue**: only one turn is ever in flight. `AssistantManager`
   pairs the session with an `in_flight` flag and one
   `VecDeque<PendingInput>`, all under the *same* lock — so a queued item can
-  never slip past a turn that starts between two lock acquisitions. All four
-  writers into a live session — the user's own turn (`send`), the
-  proactivity/`report_to_assistant` nudge drain (`nudge`), and a proposal
-  outcome (`notify`) — route through one `deliver_or_queue`: idle with
+  never slip past a turn that starts between two lock acquisitions. The
+  proactivity/`report_to_assistant` nudge drain (`nudge`) and a proposal
+  outcome (`notify`) always route through one `deliver_or_queue`: idle with
   nothing already ahead of it → written immediately, exactly as its caller
-  already expects; otherwise it waits, FIFO. `TurnEnd` (`drain_next`)
+  already expects; otherwise it waits, FIFO. Whether the user's own turn
+  (`send`) does too is the `queue_messages` setting (Settings → Assistant,
+  `assistant_queue_messages_get`/`_set`, default **off**): off, a message
+  typed mid-turn goes straight into the live session as it did before this
+  queue existed — possibly landing mid-answer — unless something is already
+  fairly waiting ahead of it (a nudge queued while nobody was chatting, or a
+  message accepted before the setting was flipped off), in which case it
+  still falls in line rather than cutting ahead; on, it always waits its
+  turn like everything else. Flipping the setting mid-turn never touches
+  what is already queued — only where the *next* user message goes.
+  `TurnEnd` (`drain_next`)
   delivers exactly one waiting item as its own turn — never merged — and a
   `TurnEnd` carrying an error still advances the queue. Only a *user*
   message is editable/removable (`assistant_queue_edit` /
@@ -489,6 +498,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
 | `assistant_proactivity_get` | –                                       | `boolean`         |
 | `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
+| `assistant_queue_messages_get` | –                                    | `boolean`         |
+| `assistant_queue_messages_set` | `{ enabled }`                        | `boolean`         |
 | `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |
 | `assistant_queue_edit`  | `{ id, text }`                              | –                 |
 | `assistant_queue_remove` | `{ id }`                                   | –                 |

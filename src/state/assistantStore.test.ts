@@ -7,6 +7,10 @@ vi.mock("../ipc/commands", () => ({
   assistantProactivitySet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
   ),
+  assistantQueueMessagesGet: vi.fn(() => Promise.resolve(false)),
+  assistantQueueMessagesSet: vi.fn((enabled: boolean) =>
+    Promise.resolve(enabled),
+  ),
   assistantQueueEdit: vi.fn(() => Promise.resolve()),
   assistantQueueRemove: vi.fn(() => Promise.resolve()),
   assistantInterrupt: vi.fn(() => Promise.resolve()),
@@ -25,6 +29,8 @@ import {
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
+  assistantQueueMessagesGet,
+  assistantQueueMessagesSet,
   assistantQueueRemove,
   assistantSend,
 } from "../ipc/commands";
@@ -39,6 +45,11 @@ describe("assistantStore", () => {
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
       Promise.resolve(enabled),
     );
+    vi.mocked(assistantQueueMessagesGet).mockClear();
+    vi.mocked(assistantQueueMessagesSet).mockClear();
+    vi.mocked(assistantQueueMessagesSet).mockImplementation((enabled) =>
+      Promise.resolve(enabled),
+    );
     vi.mocked(assistantQueueEdit).mockClear();
     vi.mocked(assistantQueueEdit).mockResolvedValue(undefined);
     vi.mocked(assistantQueueRemove).mockClear();
@@ -50,6 +61,7 @@ describe("assistantStore", () => {
       busy: false,
       activity: null,
       proactive: true,
+      queueMessages: false,
       pending: [],
     });
   });
@@ -124,6 +136,26 @@ describe("assistantStore", () => {
     });
     await useAssistantStore.getState().setProactivity(true);
     expect(useAssistantStore.getState().proactive).toBe(false);
+    const msgs = useAssistantStore.getState().messages;
+    const last = msgs[msgs.length - 1];
+    expect(last?.text).toBe("disk is full");
+  });
+
+  it("mirrors the queue-messages setting and rolls back a failed save", async () => {
+    await useAssistantStore.getState().loadQueueMessages();
+    expect(assistantQueueMessagesGet).toHaveBeenCalled();
+    expect(useAssistantStore.getState().queueMessages).toBe(false);
+
+    await useAssistantStore.getState().setQueueMessages(true);
+    expect(assistantQueueMessagesSet).toHaveBeenCalledWith(true);
+    expect(useAssistantStore.getState().queueMessages).toBe(true);
+
+    vi.mocked(assistantQueueMessagesSet).mockRejectedValueOnce({
+      kind: "io",
+      message: "disk is full",
+    });
+    await useAssistantStore.getState().setQueueMessages(false);
+    expect(useAssistantStore.getState().queueMessages).toBe(true);
     const msgs = useAssistantStore.getState().messages;
     const last = msgs[msgs.length - 1];
     expect(last?.text).toBe("disk is full");

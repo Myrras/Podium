@@ -263,7 +263,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 /**
  * Assistant tab: the same autonomy setting the chat panel's header exposes
  * (both mirror the one persisted value), plus whether Podium may nudge the
- * assistant unprompted.
+ * assistant unprompted, and whether a message you send mid-turn waits its
+ * turn or goes straight in.
  */
 function AssistantTab() {
   const autonomy = useAssistantStore((s) => s.autonomy);
@@ -272,12 +273,16 @@ function AssistantTab() {
   const proactive = useAssistantStore((s) => s.proactive);
   const setProactivity = useAssistantStore((s) => s.setProactivity);
   const loadProactivity = useAssistantStore((s) => s.loadProactivity);
+  const queueMessages = useAssistantStore((s) => s.queueMessages);
+  const setQueueMessages = useAssistantStore((s) => s.setQueueMessages);
+  const loadQueueMessages = useAssistantStore((s) => s.loadQueueMessages);
   const newConversation = useAssistantStore((s) => s.newConversation);
 
   useEffect(() => {
     void loadAutonomy();
     void loadProactivity();
-  }, [loadAutonomy, loadProactivity]);
+    void loadQueueMessages();
+  }, [loadAutonomy, loadProactivity, loadQueueMessages]);
 
   return (
     <>
@@ -307,6 +312,16 @@ function AssistantTab() {
           help="When on, it reports agents that finished, crashed or look stuck, sweeps for lingering to-dos, and gives a day-start summary."
           value={proactive}
           onChange={(enabled) => void setProactivity(enabled)}
+        />
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Message queue</h3>
+        <SettingToggle
+          label="Wait for a reply before sending your next message"
+          help="Off: a message you send while it is answering goes straight in and may land mid-answer. On: it waits its turn and is sent once the current reply ends."
+          value={queueMessages}
+          onChange={(enabled) => void setQueueMessages(enabled)}
         />
       </section>
 

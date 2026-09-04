@@ -647,6 +647,8 @@ async fn to_dos_left_open_are_swept_into_the_chat() {
 #[tokio::test]
 async fn queued_messages_are_delivered_one_per_turn_in_order() {
     let (orch, _dir) = setup(ECHOING_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
     let mut rx = orch.subscribe_events();
 
     orch.assistant_send("first").await.expect("send first");
@@ -686,6 +688,8 @@ async fn queued_messages_are_delivered_one_per_turn_in_order() {
 #[tokio::test]
 async fn a_turn_that_ends_in_error_still_advances_the_queue() {
     let (orch, _dir) = setup(ERRORS_ONCE_THEN_OK_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
     let mut rx = orch.subscribe_events();
 
     orch.assistant_send("first").await.expect("send first");
@@ -712,6 +716,8 @@ async fn a_turn_that_ends_in_error_still_advances_the_queue() {
 async fn interrupt_stops_the_turn_and_delivers_the_queued_message_right_away() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = setup_in(dir.path(), HANGING_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
     let mut rx = orch.subscribe_events();
 
     orch.assistant_send("hang please").await.expect("send");
@@ -755,6 +761,8 @@ async fn interrupt_with_nothing_running_does_nothing() {
 #[tokio::test]
 async fn a_session_that_crashes_mid_turn_reports_the_queued_message_as_undelivered() {
     let (orch, _dir) = setup(DIES_MID_TURN_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
     let mut rx = orch.subscribe_events();
 
     orch.assistant_send("first").await.expect("send first");
@@ -776,6 +784,8 @@ async fn a_session_that_crashes_mid_turn_reports_the_queued_message_as_undeliver
 #[tokio::test]
 async fn editing_and_removing_a_waiting_message_changes_what_is_delivered() {
     let (orch, _dir) = setup(ECHOING_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
     let mut rx = orch.subscribe_events();
 
     orch.assistant_send("first").await.expect("send first");
@@ -815,6 +825,93 @@ async fn editing_and_removing_a_waiting_message_changes_what_is_delivered() {
     assert!(!turn2
         .iter()
         .any(|e| matches!(e, AssistantEvent::Message { text } if text.contains("remove me"))));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn queue_off_writes_a_second_message_straight_into_a_busy_session() {
+    // Queuing is off by default — the point of this test: no explicit
+    // `set_assistant_queue_messages` call.
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+
+    orch.assistant_send("first").await.expect("send first");
+    // Busy the instant `send` returns — with the queue off this still goes
+    // straight into the live session instead of waiting for `first` to end.
+    orch.assistant_send("second").await.expect("send second");
+
+    let user_rows: Vec<_> = orch
+        .assistant_transcript()
+        .into_iter()
+        .filter(|r| r.role == TranscriptRole::User)
+        .map(|r| r.text)
+        .collect();
+    assert_eq!(
+        user_rows,
+        vec!["first".to_string(), "second".to_string()],
+        "both must land in the session immediately, not one held in the queue"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn queue_off_still_queues_a_nudge_sent_while_busy() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    // A nudge is Podium's own input, not the user's — it queues regardless
+    // of the (default-off) message-queue setting, which governs only what
+    // the user types.
+    orch.assistant_nudge("[Podium] an agent finished".to_string())
+        .await;
+
+    let events = collect_until(
+        &mut rx,
+        |e| matches!(e, AssistantEvent::QueueChanged { items } if items.len() == 1),
+    )
+    .await;
+    assert!(
+        matches!(
+            events.last(),
+            Some(AssistantEvent::QueueChanged { items })
+                if items[0].text.contains("an agent finished")
+        ),
+        "{events:?}"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn flipping_the_queue_setting_off_mid_turn_still_drains_what_was_already_queued() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    orch.assistant_send("second").await.expect("queue second");
+
+    // Flip off mid-turn: only a *new* send should bypass the queue from now
+    // on — "second" was already accepted into it and must still be
+    // delivered.
+    orch.set_assistant_queue_messages(false)
+        .expect("disable queue");
+
+    let turn1 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn1.contains(&AssistantEvent::Message {
+        text: "echo:first".to_string()
+    }));
+
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn2.contains(&AssistantEvent::QueueItemDelivered {
+        text: "second".to_string()
+    }));
+    assert!(turn2.contains(&AssistantEvent::Message {
+        text: "echo:second".to_string()
+    }));
 
     orch.shutdown().await;
 }

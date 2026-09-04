@@ -24,12 +24,22 @@
 //! `[Podium]` turn into the session (see [`crate::proactivity`] for what
 //! triggers one).
 //!
-//! Only one turn is ever in flight at a time. The user's own messages, a
-//! nudge, and a proposal-outcome notice (`notify`) all route through one
-//! pending-input queue: a message written while a turn is running (or before
-//! any session exists, for a nudge) waits instead of interleaving into the
-//! turn in progress, and is delivered as its own turn once the current one
+//! Only one turn is ever in flight at a time. A nudge and a proposal-outcome
+//! notice (`notify`) — Podium's own inputs — always route through one
+//! pending-input queue: written while a turn is running (or before any
+//! session exists, for a nudge) they wait instead of interleaving into the
+//! turn in progress, and are delivered as their own turn once the current one
 //! ends (`TurnEnd`) — one waiting item per turn, oldest first, never merged.
+//! Whether the user's *own* messages join that same queue is the
+//! `queue_messages` setting (Settings → Assistant, default **off**): off, a
+//! message typed mid-turn goes straight into the live session as it always
+//! did before this queue existed, possibly interleaving into the answer; on,
+//! it waits its turn like everything else. Either way, a new user message
+//! never cuts ahead of whatever is already fairly waiting (a nudge queued
+//! while nobody was chatting, or a message queued before the setting was
+//! flipped) — "off" only stops a *new* message from joining that line, it
+//! does not let one skip it. Flipping the setting never affects items
+//! already waiting — only where a *new* user message goes.
 //! [`AssistantManager::interrupt`] cuts a running turn short and delivers the
 //! next waiting item immediately rather than for a `TurnEnd` that would never
 //! come. The queue is not persisted: a session ending for any reason (crash,
@@ -141,6 +151,15 @@ pub struct AssistantSettings {
     /// on — also for an `agents.json` written before this field existed.
     #[serde(default = "default_true")]
     pub proactive: bool,
+    /// Whether a message typed while a turn is running waits its turn
+    /// (queued, FIFO) instead of going straight into the live session.
+    /// Defaults to **off** — the behaviour from before this queue existed —
+    /// so an `agents.json` written before this field existed reads the same
+    /// way it always ran. Governs only the user's own messages: a
+    /// proactivity nudge or a proposal-outcome notice always queues,
+    /// regardless of this setting.
+    #[serde(default)]
+    pub queue_messages: bool,
 }
 
 fn default_true() -> bool {
@@ -152,6 +171,7 @@ impl Default for AssistantSettings {
         Self {
             autonomy: AutonomyMode::default(),
             proactive: true,
+            queue_messages: false,
         }
     }
 }
@@ -640,11 +660,20 @@ impl AssistantManager {
     }
 
     /// Send a chat turn, spawning the session on first use (or after it
-    /// died). Delivered immediately if the session is idle; queued (see the
-    /// module docs) if a turn is already running. `mcp` is how the new
-    /// session reaches Podium's own MCP endpoint; a session spawned before
-    /// the server is up simply has no Podium tools.
-    pub async fn send(&self, text: &str, mcp: Option<McpConnectInfo>) -> CoreResult<()> {
+    /// died). `mcp` is how the new session reaches Podium's own MCP
+    /// endpoint; a session spawned before the server is up simply has no
+    /// Podium tools. With `queue_messages` on, delivered immediately if the
+    /// session is idle and queued (see the module docs) otherwise; off (the
+    /// default), it goes straight into the live session whenever nothing is
+    /// already fairly waiting ahead of it — exactly as it did before the
+    /// queue existed. Either way, the setting governs only the user's own
+    /// messages, never a nudge or a proposal-outcome notice.
+    pub async fn send(
+        &self,
+        text: &str,
+        mcp: Option<McpConnectInfo>,
+        queue_messages: bool,
+    ) -> CoreResult<()> {
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -671,7 +700,15 @@ impl AssistantManager {
             kind: PendingKind::User,
             text: text.to_string(),
         };
-        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
+        // Off still respects whatever is already fairly waiting (e.g. a
+        // nudge queued while nobody was chatting) — it only stops a *new*
+        // message from joining the back of that line. Only with nothing
+        // ahead of it does it bypass straight to the session.
+        if queue_messages || !state.pending.is_empty() {
+            deliver_or_queue(&mut state, item, &self.store, &self.events).await;
+        } else {
+            deliver_bypassing_queue(&mut state, item, &self.store, &self.events).await;
+        }
         Ok(())
     }
 
@@ -1042,6 +1079,34 @@ impl AssistantManager {
             quiet_exit,
         })
     }
+}
+
+/// Write `item` straight into the live session, regardless of whether a turn
+/// is already running — the behaviour from before the pending-input queue
+/// existed, kept as the default (`queue_messages` off) for the user's own
+/// messages. Callers only reach this with `state.pending` already empty, so
+/// there is nothing to queue-jump: an in-progress turn's output can
+/// interleave with this new one, which is the trade-off of the setting being
+/// off. A write that fails, or no live session at all, falls back to queuing
+/// rather than losing the item outright.
+async fn deliver_bypassing_queue(
+    state: &mut SessionState,
+    item: PendingInput,
+    store: &AssistantStore,
+    events: &EventBus,
+) {
+    if let Some(session) = state.session.as_mut() {
+        match write_turn(session, &item.text).await {
+            Ok(()) => {
+                state.in_flight = true;
+                record_delivered(store, events, &item);
+                return;
+            }
+            Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
+        }
+    }
+    state.pending.push_back(item);
+    publish_queue(state, events);
 }
 
 /// Deliver `item` right now if the session is idle and nothing is already
@@ -1540,7 +1605,10 @@ mod tests {
     #[tokio::test]
     async fn blank_messages_are_rejected() {
         let manager = AssistantManager::new(EventBus::new());
-        let err = manager.send("   ", None).await.expect_err("blank rejected");
+        let err = manager
+            .send("   ", None, false)
+            .await
+            .expect_err("blank rejected");
         assert!(matches!(err, CoreError::InvalidInput(_)));
     }
 
@@ -1727,6 +1795,16 @@ mod tests {
             serde_json::from_str(r#"{"autonomy":"full"}"#).expect("legacy settings");
         assert!(legacy.proactive);
         assert_eq!(legacy.autonomy, AutonomyMode::Full);
+    }
+
+    #[test]
+    fn queue_messages_defaults_off_including_for_older_settings_files() {
+        assert!(!AssistantSettings::default().queue_messages);
+        // An `agents.json` written before the field existed must read as the
+        // pre-queue behaviour, not as "the user turned queuing on".
+        let legacy: AssistantSettings =
+            serde_json::from_str(r#"{"autonomy":"full"}"#).expect("legacy settings");
+        assert!(!legacy.queue_messages);
     }
 
     #[test]

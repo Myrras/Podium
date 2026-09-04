@@ -618,6 +618,20 @@ export function assistantProactivitySet(enabled: boolean): Promise<boolean> {
 }
 
 /**
+ * Whether a message typed while a turn is running waits its turn (queued)
+ * instead of going straight into the live session. Governs only the user's
+ * own messages.
+ */
+export function assistantQueueMessagesGet(): Promise<boolean> {
+  return invoke("assistant_queue_messages_get");
+}
+
+/** Turn the message queue on or off; returns what was stored. */
+export function assistantQueueMessagesSet(enabled: boolean): Promise<boolean> {
+  return invoke("assistant_queue_messages_set", { enabled });
+}
+
+/**
  * Confirm or reject one action the assistant proposed. A confirmed proposal
  * runs right away; the outcome streams back as `assistant:event`.
  */

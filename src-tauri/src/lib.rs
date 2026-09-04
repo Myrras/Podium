@@ -222,6 +222,8 @@ pub fn run() {
             commands::assistant::assistant_autonomy_set,
             commands::assistant::assistant_proactivity_get,
             commands::assistant::assistant_proactivity_set,
+            commands::assistant::assistant_queue_messages_get,
+            commands::assistant::assistant_queue_messages_set,
             commands::assistant::assistant_resolve_proposal,
             commands::assistant::assistant_queue_edit,
             commands::assistant::assistant_queue_remove,
