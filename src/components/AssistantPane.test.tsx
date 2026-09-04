@@ -285,6 +285,23 @@ describe("AssistantPane", () => {
       expect(screen.getByText("list todos")).toBeInTheDocument();
     });
 
+    it("demotes a replayed nudge just like a live one", async () => {
+      vi.mocked(assistantTranscript).mockResolvedValue([
+        {
+          role: "nudge",
+          text: '[Podium] The agent "docs" finished (exit code 0). Check what it did and tell the user.',
+          at: "2026-01-02T09:00:00Z",
+        },
+      ]);
+
+      render(<AssistantPane />);
+
+      expect(
+        await screen.findByText("Podium nudged the assistant"),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Check what it did/)).not.toBeInTheDocument();
+    });
+
     it("offers no new-conversation control — resetting lives in Settings", async () => {
       vi.mocked(assistantTranscript).mockResolvedValue([
         { role: "user", text: "old turn", at: "2026-01-02T09:00:00Z" },

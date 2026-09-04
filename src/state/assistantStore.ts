@@ -38,10 +38,9 @@ export type ChatRole =
    * agent finished, a to-do is lingering, …) carrying instruction text meant
    * for the assistant to act on. Kept out of `"notice"` so the log never
    * renders it as a message written to the user; it gets a collapsed, muted
-   * marker instead. Only live `AssistantEvent::Notice` events are nudges —
-   * replayed transcript rows stay `"notice"` because the backend also
-   * collapses tool-failure rows into the same persisted role, so a nudge
-   * can't be told apart from a real failure after a restart.
+   * marker instead. The backend persists nudges under their own
+   * `TranscriptRole::Nudge`, distinct from a real notice (e.g. a tool
+   * failure), so a replayed nudge renders the same way after a restart.
    */
   | "nudge";
 

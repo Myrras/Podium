@@ -243,6 +243,10 @@ pub enum TranscriptRole {
     Tool,
     /// Something Podium reports, e.g. an action that failed.
     Notice,
+    /// A proactivity nudge Podium sent the assistant (an internal
+    /// instruction, not a user-facing notice). Kept distinct from `Notice`
+    /// so a replayed row renders the same muted way a live nudge does.
+    Nudge,
 }
 
 /// One persisted chat row, replayed into the panel after a restart.
@@ -388,7 +392,7 @@ impl AssistantStore {
             AssistantEvent::ToolFailed { message } => {
                 self.append(TranscriptRole::Notice, message.clone())
             }
-            AssistantEvent::Notice { text } => self.append(TranscriptRole::Notice, text.clone()),
+            AssistantEvent::Notice { text } => self.append(TranscriptRole::Nudge, text.clone()),
             // Proposals, turn ends and exits are runtime signals, not chat.
             _ => {}
         }
@@ -1410,11 +1414,14 @@ mod tests {
     }
 
     #[test]
-    fn a_notice_is_recorded_as_what_podium_said() {
+    fn a_nudge_is_recorded_distinctly_from_a_real_notice() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(dir.path());
         store.record(&AssistantEvent::Notice {
             text: "[Podium] The agent \"fix-login\" finished.".to_string(),
+        });
+        store.record(&AssistantEvent::ToolFailed {
+            message: "project not found".to_string(),
         });
         let rows: Vec<_> = store
             .transcript()
@@ -1423,10 +1430,14 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            vec![(
-                TranscriptRole::Notice,
-                "[Podium] The agent \"fix-login\" finished.".to_string()
-            )]
+            vec![
+                (
+                    TranscriptRole::Nudge,
+                    "[Podium] The agent \"fix-login\" finished.".to_string()
+                ),
+                (TranscriptRole::Notice, "project not found".to_string()),
+            ],
+            "a nudge must replay as muted (Nudge), a real tool failure as a visible Notice"
         );
     }
 

@@ -355,7 +355,7 @@ export type AssistantEvent =
   | { type: "exited" };
 
 /** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */
-export type TranscriptRole = "user" | "assistant" | "tool" | "notice";
+export type TranscriptRole = "user" | "assistant" | "tool" | "notice" | "nudge";
 
 /**
  * One persisted chat row (`podium_core::TranscriptEntry`), replayed into the
