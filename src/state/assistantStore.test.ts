@@ -81,13 +81,15 @@ describe("assistantStore", () => {
     expect(useAssistantStore.getState().busy).toBe(false);
   });
 
-  it("shows a proactive nudge as Podium speaking in the log", () => {
+  it("keeps a proactive nudge out of the visible notice role", () => {
     useAssistantStore
       .getState()
       .apply({ type: "notice", text: '[Podium] The agent "docs" finished.' });
 
     const [row] = useAssistantStore.getState().messages;
-    expect(row.role).toBe("notice");
+    // "nudge", not "notice": it's internal instruction text for the
+    // assistant, not a message written to the user (see AssistantPane).
+    expect(row.role).toBe("nudge");
     expect(row.text).toContain("finished");
   });
 

@@ -22,10 +22,11 @@ import { Markdown } from "./Markdown";
 import { AssistantIcon, CloseIcon, MemoryIcon, SendIcon } from "./icons";
 import styles from "./AssistantPane.module.css";
 
-const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
-  full: "Act on its own",
-  "confirm-destructive": "Confirm destructive",
-  "propose-all": "Propose everything",
+/** Shared with the Settings → Assistant tab, which mirrors this same picker. */
+export const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
+  full: "Do everything itself",
+  "confirm-destructive": "Ask before risky actions",
+  "propose-all": "Ask before every action",
 };
 
 /** `set_todo_archived` → `set todo archived`, for the action cards. */
@@ -139,6 +140,10 @@ export function AssistantPane() {
               actionLabel(m.text)
             ) : m.proposal ? (
               <ProposalCard proposal={m.proposal} />
+            ) : m.role === "nudge" ? (
+              // Podium spoke to the *assistant*, not the user: a discreet
+              // marker, not the internal instruction text (hover for it).
+              <span title={m.text}>Podium nudged the assistant</span>
             ) : (
               m.text
             )}

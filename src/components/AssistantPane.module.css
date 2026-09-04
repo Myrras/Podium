@@ -127,6 +127,11 @@
   gap: var(--sp-2);
   font-size: var(--fs-md);
   line-height: 1.5;
+  /* The transcript is read-only prose — the user should be able to select
+     and copy it, unlike the app's chrome (sidebar rows, headers). Buttons
+     nested in here (proposal Confirm/Reject) stay unselectable via the
+     global `button` rule. */
+  user-select: text;
 }
 
 .empty {
@@ -239,6 +244,15 @@
   background: var(--danger-bg);
   color: var(--text);
   font-size: var(--fs-sm);
+}
+
+/* Podium nudging the assistant, not the user: a quiet aside, not a message —
+   no background, small and muted, unlike `[data-role="notice"]` above. */
+.message[data-role="nudge"] {
+  padding: 0 var(--sp-2);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-style: italic;
 }
 
 .working {

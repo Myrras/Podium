@@ -12,6 +12,7 @@ import { Modal } from "./Modal";
 import { useThemeStore, type ThemeMode } from "../state/themeStore";
 import { useSettingsStore } from "../state/settingsStore";
 import { useAssistantStore } from "../state/assistantStore";
+import { AUTONOMY_LABELS } from "./AssistantPane";
 import {
   agentSettingsGet,
   agentSettingsSetAdapter,
@@ -259,12 +260,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   );
 }
 
-const AUTONOMY_MODES: { value: AutonomyMode; label: string }[] = [
-  { value: "full", label: "Act on its own" },
-  { value: "confirm-destructive", label: "Confirm destructive actions" },
-  { value: "propose-all", label: "Propose everything" },
-];
-
 /**
  * Assistant tab: the same autonomy setting the chat panel's header exposes
  * (both mirror the one persisted value), plus whether Podium may nudge the
@@ -297,9 +292,9 @@ function AssistantTab() {
           value={autonomy}
           onChange={(e) => void setAutonomy(e.target.value as AutonomyMode)}
         >
-          {AUTONOMY_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
+          {Object.entries(AUTONOMY_LABELS).map(([mode, label]) => (
+            <option key={mode} value={mode}>
+              {label}
             </option>
           ))}
         </select>

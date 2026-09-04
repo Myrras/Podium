@@ -141,6 +141,23 @@ describe("AssistantPane", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
+  it("demotes a proactive nudge instead of showing it as a message to the user", () => {
+    render(<AssistantPane />);
+
+    act(() => {
+      useAssistantStore.getState().apply({
+        type: "notice",
+        text: '[Podium] The agent "docs" in project "Elements" finished (exit code 0). Check what it did and tell the user.',
+      });
+    });
+
+    // A discreet marker, not the raw internal instruction text.
+    expect(
+      screen.getByText("Podium nudged the assistant"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Check what it did/)).not.toBeInTheDocument();
+  });
+
   it("shows the running tool in the busy row while it is active", async () => {
     const user = userEvent.setup();
     render(<AssistantPane />);

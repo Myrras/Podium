@@ -27,7 +27,23 @@ import {
 } from "../ipc/commands";
 import type { AssistantEvent, AutonomyMode } from "../ipc/types";
 
-export type ChatRole = "user" | "assistant" | "tool" | "notice" | "proposal";
+export type ChatRole =
+  | "user"
+  | "assistant"
+  | "tool"
+  | "notice"
+  | "proposal"
+  /**
+   * Podium spoke to the *assistant*, not the user — an internal nudge (an
+   * agent finished, a to-do is lingering, …) carrying instruction text meant
+   * for the assistant to act on. Kept out of `"notice"` so the log never
+   * renders it as a message written to the user; it gets a collapsed, muted
+   * marker instead. Only live `AssistantEvent::Notice` events are nudges —
+   * replayed transcript rows stay `"notice"` because the backend also
+   * collapses tool-failure rows into the same persisted role, so a nudge
+   * can't be told apart from a real failure after a restart.
+   */
+  | "nudge";
 
 /** A gated action awaiting (or carrying) the user's decision. */
 export interface ChatProposal {
@@ -258,10 +274,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             activity: event.name,
             messages: [...s.messages, message("tool", event.name)],
           };
-        // Podium speaking: shown as-is, so an unprompted reply has a reason.
+        // Podium nudging the assistant, not the user: demoted so it never
+        // reads as a message written to them (see the `"nudge"` ChatRole doc).
         case "notice":
           return {
-            messages: [...s.messages, message("notice", event.text)],
+            messages: [...s.messages, message("nudge", event.text)],
           };
         case "toolFailed":
           return {
