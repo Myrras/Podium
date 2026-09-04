@@ -1,4 +1,4 @@
-//! The 27 MCP tools Podium exposes to agents — all thin calls into
+//! The 29 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
 //!
 //! The same surface serves the personal assistant, on its own endpoint
@@ -123,6 +123,15 @@ pub struct RenameSessionParams {
     /// The new session name (must not be blank). Keep it short and
     /// descriptive of what the session is about.
     pub name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReportToAssistantParams {
+    /// Your own agent process UUID — the value of the `PODIUM_PROCESS_ID`
+    /// environment variable set for you at launch.
+    pub process_id: String,
+    /// Short summary of what you did and what is left — no code or diffs.
+    pub summary: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -583,6 +592,39 @@ impl PodiumTools {
                 .rename_process(process_id, &p.name)
                 .map_err(core_error)?,
         )
+    }
+
+    #[tool(
+        description = "Report back to the personal assistant when you finish your work, or when you are blocked and need the user. Pass your own process_id (the PODIUM_PROCESS_ID environment variable) and a short summary of what you did and what is left — no code or diffs. Delivered like a proactivity nudge: straight into a live assistant conversation, or queued for the user's next turn if none is running."
+    )]
+    pub async fn report_to_assistant(
+        &self,
+        Parameters(p): Parameters<ReportToAssistantParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let process_id = parse_process_id(&p.process_id)?;
+        let summary = p.summary.trim();
+        if summary.is_empty() {
+            return Err(McpError::invalid_params(
+                "summary must not be blank".to_string(),
+                None,
+            ));
+        }
+        let process = self.find_process(process_id)?;
+        let project = self
+            .orchestrator
+            .list_projects()
+            .into_iter()
+            .find(|proj| proj.id == process.project_id)
+            .map(|proj| proj.name)
+            .unwrap_or_else(|| "a closed project".to_string());
+        self.orchestrator
+            .assistant_nudge(format!(
+                "[Podium] The agent \"{}\" in project \"{project}\" reports: {summary} Tell \
+                 the user in a line or two.",
+                process.name
+            ))
+            .await;
+        Ok(text_result("Reported to the assistant.".to_string()))
     }
 
     #[tool(

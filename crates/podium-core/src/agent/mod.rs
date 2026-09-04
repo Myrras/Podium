@@ -184,7 +184,10 @@ fn identity_prompt(ctx: &AgentLaunchCtx) -> String {
     let mut prompt = format!(
         "You run as a Podium-managed agent: your process_id is {} and your \
          project_id is {}. Use these ids for Podium MCP tools that ask for \
-         them (rename_session, assign_todo).",
+         them (rename_session, assign_todo, report_to_assistant). When you \
+         finish your work, or when you are blocked and need the user, call \
+         the podium report_to_assistant tool with a short summary of what \
+         you did and what is left.",
         ctx.process_id, ctx.project_id
     );
     if !ctx.named {
@@ -741,6 +744,20 @@ mod tests {
         let blurb = &tokens[tokens.len() - 1];
         assert!(blurb.contains("create_worktree"));
         assert!(blurb.contains("a short name that fits the work"));
+    }
+
+    #[test]
+    fn identity_prompt_tells_agents_to_report_back_when_done() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let (plan, _, _) = plan(None, &[], Some(&mcp));
+        let tokens = split_command(&plan.command);
+        let blurb = &tokens[tokens.len() - 1];
+        assert!(blurb.contains("report_to_assistant"));
     }
 
     #[test]

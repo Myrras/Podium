@@ -8,14 +8,14 @@ use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
     CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
     ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
-    ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    ReportToAssistantParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
     UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
     Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
-    TodoId,
+    TodoId, TranscriptRole,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -1002,6 +1002,154 @@ async fn rename_session_tool_renames_the_calling_agent() {
         }))
         .await
         .is_err());
+
+    orch.shutdown().await;
+}
+
+/// A fake CLI just enough of the stream-json protocol to prove a report
+/// reaches a live assistant session: greets with an init line, then answers
+/// every stdin turn with a success result.
+#[cfg(unix)]
+const FAKE_ASSISTANT_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r _line; do
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+done
+"#;
+
+/// A fake CLI that only records that it was launched, standing in for "no
+/// session should ever be spawned just to deliver a report".
+#[cfg(unix)]
+const ARGV_RECORDING_CLAUDE: &str = "#!/bin/sh\nprintf ok > \"$(dirname \"$0\")/argv.txt\"\nsleep 5\n";
+
+#[cfg(unix)]
+fn write_fake_cli(dir: &std::path::Path, script: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-claude");
+    std::fs::write(&path, script).expect("write fake cli");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path.to_string_lossy().into_owned()
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: write_fake_cli(dir.path(), FAKE_ASSISTANT_CLAUDE),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("Login bug agent".to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn agent");
+
+    // A live conversation exists before the agent reports back.
+    orch.assistant_send("hi").await.expect("send");
+
+    tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: agent.to_string(),
+            summary: "Fixed the redirect; tests green.".to_string(),
+        }))
+        .await
+        .expect("report_to_assistant");
+
+    let transcript = orch.assistant_transcript();
+    let report = transcript
+        .iter()
+        .rev()
+        .find(|e| e.role == TranscriptRole::Nudge)
+        .expect("the report is delivered into the live session as a nudge");
+    assert!(report.text.contains("Login bug agent"), "{}", report.text);
+    assert!(
+        report.text.contains("Fixed the redirect; tests green."),
+        "{}",
+        report.text
+    );
+
+    // An unknown process cannot claim to be another agent.
+    assert!(tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: ProcessId::new().to_string(),
+            summary: "impersonation attempt".to_string(),
+        }))
+        .await
+        .is_err());
+
+    orch.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn report_to_assistant_queues_without_spawning_a_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: write_fake_cli(dir.path(), ARGV_RECORDING_CLAUDE),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("Login bug agent".to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn agent");
+
+    // No conversation is running: the report must queue, not spawn the CLI.
+    tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: agent.to_string(),
+            summary: "Blocked: need credentials.".to_string(),
+        }))
+        .await
+        .expect("report_to_assistant");
+
+    assert!(
+        !dir.path().join("argv.txt").exists(),
+        "a report must not spawn the assistant's CLI"
+    );
+    assert!(
+        orch.assistant_transcript().is_empty(),
+        "the report is queued, not yet delivered"
+    );
 
     orch.shutdown().await;
 }
@@ -2177,6 +2325,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("update_assistant_memory", false, false),
     ("create_worktree", false, false),
     ("remove_worktree", false, true),
+    ("report_to_assistant", false, false),
 ];
 
 #[tokio::test(flavor = "multi_thread")]
