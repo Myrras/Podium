@@ -7,7 +7,7 @@ use std::time::Duration;
 use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
     CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
-    ListWorktreesParams, PodiumTools, RemoveWorktreeParams, RenameSessionParams,
+    ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
     ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
     UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
 };
@@ -337,6 +337,47 @@ async fn tools_list_projects_and_read_ansi_stripped_output() {
     let text = first_text(&output);
     assert!(text.contains("red"), "output captured: {text:?}");
     assert!(!text.contains('\u{1b}'), "ANSI escapes stripped: {text:?}");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_process_tool_removes_it_from_the_list() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let pid = orch
+        .add_process(
+            project_id,
+            ProcessSpec {
+                name: "sleeper".to_string(),
+                command: "sleep 60".to_string(),
+                cwd: dir.path().to_path_buf(),
+                env: Vec::new(),
+                kind: ProcessKind::Service,
+                restart_policy: RestartPolicy::Never,
+                color: None,
+            },
+        )
+        .await
+        .expect("add process");
+
+    tools
+        .remove_process(Parameters(ProcessParams {
+            process_id: pid.to_string(),
+        }))
+        .await
+        .expect("remove_process");
+
+    assert!(
+        orch.list_processes(Some(project_id)).is_empty(),
+        "process removed from the list"
+    );
 
     orch.shutdown().await;
 }
@@ -996,6 +1037,7 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
             scratchpad_ids: None,
             worktree: None,
             worktree_name: None,
+            args: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -1256,6 +1298,7 @@ async fn spawn_agent_tool_accepts_scratchpad_ids() {
             scratchpad_ids: Some(vec![a.id.to_string(), b.id.to_string()]),
             worktree: None,
             worktree_name: None,
+            args: None,
         }))
         .await
         .expect("spawn_agent over MCP");
@@ -1525,6 +1568,50 @@ async fn spawn_agent_args_override_replaces_global_default_args() {
     orch.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_agent_tool_args_become_the_launch_args_override() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(EchoAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    tools
+        .spawn_agent(Parameters(SpawnAgentParams {
+            project_id: project_id.to_string(),
+            prompt: None,
+            name: None,
+            adapter_id: Some("echo".to_string()),
+            todo_id: None,
+            todo_ids: None,
+            scratchpad_id: None,
+            scratchpad_ids: None,
+            worktree: None,
+            worktree_name: None,
+            args: Some(vec!["--model".to_string(), "opus".to_string()]),
+        }))
+        .await
+        .expect("spawn_agent over MCP");
+
+    let id = orch
+        .list_processes(Some(project_id))
+        .into_iter()
+        .find(|p| matches!(p.kind, ProcessKind::Agent { .. }))
+        .map(|p| p.id)
+        .expect("agent process");
+    assert_eq!(
+        planned_command(&orch, project_id, id),
+        "echo-agent --model opus",
+        "the args param becomes this spawn's args_override"
+    );
+
+    orch.shutdown().await;
+}
+
 /// A throwaway git repo with one commit, identity pinned so commits work on
 /// machines without global git config.
 fn init_git_repo() -> tempfile::TempDir {
@@ -1633,6 +1720,7 @@ async fn spawn_agent_with_worktree_does_not_create_one() {
             scratchpad_ids: None,
             worktree: Some(true),
             worktree_name: Some("isolated work".to_string()),
+            args: None,
         }))
         .await
         .expect("spawn_agent with worktree over MCP");
@@ -2072,6 +2160,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("start_process", false, false),
     ("stop_process", false, true),
     ("restart_process", false, true),
+    ("remove_process", false, true),
     ("add_todo", false, false),
     ("complete_todo", false, false),
     ("update_todo", false, false),

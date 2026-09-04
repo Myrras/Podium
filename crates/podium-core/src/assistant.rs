@@ -72,7 +72,11 @@ to-do describing it and spawn an agent on that to-do, then report back. Some \
 actions need the user's confirmation: the tool then answers that a proposal is \
 awaiting them, which means a card is shown in the chat — never retry such a \
 call, just carry on and you will be told the outcome. Keep answers short and \
-concrete; the panel is narrow. What you learn about the user and their work \
+concrete; the panel is narrow. When a choice materially affects what happens \
+(e.g. which model to run a spawned agent with), ask the user in the chat \
+instead of silently picking a default. If something the user wants cannot be \
+done with the tools available, say so and ask rather than quietly doing \
+something else. What you learn about the user and their work \
 belongs in the memory below: call update_assistant_memory with the full new \
 text (it replaces what is there) whenever something is worth having next \
 time.";
@@ -93,6 +97,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
 const DESTRUCTIVE_TOOLS: &[&str] = &[
     "stop_process",
     "restart_process",
+    "remove_process",
     "set_todo_archived",
     "set_scratchpad_archived",
     "remove_scratchpad_tag",
@@ -1238,6 +1243,7 @@ mod tests {
     fn confirm_destructive_gates_only_destructive_tools() {
         let mode = AutonomyMode::ConfirmDestructive;
         assert!(requires_proposal(mode, "stop_process"));
+        assert!(requires_proposal(mode, "remove_process"));
         assert!(requires_proposal(mode, "set_todo_archived"));
         assert!(requires_proposal(mode, "remove_worktree"));
         assert!(!requires_proposal(mode, "add_todo"));

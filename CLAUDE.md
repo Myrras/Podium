@@ -53,7 +53,7 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 27 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 28 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
 - ✅ **Tauri IPC layer** (`src-tauri`): **70 commands**, per-attach terminal
@@ -105,7 +105,7 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 27 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 28 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
@@ -170,8 +170,13 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
   `get_process_output` (tail, ANSI-stripped, default 100 / max 2000 lines),
-  `spawn_agent`, `start_process`, `stop_process`, `restart_process`,
-  `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`,
+  `spawn_agent` (its `args` param sets the model/reasoning effort for that
+  agent, e.g. `["--model", "opus"]`), `start_process`, `stop_process`,
+  `restart_process`, `remove_process`,
+  `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`
+  (its `author` is rejected server-side if it impersonates the user —
+  "you"/"user"/"gebruiker", case/whitespace-insensitive — falling back to
+  `agent`, so no MCP caller can make a comment read as if the user wrote it),
   `add_todo_link` (pin an issue/PR URL to the top of a to-do),
   `set_todo_archived`, `assign_todo` (a running agent self-assigns a to-do via its
   `PODIUM_PROCESS_ID`, so the user sees who owns it — blocked if the to-do is

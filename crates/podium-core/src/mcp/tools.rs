@@ -185,6 +185,11 @@ pub struct SpawnAgentParams {
     /// Name to hand the agent for that worktree; omit to let it pick one.
     /// Ignored unless `worktree` is true.
     pub worktree_name: Option<String>,
+    /// Extra CLI args for this spawn, replacing the global default args for
+    /// just this agent (e.g. `["--model", "opus"]` or
+    /// `["--permission-mode", "plan"]`). This is how to pick the model or
+    /// reasoning effort a spawned agent runs with.
+    pub args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -336,7 +341,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Pass worktree=true to tell it to create a git worktree (via create_worktree) and work inside it, optionally with worktree_name to name it — omit the name and the agent picks one. Returns the new process snapshot."
+        description = "Spawn a new AI coding agent in a project (max 8 running agents per project). Pass todo_ids (or the single todo_id) to have it work on one or more to-dos and keep them updated; several to-dos are handed over as one combined task. Pass scratchpad_ids (or the single scratchpad_id) to have it work on one or more scratchpads instead (ignored if a to-do is also given). Pass worktree=true to tell it to create a git worktree (via create_worktree) and work inside it, optionally with worktree_name to name it — omit the name and the agent picks one. Pass args to set the model or reasoning effort for this agent, e.g. [\"--model\", \"opus\"]. Returns the new process snapshot."
     )]
     pub async fn spawn_agent(
         &self,
@@ -374,7 +379,7 @@ impl PodiumTools {
                 scratchpad_ids,
                 p.worktree.unwrap_or(false),
                 p.worktree_name,
-                None,
+                p.args,
             )
             .await
             .map_err(core_error)?;
@@ -469,6 +474,21 @@ impl PodiumTools {
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
+    }
+
+    #[tool(
+        description = "Remove a process from Podium's list (stopping it first if it is still running). Unlike stop_process, it disappears from the sidebar entirely."
+    )]
+    pub async fn remove_process(
+        &self,
+        Parameters(p): Parameters<ProcessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_process_id(&p.process_id)?;
+        self.orchestrator
+            .remove_process(id)
+            .await
+            .map_err(core_error)?;
+        Ok(text_result("removed".to_string()))
     }
 
     #[tool(description = "List a project's to-do items (id, text, done, createdAt).")]
@@ -596,7 +616,7 @@ impl PodiumTools {
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
-        let author = p.author.as_deref().unwrap_or("agent");
+        let author = comment_author(p.author.as_deref());
         json_result(
             &self
                 .orchestrator
@@ -918,6 +938,22 @@ fn core_error(e: CoreError) -> McpError {
     }
 }
 
+/// Author values an MCP caller could pass to make a to-do comment look as if
+/// the user wrote it, case/whitespace-insensitive.
+const IMPERSONATION_AUTHORS: &[&str] = &["you", "user", "gebruiker"];
+
+/// The author to record for a `comment_todo` call: `author` as given, unless
+/// it impersonates the user, in which case it falls back to `agent` just like
+/// an absent author does. Server-side, so no MCP caller — assistant or
+/// spawned agent — can ever make a comment read as if the user wrote it.
+fn comment_author(author: Option<&str>) -> &str {
+    match author {
+        Some(a) if IMPERSONATION_AUTHORS.contains(&a.trim().to_lowercase().as_str()) => "agent",
+        Some(a) => a,
+        None => "agent",
+    }
+}
+
 fn strip_ansi(raw: &str) -> String {
     String::from_utf8_lossy(&strip_ansi_escapes::strip(raw.as_bytes())).into_owned()
 }
@@ -970,6 +1006,16 @@ mod tests {
         let summary = summarize_arguments(&request);
         assert!(summary.ends_with('…'));
         assert_eq!(summary.chars().count(), MAX_SUMMARY_CHARS + 1);
+    }
+
+    #[test]
+    fn comment_author_blocks_impersonation_of_the_user() {
+        assert_eq!(comment_author(Some("You")), "agent");
+        assert_eq!(comment_author(Some("  you  ")), "agent");
+        assert_eq!(comment_author(Some("USER")), "agent");
+        assert_eq!(comment_author(Some("Gebruiker")), "agent");
+        assert_eq!(comment_author(Some("claude")), "claude");
+        assert_eq!(comment_author(None), "agent");
     }
 
     #[test]
