@@ -68,6 +68,7 @@ impl From<CoreError> for IpcError {
             CoreError::ScratchpadNotFound => "scratchpadNotFound",
             CoreError::ScratchpadConflict => "scratchpadConflict",
             CoreError::ProposalNotFound => "proposalNotFound",
+            CoreError::QueuedMessageNotFound => "queueItemNotFound",
             CoreError::NotAGitRepo => "notAGitRepo",
             CoreError::WorktreeNotFound => "worktreeNotFound",
             CoreError::WorktreeDirty => "worktreeDirty",

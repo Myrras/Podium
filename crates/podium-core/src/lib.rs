@@ -30,12 +30,14 @@ pub use agent::{
 };
 pub use assignment::AssignedAgent;
 pub use assistant::{
-    AssistantConfig, AssistantEvent, AssistantSettings, AutonomyMode, ProposalInfo,
-    TranscriptEntry, TranscriptRole,
+    AssistantConfig, AssistantEvent, AssistantSettings, AutonomyMode, PendingKind, ProposalInfo,
+    QueuedMessage, TranscriptEntry, TranscriptRole,
 };
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
-pub use ids::{CommentId, LinkId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId};
+pub use ids::{
+    CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
+};
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;

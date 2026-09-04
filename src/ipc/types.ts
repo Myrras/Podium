@@ -352,7 +352,45 @@ export type AssistantEvent =
   /** The turn finished; `error` is set when it ended badly. */
   | { type: "turnEnd"; error: string | null }
   /** The session ended; the next message starts a fresh one. */
-  | { type: "exited" };
+  | { type: "exited" }
+  /**
+   * The pending-input queue changed (queued, delivered, edited, removed,
+   * dropped by the cap, or emptied when the session ended). Carries the
+   * whole queue, oldest first — a snapshot, not a delta.
+   */
+  | { type: "queueChanged"; items: QueuedMessage[] }
+  /**
+   * A plain notice for the *user* — not routed to the assistant, unlike
+   * `"notice"` above — e.g. a queued message was dropped by the cap, a turn
+   * was interrupted, or messages were left undelivered when the session
+   * ended.
+   */
+  | { type: "queueNotice"; text: string }
+  /**
+   * A user message that was waiting in the queue was just delivered as its
+   * own turn. Unlike the very first, immediately-delivered message (shown by
+   * the sender itself), nothing else announces this one starting, so the UI
+   * promotes its waiting row into the ordinary log.
+   */
+  | { type: "queueItemDelivered"; text: string };
+
+/**
+ * Whether a queued item can be edited or withdrawn before delivery. Only a
+ * user message can; a nudge or a proposal-outcome notice is Podium's own
+ * text, delivered verbatim once its turn comes
+ * (`podium_core::assistant::PendingKind`).
+ */
+export type PendingKind = "user" | "nudge" | "notice";
+
+/**
+ * One turn waiting for the assistant's session to become free
+ * (`podium_core::assistant::QueuedMessage`).
+ */
+export interface QueuedMessage {
+  id: string;
+  kind: PendingKind;
+  text: string;
+}
 
 /** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */
 export type TranscriptRole = "user" | "assistant" | "tool" | "notice" | "nudge";

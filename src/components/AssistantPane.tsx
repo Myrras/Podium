@@ -14,12 +14,20 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { AutonomyMode } from "../ipc/types";
+import type { AutonomyMode, QueuedMessage } from "../ipc/types";
 import type { ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { Markdown } from "./Markdown";
-import { AssistantIcon, CloseIcon, MemoryIcon, SendIcon } from "./icons";
+import {
+  AssistantIcon,
+  CloseIcon,
+  DeleteIcon,
+  EditIcon,
+  MemoryIcon,
+  SendIcon,
+  StopIcon,
+} from "./icons";
 import styles from "./AssistantPane.module.css";
 
 /** Shared with the Settings → Assistant tab, which mirrors this same picker. */
@@ -39,6 +47,8 @@ export function AssistantPane() {
   const busy = useAssistantStore((s) => s.busy);
   const activity = useAssistantStore((s) => s.activity);
   const send = useAssistantStore((s) => s.send);
+  const pending = useAssistantStore((s) => s.pending);
+  const interrupt = useAssistantStore((s) => s.interrupt);
   const autonomy = useAssistantStore((s) => s.autonomy);
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
@@ -56,11 +66,12 @@ export function AssistantPane() {
     void hydrate();
   }, [loadAutonomy, hydrate]);
 
-  // Follow the tail as turns stream in.
+  // Follow the tail as turns stream in (waiting rows count too — they live
+  // at the bottom of the same scroll container).
   useEffect(() => {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
-  }, [messages, busy]);
+  }, [messages, busy, pending]);
 
   // Grow the composer with the draft, up to the CSS max-height cap (where it
   // starts scrolling instead). Re-runs on every keystroke and on submit()
@@ -127,7 +138,7 @@ export function AssistantPane() {
       {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
 
       <div className={styles.log} ref={logRef}>
-        {messages.length === 0 && (
+        {messages.length === 0 && pending.length === 0 && (
           <p className={styles.empty}>
             Ask for anything across your projects — to-dos, agents, an overview.
           </p>
@@ -149,6 +160,9 @@ export function AssistantPane() {
             )}
           </div>
         ))}
+        {pending.map((p) => (
+          <PendingRow key={p.id} item={p} />
+        ))}
         {busy && (
           <div className={styles.working} role="status">
             <span>{activity ? `${actionLabel(activity)}…` : "thinking…"}</span>
@@ -157,6 +171,15 @@ export function AssistantPane() {
               <span />
               <span />
             </span>
+            <button
+              type="button"
+              className={styles.interruptBtn}
+              aria-label="Interrupt"
+              title="Stop this turn and send what's waiting"
+              onClick={() => void interrupt()}
+            >
+              <StopIcon />
+            </button>
           </div>
         )}
       </div>
@@ -294,6 +317,68 @@ function ProposalCard({ proposal }: { proposal: ChatProposal }) {
               ? `Failed: ${error ?? "unknown reason"}`
               : "Done"}
         </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One message waiting for the current turn to end. Only a user message is
+ * editable/removable — a nudge or proposal-outcome notice is Podium's own
+ * text, shown as-is until it is delivered.
+ */
+function PendingRow({ item }: { item: QueuedMessage }) {
+  const editPending = useAssistantStore((s) => s.editPending);
+  const removePending = useAssistantStore((s) => s.removePending);
+  const [draft, setDraft] = useState<string | null>(null);
+  const editing = draft !== null;
+
+  function save() {
+    const text = (draft ?? "").trim();
+    if (text && text !== item.text) void editPending(item.id, text);
+    setDraft(null);
+  }
+
+  return (
+    <div className={styles.pending} data-editing={editing}>
+      {editing ? (
+        <input
+          className={styles.pendingInput}
+          value={draft ?? ""}
+          autoFocus
+          aria-label="Edit waiting message"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") setDraft(null);
+          }}
+          onBlur={save}
+        />
+      ) : (
+        <span className={styles.pendingText}>{item.text}</span>
+      )}
+      <span className={styles.pendingStatus}>waiting…</span>
+      {item.kind === "user" && !editing && (
+        <div className={styles.pendingActions}>
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Edit waiting message"
+            title="Edit before it is sent"
+            onClick={() => setDraft(item.text)}
+          >
+            <EditIcon />
+          </button>
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Remove waiting message"
+            title="Withdraw — it will never be sent"
+            onClick={() => void removePending(item.id)}
+          >
+            <DeleteIcon />
+          </button>
+        </div>
       )}
     </div>
   );

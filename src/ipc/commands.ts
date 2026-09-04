@@ -628,6 +628,27 @@ export function assistantResolveProposal(
   return invoke("assistant_resolve_proposal", { id, approved });
 }
 
+/**
+ * Change a waiting user message's text before it is delivered. Nudges and
+ * proposal-outcome notices are not editable — they are Podium's own text.
+ */
+export function assistantQueueEdit(id: string, text: string): Promise<void> {
+  return invoke("assistant_queue_edit", { id, text });
+}
+
+/** Withdraw a waiting user message so nothing is delivered for it. */
+export function assistantQueueRemove(id: string): Promise<void> {
+  return invoke("assistant_queue_remove", { id });
+}
+
+/**
+ * Stop the assistant's current turn, if any, and immediately hand the next
+ * waiting message over. With nothing running this does nothing.
+ */
+export function assistantInterrupt(): Promise<void> {
+  return invoke("assistant_interrupt");
+}
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------

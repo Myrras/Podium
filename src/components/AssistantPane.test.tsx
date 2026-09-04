@@ -12,6 +12,9 @@ vi.mock("../ipc/commands", () => ({
   assistantNewConversation: vi.fn(() => Promise.resolve()),
   assistantMemoryGet: vi.fn(() => Promise.resolve("")),
   assistantMemorySet: vi.fn(() => Promise.resolve()),
+  assistantQueueEdit: vi.fn(() => Promise.resolve()),
+  assistantQueueRemove: vi.fn(() => Promise.resolve()),
+  assistantInterrupt: vi.fn(() => Promise.resolve()),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
       return e as { kind: string; message: string };
@@ -23,9 +26,12 @@ vi.mock("../ipc/commands", () => ({
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
+  assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
   assistantNewConversation,
+  assistantQueueEdit,
+  assistantQueueRemove,
   assistantResolveProposal,
   assistantSend,
   assistantTranscript,
@@ -54,6 +60,12 @@ describe("AssistantPane", () => {
     vi.mocked(assistantMemoryGet).mockResolvedValue("");
     vi.mocked(assistantMemorySet).mockReset();
     vi.mocked(assistantMemorySet).mockResolvedValue(undefined);
+    vi.mocked(assistantQueueEdit).mockReset();
+    vi.mocked(assistantQueueEdit).mockResolvedValue(undefined);
+    vi.mocked(assistantQueueRemove).mockReset();
+    vi.mocked(assistantQueueRemove).mockResolvedValue(undefined);
+    vi.mocked(assistantInterrupt).mockReset();
+    vi.mocked(assistantInterrupt).mockResolvedValue(undefined);
     useAssistantStore.setState({
       messages: [],
       busy: false,
@@ -61,6 +73,7 @@ describe("AssistantPane", () => {
       autonomy: "confirm-destructive",
       memory: null,
       hydrated: false,
+      pending: [],
     });
   });
 
@@ -152,9 +165,7 @@ describe("AssistantPane", () => {
     });
 
     // A discreet marker, not the raw internal instruction text.
-    expect(
-      screen.getByText("Podium nudged the assistant"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Podium nudged the assistant")).toBeInTheDocument();
     expect(screen.queryByText(/Check what it did/)).not.toBeInTheDocument();
   });
 
@@ -347,6 +358,82 @@ describe("AssistantPane", () => {
 
       await user.click(screen.getByRole("button", { name: "Save" }));
       expect(assistantMemorySet).toHaveBeenCalledWith("");
+    });
+  });
+
+  describe("the pending queue", () => {
+    it("shows nothing when the queue is empty", () => {
+      render(<AssistantPane />);
+      expect(screen.queryByLabelText("Edit waiting message")).toBeNull();
+      expect(screen.queryByLabelText("Remove waiting message")).toBeNull();
+    });
+
+    it("renders a waiting user message with edit/remove controls", () => {
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "queued while busy" }],
+      });
+      render(<AssistantPane />);
+
+      expect(screen.getByText("queued while busy")).toBeInTheDocument();
+      expect(screen.getByText("waiting…")).toBeInTheDocument();
+      expect(screen.getByLabelText("Edit waiting message")).toBeInTheDocument();
+      expect(
+        screen.getByLabelText("Remove waiting message"),
+      ).toBeInTheDocument();
+    });
+
+    it("does not offer edit/remove for a nudge or notice waiting its turn", () => {
+      useAssistantStore.setState({
+        pending: [
+          { id: "n-1", kind: "nudge", text: "[Podium] an agent finished" },
+        ],
+      });
+      render(<AssistantPane />);
+
+      expect(
+        screen.getByText("[Podium] an agent finished"),
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText("Edit waiting message")).toBeNull();
+      expect(screen.queryByLabelText("Remove waiting message")).toBeNull();
+    });
+
+    it("edits a waiting message on Enter", async () => {
+      const user = userEvent.setup();
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "first draft" }],
+      });
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Edit waiting message"));
+      const input = screen.getByLabelText("Edit waiting message");
+      await user.clear(input);
+      await user.type(input, "final draft{Enter}");
+
+      expect(assistantQueueEdit).toHaveBeenCalledWith("p-1", "final draft");
+    });
+
+    it("removes a waiting message", async () => {
+      const user = userEvent.setup();
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "withdraw me" }],
+      });
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Remove waiting message"));
+
+      expect(assistantQueueRemove).toHaveBeenCalledWith("p-1");
+    });
+
+    it("offers an interrupt control only while a turn is running", async () => {
+      const user = userEvent.setup();
+      const { rerender } = render(<AssistantPane />);
+      expect(screen.queryByLabelText("Interrupt")).toBeNull();
+
+      useAssistantStore.setState({ busy: true });
+      rerender(<AssistantPane />);
+      await user.click(screen.getByLabelText("Interrupt"));
+
+      expect(assistantInterrupt).toHaveBeenCalled();
     });
   });
 });

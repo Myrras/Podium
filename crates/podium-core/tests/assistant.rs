@@ -38,6 +38,59 @@ printf '%s\n' "$@" > "$(dirname "$0")/argv.txt"
 sleep 5
 "#;
 
+/// A fake CLI that echoes each turn's own text back as its prose reply
+/// (`echo:<text>`), so a test can tell *which* message produced *which*
+/// turn — `FAKE_CLAUDE`'s canned reply cannot distinguish that.
+const ECHOING_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r line; do
+  text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"echo:%s"}]}}\n' "$text"
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+done
+"#;
+
+/// A fake CLI whose first turn fails, and every turn after that succeeds —
+/// for asserting that an error still advances the queue.
+const ERRORS_ONCE_THEN_OK_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+first=1
+while IFS= read -r _line; do
+  if [ "$first" = "1" ]; then
+    echo '{"type":"result","subtype":"error_max_turns","is_error":true}'
+    first=0
+  else
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"recovered"}]}}'
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+  fi
+done
+"#;
+
+/// A fake CLI that hangs forever on a turn whose text starts with "hang",
+/// and echoes back anything else — for driving `assistant_interrupt`.
+const HANGING_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r line; do
+  text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+  case "$text" in
+    hang*) sleep 30 ;;
+    *)
+      printf '{"type":"assistant","message":{"content":[{"type":"text","text":"echo:%s"}]}}\n' "$text"
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+      ;;
+  esac
+done
+"#;
+
+/// A fake CLI that reads exactly one turn, then dies without ever answering
+/// it — a crash mid-turn, for asserting a queued message is reported as
+/// undelivered rather than silently dropped.
+const DIES_MID_TURN_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+read -r _line
+exit 1
+"#;
+
 fn write_fake(dir: &Path, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("fake-claude");
@@ -588,5 +641,180 @@ async fn to_dos_left_open_are_swept_into_the_chat() {
 
     let notice = next_notice(&mut rx).await;
     assert!(notice.contains("Fix the login redirect"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_messages_are_delivered_one_per_turn_in_order() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    // Busy the instant `send` returns (in-flight is set before the child
+    // even has a chance to answer) — these must queue, not interleave.
+    orch.assistant_send("second").await.expect("queue second");
+    orch.assistant_send("third").await.expect("queue third");
+
+    let turn1 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn1.contains(&AssistantEvent::Message {
+        text: "echo:first".to_string()
+    }));
+    assert!(
+        !turn1.iter().any(|e| matches!(e, AssistantEvent::Message { text } if text.contains("second") || text.contains("third"))),
+        "queued messages must not interleave into the running turn: {turn1:?}"
+    );
+
+    // The oldest queued message becomes its own turn once the first ends,
+    // announced so the UI can promote its waiting row into the ordinary log.
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn2.contains(&AssistantEvent::QueueItemDelivered {
+        text: "second".to_string()
+    }));
+    assert!(turn2.contains(&AssistantEvent::Message {
+        text: "echo:second".to_string()
+    }));
+
+    // …and the next one after that — never merged together.
+    let turn3 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn3.contains(&AssistantEvent::Message {
+        text: "echo:third".to_string()
+    }));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_turn_that_ends_in_error_still_advances_the_queue() {
+    let (orch, _dir) = setup(ERRORS_ONCE_THEN_OK_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    orch.assistant_send("second").await.expect("queue second");
+
+    let turn1 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert_eq!(
+        turn1.last(),
+        Some(&AssistantEvent::TurnEnd {
+            error: Some("error_max_turns".to_string())
+        })
+    );
+
+    // The queue still drains despite the failure — the second message gets
+    // its own (successful) turn right after.
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn2.contains(&AssistantEvent::Message {
+        text: "recovered".to_string()
+    }));
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn interrupt_stops_the_turn_and_delivers_the_queued_message_right_away() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), HANGING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hang please").await.expect("send");
+    // Wait for the session id so the respawn below can `--resume` it.
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Started { .. })).await;
+
+    orch.assistant_send("queued while hanging")
+        .await
+        .expect("queue while the turn hangs");
+
+    orch.assistant_interrupt().await.expect("interrupt");
+
+    // The interruption itself is a visible chat line, not a silent cut.
+    let rows = orch.assistant_transcript();
+    assert!(
+        rows.iter().any(|r| r.text.contains("interrupted")),
+        "{rows:?}"
+    );
+
+    // The waiting message is handed over immediately — no `TurnEnd` for the
+    // killed turn was ever coming.
+    let turn = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn.contains(&AssistantEvent::Message {
+        text: "echo:queued while hanging".to_string()
+    }));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn interrupt_with_nothing_running_does_nothing() {
+    let (orch, _dir) = setup(FAKE_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    // No session at all yet: nothing to stop, nothing to report.
+    orch.assistant_interrupt().await.expect("interrupt");
+    assert!(rx.try_recv().is_err());
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_session_that_crashes_mid_turn_reports_the_queued_message_as_undelivered() {
+    let (orch, _dir) = setup(DIES_MID_TURN_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    // Busy the moment `send` returns — queues rather than being lost when
+    // the session dies without ever finishing the first turn.
+    orch.assistant_send("second").await.expect("queue second");
+
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Exited)).await;
+
+    let rows = orch.assistant_transcript();
+    assert!(
+        rows.iter()
+            .any(|r| r.text.contains("second") && r.text.contains("delivered")),
+        "the queued message must be reported, not silently dropped: {rows:?}"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn editing_and_removing_a_waiting_message_changes_what_is_delivered() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    orch.assistant_send("edit me").await.expect("queue");
+    orch.assistant_send("remove me").await.expect("queue");
+
+    // Wait for the snapshot that carries both queued messages (the first one
+    // published only has "edit me" — "remove me" is queued a moment later).
+    let events = collect_until(
+        &mut rx,
+        |e| matches!(e, AssistantEvent::QueueChanged { items } if items.len() == 2),
+    )
+    .await;
+    let ids = match events.last() {
+        Some(AssistantEvent::QueueChanged { items }) => items.clone(),
+        other => panic!("expected a queue snapshot with 2 items, got {other:?}"),
+    };
+    let edit_id = ids[0].id;
+    let remove_id = ids[1].id;
+
+    orch.assistant_queue_edit(edit_id, "edited")
+        .await
+        .expect("edit");
+    orch.assistant_queue_remove(remove_id)
+        .await
+        .expect("remove");
+
+    // First turn's own reply — not under test here, just drained out of the
+    // way so the next `collect_until` starts clean.
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    // Only the edited text is delivered — the removed one never is.
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(turn2.contains(&AssistantEvent::Message {
+        text: "echo:edited".to_string()
+    }));
+    assert!(!turn2
+        .iter()
+        .any(|e| matches!(e, AssistantEvent::Message { text } if text.contains("remove me"))));
+
     orch.shutdown().await;
 }

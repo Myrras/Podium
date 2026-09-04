@@ -15,17 +15,20 @@ import { create } from "zustand";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
+  assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
   assistantNewConversation,
   assistantProactivityGet,
   assistantProactivitySet,
+  assistantQueueEdit,
+  assistantQueueRemove,
   assistantResolveProposal,
   assistantSend,
   assistantTranscript,
   toIpcError,
 } from "../ipc/commands";
-import type { AssistantEvent, AutonomyMode } from "../ipc/types";
+import type { AssistantEvent, AutonomyMode, QueuedMessage } from "../ipc/types";
 
 export type ChatRole =
   | "user"
@@ -78,6 +81,13 @@ interface AssistantState {
   memory: string | null;
   /** Whether the stored transcript was already replayed this app run. */
   hydrated: boolean;
+  /**
+   * Messages waiting for the current turn to end (or for the assistant's
+   * session to exist at all), oldest first — mirrors the backend's queue
+   * exactly via `queueChanged` events; not persisted, so it starts empty on
+   * every launch.
+   */
+  pending: QueuedMessage[];
   /** Replay the persisted transcript into the log (once, on mount). */
   hydrate: () => Promise<void>;
   /** Drop the conversation and start over (memory is kept). */
@@ -98,6 +108,12 @@ interface AssistantState {
   setProactivity: (enabled: boolean) => Promise<void>;
   /** Confirm or reject a proposed action. */
   resolveProposal: (id: string, approved: boolean) => Promise<void>;
+  /** Change a waiting user message's text before it is delivered. */
+  editPending: (id: string, text: string) => Promise<void>;
+  /** Withdraw a waiting user message. */
+  removePending: (id: string) => Promise<void>;
+  /** Stop the current turn, if any, and hand the next waiting message over. */
+  interrupt: () => Promise<void>;
   /** Fold one backend stream event into the log. */
   apply: (event: AssistantEvent) => void;
 }
@@ -132,6 +148,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   proactive: true,
   memory: null,
   hydrated: false,
+  pending: [],
   hydrate: async () => {
     // Once per app run: the panel remounts every time it is reopened, and the
     // log it already holds is the same conversation.
@@ -154,7 +171,17 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   newConversation: async () => {
     try {
       await assistantNewConversation();
-      set({ messages: [], busy: false, activity: null });
+      // The backend may have recorded an "undelivered messages" notice as
+      // the first row of the now-otherwise-empty transcript (the queue is
+      // dropped too, quietly — no `queueChanged` event is sent for it), so
+      // re-fetch rather than assuming the log is simply empty.
+      const stored = await assistantTranscript();
+      set({
+        messages: stored.map((e) => message(e.role, e.text)),
+        busy: false,
+        activity: null,
+        pending: [],
+      });
     } catch (e) {
       set((s) => ({
         messages: [...s.messages, message("notice", toIpcError(e).message)],
@@ -184,10 +211,17 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   send: async (text) => {
     const trimmed = text.trim();
     if (!trimmed) return false;
-    set((s) => ({
-      messages: [...s.messages, message("user", trimmed)],
-      busy: true,
-    }));
+    // Busy already means a turn is running: the backend will queue this one
+    // rather than deliver it, and the `queueChanged` event that follows adds
+    // its own waiting row — an optimistic "user" bubble here would show it
+    // twice, once as if sent and once as waiting.
+    const idle = !get().busy;
+    if (idle) {
+      set((s) => ({
+        messages: [...s.messages, message("user", trimmed)],
+        busy: true,
+      }));
+    }
     try {
       await assistantSend(trimmed);
       return true;
@@ -197,7 +231,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // one place the user follows the conversation.
       set((s) => ({
         messages: [...s.messages, message("notice", err.message)],
-        busy: false,
+        ...(idle ? { busy: false } : {}),
       }));
       return false;
     }
@@ -258,6 +292,45 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           message("notice", toIpcError(e).message),
         ],
         busy: false,
+      }));
+    }
+  },
+  editPending: async (id, text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const previous = get().pending;
+    // Optimistic: `queueChanged` echoes the change back anyway, but this
+    // keeps the box feeling responsive while the round trip is in flight.
+    set({
+      pending: previous.map((p) => (p.id === id ? { ...p, text: trimmed } : p)),
+    });
+    try {
+      await assistantQueueEdit(id, trimmed);
+    } catch (e) {
+      set((s) => ({
+        pending: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  removePending: async (id) => {
+    const previous = get().pending;
+    set({ pending: previous.filter((p) => p.id !== id) });
+    try {
+      await assistantQueueRemove(id);
+    } catch (e) {
+      set((s) => ({
+        pending: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  interrupt: async () => {
+    try {
+      await assistantInterrupt();
+    } catch (e) {
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
       }));
     }
   },
@@ -336,6 +409,21 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         // resume the conversation later, and it is not chat content.
         case "started":
           return s;
+        case "queueChanged":
+          return { pending: event.items };
+        case "queueNotice":
+          return {
+            messages: [...s.messages, message("notice", event.text)],
+          };
+        // A waiting message's turn came up — nothing else announces this,
+        // so promote it into the ordinary log and show the panel as busy
+        // again (mirrors the optimistic bubble a same-cycle `send()` shows
+        // for a message delivered immediately).
+        case "queueItemDelivered":
+          return {
+            busy: true,
+            messages: [...s.messages, message("user", event.text)],
+          };
       }
     }),
 }));

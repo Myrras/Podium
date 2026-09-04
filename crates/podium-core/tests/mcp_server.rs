@@ -1064,8 +1064,25 @@ async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
         .await
         .expect("spawn agent");
 
-    // A live conversation exists before the agent reports back.
+    // A live, *idle* conversation exists before the agent reports back: a
+    // report during a still-running turn now queues (message queueing) and
+    // this test is specifically about immediate, live delivery.
+    let mut rx = orch.subscribe_events();
     orch.assistant_send("hi").await.expect("send");
+    timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(podium_core::PodiumEvent::AssistantEvent { event }) = rx.recv().await {
+                if matches!(
+                    event,
+                    podium_core::assistant::AssistantEvent::TurnEnd { .. }
+                ) {
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .expect("turn ends");
 
     tools
         .report_to_assistant(Parameters(ReportToAssistantParams {

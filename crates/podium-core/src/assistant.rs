@@ -22,11 +22,22 @@
 //!
 //! Podium can also speak first: [`AssistantManager::nudge`] writes a tagged
 //! `[Podium]` turn into the session (see [`crate::proactivity`] for what
-//! triggers one). A nudge never spawns a session — with nobody chatting there
-//! is no conversation to nudge — it queues until the next turn does.
+//! triggers one).
+//!
+//! Only one turn is ever in flight at a time. The user's own messages, a
+//! nudge, and a proposal-outcome notice (`notify`) all route through one
+//! pending-input queue: a message written while a turn is running (or before
+//! any session exists, for a nudge) waits instead of interleaving into the
+//! turn in progress, and is delivered as its own turn once the current one
+//! ends (`TurnEnd`) — one waiting item per turn, oldest first, never merged.
+//! [`AssistantManager::interrupt`] cuts a running turn short and delivers the
+//! next waiting item immediately rather than for a `TurnEnd` that would never
+//! come. The queue is not persisted: a session ending for any reason (crash,
+//! a new conversation, shutdown) drops it and reports what was never sent.
 //!
 //! Proposals still live in memory only, so a pending one is lost on restart.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -43,7 +54,7 @@ use tokio::sync::Mutex;
 use crate::agent::McpConnectInfo;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
-use crate::ids::{ProjectId, ProposalId};
+use crate::ids::{PendingId, ProjectId, ProposalId};
 
 /// Tools the assistant is never allowed to run: it delegates implementation
 /// work to spawned agents instead of touching the filesystem itself.
@@ -164,10 +175,49 @@ pub fn requires_proposal(mode: AutonomyMode, tool: &str) -> bool {
 pub type ProposalAction =
     Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>> + Send>;
 
-/// Longest a queued nudge list may grow while nobody is chatting: what
-/// happened hours ago is not worth replaying.
+/// Longest the pending-input queue may grow: newest kept, oldest dropped with
+/// a chat notice — what happened hours ago is not worth replaying.
 // ponytail: flat cap, oldest dropped.
-const MAX_QUEUED_NUDGES: usize = 20;
+const MAX_PENDING: usize = 20;
+
+/// Whether a queued item can be edited or withdrawn before it is delivered.
+/// Only a user message can; a nudge or a proposal-outcome notice is Podium's
+/// own text, delivered verbatim once its turn comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingKind {
+    User,
+    Nudge,
+    Notice,
+}
+
+/// One turn waiting for the session to become free. FIFO — the oldest is
+/// delivered next, as its own turn, never merged with another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingInput {
+    id: PendingId,
+    kind: PendingKind,
+    text: String,
+}
+
+/// UI-facing snapshot of one waiting item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessage {
+    pub id: PendingId,
+    pub kind: PendingKind,
+    pub text: String,
+}
+
+impl From<&PendingInput> for QueuedMessage {
+    fn from(p: &PendingInput) -> Self {
+        Self {
+            id: p.id,
+            kind: p.kind,
+            text: p.text.clone(),
+        }
+    }
+}
 
 /// A parked proposal: what the user sees, the project it acts on (`None` for
 /// a workspace-wide call) and the call itself.
@@ -229,6 +279,22 @@ pub enum AssistantEvent {
     /// The session ended (crashed, or the CLI is missing). A later send
     /// starts a fresh one.
     Exited,
+    /// The pending-input queue changed (something was queued, delivered,
+    /// edited, removed, dropped by the cap, or emptied when the session
+    /// ended). Carries the whole queue, oldest first — a snapshot, not a
+    /// delta, so the UI never has to reconcile.
+    QueueChanged { items: Vec<QueuedMessage> },
+    /// A plain notice for the *user* — not routed to the assistant, unlike
+    /// [`AssistantEvent::Notice`] — e.g. a queued message was dropped by the
+    /// cap, a turn was interrupted, or messages were left undelivered when
+    /// the session ended.
+    QueueNotice { text: String },
+    /// A user message that was waiting in the queue was just delivered as
+    /// its own turn. Unlike the very first, immediately-delivered message
+    /// (which the caller already shows), nothing else announces this one
+    /// starting, so the UI needs it to promote the waiting row into the
+    /// ordinary log.
+    QueueItemDelivered { text: String },
 }
 
 /// Who spoke in one persisted transcript row. A subset of the live event
@@ -393,7 +459,11 @@ impl AssistantStore {
                 self.append(TranscriptRole::Notice, message.clone())
             }
             AssistantEvent::Notice { text } => self.append(TranscriptRole::Nudge, text.clone()),
-            // Proposals, turn ends and exits are runtime signals, not chat.
+            AssistantEvent::QueueNotice { text } => {
+                self.append(TranscriptRole::Notice, text.clone())
+            }
+            // Proposals, turn ends, exits and queue snapshots are runtime
+            // signals, not chat.
             _ => {}
         }
     }
@@ -493,25 +563,51 @@ struct Session {
     child: Child,
     stdin: ChildStdin,
     /// Set before Podium kills the child on purpose (starting a new
-    /// conversation), so its output task stays quiet instead of reporting the
-    /// session as having ended under the user.
+    /// conversation, or interrupting a turn), so its output task stays quiet
+    /// instead of reporting the session as having ended under the user. Also
+    /// this session's identity: compared by pointer to tell whether a
+    /// background task's session is still the one installed in
+    /// [`SessionState`], so a task cleaning up after an old session can never
+    /// clobber one that replaced it in the meantime.
     quiet_exit: Arc<AtomicBool>,
+}
+
+/// The session plus turn-in-flight bookkeeping plus the pending-input queue,
+/// all under one lock — so a queued item can never slip past a turn that
+/// starts between two lock acquisitions.
+struct SessionState {
+    session: Option<Session>,
+    /// Whether a turn is currently running: from the moment it is written to
+    /// stdin until its `TurnEnd` (or the session dying without one).
+    in_flight: bool,
+    /// User messages, nudges and proposal-outcome notices waiting for the
+    /// current turn to end. FIFO — oldest delivered next, one per `TurnEnd`,
+    /// never merged.
+    pending: VecDeque<PendingInput>,
+}
+
+impl SessionState {
+    fn new() -> Self {
+        Self {
+            session: None,
+            in_flight: false,
+            pending: VecDeque::new(),
+        }
+    }
 }
 
 /// Owns the assistant session, its lazy (re)spawn, and the proposals its
 /// gated tool calls are parked in.
 pub struct AssistantManager {
     config: StdMutex<AssistantConfig>,
-    session: Mutex<Option<Session>>,
+    /// `Arc` so the background output task (spawned per session, `'static`)
+    /// can share the same lock as the manager without borrowing `self`.
+    state: Arc<Mutex<SessionState>>,
     /// Gated tool calls awaiting the user, oldest first, each with the
     /// project it acts on (so closing that project can invalidate it). In
     /// memory only: a proposal never expires on its own, but does not survive
     /// a restart.
     proposals: StdMutex<Vec<PendingProposal>>,
-    /// Nudges waiting for a session to exist. Podium never spawns the child
-    /// just to deliver one — a fresh session would not know what it is about
-    /// — so they ride along with the user's next turn.
-    queued_nudges: StdMutex<Vec<String>>,
     /// The persisted conversation (transcript + session id) and the memory
     /// file. Shared with the output task, which records what it publishes.
     store: Arc<AssistantStore>,
@@ -522,9 +618,8 @@ impl AssistantManager {
     pub fn new(events: EventBus) -> Self {
         Self {
             config: StdMutex::new(AssistantConfig::default()),
-            session: Mutex::new(None),
+            state: Arc::new(Mutex::new(SessionState::new())),
             proposals: StdMutex::new(Vec::new()),
-            queued_nudges: StdMutex::new(Vec::new()),
             store: Arc::new(AssistantStore::new()),
             events,
         }
@@ -544,9 +639,11 @@ impl AssistantManager {
         *self.config.lock().expect(LOCK_POISONED) = config;
     }
 
-    /// Send a chat turn, spawning the session on first use (or after it died).
-    /// `mcp` is how the new session reaches Podium's own MCP endpoint; a
-    /// session spawned before the server is up simply has no Podium tools.
+    /// Send a chat turn, spawning the session on first use (or after it
+    /// died). Delivered immediately if the session is idle; queued (see the
+    /// module docs) if a turn is already running. `mcp` is how the new
+    /// session reaches Podium's own MCP endpoint; a session spawned before
+    /// the server is up simply has no Podium tools.
     pub async fn send(&self, text: &str, mcp: Option<McpConnectInfo>) -> CoreResult<()> {
         let text = text.trim();
         if text.is_empty() {
@@ -554,46 +651,115 @@ impl AssistantManager {
                 "message must not be blank".to_string(),
             ));
         }
-        let mut guard = self.session.lock().await;
+        let mut state = self.state.lock().await;
         // A session that exited (crash, missing CLI) is replaced rather than
         // written to: the write would only fail with a broken pipe.
-        if guard
+        if state
+            .session
             .as_mut()
             .is_some_and(|s| matches!(s.child.try_wait(), Ok(Some(_)) | Err(_)))
         {
-            *guard = None;
+            state.session = None;
+            state.in_flight = false;
         }
-        if guard.is_none() {
+        if state.session.is_none() {
             let config = self.config.lock().expect(LOCK_POISONED).clone();
-            *guard = Some(self.spawn(&config, mcp.as_ref())?);
+            state.session = Some(self.spawn(&config, mcp.as_ref())?);
         }
-        let session = guard.as_mut().expect("session present");
-        // Whatever happened while nobody was chatting goes in first, so the
-        // assistant reads it as context for this turn.
-        let queued = std::mem::take(&mut *self.queued_nudges.lock().expect(LOCK_POISONED));
-        for nudge in queued {
-            if write_turn(session, &nudge).await.is_ok() {
-                self.publish(AssistantEvent::Notice { text: nudge });
-            }
-        }
-        write_turn(session, text).await?;
-        self.store.append(TranscriptRole::User, text.to_string());
+        let item = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::User,
+            text: text.to_string(),
+        };
+        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
         Ok(())
     }
 
-    /// Drop the conversation: kill the session, forget the transcript and the
-    /// session id, and discard proposals that belonged to it. The next turn
-    /// starts a session with no `--resume`.
+    /// Drop the conversation: kill the session, forget the transcript, the
+    /// session id and the pending queue, and discard proposals that belonged
+    /// to it. Whatever was still waiting is reported as undelivered in the
+    /// fresh (otherwise empty) transcript. The next turn starts a session
+    /// with no `--resume`.
     pub async fn new_conversation(&self) {
-        if let Some(mut session) = self.session.lock().await.take() {
-            // A deliberate kill: the panel is being cleared, so the output
-            // task must not report the session as having ended by itself.
+        let dropped = {
+            let mut state = self.state.lock().await;
+            if let Some(mut session) = state.session.take() {
+                // A deliberate kill: the panel is being cleared, so the
+                // output task must not report the session as having ended by
+                // itself.
+                session.quiet_exit.store(true, Ordering::Relaxed);
+                let _ = session.child.kill().await;
+            }
+            state.in_flight = false;
+            std::mem::take(&mut state.pending)
+        };
+        self.proposals.lock().expect(LOCK_POISONED).clear();
+        self.store.clear();
+        // After clearing, so the notice survives as the first line of the
+        // fresh conversation rather than being wiped along with the old one.
+        report_undelivered(&self.store, &self.events, dropped);
+    }
+
+    /// Stop the turn in progress, if any, and immediately hand the next
+    /// waiting message over — a `TurnEnd` for the killed turn will never
+    /// arrive, so the normal one-per-turn drain would wait forever. With
+    /// nothing running this is a no-op: nothing to stop, nothing to report.
+    pub async fn interrupt(&self, mcp: Option<McpConnectInfo>) -> CoreResult<()> {
+        let mut state = self.state.lock().await;
+        if !state.in_flight {
+            return Ok(());
+        }
+        if let Some(mut session) = state.session.take() {
             session.quiet_exit.store(true, Ordering::Relaxed);
             let _ = session.child.kill().await;
         }
-        self.proposals.lock().expect(LOCK_POISONED).clear();
-        self.queued_nudges.lock().expect(LOCK_POISONED).clear();
-        self.store.clear();
+        state.in_flight = false;
+        let event = AssistantEvent::QueueNotice {
+            text: "[Podium] The current turn was interrupted.".to_string(),
+        };
+        self.store.record(&event);
+        self.events.publish(PodiumEvent::AssistantEvent { event });
+        if !state.pending.is_empty() {
+            let config = self.config.lock().expect(LOCK_POISONED).clone();
+            state.session = Some(self.spawn(&config, mcp.as_ref())?);
+            drain_next(&mut state, &self.store, &self.events).await;
+        }
+        Ok(())
+    }
+
+    /// Change a waiting user message's text before it is delivered. Nudges
+    /// and proposal-outcome notices are not editable — they are Podium's own
+    /// text.
+    pub async fn edit_pending(&self, id: PendingId, text: &str) -> CoreResult<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "message must not be blank".to_string(),
+            ));
+        }
+        let mut state = self.state.lock().await;
+        let item = state
+            .pending
+            .iter_mut()
+            .find(|p| p.id == id && p.kind == PendingKind::User)
+            .ok_or(CoreError::QueuedMessageNotFound)?;
+        item.text = text.to_string();
+        publish_queue(&state, &self.events);
+        Ok(())
+    }
+
+    /// Withdraw a waiting user message so nothing is delivered for it.
+    pub async fn remove_pending(&self, id: PendingId) -> CoreResult<()> {
+        let mut state = self.state.lock().await;
+        let before = state.pending.len();
+        state
+            .pending
+            .retain(|p| !(p.id == id && p.kind == PendingKind::User));
+        if state.pending.len() == before {
+            return Err(CoreError::QueuedMessageNotFound);
+        }
+        publish_queue(&state, &self.events);
+        Ok(())
     }
 
     /// Publish one event and persist whatever of it belongs in the transcript.
@@ -701,51 +867,44 @@ impl AssistantManager {
     }
 
     /// Hand the assistant something Podium noticed (an agent finished, a
-    /// to-do is lingering, …). A live session gets it straight away; with no
-    /// session running it is queued for the user's next turn — Podium never
+    /// to-do is lingering, …). Delivered straight away if a live session is
+    /// idle; queued (busy, or no session at all) otherwise — Podium never
     /// starts the CLI just to deliver a nudge.
     pub async fn nudge(&self, text: String) {
-        {
-            let mut guard = self.session.lock().await;
-            if let Some(session) = guard.as_mut() {
-                match write_turn(session, &text).await {
-                    Ok(()) => {
-                        self.publish(AssistantEvent::Notice { text });
-                        return;
-                    }
-                    // A broken pipe means the session is gone; queue instead.
-                    Err(e) => tracing::warn!("could not nudge the assistant: {e}"),
-                }
-            }
-        }
-        {
-            let mut queue = self.queued_nudges.lock().expect(LOCK_POISONED);
-            queue.push(text);
-            if queue.len() > MAX_QUEUED_NUDGES {
-                let drop = queue.len() - MAX_QUEUED_NUDGES;
-                queue.drain(..drop);
-            }
-        }
+        let mut state = self.state.lock().await;
+        let item = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Nudge,
+            text,
+        };
+        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
 
-    /// Write a Podium-side message into a *live* session. Unlike [`send`] this
-    /// never spawns one: a fresh session would have no memory of what the
-    /// notice is about.
+    /// Write a Podium-side message into a *live* session, queuing it if a
+    /// turn is already running. Unlike [`send`] this never spawns one: a
+    /// fresh session would have no memory of what the notice is about, so
+    /// with no session at all it is silently skipped, exactly as before this
+    /// queue existed.
     ///
     /// [`send`]: Self::send
     async fn notify(&self, text: &str) {
-        let mut guard = self.session.lock().await;
-        let Some(session) = guard.as_mut() else {
+        let mut state = self.state.lock().await;
+        if state.session.is_none() {
             return;
-        };
-        if let Err(e) = write_turn(session, text).await {
-            tracing::warn!("could not notify the assistant: {e}");
         }
+        let item = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Notice,
+            text: text.to_string(),
+        };
+        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
 
-    /// Kill the session, if any (app shutdown).
+    /// Kill the session, if any (app shutdown). Whatever is still waiting is
+    /// reported as undelivered once the output task notices the session is
+    /// gone.
     pub async fn shutdown(&self) {
-        if let Some(mut session) = self.session.lock().await.take() {
+        if let Some(mut session) = self.state.lock().await.session.take() {
             let _ = session.child.kill().await;
         }
     }
@@ -817,6 +976,7 @@ impl AssistantManager {
         let stdout = child.stdout.take().expect("stdout piped");
         let events = self.events.clone();
         let store = Arc::clone(&self.store);
+        let state = Arc::clone(&self.state);
         let quiet_exit = Arc::new(AtomicBool::new(false));
         let quiet = Arc::clone(&quiet_exit);
         tokio::spawn(async move {
@@ -826,8 +986,18 @@ impl AssistantManager {
             while let Ok(Some(line)) = lines.next_line().await {
                 for event in parse_stream_line(&line) {
                     started |= matches!(event, AssistantEvent::Started { .. });
+                    let is_turn_end = matches!(event, AssistantEvent::TurnEnd { .. });
                     store.record(&event);
                     events.publish(PodiumEvent::AssistantEvent { event });
+                    if is_turn_end {
+                        // The turn is over, so the next waiting item (if any)
+                        // becomes its own turn right away — never merged, and
+                        // this advances the queue even when the turn ended in
+                        // error.
+                        let mut st = state.lock().await;
+                        st.in_flight = false;
+                        drain_next(&mut st, &store, &events).await;
+                    }
                 }
             }
             // A session that never announced itself is a session that never
@@ -837,7 +1007,30 @@ impl AssistantManager {
             if !started && resumed {
                 store.forget_session();
             }
+            // Only clean up `state` if it still holds *this* session: a quiet
+            // kill (new conversation, interrupt) may already have replaced or
+            // cleared it by the time this task notices the pipe closed, and
+            // must not be clobbered.
+            let dropped = {
+                let mut st = state.lock().await;
+                if st
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| Arc::ptr_eq(&s.quiet_exit, &quiet))
+                {
+                    st.session = None;
+                    st.in_flight = false;
+                    std::mem::take(&mut st.pending)
+                } else {
+                    VecDeque::new()
+                }
+            };
+            // A quiet exit (new conversation, interrupt) is handled by its
+            // caller, including reporting its own dropped items — this is
+            // only for an exit nobody asked for (crash, missing CLI, or
+            // shutdown).
             if !quiet.load(Ordering::Relaxed) {
+                report_undelivered(&store, &events, dropped);
                 events.publish(PodiumEvent::AssistantEvent {
                     event: AssistantEvent::Exited,
                 });
@@ -849,6 +1042,143 @@ impl AssistantManager {
             quiet_exit,
         })
     }
+}
+
+/// Deliver `item` right now if the session is idle and nothing is already
+/// waiting, otherwise queue it (FIFO) — never queue-jumping, even a message
+/// that could itself be written immediately still waits behind anything
+/// already ahead of it. A write that fails (a session that died between the
+/// caller's checks and this one) falls back to queuing rather than losing the
+/// item outright.
+async fn deliver_or_queue(
+    state: &mut SessionState,
+    item: PendingInput,
+    store: &AssistantStore,
+    events: &EventBus,
+) {
+    if !state.in_flight && state.pending.is_empty() {
+        if let Some(session) = state.session.as_mut() {
+            match write_turn(session, &item.text).await {
+                Ok(()) => {
+                    state.in_flight = true;
+                    record_delivered(store, events, &item);
+                    return;
+                }
+                Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
+            }
+        }
+    }
+    state.pending.push_back(item);
+    if state.pending.len() > MAX_PENDING {
+        state.pending.pop_front();
+        let event = AssistantEvent::QueueNotice {
+            text: format!(
+                "[Podium] The waiting-message queue is full ({MAX_PENDING}); the oldest \
+                 waiting message was dropped."
+            ),
+        };
+        store.record(&event);
+        events.publish(PodiumEvent::AssistantEvent { event });
+    }
+    publish_queue(state, events);
+    if !state.in_flight {
+        // Not actually busy — just deferred to something already queued (or
+        // a session that only just came up) — so there is no `TurnEnd`
+        // coming to drain it. Get the front moving now.
+        drain_next(state, store, events).await;
+    }
+}
+
+/// Deliver the oldest waiting item into an already-live, already-idle
+/// session — what happens right after a `TurnEnd`, or once
+/// [`AssistantManager::interrupt`] has respawned. One item per call, so
+/// several queued items always become separate turns.
+async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &EventBus) {
+    if state.in_flight {
+        return;
+    }
+    let Some(session) = state.session.as_mut() else {
+        return;
+    };
+    let Some(item) = state.pending.pop_front() else {
+        return;
+    };
+    match write_turn(session, &item.text).await {
+        Ok(()) => {
+            state.in_flight = true;
+            record_delivered(store, events, &item);
+            // The direct-write path (an immediately-delivered message) is
+            // already shown by its own caller; this one was waiting and
+            // nothing else announces its turn starting.
+            if item.kind == PendingKind::User {
+                events.publish(PodiumEvent::AssistantEvent {
+                    event: AssistantEvent::QueueItemDelivered {
+                        text: item.text.clone(),
+                    },
+                });
+            }
+        }
+        Err(e) => {
+            tracing::warn!("could not deliver a queued assistant message: {e}");
+            state.pending.push_front(item);
+        }
+    }
+    publish_queue(state, events);
+}
+
+/// Record/publish a just-delivered item the same way it always would have
+/// been, had it never needed to wait: a user turn joins the transcript, a
+/// nudge shows as a muted row, and a proposal-outcome notice stays invisible
+/// (it is for the assistant, not the user).
+fn record_delivered(store: &AssistantStore, events: &EventBus, item: &PendingInput) {
+    match item.kind {
+        PendingKind::User => store.append(TranscriptRole::User, item.text.clone()),
+        PendingKind::Nudge => {
+            let event = AssistantEvent::Notice {
+                text: item.text.clone(),
+            };
+            store.record(&event);
+            events.publish(PodiumEvent::AssistantEvent { event });
+        }
+        PendingKind::Notice => {}
+    }
+}
+
+/// Publish the current queue as a snapshot for the UI.
+fn publish_queue(state: &SessionState, events: &EventBus) {
+    let items = state.pending.iter().map(QueuedMessage::from).collect();
+    events.publish(PodiumEvent::AssistantEvent {
+        event: AssistantEvent::QueueChanged { items },
+    });
+}
+
+/// Tell the user which waiting messages never made it out, as a chat notice
+/// — never a silent drop — and clear the queue on screen. A no-op when
+/// nothing was waiting.
+fn report_undelivered(store: &AssistantStore, events: &EventBus, dropped: VecDeque<PendingInput>) {
+    if dropped.is_empty() {
+        return;
+    }
+    let list = dropped
+        .iter()
+        .map(|p| format!("\"{}\"", truncate(&p.text, 60)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let phrase = if dropped.len() == 1 {
+        "this waiting message"
+    } else {
+        "these waiting messages"
+    };
+    let event = AssistantEvent::QueueNotice {
+        text: format!(
+            "[Podium] The conversation ended before {phrase} could be delivered: {list}."
+        ),
+    };
+    store.record(&event);
+    events.publish(PodiumEvent::AssistantEvent { event });
+    events.publish(PodiumEvent::AssistantEvent {
+        event: AssistantEvent::QueueChanged { items: Vec::new() },
+    });
 }
 
 /// The system prompt the session is spawned with: who it is, plus whatever it
@@ -1446,29 +1776,149 @@ mod tests {
         let manager = AssistantManager::new(EventBus::new());
         let mut rx = manager.events.subscribe();
 
-        // No session: nothing is published yet (and nothing is spawned).
+        // No session, so nothing is spawned for it — but the UI still learns
+        // it is waiting.
         manager
             .nudge("[Podium] an agent finished".to_string())
             .await;
-        assert!(rx.try_recv().is_err());
         assert_eq!(
-            manager.queued_nudges.lock().expect(LOCK_POISONED).len(),
+            manager.state.lock().await.pending.len(),
             1,
             "the nudge must wait for a session, not vanish"
         );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::QueueChanged { items }
+            }) if items.len() == 1
+        ));
 
         // …and it is dropped along with the conversation it was meant for.
         manager.new_conversation().await;
-        assert!(manager
-            .queued_nudges
-            .lock()
-            .expect(LOCK_POISONED)
-            .is_empty());
+        assert!(manager.state.lock().await.pending.is_empty());
     }
 
     #[test]
     fn truncate_clips_on_a_char_boundary() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("héllo", 3), "hél…");
+    }
+
+    /// Push a bare pending item straight onto the queue, bypassing
+    /// `send`/`nudge` — for tests that only care about edit/remove/cap
+    /// behaviour, not delivery.
+    async fn seed_pending(manager: &AssistantManager, kind: PendingKind, text: &str) -> PendingId {
+        let mut state = manager.state.lock().await;
+        let id = PendingId::new();
+        state.pending.push_back(PendingInput {
+            id,
+            kind,
+            text: text.to_string(),
+        });
+        id
+    }
+
+    #[tokio::test]
+    async fn editing_a_waiting_user_message_changes_its_text() {
+        let manager = AssistantManager::new(EventBus::new());
+        let id = seed_pending(&manager, PendingKind::User, "first draft").await;
+
+        manager.edit_pending(id, "final draft").await.expect("edit");
+
+        let state = manager.state.lock().await;
+        assert_eq!(state.pending[0].text, "final draft");
+    }
+
+    #[tokio::test]
+    async fn a_nudge_or_notice_cannot_be_edited_or_removed() {
+        let manager = AssistantManager::new(EventBus::new());
+        let nudge_id = seed_pending(&manager, PendingKind::Nudge, "an agent finished").await;
+        let notice_id = seed_pending(&manager, PendingKind::Notice, "proposal outcome").await;
+
+        assert!(matches!(
+            manager.edit_pending(nudge_id, "rewritten").await,
+            Err(CoreError::QueuedMessageNotFound)
+        ));
+        assert!(matches!(
+            manager.remove_pending(notice_id).await,
+            Err(CoreError::QueuedMessageNotFound)
+        ));
+        // Both untouched.
+        assert_eq!(manager.state.lock().await.pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn removing_a_waiting_message_means_nothing_is_delivered_for_it() {
+        let manager = AssistantManager::new(EventBus::new());
+        let id = seed_pending(&manager, PendingKind::User, "withdraw me").await;
+
+        manager.remove_pending(id).await.expect("remove");
+        assert!(manager.state.lock().await.pending.is_empty());
+
+        // A second removal finds nothing left.
+        assert!(matches!(
+            manager.remove_pending(id).await,
+            Err(CoreError::QueuedMessageNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn editing_or_removing_an_unknown_id_fails() {
+        let manager = AssistantManager::new(EventBus::new());
+        let unknown = PendingId::new();
+        assert!(matches!(
+            manager.edit_pending(unknown, "anything").await,
+            Err(CoreError::QueuedMessageNotFound)
+        ));
+        assert!(matches!(
+            manager.remove_pending(unknown).await,
+            Err(CoreError::QueuedMessageNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_cap_drops_the_oldest_waiting_message_and_reports_it() {
+        let manager = AssistantManager::new(EventBus::new());
+        let mut rx = manager.events.subscribe();
+        // Busy with no live session: every nudge just queues.
+        for i in 0..MAX_PENDING + 1 {
+            manager.nudge(format!("nudge {i}")).await;
+        }
+        let state = manager.state.lock().await;
+        assert_eq!(state.pending.len(), MAX_PENDING);
+        assert_eq!(state.pending.front().unwrap().text, "nudge 1");
+        drop(state);
+
+        let mut saw_drop_notice = false;
+        while let Ok(PodiumEvent::AssistantEvent { event }) = rx.try_recv() {
+            if let AssistantEvent::QueueNotice { text } = event {
+                assert!(text.contains("dropped"), "{text}");
+                saw_drop_notice = true;
+            }
+        }
+        assert!(saw_drop_notice, "the drop must be reported in the chat");
+    }
+
+    #[tokio::test]
+    async fn a_turn_end_with_nothing_queued_publishes_no_queue_event() {
+        // `drain_next` on an empty queue must be a true no-op — otherwise
+        // every ordinary turn would spam a pointless `QueueChanged`.
+        let manager = AssistantManager::new(EventBus::new());
+        let mut rx = manager.events.subscribe();
+        drain_next(
+            &mut *manager.state.lock().await,
+            &manager.store,
+            &manager.events,
+        )
+        .await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn interrupt_with_nothing_running_is_a_no_op() {
+        let manager = AssistantManager::new(EventBus::new());
+        let mut rx = manager.events.subscribe();
+        manager.interrupt(None).await.expect("interrupt");
+        assert!(rx.try_recv().is_err(), "nothing to stop, nothing to report");
     }
 }

@@ -7,6 +7,11 @@ vi.mock("../ipc/commands", () => ({
   assistantProactivitySet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
   ),
+  assistantQueueEdit: vi.fn(() => Promise.resolve()),
+  assistantQueueRemove: vi.fn(() => Promise.resolve()),
+  assistantInterrupt: vi.fn(() => Promise.resolve()),
+  assistantNewConversation: vi.fn(() => Promise.resolve()),
+  assistantTranscript: vi.fn(() => Promise.resolve([])),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
       return e as { kind: string; message: string };
@@ -16,8 +21,11 @@ vi.mock("../ipc/commands", () => ({
 }));
 
 import {
+  assistantInterrupt,
   assistantProactivityGet,
   assistantProactivitySet,
+  assistantQueueEdit,
+  assistantQueueRemove,
   assistantSend,
 } from "../ipc/commands";
 import { useAssistantStore } from "./assistantStore";
@@ -25,16 +33,24 @@ import { useAssistantStore } from "./assistantStore";
 describe("assistantStore", () => {
   beforeEach(() => {
     vi.mocked(assistantSend).mockClear();
+    vi.mocked(assistantSend).mockResolvedValue(undefined);
     vi.mocked(assistantProactivityGet).mockClear();
     vi.mocked(assistantProactivitySet).mockClear();
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
       Promise.resolve(enabled),
     );
+    vi.mocked(assistantQueueEdit).mockClear();
+    vi.mocked(assistantQueueEdit).mockResolvedValue(undefined);
+    vi.mocked(assistantQueueRemove).mockClear();
+    vi.mocked(assistantQueueRemove).mockResolvedValue(undefined);
+    vi.mocked(assistantInterrupt).mockClear();
+    vi.mocked(assistantInterrupt).mockResolvedValue(undefined);
     useAssistantStore.setState({
       messages: [],
       busy: false,
       activity: null,
       proactive: true,
+      pending: [],
     });
   });
 
@@ -111,5 +127,146 @@ describe("assistantStore", () => {
     const msgs = useAssistantStore.getState().messages;
     const last = msgs[msgs.length - 1];
     expect(last?.text).toBe("disk is full");
+  });
+
+  describe("the pending queue", () => {
+    it("sends straight through without touching the queue while idle", async () => {
+      await useAssistantStore.getState().send("hello");
+
+      expect(assistantSend).toHaveBeenCalledWith("hello");
+      expect(useAssistantStore.getState().pending).toEqual([]);
+      expect(useAssistantStore.getState().messages.map((m) => m.role)).toEqual([
+        "user",
+      ]);
+    });
+
+    it("does not show an optimistic bubble for a message sent while busy", async () => {
+      useAssistantStore.setState({ busy: true });
+
+      const sent = await useAssistantStore.getState().send("queue me");
+
+      expect(sent).toBe(true);
+      expect(assistantSend).toHaveBeenCalledWith("queue me");
+      // No local bubble: the backend's `queueChanged` event is what shows it.
+      expect(useAssistantStore.getState().messages).toEqual([]);
+      expect(useAssistantStore.getState().busy).toBe(true);
+    });
+
+    it("mirrors a queueChanged snapshot exactly", () => {
+      useAssistantStore.getState().apply({
+        type: "queueChanged",
+        items: [{ id: "p-1", kind: "user", text: "waiting" }],
+      });
+
+      expect(useAssistantStore.getState().pending).toEqual([
+        { id: "p-1", kind: "user", text: "waiting" },
+      ]);
+    });
+
+    it("shows a dropped/undelivered queue notice as a plain notice", () => {
+      useAssistantStore.getState().apply({
+        type: "queueNotice",
+        text: "[Podium] The waiting-message queue is full (20); the oldest waiting message was dropped.",
+      });
+
+      const [row] = useAssistantStore.getState().messages;
+      expect(row.role).toBe("notice");
+      expect(row.text).toContain("dropped");
+    });
+
+    it("promotes a delivered waiting message into the log and re-busies the panel", () => {
+      useAssistantStore.setState({
+        busy: false,
+        pending: [{ id: "p-1", kind: "user", text: "its turn came" }],
+      });
+
+      useAssistantStore.getState().apply({
+        type: "queueItemDelivered",
+        text: "its turn came",
+      });
+
+      expect(useAssistantStore.getState().busy).toBe(true);
+      expect(
+        useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
+      ).toEqual([["user", "its turn came"]]);
+    });
+
+    it("edits a waiting message optimistically and rolls back on failure", async () => {
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "first draft" }],
+      });
+
+      await useAssistantStore.getState().editPending("p-1", "final draft");
+      expect(assistantQueueEdit).toHaveBeenCalledWith("p-1", "final draft");
+      expect(useAssistantStore.getState().pending[0].text).toBe("final draft");
+
+      vi.mocked(assistantQueueEdit).mockRejectedValueOnce({
+        kind: "queueItemNotFound",
+        message: "already delivered",
+      });
+      await useAssistantStore.getState().editPending("p-1", "too late");
+      // Rolled back to what the backend last confirmed.
+      expect(useAssistantStore.getState().pending[0].text).toBe("final draft");
+      const msgs = useAssistantStore.getState().messages;
+      expect(msgs[msgs.length - 1]?.text).toBe("already delivered");
+    });
+
+    it("ignores a blank edit rather than sending it", async () => {
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "first draft" }],
+      });
+
+      await useAssistantStore.getState().editPending("p-1", "   ");
+
+      expect(assistantQueueEdit).not.toHaveBeenCalled();
+      expect(useAssistantStore.getState().pending[0].text).toBe("first draft");
+    });
+
+    it("removes a waiting message optimistically and rolls back on failure", async () => {
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "withdraw me" }],
+      });
+
+      await useAssistantStore.getState().removePending("p-1");
+      expect(assistantQueueRemove).toHaveBeenCalledWith("p-1");
+      expect(useAssistantStore.getState().pending).toEqual([]);
+
+      useAssistantStore.setState({
+        pending: [{ id: "p-2", kind: "user", text: "keep me" }],
+      });
+      vi.mocked(assistantQueueRemove).mockRejectedValueOnce({
+        kind: "queueItemNotFound",
+        message: "already delivered",
+      });
+      await useAssistantStore.getState().removePending("p-2");
+      expect(useAssistantStore.getState().pending).toEqual([
+        { id: "p-2", kind: "user", text: "keep me" },
+      ]);
+    });
+
+    it("interrupts the running turn", async () => {
+      await useAssistantStore.getState().interrupt();
+      expect(assistantInterrupt).toHaveBeenCalled();
+    });
+
+    it("reports a failed interrupt in the log", async () => {
+      vi.mocked(assistantInterrupt).mockRejectedValueOnce({
+        kind: "io",
+        message: "could not kill the session",
+      });
+      await useAssistantStore.getState().interrupt();
+      const msgs = useAssistantStore.getState().messages;
+      expect(msgs[msgs.length - 1]?.text).toBe("could not kill the session");
+    });
+
+    it("drops the local queue on a fresh conversation", async () => {
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "stale" }],
+      });
+
+      await useAssistantStore.getState().newConversation();
+
+      expect(useAssistantStore.getState().pending).toEqual([]);
+    });
   });
 });

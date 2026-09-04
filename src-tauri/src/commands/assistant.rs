@@ -1,11 +1,13 @@
 //! Personal-assistant commands: sending a turn, replaying the stored
 //! transcript, starting over, its memory, the autonomy and proactivity
-//! settings, and deciding on a proposed action. Replies (and the outcome of a proposal)
-//! stream back as global `assistant:event` events (see `events.rs`).
+//! settings, deciding on a proposed action, and managing the pending-input
+//! queue (edit/remove a waiting message, interrupt the running turn). Replies
+//! (and the outcome of a proposal, and queue changes) stream back as global
+//! `assistant:event` events (see `events.rs`).
 
 use tauri::State;
 
-use podium_core::{AutonomyMode, ProposalId, TranscriptEntry};
+use podium_core::{AutonomyMode, PendingId, ProposalId, TranscriptEntry};
 
 use crate::error::IpcError;
 use crate::state::AppState;
@@ -95,5 +97,36 @@ pub async fn assistant_resolve_proposal(
         .orchestrator
         .resolve_assistant_proposal(id, approved)
         .await?;
+    Ok(())
+}
+
+/// Change a waiting user message's text before it is delivered. Nudges and
+/// proposal-outcome notices are not editable — they are Podium's own text.
+#[tauri::command]
+pub async fn assistant_queue_edit(
+    state: State<'_, AppState>,
+    id: PendingId,
+    text: String,
+) -> Result<(), IpcError> {
+    state.orchestrator.assistant_queue_edit(id, &text).await?;
+    Ok(())
+}
+
+/// Withdraw a waiting user message so nothing is delivered for it.
+#[tauri::command]
+pub async fn assistant_queue_remove(
+    state: State<'_, AppState>,
+    id: PendingId,
+) -> Result<(), IpcError> {
+    state.orchestrator.assistant_queue_remove(id).await?;
+    Ok(())
+}
+
+/// Stop the assistant's current turn, if any, and immediately hand the next
+/// waiting message over rather than for a `TurnEnd` that would never come.
+/// With nothing running this is a no-op.
+#[tauri::command]
+pub async fn assistant_interrupt(state: State<'_, AppState>) -> Result<(), IpcError> {
+    state.orchestrator.assistant_interrupt().await?;
     Ok(())
 }

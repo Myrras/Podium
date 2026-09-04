@@ -53,10 +53,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 28 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 29 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **70 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **73 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -70,9 +70,10 @@ them in sync when you add a command or MCP tool.
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible, resizable right-side
   assistant chat panel (replayed transcript, action + proposal cards,
-  autonomy picker, memory view, proactive `[Podium]` notices; conversation
-  reset lives in Settings → Assistant), Zustand stores, typed IPC wrappers
-  over all 70 commands.
+  waiting-message rows with edit/remove and an interrupt control while a turn
+  runs, autonomy picker, memory view, proactive `[Podium]` notices;
+  conversation reset lives in Settings → Assistant), Zustand stores, typed
+  IPC wrappers over all 73 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -105,7 +106,7 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 28 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 29 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
@@ -186,8 +187,12 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   scratchpad tools `list_scratchpads`, `create_scratchpad`,
   `update_scratchpad`, `add_scratchpad_tag`, `remove_scratchpad_tag`,
   `set_scratchpad_archived`, the worktree tools `create_worktree`,
-  `list_worktrees`, `remove_worktree`, and `update_assistant_memory` (the
-  personal assistant rewriting its own long-term memory).
+  `list_worktrees`, `remove_worktree`, `update_assistant_memory` (the
+  personal assistant rewriting its own long-term memory), and
+  `report_to_assistant` (a finished or blocked agent handing the assistant a
+  short summary of its own work, routed to `Orchestrator::assistant_nudge` so
+  it gets the same live-or-queued delivery, cap and proactivity switch as any
+  other nudge).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -302,8 +307,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
   `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
-  `exited`) published on the `EventBus` and forwarded to the webview as
-  `assistant:event`. Unparseable lines (a chatty shell profile) are
+  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered`) published
+  on the `EventBus` and forwarded to the webview as `assistant:event`.
+  Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
   (`AssistantConfig`) so integration tests drive a fake `claude` script. The
   assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
@@ -341,8 +347,37 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   itself makes Podium drop the stored id, so a pruned session cannot wedge
   every later turn. The panel's **new-conversation** button
   (`assistant_new_conversation`) kills the session and drops transcript,
-  session id and pending proposals — that kill is deliberate, so it is not
-  reported as `exited`.
+  session id, pending proposals and the message queue — that kill is
+  deliberate, so it is not reported as `exited` (any messages the queue was
+  still holding are instead reported undelivered as the first row of the
+  now-fresh transcript).
+
+  **Message queue**: only one turn is ever in flight. `AssistantManager`
+  pairs the session with an `in_flight` flag and one
+  `VecDeque<PendingInput>`, all under the *same* lock — so a queued item can
+  never slip past a turn that starts between two lock acquisitions. All four
+  writers into a live session — the user's own turn (`send`), the
+  proactivity/`report_to_assistant` nudge drain (`nudge`), and a proposal
+  outcome (`notify`) — route through one `deliver_or_queue`: idle with
+  nothing already ahead of it → written immediately, exactly as its caller
+  already expects; otherwise it waits, FIFO. `TurnEnd` (`drain_next`)
+  delivers exactly one waiting item as its own turn — never merged — and a
+  `TurnEnd` carrying an error still advances the queue. Only a *user*
+  message is editable/removable (`assistant_queue_edit` /
+  `assistant_queue_remove`, `kind: "user"` only); a nudge or a
+  proposal-outcome notice is Podium's own text, delivered verbatim. The
+  queue caps at the newest 20, dropping the oldest with a `queueNotice`.
+  `assistant_interrupt` kills the running child — there is no documented
+  stdin control message for interrupting `--input-format stream-json` mode —
+  and respawns it (picking the conversation back up via `--resume`),
+  immediately delivering whatever is waiting rather than for a `TurnEnd`
+  that would never come; with nothing running it is a no-op. The queue is
+  **not persisted**, matching `proposals`: a session ending for any reason
+  (crash, `new_conversation`, shutdown) drops it and reports which messages
+  were never delivered via `queueNotice`. The frontend gets the whole
+  snapshot on every change (`queueChanged`), plus `queueItemDelivered` when a
+  *waiting* message's turn comes up — the very first, immediately-delivered
+  message needs no such event, since the sender already shows it itself.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so
@@ -363,10 +398,12 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `assistant.json`, so restarts do not re-ask). Each becomes one `[Podium] …`
   turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
-  milliseconds. A nudge **never spawns the CLI child**: with no conversation
-  running it queues (newest 20) and rides along with the user's next turn — a
-  fresh session would have no idea what the nudge was about. Switching the
-  setting off silences all of it, day-start claim included. The watcher holds
+  milliseconds. A nudge **never spawns the CLI child**: with no live,
+  idle session it waits in the message queue described above (see
+  _Message queue_) and is delivered as its own turn once one exists and
+  frees up — a fresh session would have no idea what the nudge was about.
+  Switching the setting off silences all of it, day-start claim included.
+  The watcher holds
   only a weak reference, so it ends with the orchestrator. **Settings →
   Assistant** holds this toggle plus the autonomy mode (the chat header keeps
   its own autonomy picker — both mirror the one stored value).
@@ -453,6 +490,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_proactivity_get` | –                                       | `boolean`         |
 | `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
 | `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |
+| `assistant_queue_edit`  | `{ id, text }`                              | –                 |
+| `assistant_queue_remove` | `{ id }`                                   | –                 |
+| `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:

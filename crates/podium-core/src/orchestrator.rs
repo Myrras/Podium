@@ -19,7 +19,7 @@ use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{ProcessId, ProjectId, ProposalId, ScratchpadId};
+use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::supervisor::{RestartState, SupervisorConfig};
@@ -346,6 +346,24 @@ impl Orchestrator {
         approved: bool,
     ) -> CoreResult<()> {
         self.assistant.resolve_proposal(id, approved).await
+    }
+
+    /// Change a waiting user message's text before it is delivered.
+    pub async fn assistant_queue_edit(&self, id: PendingId, text: &str) -> CoreResult<()> {
+        self.assistant.edit_pending(id, text).await
+    }
+
+    /// Withdraw a waiting user message so nothing is delivered for it.
+    pub async fn assistant_queue_remove(&self, id: PendingId) -> CoreResult<()> {
+        self.assistant.remove_pending(id).await
+    }
+
+    /// Stop the assistant's current turn, if any, and immediately hand the
+    /// next waiting message over rather than for a `TurnEnd` that would never
+    /// come. With nothing running this is a no-op.
+    pub async fn assistant_interrupt(&self) -> CoreResult<()> {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.interrupt(mcp).await
     }
 
     /// Point the global agent settings at their backing file (app data dir)

@@ -71,6 +71,12 @@ uuid_newtype!(
     /// the user's confirmation).
     ProposalId
 );
+uuid_newtype!(
+    /// Identifies one message waiting in the assistant's send queue (a user
+    /// turn, a proactivity nudge, or a proposal-outcome notice) so it can be
+    /// edited or withdrawn before it is delivered.
+    PendingId
+);
 
 #[cfg(test)]
 mod tests {

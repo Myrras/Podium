@@ -255,12 +255,83 @@
   font-style: italic;
 }
 
+/* A message waiting for the current turn to end: dashed border reads as
+   "not sent yet", distinct from the solid user bubble above it. */
+.pending {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-md);
+  animation: messageIn var(--dur-2) var(--ease-out);
+}
+
+.pendingText {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.pendingInput {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--sp-1);
+}
+
+.pendingInput:focus {
+  outline: none;
+}
+
+.pendingStatus {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+
+.pendingActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
 .working {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
   color: var(--text-faint);
   font-size: var(--fs-sm);
+}
+
+/* Cuts the running turn short — quiet like the rest of the busy row, but
+   grows a subtle danger tint on hover since it discards work in progress. */
+.interruptBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-left: auto;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  transition: color var(--dur-1) var(--ease-out);
+}
+
+.interruptBtn:hover {
+  background: var(--danger-bg);
+  color: var(--text);
 }
 
 /* Three dots pulsing in sequence — opacity-only, same reasoning as the
