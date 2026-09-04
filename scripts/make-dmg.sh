@@ -12,8 +12,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$REPO_ROOT/target/release/bundle/macos/Podium.app"
-OUT_DIR="$REPO_ROOT/target/release/bundle/dmg"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+APP="$TARGET_DIR/release/bundle/macos/Podium.app"
+OUT_DIR="$TARGET_DIR/release/bundle/dmg"
 
 if [[ ! -d "$APP" ]]; then
 	echo >&2 "error: $APP not found — run 'pnpm tauri build --bundles app' first."
