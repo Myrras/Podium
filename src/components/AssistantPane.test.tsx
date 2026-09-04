@@ -436,4 +436,121 @@ describe("AssistantPane", () => {
       expect(assistantInterrupt).toHaveBeenCalled();
     });
   });
+
+  describe("composer history recall", () => {
+    function seedSentMessages() {
+      useAssistantStore.setState({
+        messages: [
+          { id: 1, role: "user", text: "first message" },
+          { id: 2, role: "assistant", text: "an answer" },
+          { id: 3, role: "user", text: "second message" },
+        ],
+      });
+    }
+
+    it("arrow-up recalls the previous sent messages, newest first", async () => {
+      seedSentMessages();
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const input = screen.getByLabelText(
+        "Message the assistant",
+      ) as HTMLTextAreaElement;
+      input.focus();
+
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("second message");
+
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("first message");
+
+      // Already at the oldest entry — stays put rather than wrapping.
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("first message");
+    });
+
+    it("arrow-down walks forward and restores the draft past the newest entry", async () => {
+      seedSentMessages();
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const input = screen.getByLabelText(
+        "Message the assistant",
+      ) as HTMLTextAreaElement;
+      input.focus();
+      await user.type(input, "my unsent draft");
+
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("second message");
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("first message");
+
+      await user.keyboard("{ArrowDown}");
+      expect(input).toHaveValue("second message");
+
+      // Past the newest recalled entry: back to what was being typed.
+      await user.keyboard("{ArrowDown}");
+      expect(input).toHaveValue("my unsent draft");
+    });
+
+    it("does not recall when the caret isn't on the first/last line", async () => {
+      seedSentMessages();
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const input = screen.getByLabelText(
+        "Message the assistant",
+      ) as HTMLTextAreaElement;
+
+      await user.type(input, "line one{Shift>}{Enter}{/Shift}line two");
+      // Caret sits at the end, on the second line — arrow-up should move the
+      // cursor within the text, not recall history.
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("line one\nline two");
+
+      // Move the caret to the very start (first line) and try again: now it
+      // recalls.
+      input.setSelectionRange(0, 0);
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("second message");
+    });
+
+    it("does not send while recalling, and sending a recalled+edited message leaves history intact", async () => {
+      seedSentMessages();
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const input = screen.getByLabelText(
+        "Message the assistant",
+      ) as HTMLTextAreaElement;
+      input.focus();
+
+      await user.keyboard("{ArrowUp}");
+      expect(assistantSend).not.toHaveBeenCalled();
+      expect(input).toHaveValue("second message");
+
+      await user.type(input, " edited");
+      await user.click(screen.getByLabelText("Send"));
+      expect(assistantSend).toHaveBeenCalledWith("second message edited");
+      // Sending moved focus to the Send button; bring it back to the
+      // composer before recalling again.
+      input.focus();
+
+      // Recalling again finds the sent message as a new, separate entry —
+      // the original "second message" is still there behind it.
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("second message edited");
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("second message");
+    });
+
+    it("does nothing when there is no sent history", async () => {
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const input = screen.getByLabelText(
+        "Message the assistant",
+      ) as HTMLTextAreaElement;
+      input.focus();
+      await user.type(input, "typing");
+
+      await user.keyboard("{ArrowUp}");
+      expect(input).toHaveValue("typing");
+    });
+  });
 });

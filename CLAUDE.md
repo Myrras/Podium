@@ -597,6 +597,32 @@ input"** instead — derived for **every** running process, not just agents, so
 a terminal stalled on `sudo` surfaces the same way; non-agents only show that
 state ("working…"/"idle" is noise for a plain shell).
 
+`notifyAgentWaiting` (`src/lib/notify.ts`) has a sibling, `notifyAssistant`,
+for the same toast+OS-notification+sound treatment on the personal assistant.
+`assistantStore.apply` (`src/state/assistantStore.ts`) fires it in exactly
+two places, both gated on `isAssistantVisible()` (focused window **and**
+`useLayoutStore.getState().assistantOpen`) so a user already watching the
+pane is never pinged: once at `turnEnd` when the turn produced a reply (the
+*last* `message` event streamed that turn — tracked in `turnReplyText`,
+reset whenever a new turn starts, so three streamed blocks make one
+notification, not three, and a turn with no reply or an error makes none),
+and once when a `proposal` event arrives (the assistant waiting on
+confirm/reject, same shape as an agent waiting on a permission prompt). A
+proactive nudge (`notice`/`nudge` row) never itself notifies — only the
+reply it may provoke does, through the same `turnEnd` path.
+
+The composer (`AssistantPane.tsx`) supports shell-style history recall:
+arrow-up/down walk the sent `user` rows already in `messages` (no separate
+persisted history — they come back for free via transcript `hydrate()`).
+Recall only fires when the caret sits on the composer's first line
+(arrow-up) or last line (arrow-down, only while already recalling) — checked
+by literal `\n`s around the caret (`isCaretOnFirstLine`/`isCaretOnLastLine`),
+not visual wrapping, since a plain textarea gives no other way to ask —
+so a multi-line draft still lets the arrows move the cursor normally.
+Walking past the newest entry restores whatever was being typed before the
+first arrow-up; recalling never sends, and editing a recalled message before
+sending appends a new entry rather than rewriting history.
+
 ## Build, run, test
 
 Prefer `just` (run `just` to list recipes). The Tauri CLI is the local

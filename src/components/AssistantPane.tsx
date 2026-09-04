@@ -42,6 +42,21 @@ function actionLabel(tool: string): string {
   return tool.replace(/^mcp__[^_]+__/, "").replace(/_/g, " ");
 }
 
+/**
+ * True when the caret has no newline before it — i.e. it's on the textarea's
+ * first *text* line. (jsdom has no layout, so this is defined by literal
+ * `\n`s, not by where a long line visually wraps — the same limit any
+ * caller faces without a real renderer, and good enough for a composer.)
+ */
+function isCaretOnFirstLine(el: HTMLTextAreaElement): boolean {
+  return !el.value.slice(0, el.selectionStart ?? 0).includes("\n");
+}
+
+/** True when the caret has no newline after it — the textarea's last line. */
+function isCaretOnLastLine(el: HTMLTextAreaElement): boolean {
+  return !el.value.slice(el.selectionEnd ?? el.value.length).includes("\n");
+}
+
 export function AssistantPane() {
   const messages = useAssistantStore((s) => s.messages);
   const busy = useAssistantStore((s) => s.busy);
@@ -59,6 +74,16 @@ export function AssistantPane() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Arrow-up/down history recall: an index into `history` (newest last),
+  // `null` while not recalling. `draftBeforeRecall` is what the user had
+  // typed before the first arrow-up, restored when walking past the newest
+  // entry again — recalling never sends anything and never touches the
+  // stored transcript, it only reads the `user` rows already in `messages`.
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [draftBeforeRecall, setDraftBeforeRecall] = useState("");
+  const history = messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.text);
 
   // Both are persisted server-side; the store only mirrors them.
   useEffect(() => {
@@ -89,7 +114,34 @@ export function AssistantPane() {
     // Clear optimistically: the store keeps the turn either way (a failure
     // lands in the log as a notice), so re-typing it would be noise.
     setDraft("");
+    setHistoryIndex(null);
     await send(text);
+  }
+
+  /**
+   * Walk the composer's history: `-1` for arrow-up (older), `1` for
+   * arrow-down (newer/back-to-draft). Only fires when the caret is on the
+   * edge line arrow-up/down would otherwise leave — checked by the caller —
+   * so it never steals the cursor movement a multi-line draft needs.
+   */
+  function recall(direction: -1 | 1) {
+    if (direction === -1) {
+      if (history.length === 0) return;
+      const idx = historyIndex === null ? history.length - 1 : historyIndex - 1;
+      if (idx < 0) return;
+      if (historyIndex === null) setDraftBeforeRecall(draft);
+      setHistoryIndex(idx);
+      setDraft(history[idx]);
+    } else {
+      if (historyIndex === null) return;
+      if (historyIndex + 1 < history.length) {
+        setHistoryIndex(historyIndex + 1);
+        setDraft(history[historyIndex + 1]);
+      } else {
+        setHistoryIndex(null);
+        setDraft(draftBeforeRecall);
+      }
+    }
   }
 
   return (
@@ -204,6 +256,22 @@ export function AssistantPane() {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               void submit();
+              return;
+            }
+            // Recall only from the edge line the arrow would otherwise
+            // leave the composer through — anywhere else the arrow just
+            // moves the cursor, as it must in a multi-line draft.
+            if (e.key === "ArrowUp" && isCaretOnFirstLine(e.currentTarget)) {
+              if (history.length === 0) return;
+              e.preventDefault();
+              recall(-1);
+            } else if (
+              e.key === "ArrowDown" &&
+              isCaretOnLastLine(e.currentTarget) &&
+              historyIndex !== null
+            ) {
+              e.preventDefault();
+              recall(1);
             }
           }}
         />

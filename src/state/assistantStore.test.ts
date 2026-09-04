@@ -34,10 +34,20 @@ import {
   assistantQueueRemove,
   assistantSend,
 } from "../ipc/commands";
+
+const notifyAssistant = vi.fn();
+vi.mock("../lib/notify", () => ({
+  notifyAssistant: (title: string, body: string) => notifyAssistant(title, body),
+}));
+
+import { useLayoutStore } from "./layoutStore";
 import { useAssistantStore } from "./assistantStore";
 
 describe("assistantStore", () => {
   beforeEach(() => {
+    notifyAssistant.mockClear();
+    useLayoutStore.setState({ assistantOpen: false });
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
     vi.mocked(assistantSend).mockClear();
     vi.mocked(assistantSend).mockResolvedValue(undefined);
     vi.mocked(assistantProactivityGet).mockClear();
@@ -63,6 +73,7 @@ describe("assistantStore", () => {
       proactive: true,
       queueMessages: false,
       pending: [],
+      turnReplyText: null,
     });
   });
 
@@ -299,6 +310,110 @@ describe("assistantStore", () => {
       await useAssistantStore.getState().newConversation();
 
       expect(useAssistantStore.getState().pending).toEqual([]);
+    });
+  });
+
+  describe("notifying the user", () => {
+    const { apply } = useAssistantStore.getState();
+
+    it("notifies once at turn end, using the last streamed block as the body", () => {
+      apply({ type: "message", text: "partial…" });
+      apply({ type: "message", text: "Two to-dos are open." });
+      apply({ type: "turnEnd", error: null });
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+      expect(notifyAssistant).toHaveBeenCalledWith(
+        "Assistant replied",
+        "Two to-dos are open.",
+      );
+    });
+
+    it("stays silent when the window is focused and the pane is open", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      useLayoutStore.setState({ assistantOpen: true });
+
+      apply({ type: "message", text: "Two to-dos are open." });
+      apply({ type: "turnEnd", error: null });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("notifies when the pane is open but the window is unfocused", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      useLayoutStore.setState({ assistantOpen: true });
+
+      apply({ type: "message", text: "reply" });
+      apply({ type: "turnEnd", error: null });
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("notifies when the window is focused but the pane is closed", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      useLayoutStore.setState({ assistantOpen: false });
+
+      apply({ type: "message", text: "reply" });
+      apply({ type: "turnEnd", error: null });
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("does not notify when the turn produced nothing", () => {
+      apply({ type: "turnEnd", error: null });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("does not notify when the turn failed", () => {
+      apply({ type: "message", text: "reply" });
+      apply({ type: "turnEnd", error: "error_max_turns" });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("does not notify for a proactive nudge itself", () => {
+      apply({ type: "notice", text: "[Podium] an agent finished" });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("notifies when a proposal appears, needing confirm/reject", () => {
+      apply({
+        type: "proposal",
+        id: "p-1",
+        tool: "set_todo_archived",
+        summary: '{"todoId":"t-1"}',
+      });
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+      expect(notifyAssistant).toHaveBeenCalledWith(
+        "Assistant has a question",
+        '{"todoId":"t-1"}',
+      );
+    });
+
+    it("does not re-notify for a resolved proposal", () => {
+      apply({
+        type: "proposal",
+        id: "p-1",
+        tool: "set_todo_archived",
+        summary: "",
+      });
+      notifyAssistant.mockClear();
+
+      apply({ type: "proposalResolved", id: "p-1", approved: true, error: null });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("resets the reply tracked per turn when a queued message is delivered", () => {
+      apply({ type: "message", text: "first turn's reply" });
+      apply({ type: "queueItemDelivered", text: "next queued message" });
+      apply({ type: "turnEnd", error: null });
+
+      // The stale reply from before the queued turn started must not leak
+      // into a notification for a turn that produced nothing new.
+      expect(notifyAssistant).not.toHaveBeenCalled();
     });
   });
 });

@@ -31,6 +31,17 @@ import {
   toIpcError,
 } from "../ipc/commands";
 import type { AssistantEvent, AutonomyMode, QueuedMessage } from "../ipc/types";
+import { notifyAssistant } from "../lib/notify";
+import { useLayoutStore } from "./layoutStore";
+
+/**
+ * Is the user already looking at the assistant's reply? True only when the
+ * app window is focused and the chat pane is open — the same "don't ping
+ * the window you're watching" rule `agentActivityStore` applies to agents.
+ */
+function isAssistantVisible(): boolean {
+  return document.hasFocus() && useLayoutStore.getState().assistantOpen;
+}
 
 export type ChatRole =
   | "user"
@@ -96,6 +107,13 @@ interface AssistantState {
    * every launch.
    */
   pending: QueuedMessage[];
+  /**
+   * Text of the latest assistant reply streamed this turn, or `null` before
+   * one arrives. Used to notify once at `turnEnd` — using the *last*
+   * streamed block, not one ping per block — and reset whenever a new turn
+   * starts.
+   */
+  turnReplyText: string | null;
   /** Replay the persisted transcript into the log (once, on mount). */
   hydrate: () => Promise<void>;
   /** Drop the conversation and start over (memory is kept). */
@@ -162,6 +180,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   memory: null,
   hydrated: false,
   pending: [],
+  turnReplyText: null,
   hydrate: async () => {
     // Once per app run: the panel remounts every time it is reopened, and the
     // log it already holds is the same conversation.
@@ -194,6 +213,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         busy: false,
         activity: null,
         pending: [],
+        turnReplyText: null,
       });
     } catch (e) {
       set((s) => ({
@@ -233,6 +253,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       set((s) => ({
         messages: [...s.messages, message("user", trimmed)],
         busy: true,
+        turnReplyText: null,
       }));
     }
     try {
@@ -314,6 +335,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         status: approved ? "approved" : "rejected",
       }),
       busy: true,
+      turnReplyText: null,
     }));
     try {
       await assistantResolveProposal(id, approved);
@@ -371,6 +393,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       switch (event.type) {
         case "message":
           return {
+            turnReplyText: event.text,
             messages: [...s.messages, message("assistant", event.text)],
           };
         case "tool":
@@ -392,6 +415,14 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             ],
           };
         case "proposal":
+          // The assistant is waiting on the user, exactly like a stalled
+          // agent — ping unless they're already watching the pane.
+          if (!isAssistantVisible()) {
+            notifyAssistant(
+              "Assistant has a question",
+              event.summary || event.tool,
+            );
+          }
           return {
             messages: [
               ...s.messages,
@@ -415,9 +446,16 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             }),
           };
         case "turnEnd":
+          // One ping per turn, using the last reply streamed during it — not
+          // one per streamed block — and only when nothing came back is
+          // there nothing to tell the user about.
+          if (!event.error && s.turnReplyText && !isAssistantVisible()) {
+            notifyAssistant("Assistant replied", s.turnReplyText);
+          }
           return {
             busy: false,
             activity: null,
+            turnReplyText: null,
             messages: event.error
               ? [
                   ...s.messages,
@@ -454,6 +492,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "queueItemDelivered":
           return {
             busy: true,
+            turnReplyText: null,
             messages: [...s.messages, message("user", event.text)],
           };
       }
