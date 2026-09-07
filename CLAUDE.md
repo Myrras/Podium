@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 29 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -70,10 +70,10 @@ them in sync when you add a command or MCP tool.
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible, resizable right-side
   assistant chat panel (replayed transcript, action + proposal cards,
-  waiting-message rows with edit/remove and an interrupt control while a turn
-  runs, autonomy picker, memory view, proactive `[Podium]` notices;
+  waiting-message rows with send-now/edit/remove and an interrupt control
+  while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 79 commands.
+  IPC wrappers over all 78 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -366,16 +366,16 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   proactivity/`report_to_assistant` nudge drain (`nudge`) and a proposal
   outcome (`notify`) always route through one `deliver_or_queue`: idle with
   nothing already ahead of it → written immediately, exactly as its caller
-  already expects; otherwise it waits, FIFO. Whether the user's own turn
-  (`send`) does too is the `queue_messages` setting (Settings → Assistant,
-  `assistant_queue_messages_get`/`_set`, default **off**): off, a message
-  typed mid-turn goes straight into the live session as it did before this
-  queue existed — possibly landing mid-answer — unless something is already
-  fairly waiting ahead of it (a nudge queued while nobody was chatting, or a
-  message accepted before the setting was flipped off), in which case it
-  still falls in line rather than cutting ahead; on, it always waits its
-  turn like everything else. Flipping the setting mid-turn never touches
-  what is already queued — only where the *next* user message goes.
+  already expects; otherwise it waits, FIFO. The user's own turn (`send`)
+  goes through the same path, so a message typed mid-turn waits instead of
+  landing mid-answer. It can still be pushed into the running turn on
+  demand — `assistant_queue_send_now` / `send_pending_now`, the **send now**
+  action on the waiting row — which writes it straight into the live
+  session, interleaved output and all. That replaced a `queue_messages`
+  setting deciding the same thing for every message in advance: the choice
+  only ever matters for one message at a time, when you are looking at it.
+  A nudge or a proposal-outcome notice has no such escape hatch — their
+  ordering is Podium's business.
   `TurnEnd` (`drain_next`)
   delivers exactly one waiting *user* item as its own turn — never merged —
   and a `TurnEnd` carrying an error still advances the queue. **Consecutive
@@ -608,10 +608,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
 | `assistant_polling_get` | –                                           | `AssistantPolling` |
 | `assistant_polling_set` | `{ intervalMinutes, slack, teams }` (0 = off) | `AssistantPolling` |
-| `assistant_queue_messages_get` | –                                    | `boolean`         |
-| `assistant_queue_messages_set` | `{ enabled }`                        | `boolean`         |
 | `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |
 | `assistant_queue_edit`  | `{ id, text }`                              | –                 |
+| `assistant_queue_send_now` | `{ id }` (waiting user message)          | –                 |
 | `assistant_queue_remove` | `{ id }`                                   | –                 |
 | `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
 | `window_confirm_close`  | –                                           | –                 |

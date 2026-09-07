@@ -665,6 +665,7 @@ function ProposalCard({ proposal }: { proposal: ChatProposal }) {
  */
 function PendingRow({ item }: { item: QueuedMessage }) {
   const editPending = useAssistantStore((s) => s.editPending);
+  const sendPendingNow = useAssistantStore((s) => s.sendPendingNow);
   const removePending = useAssistantStore((s) => s.removePending);
   const [draft, setDraft] = useState<string | null>(null);
   const editing = draft !== null;
@@ -709,6 +710,15 @@ function PendingRow({ item }: { item: QueuedMessage }) {
             onClick={() => setDraft(item.text)}
           >
             <EditIcon />
+          </button>
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Send waiting message now"
+            title="Send now — it may land mid-answer"
+            onClick={() => void sendPendingNow(item.id)}
+          >
+            <SendIcon />
           </button>
           <button
             type="button"

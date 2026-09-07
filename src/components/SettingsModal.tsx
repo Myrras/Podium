@@ -274,9 +274,6 @@ function AssistantTab() {
   const proactive = useAssistantStore((s) => s.proactive);
   const setProactivity = useAssistantStore((s) => s.setProactivity);
   const loadProactivity = useAssistantStore((s) => s.loadProactivity);
-  const queueMessages = useAssistantStore((s) => s.queueMessages);
-  const setQueueMessages = useAssistantStore((s) => s.setQueueMessages);
-  const loadQueueMessages = useAssistantStore((s) => s.loadQueueMessages);
   const polling = useAssistantStore((s) => s.polling);
   const setPolling = useAssistantStore((s) => s.setPolling);
   const loadPolling = useAssistantStore((s) => s.loadPolling);
@@ -285,9 +282,8 @@ function AssistantTab() {
   useEffect(() => {
     void loadAutonomy();
     void loadProactivity();
-    void loadQueueMessages();
     void loadPolling();
-  }, [loadAutonomy, loadProactivity, loadQueueMessages, loadPolling]);
+  }, [loadAutonomy, loadProactivity, loadPolling]);
 
   return (
     <>
@@ -317,16 +313,6 @@ function AssistantTab() {
           help="When on, it reports agents that finished, crashed or look stuck, sweeps for lingering to-dos, and gives a day-start summary."
           value={proactive}
           onChange={(enabled) => void setProactivity(enabled)}
-        />
-      </section>
-
-      <section className={styles.section}>
-        <h3 className={styles.sectionLabel}>Message queue</h3>
-        <SettingToggle
-          label="Wait for a reply before sending your next message"
-          help="Off: a message you send while it is answering goes straight in and may land mid-answer. On: it waits its turn and is sent once the current reply ends."
-          value={queueMessages}
-          onChange={(enabled) => void setQueueMessages(enabled)}
         />
       </section>
 

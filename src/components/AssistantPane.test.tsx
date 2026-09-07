@@ -21,6 +21,7 @@ vi.mock("../ipc/commands", () => ({
   assistantMemorySet: vi.fn(() => Promise.resolve()),
   assistantQueueEdit: vi.fn(() => Promise.resolve()),
   assistantQueueRemove: vi.fn(() => Promise.resolve()),
+  assistantQueueSendNow: vi.fn(() => Promise.resolve()),
   assistantInterrupt: vi.fn(() => Promise.resolve()),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
@@ -42,6 +43,7 @@ import {
   assistantNewConversation,
   assistantQueueEdit,
   assistantQueueRemove,
+  assistantQueueSendNow,
   assistantResolveProposal,
   assistantSend,
   assistantTranscript,
@@ -76,6 +78,8 @@ describe("AssistantPane", () => {
     vi.mocked(assistantQueueEdit).mockResolvedValue(undefined);
     vi.mocked(assistantQueueRemove).mockReset();
     vi.mocked(assistantQueueRemove).mockResolvedValue(undefined);
+    vi.mocked(assistantQueueSendNow).mockReset();
+    vi.mocked(assistantQueueSendNow).mockResolvedValue(undefined);
     vi.mocked(assistantInterrupt).mockReset();
     vi.mocked(assistantInterrupt).mockResolvedValue(undefined);
     vi.mocked(openFileDialog).mockReset();
@@ -424,6 +428,18 @@ describe("AssistantPane", () => {
       await user.type(input, "final draft{Enter}");
 
       expect(assistantQueueEdit).toHaveBeenCalledWith("p-1", "final draft");
+    });
+
+    it("sends a waiting message now", async () => {
+      const user = userEvent.setup();
+      useAssistantStore.setState({
+        pending: [{ id: "p-1", kind: "user", text: "send me now", attachments: [] }],
+      });
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Send waiting message now"));
+
+      expect(assistantQueueSendNow).toHaveBeenCalledWith("p-1");
     });
 
     it("removes a waiting message", async () => {

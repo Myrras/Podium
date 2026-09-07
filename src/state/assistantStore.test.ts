@@ -8,10 +8,6 @@ vi.mock("../ipc/commands", () => ({
   assistantProactivitySet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
   ),
-  assistantQueueMessagesGet: vi.fn(() => Promise.resolve(false)),
-  assistantQueueMessagesSet: vi.fn((enabled: boolean) =>
-    Promise.resolve(enabled),
-  ),
   assistantPollingGet: vi.fn(() =>
     Promise.resolve({ intervalMinutes: 10, slack: true, teams: true }),
   ),
@@ -20,6 +16,7 @@ vi.mock("../ipc/commands", () => ({
       Promise.resolve({ intervalMinutes, slack, teams }),
   ),
   assistantQueueEdit: vi.fn(() => Promise.resolve()),
+  assistantQueueSendNow: vi.fn(() => Promise.resolve()),
   assistantQueueRemove: vi.fn(() => Promise.resolve()),
   assistantInterrupt: vi.fn(() => Promise.resolve()),
   assistantNewConversation: vi.fn(() => Promise.resolve()),
@@ -40,9 +37,8 @@ import {
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
-  assistantQueueMessagesGet,
-  assistantQueueMessagesSet,
   assistantQueueRemove,
+  assistantQueueSendNow,
   assistantSend,
 } from "../ipc/commands";
 
@@ -69,11 +65,6 @@ describe("assistantStore", () => {
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
       Promise.resolve(enabled),
     );
-    vi.mocked(assistantQueueMessagesGet).mockClear();
-    vi.mocked(assistantQueueMessagesSet).mockClear();
-    vi.mocked(assistantQueueMessagesSet).mockImplementation((enabled) =>
-      Promise.resolve(enabled),
-    );
     vi.mocked(assistantPollingGet).mockClear();
     vi.mocked(assistantPollingSet).mockClear();
     vi.mocked(assistantPollingSet).mockImplementation(
@@ -84,6 +75,8 @@ describe("assistantStore", () => {
     vi.mocked(assistantQueueEdit).mockResolvedValue(undefined);
     vi.mocked(assistantQueueRemove).mockClear();
     vi.mocked(assistantQueueRemove).mockResolvedValue(undefined);
+    vi.mocked(assistantQueueSendNow).mockClear();
+    vi.mocked(assistantQueueSendNow).mockResolvedValue(undefined);
     vi.mocked(assistantInterrupt).mockClear();
     vi.mocked(assistantInterrupt).mockResolvedValue(undefined);
     useAssistantStore.setState({
@@ -91,7 +84,6 @@ describe("assistantStore", () => {
       busy: false,
       activity: null,
       proactive: true,
-      queueMessages: false,
       polling: { intervalMinutes: 10, slack: true, teams: true },
       pending: [],
       turnReplyText: null,
@@ -196,26 +188,6 @@ describe("assistantStore", () => {
     });
     await useAssistantStore.getState().setProactivity(true);
     expect(useAssistantStore.getState().proactive).toBe(false);
-    const msgs = useAssistantStore.getState().messages;
-    const last = msgs[msgs.length - 1];
-    expect(last?.text).toBe("disk is full");
-  });
-
-  it("mirrors the queue-messages setting and rolls back a failed save", async () => {
-    await useAssistantStore.getState().loadQueueMessages();
-    expect(assistantQueueMessagesGet).toHaveBeenCalled();
-    expect(useAssistantStore.getState().queueMessages).toBe(false);
-
-    await useAssistantStore.getState().setQueueMessages(true);
-    expect(assistantQueueMessagesSet).toHaveBeenCalledWith(true);
-    expect(useAssistantStore.getState().queueMessages).toBe(true);
-
-    vi.mocked(assistantQueueMessagesSet).mockRejectedValueOnce({
-      kind: "io",
-      message: "disk is full",
-    });
-    await useAssistantStore.getState().setQueueMessages(false);
-    expect(useAssistantStore.getState().queueMessages).toBe(true);
     const msgs = useAssistantStore.getState().messages;
     const last = msgs[msgs.length - 1];
     expect(last?.text).toBe("disk is full");

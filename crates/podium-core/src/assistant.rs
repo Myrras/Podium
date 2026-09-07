@@ -33,16 +33,13 @@
 //! interleaving into the turn in progress, and are delivered as their own
 //! turn once the current one ends (`TurnEnd`) — one waiting item per turn,
 //! oldest first, and only consecutive nudges are merged.
-//! Whether the user's *own* messages join that same queue is the
-//! `queue_messages` setting (Settings → Assistant, default **off**): off, a
-//! message typed mid-turn goes straight into the live session as it always
-//! did before this queue existed, possibly interleaving into the answer; on,
-//! it waits its turn like everything else. Either way, a new user message
-//! never cuts ahead of whatever is already fairly waiting (a nudge queued
-//! while nobody was chatting, or a message queued before the setting was
-//! flipped) — "off" only stops a *new* message from joining that line, it
-//! does not let one skip it. Flipping the setting never affects items
-//! already waiting — only where a *new* user message goes.
+//! The user's own messages join that same queue, and never cut ahead of
+//! whatever is already fairly waiting. A waiting message can still be pushed
+//! into the running turn on demand — [`AssistantManager::send_pending_now`],
+//! the "send now" action on its row — which writes it straight into the live
+//! session, output interleaving and all. That replaced a `queue_messages`
+//! setting deciding the same thing for every message in advance: the choice
+//! only ever matters for one message at a time, when you are looking at it.
 //! [`AssistantManager::interrupt`] cuts a running turn short and delivers the
 //! next waiting item immediately rather than for a `TurnEnd` that would never
 //! come. The queue is not persisted: a session ending for any reason (crash,
@@ -189,15 +186,6 @@ pub struct AssistantSettings {
     /// on — also for an `agents.json` written before this field existed.
     #[serde(default = "default_true")]
     pub proactive: bool,
-    /// Whether a message typed while a turn is running waits its turn
-    /// (queued, FIFO) instead of going straight into the live session.
-    /// Defaults to **off** — the behaviour from before this queue existed —
-    /// so an `agents.json` written before this field existed reads the same
-    /// way it always ran. Governs only the user's own messages: a
-    /// proactivity nudge or a proposal-outcome notice always queues,
-    /// regardless of this setting.
-    #[serde(default)]
-    pub queue_messages: bool,
     /// How often (in minutes) the slow lane sweeps the enabled external
     /// sources; **0 turns it off**. Defaults to 10, also for an
     /// `agents.json` written before this field existed.
@@ -227,7 +215,6 @@ impl Default for AssistantSettings {
         Self {
             autonomy: AutonomyMode::default(),
             proactive: true,
-            queue_messages: false,
             poll_interval_minutes: DEFAULT_POLL_INTERVAL_MINUTES,
             poll_slack: true,
             poll_teams: true,
@@ -844,12 +831,11 @@ impl AssistantManager {
     /// Send a chat turn, spawning the session on first use (or after it
     /// died). `mcp` is how the new session reaches Podium's own MCP
     /// endpoint; a session spawned before the server is up simply has no
-    /// Podium tools. With `queue_messages` on, delivered immediately if the
-    /// session is idle and queued (see the module docs) otherwise; off (the
-    /// default), it goes straight into the live session whenever nothing is
-    /// already fairly waiting ahead of it — exactly as it did before the
-    /// queue existed. Either way, the setting governs only the user's own
-    /// messages, never a nudge or a proposal-outcome notice.
+    /// Podium tools. Delivered immediately when the session is idle with
+    /// nothing waiting, and queued (see the module docs) otherwise — the
+    /// user pushes a waiting message into the running turn per message with
+    /// [`send_pending_now`](Self::send_pending_now), rather than by a
+    /// setting that decided it for every message in advance.
     ///
     /// `attachments` beyond the limits are refused individually (a chat
     /// notice names the file) before the rest of the message goes out — see
@@ -859,7 +845,6 @@ impl AssistantManager {
         text: &str,
         attachments: Vec<Attachment>,
         mcp: Option<McpConnectInfo>,
-        queue_messages: bool,
     ) -> CoreResult<()> {
         let text = text.trim();
         if text.is_empty() {
@@ -880,15 +865,7 @@ impl AssistantManager {
             attachments,
             recorded: false,
         };
-        // Off still respects whatever is already fairly waiting (e.g. a
-        // nudge queued while nobody was chatting) — it only stops a *new*
-        // message from joining the back of that line. Only with nothing
-        // ahead of it does it bypass straight to the session.
-        if queue_messages || !state.pending.is_empty() {
-            deliver_or_queue(&mut state, item, &self.store, &self.events).await;
-        } else {
-            deliver_bypassing_queue(&mut state, item, &self.store, &self.events).await;
-        }
+        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
         Ok(())
     }
 
@@ -961,6 +938,34 @@ impl AssistantManager {
             .find(|p| p.id == id && p.kind == PendingKind::User)
             .ok_or(CoreError::QueuedMessageNotFound)?;
         item.text = text.to_string();
+        publish_queue(&state, &self.events);
+        Ok(())
+    }
+
+    /// Push a waiting user message into the session right now, without
+    /// waiting for the running turn to end — the escape hatch from the queue,
+    /// per message. Only a user message qualifies: a nudge or a
+    /// proposal-outcome notice is Podium's own text, and its ordering is
+    /// Podium's business.
+    pub async fn send_pending_now(&self, id: PendingId) -> CoreResult<()> {
+        let mut state = self.state.lock().await;
+        let index = state
+            .pending
+            .iter()
+            .position(|p| p.id == id && p.kind == PendingKind::User)
+            .ok_or(CoreError::QueuedMessageNotFound)?;
+        let item = state
+            .pending
+            .remove(index)
+            .expect("index came from the same queue");
+        // Announce it like any other waiting message whose turn came up: the
+        // panel promotes the waiting row into the ordinary log on this event.
+        self.events.publish(PodiumEvent::AssistantEvent {
+            event: AssistantEvent::QueueItemDelivered {
+                text: item.text.clone(),
+            },
+        });
+        deliver_bypassing_queue(&mut state, item, &self.store, &self.events).await;
         publish_queue(&state, &self.events);
         Ok(())
     }
@@ -1342,13 +1347,11 @@ fn is_nothing_to_report(event: &AssistantEvent) -> bool {
 }
 
 /// Write `item` straight into the live session, regardless of whether a turn
-/// is already running — the behaviour from before the pending-input queue
-/// existed, kept as the default (`queue_messages` off) for the user's own
-/// messages. Callers only reach this with `state.pending` already empty, so
-/// there is nothing to queue-jump: an in-progress turn's output can
-/// interleave with this new one, which is the trade-off of the setting being
-/// off. A write that fails, or no live session at all, falls back to queuing
-/// rather than losing the item outright.
+/// is already running — what "send now" on a waiting message does. An
+/// in-progress turn's output can interleave with this new one; that is the
+/// trade-off the user takes by asking for it now instead of in turn. A write
+/// that fails, or no live session at all, falls back to queuing rather than
+/// losing the item outright.
 async fn deliver_bypassing_queue(
     state: &mut SessionState,
     mut item: PendingInput,
@@ -2174,7 +2177,7 @@ mod tests {
     async fn blank_messages_are_rejected() {
         let manager = AssistantManager::new(EventBus::new());
         let err = manager
-            .send("   ", Vec::new(), None, false)
+            .send("   ", Vec::new(), None)
             .await
             .expect_err("blank rejected");
         assert!(matches!(err, CoreError::InvalidInput(_)));
@@ -2366,13 +2369,13 @@ mod tests {
     }
 
     #[test]
-    fn queue_messages_defaults_off_including_for_older_settings_files() {
-        assert!(!AssistantSettings::default().queue_messages);
-        // An `agents.json` written before the field existed must read as the
-        // pre-queue behaviour, not as "the user turned queuing on".
-        let legacy: AssistantSettings =
-            serde_json::from_str(r#"{"autonomy":"full"}"#).expect("legacy settings");
-        assert!(!legacy.queue_messages);
+    fn a_settings_file_still_carrying_the_dropped_queue_switch_loads() {
+        // The setting is gone (every message queues now); an `agents.json`
+        // written while it existed must still load rather than being refused.
+        let stored: AssistantSettings =
+            serde_json::from_str(r#"{"autonomy":"full","queueMessages":true}"#)
+                .expect("settings with the dropped field");
+        assert_eq!(stored.autonomy, AutonomyMode::Full);
     }
 
     #[test]

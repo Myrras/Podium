@@ -187,14 +187,6 @@ impl AgentSettingsStore {
         Ok(inner.settings.clone())
     }
 
-    /// Turn the assistant's message queue on or off; returns the updated
-    /// settings.
-    pub fn set_assistant_queue_messages(&self, enabled: bool) -> CoreResult<AgentSettings> {
-        let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.settings.assistant.queue_messages = enabled;
-        save(&inner)?;
-        Ok(inner.settings.clone())
-    }
 
     /// Set the assistant's external-sweep settings (interval in minutes, 0 =
     /// off; which sources it looks at); returns the updated settings.
@@ -453,26 +445,6 @@ mod tests {
         let reloaded = AgentSettingsStore::new();
         reloaded.set_path(file);
         assert_eq!(reloaded.get().assistant.autonomy, AutonomyMode::ProposeAll);
-    }
-
-    #[test]
-    fn assistant_queue_messages_defaults_off_and_persists() {
-        assert!(!AgentSettings::default().assistant.queue_messages);
-        // A legacy file without the field loads as off — the pre-queue
-        // behaviour, unchanged for anyone who never touched the setting.
-        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
-        assert!(!legacy.assistant.queue_messages);
-
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("agents.json");
-        let store = AgentSettingsStore::new();
-        store.set_path(file.clone());
-        let updated = store.set_assistant_queue_messages(true).unwrap();
-        assert!(updated.assistant.queue_messages);
-
-        let reloaded = AgentSettingsStore::new();
-        reloaded.set_path(file);
-        assert!(reloaded.get().assistant.queue_messages);
     }
 
     #[test]

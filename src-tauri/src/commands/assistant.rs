@@ -108,23 +108,6 @@ pub async fn assistant_proactivity_set(
     Ok(state.orchestrator.set_assistant_proactivity(enabled)?)
 }
 
-/// Whether a message typed while a turn is running waits its turn (queued)
-/// instead of going straight into the live session. Governs only the user's
-/// own messages.
-#[tauri::command]
-pub async fn assistant_queue_messages_get(state: State<'_, AppState>) -> Result<bool, IpcError> {
-    Ok(state.orchestrator.assistant_queue_messages())
-}
-
-/// Turn the message queue on or off; returns what was stored.
-#[tauri::command]
-pub async fn assistant_queue_messages_set(
-    state: State<'_, AppState>,
-    enabled: bool,
-) -> Result<bool, IpcError> {
-    Ok(state.orchestrator.set_assistant_queue_messages(enabled)?)
-}
-
 /// How often the assistant sweeps the user's external sources, and which of
 /// them it looks at. `intervalMinutes` of 0 turns the sweep off.
 #[tauri::command]
@@ -174,6 +157,17 @@ pub async fn assistant_queue_edit(
     text: String,
 ) -> Result<(), IpcError> {
     state.orchestrator.assistant_queue_edit(id, &text).await?;
+    Ok(())
+}
+
+/// Push a waiting user message into the running turn instead of letting it
+/// wait for its own — the per-message escape hatch from the queue.
+#[tauri::command]
+pub async fn assistant_queue_send_now(
+    state: State<'_, AppState>,
+    id: PendingId,
+) -> Result<(), IpcError> {
+    state.orchestrator.assistant_queue_send_now(id).await?;
     Ok(())
 }
 

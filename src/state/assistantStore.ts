@@ -25,9 +25,8 @@ import {
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
-  assistantQueueMessagesGet,
-  assistantQueueMessagesSet,
   assistantQueueRemove,
+  assistantQueueSendNow,
   assistantResolveProposal,
   assistantSend,
   assistantTranscript,
@@ -100,12 +99,6 @@ interface AssistantState {
   /** Whether Podium nudges the assistant unprompted; mirrors the setting. */
   proactive: boolean;
   /**
-   * Whether a message typed while a turn is running waits its turn instead
-   * of going straight into the live session; mirrors the setting. Default
-   * off — governs only the user's own messages.
-   */
-  queueMessages: boolean;
-  /**
    * The proactive external-source (Slack/Teams) polling sweep; mirrors the
    * persisted setting. Seeded with the backend's own defaults so the tab
    * shows a sane value before the load round-trip completes.
@@ -151,10 +144,6 @@ interface AssistantState {
   loadProactivity: () => Promise<void>;
   /** Turn proactive nudges on or off. */
   setProactivity: (enabled: boolean) => Promise<void>;
-  /** Load the stored message-queue setting (Settings → Assistant). */
-  loadQueueMessages: () => Promise<void>;
-  /** Turn the message queue on or off. */
-  setQueueMessages: (enabled: boolean) => Promise<void>;
   /** Load the stored polling settings (Settings → Assistant). */
   loadPolling: () => Promise<void>;
   /** Replace the polling settings (interval + per-source toggles) as one. */
@@ -163,6 +152,8 @@ interface AssistantState {
   resolveProposal: (id: string, approved: boolean) => Promise<void>;
   /** Change a waiting user message's text before it is delivered. */
   editPending: (id: string, text: string) => Promise<void>;
+  /** Push a waiting user message into the running turn now. */
+  sendPendingNow: (id: string) => Promise<void>;
   /** Withdraw a waiting user message. */
   removePending: (id: string) => Promise<void>;
   /** Stop the current turn, if any, and hand the next waiting message over. */
@@ -199,7 +190,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   activity: null,
   autonomy: "confirm-destructive",
   proactive: true,
-  queueMessages: false,
   polling: { intervalMinutes: 10, slack: true, teams: true },
   memory: null,
   hydrated: false,
@@ -357,25 +347,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }));
     }
   },
-  loadQueueMessages: async () => {
-    try {
-      set({ queueMessages: await assistantQueueMessagesGet() });
-    } catch {
-      // The panel still works on the default; the backend stays the truth.
-    }
-  },
-  setQueueMessages: async (enabled) => {
-    const previous = get().queueMessages;
-    set({ queueMessages: enabled });
-    try {
-      set({ queueMessages: await assistantQueueMessagesSet(enabled) });
-    } catch (e) {
-      set((s) => ({
-        queueMessages: previous,
-        messages: [...s.messages, message("notice", toIpcError(e).message)],
-      }));
-    }
-  },
   loadPolling: async () => {
     try {
       set({ polling: await assistantPollingGet() });
@@ -434,6 +405,20 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     });
     try {
       await assistantQueueEdit(id, trimmed);
+    } catch (e) {
+      set((s) => ({
+        pending: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  sendPendingNow: async (id) => {
+    const previous = get().pending;
+    // Optimistic like the other queue actions: the row leaves the waiting
+    // list at once, and `queueChanged`/`queueItemDelivered` confirm it.
+    set({ pending: previous.filter((p) => p.id !== id) });
+    try {
+      await assistantQueueSendNow(id);
     } catch (e) {
       set((s) => ({
         pending: previous,

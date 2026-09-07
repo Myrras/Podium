@@ -658,20 +658,6 @@ export function assistantPollingSet(
 }
 
 /**
- * Whether a message typed while a turn is running waits its turn (queued)
- * instead of going straight into the live session. Governs only the user's
- * own messages.
- */
-export function assistantQueueMessagesGet(): Promise<boolean> {
-  return invoke("assistant_queue_messages_get");
-}
-
-/** Turn the message queue on or off; returns what was stored. */
-export function assistantQueueMessagesSet(enabled: boolean): Promise<boolean> {
-  return invoke("assistant_queue_messages_set", { enabled });
-}
-
-/**
  * Confirm or reject one action the assistant proposed. A confirmed proposal
  * runs right away; the outcome streams back as `assistant:event`.
  */
@@ -680,6 +666,15 @@ export function assistantResolveProposal(
   approved: boolean,
 ): Promise<void> {
   return invoke("assistant_resolve_proposal", { id, approved });
+}
+
+/**
+ * Push a waiting user message into the running turn instead of letting it
+ * wait for its own. It may land mid-answer — that is what asking for it now
+ * means.
+ */
+export function assistantQueueSendNow(id: string): Promise<void> {
+  return invoke("assistant_queue_send_now", { id });
 }
 
 /**
