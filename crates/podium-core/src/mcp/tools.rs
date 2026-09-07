@@ -57,6 +57,9 @@ pub struct GetProcessOutputParams {
 pub struct ListTodosParams {
     /// Project UUID whose to-dos to list.
     pub project_id: String,
+    /// One to-do's UUID to read in full, comment history included. Omit to
+    /// list the project's to-dos, where comments are reported as a count.
+    pub todo_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -500,18 +503,31 @@ impl PodiumTools {
         Ok(text_result("removed".to_string()))
     }
 
-    #[tool(description = "List a project's to-do items (id, text, done, createdAt).")]
+    #[tool(
+        description = "List a project's to-do items (id, text, description, done, \
+                       links, commentCount, …). Comment bodies are left out — pass \
+                       todo_id to read one to-do in full, comments included."
+    )]
     pub async fn list_todos(
         &self,
         Parameters(p): Parameters<ListTodosParams>,
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
-        json_result(
-            &self
-                .orchestrator
-                .list_todos(project_id)
-                .map_err(core_error)?,
-        )
+        let todos = self
+            .orchestrator
+            .list_todos(project_id)
+            .map_err(core_error)?;
+        match p.todo_id {
+            Some(id) => {
+                let id = parse_todo_id(&id)?;
+                let todo = todos
+                    .iter()
+                    .find(|t| t.id == id)
+                    .ok_or_else(|| core_error(CoreError::TodoNotFound))?;
+                json_result(todo)
+            }
+            None => json_result(&todos.iter().map(without_comments).collect::<Vec<_>>()),
+        }
     }
 
     #[tool(description = "Add a to-do item to a project's shared to-do list.")]
@@ -520,12 +536,12 @@ impl PodiumTools {
         Parameters(p): Parameters<AddTodoParams>,
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .add_todo(project_id, &p.text)
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(description = "Mark a to-do item as done. Returns the updated to-do.")]
@@ -535,12 +551,12 @@ impl PodiumTools {
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .set_todo_done(project_id, todo_id, true)
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(
@@ -552,12 +568,12 @@ impl PodiumTools {
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .set_todo_archived(project_id, todo_id, p.archived)
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(
@@ -570,12 +586,12 @@ impl PodiumTools {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
         let process_id = parse_process_id(&p.process_id)?;
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .assign_todo(project_id, todo_id, process_id)
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(
@@ -636,7 +652,7 @@ impl PodiumTools {
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .update_todo(
@@ -646,7 +662,7 @@ impl PodiumTools {
                     p.description.as_deref(),
                 )
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(
@@ -659,12 +675,12 @@ impl PodiumTools {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
         let author = comment_author(p.author.as_deref());
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .comment_todo(project_id, todo_id, author, &p.text)
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(
@@ -677,12 +693,12 @@ impl PodiumTools {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
         let label = p.label.as_deref().unwrap_or("");
-        json_result(
+        json_result(&without_comments(
             &self
                 .orchestrator
                 .add_todo_link(project_id, todo_id, label, &p.url)
                 .map_err(core_error)?,
-        )
+        ))
     }
 
     #[tool(description = "List a project's active (non-archived) scratchpads.")]
@@ -892,6 +908,23 @@ impl ServerHandler for PodiumTools {
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }
+}
+
+/// A to-do without its comment *bodies* — the one part that grows without
+/// bound. On a long-lived to-do they dwarf everything else (43 comments,
+/// 39 KB, on one real to-do here), enough to push a listing past a client's
+/// result-size cap and make it unreadable. Callers that need the history ask
+/// for the one to-do by id.
+fn without_comments(todo: &crate::todo::TodoInfo) -> serde_json::Value {
+    let mut value = serde_json::to_value(todo).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() {
+        let count = obj
+            .remove("comments")
+            .and_then(|c| c.as_array().map(Vec::len))
+            .unwrap_or(0);
+        obj.insert("commentCount".to_string(), count.into());
+    }
+    value
 }
 
 fn json_result<T: serde::Serialize>(value: &T) -> Result<CallToolResult, McpError> {

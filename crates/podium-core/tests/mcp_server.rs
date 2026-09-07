@@ -454,18 +454,48 @@ async fn todo_tools_update_and_comment_round_trip() {
         .await;
     assert!(bad.is_err(), "non-http url must be rejected");
 
-    // list_todos must reflect the revised text/description, comment, and link.
+    // list_todos must reflect the revised text/description and link — but
+    // carry the comments as a count only, so a chatty to-do cannot blow up
+    // the listing.
     let listed_result = tools
         .list_todos(Parameters(ListTodosParams {
             project_id: project_id.to_string(),
+            todo_id: None,
         }))
         .await
         .expect("list_todos");
     let listed = first_text(&listed_result);
     assert!(listed.contains("wire up OAuth"), "{listed:?}");
-    assert!(listed.contains("handler stubbed out"), "{listed:?}");
-    assert!(listed.contains("claude"), "{listed:?}");
     assert!(listed.contains("#42 Fix login"), "{listed:?}");
+    assert!(listed.contains("\"commentCount\": 1"), "{listed:?}");
+    assert!(
+        !listed.contains("handler stubbed out"),
+        "comment bodies must stay out of the listing: {listed:?}"
+    );
+
+    // Asking for the one to-do returns the history the listing left out.
+    let detail_result = tools
+        .list_todos(Parameters(ListTodosParams {
+            project_id: project_id.to_string(),
+            todo_id: Some(todo_id.clone()),
+        }))
+        .await
+        .expect("list_todos detail");
+    let detail = first_text(&detail_result);
+    assert!(detail.contains("handler stubbed out"), "{detail:?}");
+    assert!(detail.contains("claude"), "{detail:?}");
+
+    // An unknown id is an error, not an empty listing.
+    assert!(
+        tools
+            .list_todos(Parameters(ListTodosParams {
+                project_id: project_id.to_string(),
+                todo_id: Some(uuid::Uuid::new_v4().to_string()),
+            }))
+            .await
+            .is_err(),
+        "an unknown to-do id must be refused"
+    );
 
     orch.shutdown().await;
 }
