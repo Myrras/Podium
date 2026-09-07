@@ -576,6 +576,11 @@ describe("AssistantPane", () => {
       await user.click(screen.getByLabelText("Start my day"));
 
       expect(assistantDayStart).toHaveBeenCalled();
+      // The turn shows at once, so the button is gone before the CLI answers
+      // — no window in which the click looks like it did nothing.
+      expect(screen.queryByLabelText("Start my day")).toBeNull();
+      expect(screen.getByText("Start my day")).toBeInTheDocument();
+      expect(screen.getByText("thinking…")).toBeInTheDocument();
     });
 
     it("hides the day-start button once there are messages", () => {

@@ -118,11 +118,16 @@ describe("assistantStore", () => {
     ).toEqual([["user", "hello"]]);
   });
 
-  it("triggers the day-start summary without an optimistic bubble", async () => {
-    await useAssistantStore.getState().dayStart();
+  it("shows the day-start turn before the backend answers", async () => {
+    const pending = useAssistantStore.getState().dayStart();
+    // Before the await settles: the panel must already look busy.
+    expect(
+      useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
+    ).toEqual([["user", "Start my day"]]);
+    expect(useAssistantStore.getState().busy).toBe(true);
+    await pending;
 
     expect(assistantDayStart).toHaveBeenCalled();
-    expect(useAssistantStore.getState().messages).toEqual([]);
   });
 
   it("reports a failed day-start trigger as a notice", async () => {
@@ -137,6 +142,8 @@ describe("assistantStore", () => {
       role: "notice",
       text: "could not spawn the session",
     });
+    // The optimistic bubble must not leave the panel stuck on "thinking…".
+    expect(useAssistantStore.getState().busy).toBe(false);
   });
 
   it("tracks the running tool as activity, cleared at turn end", () => {

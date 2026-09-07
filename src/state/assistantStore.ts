@@ -139,11 +139,7 @@ interface AssistantState {
   saveMemory: (content: string) => Promise<void>;
   /** Send a turn; returns whether it was accepted (the input clears then). */
   send: (text: string, attachments?: Attachment[]) => Promise<boolean>;
-  /**
-   * Trigger the day-start summary as a normal user turn. No optimistic
-   * bubble: the backend sends the actual prompt, which arrives through the
-   * normal event stream like any other turn.
-   */
+  /** Trigger the day-start summary as a normal user turn. */
   dayStart: () => Promise<void>;
   /** Push a local notice (e.g. a client-side attachment-limit rejection). */
   pushNotice: (text: string) => void;
@@ -299,11 +295,25 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     }
   },
   dayStart: async () => {
+    // Same optimistic echo as `send` — a user turn publishes no event, so
+    // without it the panel sits empty (and the button stays clickable, so it
+    // invites a second click) for the seconds the CLI takes to boot. The
+    // bubble is the button's own wording; the transcript keeps the longer
+    // prompt the backend actually sent.
+    const idle = !get().busy;
+    if (idle) {
+      set((s) => ({
+        messages: [...s.messages, message("user", "Start my day")],
+        busy: true,
+        turnReplyText: null,
+      }));
+    }
     try {
       await assistantDayStart();
     } catch (e) {
       set((s) => ({
         messages: [...s.messages, message("notice", toIpcError(e).message)],
+        ...(idle ? { busy: false } : {}),
       }));
     }
   },
