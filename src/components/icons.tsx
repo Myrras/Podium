@@ -67,6 +67,9 @@ import {
   ExternalLink,
   GitBranch,
   GripVertical,
+  Paperclip,
+  Image as ImageGlyph,
+  File as FileGlyph,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
@@ -92,6 +95,9 @@ function icon(Glyph: LucideIcon, defaults?: Partial<LucideProps>) {
 export const AssistantIcon = icon(Sparkles);
 export const MemoryIcon = icon(Brain);
 export const SendIcon = icon(ArrowUp, { size: 15 });
+export const AttachIcon = icon(Paperclip, { size: 15 });
+export const ImageAttachmentIcon = icon(ImageGlyph, { size: 14 });
+export const FileAttachmentIcon = icon(FileGlyph, { size: 14 });
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.
 export const AgentIcon = icon(Bot);

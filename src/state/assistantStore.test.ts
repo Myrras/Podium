@@ -87,7 +87,7 @@ describe("assistantStore", () => {
 
   it("trims the turn and stays busy until the turn ends", async () => {
     await useAssistantStore.getState().send("  hello  ");
-    expect(assistantSend).toHaveBeenCalledWith("hello");
+    expect(assistantSend).toHaveBeenCalledWith("hello", []);
     expect(useAssistantStore.getState().busy).toBe(true);
 
     useAssistantStore.getState().apply({ type: "turnEnd", error: null });
@@ -176,7 +176,7 @@ describe("assistantStore", () => {
     it("sends straight through without touching the queue while idle", async () => {
       await useAssistantStore.getState().send("hello");
 
-      expect(assistantSend).toHaveBeenCalledWith("hello");
+      expect(assistantSend).toHaveBeenCalledWith("hello", []);
       expect(useAssistantStore.getState().pending).toEqual([]);
       expect(useAssistantStore.getState().messages.map((m) => m.role)).toEqual([
         "user",
@@ -189,7 +189,7 @@ describe("assistantStore", () => {
       const sent = await useAssistantStore.getState().send("queue me");
 
       expect(sent).toBe(true);
-      expect(assistantSend).toHaveBeenCalledWith("queue me");
+      expect(assistantSend).toHaveBeenCalledWith("queue me", []);
       // No local bubble: the backend's `queueChanged` event is what shows it.
       expect(useAssistantStore.getState().messages).toEqual([]);
       expect(useAssistantStore.getState().busy).toBe(true);
@@ -198,11 +198,11 @@ describe("assistantStore", () => {
     it("mirrors a queueChanged snapshot exactly", () => {
       useAssistantStore.getState().apply({
         type: "queueChanged",
-        items: [{ id: "p-1", kind: "user", text: "waiting" }],
+        items: [{ id: "p-1", kind: "user", text: "waiting", attachments: [] }],
       });
 
       expect(useAssistantStore.getState().pending).toEqual([
-        { id: "p-1", kind: "user", text: "waiting" },
+        { id: "p-1", kind: "user", text: "waiting", attachments: [] },
       ]);
     });
 
@@ -220,7 +220,7 @@ describe("assistantStore", () => {
     it("promotes a delivered waiting message into the log and re-busies the panel", () => {
       useAssistantStore.setState({
         busy: false,
-        pending: [{ id: "p-1", kind: "user", text: "its turn came" }],
+        pending: [{ id: "p-1", kind: "user", text: "its turn came", attachments: [] }],
       });
 
       useAssistantStore.getState().apply({
@@ -236,7 +236,7 @@ describe("assistantStore", () => {
 
     it("edits a waiting message optimistically and rolls back on failure", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "first draft" }],
+        pending: [{ id: "p-1", kind: "user", text: "first draft", attachments: [] }],
       });
 
       await useAssistantStore.getState().editPending("p-1", "final draft");
@@ -256,7 +256,7 @@ describe("assistantStore", () => {
 
     it("ignores a blank edit rather than sending it", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "first draft" }],
+        pending: [{ id: "p-1", kind: "user", text: "first draft", attachments: [] }],
       });
 
       await useAssistantStore.getState().editPending("p-1", "   ");
@@ -267,7 +267,7 @@ describe("assistantStore", () => {
 
     it("removes a waiting message optimistically and rolls back on failure", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "withdraw me" }],
+        pending: [{ id: "p-1", kind: "user", text: "withdraw me", attachments: [] }],
       });
 
       await useAssistantStore.getState().removePending("p-1");
@@ -275,7 +275,7 @@ describe("assistantStore", () => {
       expect(useAssistantStore.getState().pending).toEqual([]);
 
       useAssistantStore.setState({
-        pending: [{ id: "p-2", kind: "user", text: "keep me" }],
+        pending: [{ id: "p-2", kind: "user", text: "keep me", attachments: [] }],
       });
       vi.mocked(assistantQueueRemove).mockRejectedValueOnce({
         kind: "queueItemNotFound",
@@ -283,7 +283,7 @@ describe("assistantStore", () => {
       });
       await useAssistantStore.getState().removePending("p-2");
       expect(useAssistantStore.getState().pending).toEqual([
-        { id: "p-2", kind: "user", text: "keep me" },
+        { id: "p-2", kind: "user", text: "keep me", attachments: [] },
       ]);
     });
 
@@ -304,7 +304,7 @@ describe("assistantStore", () => {
 
     it("drops the local queue on a fresh conversation", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "stale" }],
+        pending: [{ id: "p-1", kind: "user", text: "stale", attachments: [] }],
       });
 
       await useAssistantStore.getState().newConversation();

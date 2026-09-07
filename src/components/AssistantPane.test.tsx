@@ -1,6 +1,12 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// The file picker is a Tauri plugin: mocked so the picker button resolves
+// to fixture paths instead of opening a real dialog.
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(() => Promise.resolve(null)),
+}));
 
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
@@ -22,6 +28,8 @@ vi.mock("../ipc/commands", () => ({
     return { kind: "unknown", message: String(e) };
   },
 }));
+
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import {
   assistantAutonomyGet,
@@ -66,6 +74,8 @@ describe("AssistantPane", () => {
     vi.mocked(assistantQueueRemove).mockResolvedValue(undefined);
     vi.mocked(assistantInterrupt).mockReset();
     vi.mocked(assistantInterrupt).mockResolvedValue(undefined);
+    vi.mocked(openFileDialog).mockReset();
+    vi.mocked(openFileDialog).mockResolvedValue(null);
     useAssistantStore.setState({
       messages: [],
       busy: false,
@@ -87,7 +97,7 @@ describe("AssistantPane", () => {
     );
     await user.click(screen.getByLabelText("Send"));
 
-    expect(assistantSend).toHaveBeenCalledWith("what is open?");
+    expect(assistantSend).toHaveBeenCalledWith("what is open?", []);
     expect(screen.getByText("what is open?")).toBeInTheDocument();
     // The composer clears so the next turn starts empty.
     expect(screen.getByLabelText("Message the assistant")).toHaveValue("");
@@ -128,7 +138,7 @@ describe("AssistantPane", () => {
     expect(assistantSend).not.toHaveBeenCalled();
 
     await user.type(input, "{Enter}");
-    expect(assistantSend).toHaveBeenCalledWith("first\nsecond");
+    expect(assistantSend).toHaveBeenCalledWith("first\nsecond", []);
   });
 
   it("renders streamed prose, executed actions and failures", () => {
@@ -370,7 +380,7 @@ describe("AssistantPane", () => {
 
     it("renders a waiting user message with edit/remove controls", () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "queued while busy" }],
+        pending: [{ id: "p-1", kind: "user", text: "queued while busy", attachments: [] }],
       });
       render(<AssistantPane />);
 
@@ -385,7 +395,7 @@ describe("AssistantPane", () => {
     it("does not offer edit/remove for a nudge or notice waiting its turn", () => {
       useAssistantStore.setState({
         pending: [
-          { id: "n-1", kind: "nudge", text: "[Podium] an agent finished" },
+          { id: "n-1", kind: "nudge", text: "[Podium] an agent finished", attachments: [] },
         ],
       });
       render(<AssistantPane />);
@@ -400,7 +410,7 @@ describe("AssistantPane", () => {
     it("edits a waiting message on Enter", async () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "first draft" }],
+        pending: [{ id: "p-1", kind: "user", text: "first draft", attachments: [] }],
       });
       render(<AssistantPane />);
 
@@ -415,7 +425,7 @@ describe("AssistantPane", () => {
     it("removes a waiting message", async () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "withdraw me" }],
+        pending: [{ id: "p-1", kind: "user", text: "withdraw me", attachments: [] }],
       });
       render(<AssistantPane />);
 
@@ -527,7 +537,7 @@ describe("AssistantPane", () => {
 
       await user.type(input, " edited");
       await user.click(screen.getByLabelText("Send"));
-      expect(assistantSend).toHaveBeenCalledWith("second message edited");
+      expect(assistantSend).toHaveBeenCalledWith("second message edited", []);
       // Sending moved focus to the Send button; bring it back to the
       // composer before recalling again.
       input.focus();
@@ -551,6 +561,119 @@ describe("AssistantPane", () => {
 
       await user.keyboard("{ArrowUp}");
       expect(input).toHaveValue("typing");
+    });
+  });
+
+  describe("attachments", () => {
+    it("attaches picked files as absolute paths and sends them with the turn", async () => {
+      const user = userEvent.setup();
+      vi.mocked(openFileDialog).mockResolvedValue([
+        "/abs/notes.txt",
+      ] as unknown as string);
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Attach files"));
+      expect(screen.getByText("notes.txt")).toBeInTheDocument();
+
+      await user.type(screen.getByLabelText("Message the assistant"), "read it");
+      await user.click(screen.getByLabelText("Send"));
+
+      expect(assistantSend).toHaveBeenCalledWith("read it", [
+        { kind: "path", path: "/abs/notes.txt" },
+      ]);
+      // The tray clears with the composer.
+      expect(screen.queryByText("notes.txt")).toBeNull();
+    });
+
+    it("removes an attachment before it is sent", async () => {
+      const user = userEvent.setup();
+      vi.mocked(openFileDialog).mockResolvedValue([
+        "/abs/notes.txt",
+      ] as unknown as string);
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Attach files"));
+      await user.click(screen.getByLabelText("Remove notes.txt"));
+
+      expect(screen.queryByText("notes.txt")).toBeNull();
+      // Nothing left to send, so the button goes back to disabled.
+      expect(screen.getByLabelText("Send")).toBeDisabled();
+    });
+
+    it("sends an attachment with no typed message", async () => {
+      const user = userEvent.setup();
+      vi.mocked(openFileDialog).mockResolvedValue([
+        "/abs/shot.png",
+      ] as unknown as string);
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Attach files"));
+      expect(screen.getByLabelText("Send")).toBeEnabled();
+      await user.click(screen.getByLabelText("Send"));
+
+      expect(assistantSend).toHaveBeenCalledWith("(sent without a message)", [
+        { kind: "path", path: "/abs/shot.png" },
+      ]);
+    });
+
+    it("refuses more than five attachments, naming each one it dropped", async () => {
+      const user = userEvent.setup();
+      vi.mocked(openFileDialog).mockResolvedValue(
+        Array.from({ length: 7 }, (_, i) => `/abs/f${i}.txt`) as unknown as string,
+      );
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Attach files"));
+
+      expect(screen.getByText("f4.txt")).toBeInTheDocument();
+      expect(screen.queryByText("f5.txt")).toBeNull();
+      // The two over the cap are reported, not silently dropped.
+      expect(
+        screen.getByText(/"f5.txt" was not added/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/"f6.txt" was not added/),
+      ).toBeInTheDocument();
+    });
+
+    it("attaches a pasted image as inline base64", async () => {
+      render(<AssistantPane />);
+      const input = screen.getByLabelText("Message the assistant");
+      const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+        type: "image/png",
+      });
+
+      await act(async () => {
+        fireEvent.paste(input, { clipboardData: { files: [file] } });
+      });
+
+      expect(await screen.findByText("shot.png")).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Send"));
+      });
+      expect(assistantSend).toHaveBeenCalledWith("(sent without a message)", [
+        { kind: "image", name: "shot.png", mediaType: "image/png", data: "AQID" },
+      ]);
+    });
+
+    it("attaches a dropped text file inline, and reports one it cannot take", async () => {
+      render(<AssistantPane />);
+      const pane = screen.getByLabelText("Personal assistant");
+      const text = new File(["log line"], "run.log", { type: "text/plain" });
+      const binary = new File([new Uint8Array([0, 1])], "archive.zip", {
+        type: "application/zip",
+      });
+
+      await act(async () => {
+        fireEvent.drop(pane, { dataTransfer: { files: [text, binary] } });
+      });
+
+      expect(await screen.findByText("run.log")).toBeInTheDocument();
+      // A dropped file carries bytes but no path, so a binary one has no way
+      // through — it is named rather than vanishing.
+      expect(
+        screen.getByText(/"archive.zip" was not added/),
+      ).toBeInTheDocument();
     });
   });
 });

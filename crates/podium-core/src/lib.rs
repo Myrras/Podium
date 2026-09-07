@@ -30,8 +30,8 @@ pub use agent::{
 };
 pub use assignment::AssignedAgent;
 pub use assistant::{
-    AssistantConfig, AssistantEvent, AssistantSettings, AutonomyMode, PendingKind, ProposalInfo,
-    QueuedMessage, TranscriptEntry, TranscriptRole,
+    AssistantConfig, AssistantEvent, AssistantSettings, Attachment, AttachmentInfo, AutonomyMode,
+    PendingKind, ProposalInfo, QueuedMessage, TranscriptEntry, TranscriptRole,
 };
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};

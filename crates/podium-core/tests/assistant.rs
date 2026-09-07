@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use podium_core::assistant::{AssistantEvent, TranscriptRole};
 use podium_core::{
-    AssistantConfig, McpConnectInfo, Orchestrator, PodiumEvent, ProactivityConfig, ProcessKind,
-    ProcessSpec, RestartPolicy,
+    AssistantConfig, Attachment, McpConnectInfo, Orchestrator, PodiumEvent, ProactivityConfig,
+    ProcessKind, ProcessSpec, RestartPolicy,
 };
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
@@ -91,6 +91,18 @@ read -r _line
 exit 1
 "#;
 
+/// A fake CLI that appends every turn's raw stdin line to `stdin.jsonl` next
+/// to it, so a test can inspect exactly what content blocks a turn carried —
+/// for asserting an attachment reaches the child's stdin intact.
+const RECORDS_STDIN_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$(dirname "$0")/stdin.jsonl"
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+done
+"#;
+
 fn write_fake(dir: &Path, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("fake-claude");
@@ -135,6 +147,27 @@ async fn recorded_argv(dir: &Path) -> Vec<String> {
 fn arg_after(args: &[String], flag: &str) -> Option<String> {
     let at = args.iter().position(|a| a == flag)?;
     args.get(at + 1).cloned()
+}
+
+/// The raw `stdin.jsonl` lines `RECORDS_STDIN_CLAUDE` captured, one per turn —
+/// waits until at least `at_least` lines have landed.
+async fn recorded_stdin(dir: &Path, at_least: usize) -> Vec<serde_json::Value> {
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(raw) = std::fs::read_to_string(dir.join("stdin.jsonl")) {
+                let lines: Vec<serde_json::Value> = raw
+                    .lines()
+                    .map(|l| serde_json::from_str(l).expect("valid json line"))
+                    .collect();
+                if lines.len() >= at_least {
+                    return lines;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake cli records stdin")
 }
 
 /// Watcher timings a test can wait on: everything in milliseconds.
@@ -912,6 +945,129 @@ async fn flipping_the_queue_setting_off_mid_turn_still_drains_what_was_already_q
     assert!(turn2.contains(&AssistantEvent::Message {
         text: "echo:second".to_string()
     }));
+
+    orch.shutdown().await;
+}
+
+// -- attachments -------------------------------------------------------
+
+#[tokio::test]
+async fn an_image_attachment_reaches_the_childs_stdin_intact() {
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    let attachments = vec![Attachment::Image {
+        name: "shot.png".to_string(),
+        media_type: "image/png".to_string(),
+        data: "Zm9v".to_string(),
+    }];
+    orch.assistant_send_with_attachments("what colour is this?", attachments)
+        .await
+        .expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let lines = recorded_stdin(dir.path(), 1).await;
+    let content = lines[0].pointer("/message/content").expect("content");
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "what colour is this?");
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["source"]["media_type"], "image/png");
+    assert_eq!(content[1]["source"]["data"], "Zm9v");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_path_attachment_is_passed_through_verbatim() {
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    let attachments = vec![Attachment::Path {
+        path: "/abs/notes.txt".to_string(),
+    }];
+    orch.assistant_send_with_attachments("look at this", attachments)
+        .await
+        .expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let lines = recorded_stdin(dir.path(), 1).await;
+    let text = lines[0]
+        .pointer("/message/content/0/text")
+        .and_then(|t| t.as_str())
+        .expect("text block");
+    assert!(text.contains("/abs/notes.txt"), "{text}");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_over_limit_attachment_is_reported_but_the_rest_of_the_message_still_sends() {
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    let attachments = vec![
+        Attachment::Text {
+            name: "paste.txt".to_string(),
+            text: "x".repeat(200_000),
+        },
+        Attachment::Path {
+            path: "/abs/notes.txt".to_string(),
+        },
+    ];
+    orch.assistant_send_with_attachments("see attached", attachments)
+        .await
+        .expect("send");
+
+    // The refused attachment is reported as a Podium-owned chat notice...
+    let events = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(
+        events.iter().any(
+            |e| matches!(e, AssistantEvent::QueueNotice { text } if text.contains("paste.txt"))
+        ),
+        "{events:?}"
+    );
+
+    // ...and the rest of the message — including the attachment that was
+    // within the limits — still goes out.
+    let lines = recorded_stdin(dir.path(), 1).await;
+    let text = lines[0]
+        .pointer("/message/content/0/text")
+        .and_then(|t| t.as_str())
+        .expect("text block");
+    assert!(text.contains("see attached"), "{text}");
+    assert!(text.contains("/abs/notes.txt"), "{text}");
+    assert!(!text.contains("paste.txt"), "{text}");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_queued_message_keeps_its_attachment_until_delivered() {
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    let attachments = vec![Attachment::Path {
+        path: "/abs/report.pdf".to_string(),
+    }];
+    orch.assistant_send_with_attachments("second", attachments)
+        .await
+        .expect("queue second with an attachment");
+
+    // First turn's own reply, drained out of the way.
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    // The queued message becomes its own turn once the first ends.
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let lines = recorded_stdin(dir.path(), 2).await;
+    let text = lines[1]
+        .pointer("/message/content/0/text")
+        .and_then(|t| t.as_str())
+        .expect("text block");
+    assert!(text.contains("second"), "{text}");
+    assert!(text.contains("/abs/report.pdf"), "{text}");
 
     orch.shutdown().await;
 }

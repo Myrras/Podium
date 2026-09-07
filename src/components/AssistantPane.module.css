@@ -291,6 +291,16 @@
   outline: none;
 }
 
+.pendingAttachments {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
 .pendingStatus {
   flex-shrink: 0;
   color: var(--text-faint);
@@ -372,11 +382,49 @@
 
 .composer {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
   gap: var(--sp-2);
   padding: var(--sp-2);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* The attachment tray sits above the input row; the row itself keeps the
+   layout the composer had before attachments existed. */
+.composerRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+}
+
+.tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: 100%;
+  padding: 2px var(--sp-1);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  animation: messageIn var(--dur-2) var(--ease-out);
+}
+
+.chipName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input {
@@ -427,4 +475,11 @@
 .sendBtn:disabled {
   background: var(--surface-2);
   color: var(--text-faint);
+}
+
+/* While a file is dragged over the panel — the only cue that dropping it
+   here does anything. Inset so it reads inside the pane's own border. */
+.pane[data-dragover] {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
 }

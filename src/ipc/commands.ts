@@ -12,6 +12,7 @@ import type {
   AdapterInfo,
   AgentSettingsDto,
   AgentSpawnOptions,
+  Attachment,
   AutonomyMode,
   CommentId,
   IpcError,
@@ -565,11 +566,17 @@ export function scratchpadUnassign(
 
 /**
  * Send a chat turn to the personal assistant (spawning its headless session
- * on first use). The reply streams back as `assistant:event` events, not as
- * this promise's value.
+ * on first use). `attachments` ride along per `Attachment`: an image travels
+ * inline, other files as an absolute path (or inline text with none) for the
+ * assistant's own Read tool. An attachment over the limits is refused on its
+ * own; the rest of the message still goes. The reply streams back as
+ * `assistant:event` events, not as this promise's value.
  */
-export function assistantSend(text: string): Promise<void> {
-  return invoke("assistant_send", { text });
+export function assistantSend(
+  text: string,
+  attachments: Attachment[] = [],
+): Promise<void> {
+  return invoke("assistant_send", { text, attachments });
 }
 
 /** The stored chat rows, oldest first — replayed into the panel on startup. */

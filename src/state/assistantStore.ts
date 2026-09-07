@@ -30,7 +30,12 @@ import {
   assistantTranscript,
   toIpcError,
 } from "../ipc/commands";
-import type { AssistantEvent, AutonomyMode, QueuedMessage } from "../ipc/types";
+import type {
+  Attachment,
+  AssistantEvent,
+  AutonomyMode,
+  QueuedMessage,
+} from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
 import { useLayoutStore } from "./layoutStore";
 
@@ -123,7 +128,9 @@ interface AssistantState {
   /** Replace the memory; `""` clears it. */
   saveMemory: (content: string) => Promise<void>;
   /** Send a turn; returns whether it was accepted (the input clears then). */
-  send: (text: string) => Promise<boolean>;
+  send: (text: string, attachments?: Attachment[]) => Promise<boolean>;
+  /** Push a local notice (e.g. a client-side attachment-limit rejection). */
+  pushNotice: (text: string) => void;
   /** Load the stored autonomy mode (on mount). */
   loadAutonomy: () => Promise<void>;
   /** Change the autonomy mode. */
@@ -241,7 +248,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }));
     }
   },
-  send: async (text) => {
+  send: async (text, attachments = []) => {
     const trimmed = text.trim();
     if (!trimmed) return false;
     // Busy already means a turn is running: the backend will queue this one
@@ -257,7 +264,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }));
     }
     try {
-      await assistantSend(trimmed);
+      await assistantSend(trimmed, attachments);
       return true;
     } catch (e) {
       const err = toIpcError(e);
@@ -270,6 +277,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       return false;
     }
   },
+  pushNotice: (text) =>
+    set((s) => ({ messages: [...s.messages, message("notice", text)] })),
   loadAutonomy: async () => {
     try {
       set({ autonomy: await assistantAutonomyGet() });

@@ -13,7 +13,8 @@ use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode}
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
-    AssistantConfig, AssistantManager, AutonomyMode, ProposalAction, ProposalInfo, TranscriptEntry,
+    AssistantConfig, AssistantManager, Attachment, AutonomyMode, ProposalAction, ProposalInfo,
+    TranscriptEntry,
 };
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
@@ -226,9 +227,25 @@ impl Orchestrator {
     /// Send a chat turn to the personal assistant, spawning its session on
     /// first use. Replies arrive as [`PodiumEvent::AssistantEvent`]s.
     pub async fn assistant_send(&self, text: &str) -> CoreResult<()> {
+        self.assistant_send_with_attachments(text, Vec::new()).await
+    }
+
+    /// Send a chat turn with attachments: an image always rides along inline
+    /// (read from disk first when only a path was given), anything else is
+    /// an absolute path for the assistant's own `Read` tool, or — with no
+    /// file on disk — inline text. An attachment over the limits is refused
+    /// on its own (a chat notice names it); the rest of the message still
+    /// goes.
+    pub async fn assistant_send_with_attachments(
+        &self,
+        text: &str,
+        attachments: Vec<Attachment>,
+    ) -> CoreResult<()> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         let queue_messages = self.agent_settings.get().assistant.queue_messages;
-        self.assistant.send(text, mcp, queue_messages).await
+        self.assistant
+            .send(text, attachments, mcp, queue_messages)
+            .await
     }
 
     /// The persisted chat rows the panel replays after a restart.

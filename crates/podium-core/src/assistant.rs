@@ -46,6 +46,17 @@
 //! a new conversation, shutdown) drops it and reports what was never sent.
 //!
 //! Proposals still live in memory only, so a pending one is lost on restart.
+//!
+//! A turn can also carry [`Attachment`]s: an image always rides along as its
+//! own inline `image` content block (verified empirically against the real
+//! CLI — its stdin schema is not otherwise documented), reading it from disk
+//! first when only a path was given (a drop or a picker selection, rather
+//! than a clipboard paste, which already hands over bytes). Anything else is
+//! either an absolute path for the assistant's own `Read` tool to open, or —
+//! when there is no file on disk — inline text. Attachments beyond the
+//! per-message cap, an oversized image, inline text over its cap, or a
+//! relative path are refused individually with a chat notice naming the
+//! file; the rest of the message still goes ([`resolve_attachments`]).
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -55,6 +66,8 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -200,6 +213,74 @@ pub type ProposalAction =
 // ponytail: flat cap, oldest dropped.
 const MAX_PENDING: usize = 20;
 
+/// Most attachments one message may carry.
+const MAX_ATTACHMENTS: usize = 5;
+
+/// Largest an image may be (decoded), whether it arrived already inline or
+/// was read from a path on disk.
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Largest a text fallback (no file on disk to hand over a path for) may be.
+const MAX_INLINE_TEXT_BYTES: usize = 100 * 1024;
+
+/// One attachment riding along with a chat turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Attachment {
+    /// An image, base64-encoded, sent as its own content block.
+    Image {
+        name: String,
+        media_type: String,
+        data: String,
+    },
+    /// A file the assistant opens itself via its `Read` tool. Always
+    /// absolute — its cwd is the app data dir, not the project the file came
+    /// from. An image-looking path (drop or picker; a paste already has
+    /// bytes and arrives as `Image`) is read from disk and promoted to one
+    /// instead — see [`resolve_attachments`].
+    Path { path: String },
+    /// Text with no file on disk (e.g. a clipboard paste), inlined into the
+    /// turn's own text block.
+    Text { name: String, text: String },
+}
+
+/// Lightweight description of one attachment for the UI's queue snapshot —
+/// never the image bytes themselves, since the frontend already holds those
+/// (it is the one that sent them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    pub kind: &'static str,
+    pub name: String,
+}
+
+impl From<&Attachment> for AttachmentInfo {
+    fn from(a: &Attachment) -> Self {
+        match a {
+            Attachment::Image { name, .. } => Self {
+                kind: "image",
+                name: name.clone(),
+            },
+            Attachment::Path { path } => Self {
+                kind: "path",
+                name: file_name(path),
+            },
+            Attachment::Text { name, .. } => Self {
+                kind: "text",
+                name: name.clone(),
+            },
+        }
+    }
+}
+
+/// `path`'s last component, or `path` itself when it has none.
+fn file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Whether a queued item can be edited or withdrawn before it is delivered.
 /// Only a user message can; a nudge or a proposal-outcome notice is Podium's
 /// own text, delivered verbatim once its turn comes.
@@ -218,6 +299,11 @@ struct PendingInput {
     id: PendingId,
     kind: PendingKind,
     text: String,
+    attachments: Vec<Attachment>,
+    /// Whether this item's own transcript row is already written. A write
+    /// that failed re-queues the item, and the retry must not append it a
+    /// second time.
+    recorded: bool,
 }
 
 /// UI-facing snapshot of one waiting item.
@@ -227,6 +313,7 @@ pub struct QueuedMessage {
     pub id: PendingId,
     pub kind: PendingKind,
     pub text: String,
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 impl From<&PendingInput> for QueuedMessage {
@@ -235,6 +322,7 @@ impl From<&PendingInput> for QueuedMessage {
             id: p.id,
             kind: p.kind,
             text: p.text.clone(),
+            attachments: p.attachments.iter().map(AttachmentInfo::from).collect(),
         }
     }
 }
@@ -668,9 +756,14 @@ impl AssistantManager {
     /// already fairly waiting ahead of it — exactly as it did before the
     /// queue existed. Either way, the setting governs only the user's own
     /// messages, never a nudge or a proposal-outcome notice.
+    ///
+    /// `attachments` beyond the limits are refused individually (a chat
+    /// notice names the file) before the rest of the message goes out — see
+    /// [`resolve_attachments`].
     pub async fn send(
         &self,
         text: &str,
+        attachments: Vec<Attachment>,
         mcp: Option<McpConnectInfo>,
         queue_messages: bool,
     ) -> CoreResult<()> {
@@ -679,6 +772,10 @@ impl AssistantManager {
             return Err(CoreError::InvalidInput(
                 "message must not be blank".to_string(),
             ));
+        }
+        let (attachments, notices) = resolve_attachments(attachments);
+        for notice in notices {
+            self.publish(AssistantEvent::QueueNotice { text: notice });
         }
         let mut state = self.state.lock().await;
         // A session that exited (crash, missing CLI) is replaced rather than
@@ -699,6 +796,8 @@ impl AssistantManager {
             id: PendingId::new(),
             kind: PendingKind::User,
             text: text.to_string(),
+            attachments,
+            recorded: false,
         };
         // Off still respects whatever is already fairly waiting (e.g. a
         // nudge queued while nobody was chatting) — it only stops a *new*
@@ -913,6 +1012,8 @@ impl AssistantManager {
             id: PendingId::new(),
             kind: PendingKind::Nudge,
             text,
+            attachments: Vec::new(),
+            recorded: false,
         };
         deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -933,6 +1034,8 @@ impl AssistantManager {
             id: PendingId::new(),
             kind: PendingKind::Notice,
             text: text.to_string(),
+            attachments: Vec::new(),
+            recorded: false,
         };
         deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -1091,12 +1194,13 @@ impl AssistantManager {
 /// rather than losing the item outright.
 async fn deliver_bypassing_queue(
     state: &mut SessionState,
-    item: PendingInput,
+    mut item: PendingInput,
     store: &AssistantStore,
     events: &EventBus,
 ) {
     if let Some(session) = state.session.as_mut() {
-        match write_turn(session, &item.text).await {
+        record_before_write(store, &mut item);
+        match write_turn(session, &item.text, &item.attachments).await {
             Ok(()) => {
                 state.in_flight = true;
                 record_delivered(store, events, &item);
@@ -1117,13 +1221,14 @@ async fn deliver_bypassing_queue(
 /// item outright.
 async fn deliver_or_queue(
     state: &mut SessionState,
-    item: PendingInput,
+    mut item: PendingInput,
     store: &AssistantStore,
     events: &EventBus,
 ) {
     if !state.in_flight && state.pending.is_empty() {
         if let Some(session) = state.session.as_mut() {
-            match write_turn(session, &item.text).await {
+            record_before_write(store, &mut item);
+            match write_turn(session, &item.text, &item.attachments).await {
                 Ok(()) => {
                     state.in_flight = true;
                     record_delivered(store, events, &item);
@@ -1165,10 +1270,11 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     let Some(session) = state.session.as_mut() else {
         return;
     };
-    let Some(item) = state.pending.pop_front() else {
+    let Some(mut item) = state.pending.pop_front() else {
         return;
     };
-    match write_turn(session, &item.text).await {
+    record_before_write(store, &mut item);
+    match write_turn(session, &item.text, &item.attachments).await {
         Ok(()) => {
             state.in_flight = true;
             record_delivered(store, events, &item);
@@ -1195,9 +1301,23 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
 /// been, had it never needed to wait: a user turn joins the transcript, a
 /// nudge shows as a muted row, and a proposal-outcome notice stays invisible
 /// (it is for the assistant, not the user).
+/// Put a user turn in the transcript *before* the child can see it. The
+/// stdout task records the reply on its own task, so appending the user row
+/// after the write let a fast reply land *above* the message it answers —
+/// and a restart then replayed the conversation out of order. Idempotent, so
+/// a re-queued item is not appended twice.
+fn record_before_write(store: &AssistantStore, item: &mut PendingInput) {
+    if item.kind == PendingKind::User && !item.recorded {
+        store.append(TranscriptRole::User, item.text.clone());
+        item.recorded = true;
+    }
+}
+
+/// What is recorded *after* a turn went out — the user's own row is already
+/// in by then (see [`record_before_write`]).
 fn record_delivered(store: &AssistantStore, events: &EventBus, item: &PendingInput) {
     match item.kind {
-        PendingKind::User => store.append(TranscriptRole::User, item.text.clone()),
+        PendingKind::User => {}
         PendingKind::Nudge => {
             let event = AssistantEvent::Notice {
                 text: item.text.clone(),
@@ -1355,10 +1475,14 @@ fn tool_result_text(content: Option<&serde_json::Value>) -> String {
 }
 
 /// Write one turn as a `stream-json` user message.
-async fn write_turn(session: &mut Session, text: &str) -> CoreResult<()> {
+async fn write_turn(
+    session: &mut Session,
+    text: &str,
+    attachments: &[Attachment],
+) -> CoreResult<()> {
     let line = serde_json::json!({
         "type": "user",
-        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+        "message": { "role": "user", "content": turn_content(text, attachments) },
     });
     session
         .stdin
@@ -1366,6 +1490,135 @@ async fn write_turn(session: &mut Session, text: &str) -> CoreResult<()> {
         .await?;
     session.stdin.flush().await?;
     Ok(())
+}
+
+/// Build one turn's `content` array: the text block first (a `Path` or
+/// `Text` attachment is folded into it, since the assistant only needs to
+/// *read* those, not see them as separate blocks), then one `image` block
+/// per image attachment. With no attachments this is exactly the wire shape
+/// from before this parameter existed — a caller passing `&[]` must never
+/// see it shift.
+fn turn_content(text: &str, attachments: &[Attachment]) -> serde_json::Value {
+    let mut full_text = text.to_string();
+    let mut blocks = Vec::new();
+    for attachment in attachments {
+        match attachment {
+            Attachment::Image {
+                media_type, data, ..
+            } => {
+                blocks.push(serde_json::json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": media_type, "data": data },
+                }));
+            }
+            Attachment::Path { path } => {
+                full_text.push_str(&format!("\n\n[Attached file: {path}]"));
+            }
+            Attachment::Text { name, text: inline } => {
+                full_text.push_str(&format!("\n\n[Attached: {name}]\n{inline}"));
+            }
+        }
+    }
+    let mut content = vec![serde_json::json!({ "type": "text", "text": full_text })];
+    content.append(&mut blocks);
+    serde_json::Value::Array(content)
+}
+
+/// The extension-to-`media_type` map for a path attachment the assistant can
+/// be shown inline rather than only opening itself; anything else stays a
+/// path for its own `Read` tool.
+fn image_media_type(path: &str) -> Option<&'static str> {
+    let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    })
+}
+
+/// Read an image-looking path from disk and encode it the same way a pasted
+/// image already arrives — so the assistant sees every image inline,
+/// regardless of whether the frontend had bytes in hand (a paste) or only a
+/// path (a drop or a picker selection).
+fn read_image_attachment(path: &str, media_type: &'static str) -> Result<Attachment, &'static str> {
+    let bytes = std::fs::read(path).map_err(|_| "the file could not be read")?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("the image is larger than 5 MB");
+    }
+    Ok(Attachment::Image {
+        name: file_name(path),
+        media_type: media_type.to_string(),
+        data: BASE64.encode(bytes),
+    })
+}
+
+/// Turn `attachments` into what will actually be sent, plus one chat notice
+/// per rejected item — Podium-owned text naming the file, never its raw
+/// content — so the rest of the message still goes out. A `Path` attachment
+/// that looks like an image is read from disk and promoted to an inline
+/// `Image` here (falling back to a notice, not silently keeping the path, if
+/// reading it fails or it turns out to be too large); anything past the
+/// per-message cap, an oversized image, inline text over its cap, or a
+/// relative path is dropped.
+fn resolve_attachments(attachments: Vec<Attachment>) -> (Vec<Attachment>, Vec<String>) {
+    let mut accepted = Vec::new();
+    let mut notices = Vec::new();
+    for attachment in attachments {
+        if accepted.len() >= MAX_ATTACHMENTS {
+            notices.push(format!(
+                "\"{}\" was not sent: at most {MAX_ATTACHMENTS} attachments per message.",
+                attachment_label(&attachment)
+            ));
+            continue;
+        }
+        let attachment = match attachment {
+            Attachment::Path { path } => match image_media_type(&path) {
+                Some(media_type) => match read_image_attachment(&path, media_type) {
+                    Ok(image) => image,
+                    Err(reason) => {
+                        notices.push(format!("\"{}\" was not sent: {reason}.", file_name(&path)));
+                        continue;
+                    }
+                },
+                None => Attachment::Path { path },
+            },
+            other => other,
+        };
+        match attachment_problem(&attachment) {
+            Some(reason) => notices.push(format!(
+                "\"{}\" was not sent: {reason}.",
+                attachment_label(&attachment)
+            )),
+            None => accepted.push(attachment),
+        }
+    }
+    (accepted, notices)
+}
+
+/// Why an already-resolved attachment cannot be sent, if any.
+fn attachment_problem(a: &Attachment) -> Option<&'static str> {
+    match a {
+        Attachment::Image { data, .. } => {
+            let decoded_len = BASE64.decode(data).map(|b| b.len()).unwrap_or(usize::MAX);
+            (decoded_len > MAX_IMAGE_BYTES).then_some("the image is larger than 5 MB")
+        }
+        Attachment::Text { text, .. } => (text.len() > MAX_INLINE_TEXT_BYTES)
+            .then_some("the text is larger than the 100 kB inline limit"),
+        Attachment::Path { path } => {
+            (!Path::new(path).is_absolute()).then_some("the file path was not absolute")
+        }
+    }
+}
+
+/// What to call an attachment in a notice about it.
+fn attachment_label(a: &Attachment) -> String {
+    match a {
+        Attachment::Image { name, .. } => name.clone(),
+        Attachment::Path { path } => file_name(path),
+        Attachment::Text { name, .. } => name.clone(),
+    }
 }
 
 /// What the assistant is told once the user decided on a proposal. `None`
@@ -1406,6 +1659,49 @@ mod tests {
         let store = AssistantStore::new();
         store.set_dir(dir);
         store
+    }
+
+    #[test]
+    fn a_requeued_user_turn_is_only_written_to_the_transcript_once() {
+        // The row goes in *before* the write, so a fast reply can never be
+        // recorded above the message it answers. A write that failed
+        // re-queues the same item, and the retry must not duplicate it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        let mut item = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::User,
+            text: "what is open?".to_string(),
+            attachments: Vec::new(),
+            recorded: false,
+        };
+
+        record_before_write(&store, &mut item);
+        record_before_write(&store, &mut item);
+
+        let rows: Vec<String> = store.transcript().into_iter().map(|e| e.text).collect();
+        assert_eq!(rows, vec!["what is open?".to_string()]);
+    }
+
+    #[test]
+    fn a_nudge_is_not_written_to_the_transcript_before_it_goes_out() {
+        // Only a user turn is pre-recorded: a nudge's own row is the
+        // `Notice` event `record_delivered` publishes once it is delivered,
+        // so pre-recording it would double it up.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        let mut item = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Nudge,
+            text: "[Podium] an agent finished".to_string(),
+            attachments: Vec::new(),
+            recorded: false,
+        };
+
+        record_before_write(&store, &mut item);
+
+        assert!(store.transcript().is_empty());
+        assert!(!item.recorded);
     }
 
     #[test]
@@ -1606,7 +1902,7 @@ mod tests {
     async fn blank_messages_are_rejected() {
         let manager = AssistantManager::new(EventBus::new());
         let err = manager
-            .send("   ", None, false)
+            .send("   ", Vec::new(), None, false)
             .await
             .expect_err("blank rejected");
         assert!(matches!(err, CoreError::InvalidInput(_)));
@@ -1892,6 +2188,8 @@ mod tests {
             id,
             kind,
             text: text.to_string(),
+            attachments: Vec::new(),
+            recorded: false,
         });
         id
     }
@@ -1998,5 +2296,172 @@ mod tests {
         let mut rx = manager.events.subscribe();
         manager.interrupt(None).await.expect("interrupt");
         assert!(rx.try_recv().is_err(), "nothing to stop, nothing to report");
+    }
+
+    // -- attachments ---------------------------------------------------
+
+    #[test]
+    fn a_text_only_turn_serializes_exactly_as_before() {
+        // Regression: this parameter must never shift the wire shape a
+        // caller with no attachments relies on.
+        assert_eq!(
+            turn_content("hello", &[]),
+            serde_json::json!([{ "type": "text", "text": "hello" }])
+        );
+    }
+
+    #[test]
+    fn an_image_attachment_rides_as_its_own_content_block() {
+        let attachments = vec![Attachment::Image {
+            name: "shot.png".to_string(),
+            media_type: "image/png".to_string(),
+            data: "Zm9v".to_string(),
+        }];
+        assert_eq!(
+            turn_content("what colour?", &attachments),
+            serde_json::json!([
+                { "type": "text", "text": "what colour?" },
+                {
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": "image/png", "data": "Zm9v" },
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn a_path_attachment_is_folded_into_the_text_block() {
+        let attachments = vec![Attachment::Path {
+            path: "/abs/report.pdf".to_string(),
+        }];
+        assert_eq!(
+            turn_content("look at this", &attachments),
+            serde_json::json!([{
+                "type": "text",
+                "text": "look at this\n\n[Attached file: /abs/report.pdf]",
+            }])
+        );
+    }
+
+    #[test]
+    fn an_inline_text_attachment_is_folded_into_the_text_block() {
+        let attachments = vec![Attachment::Text {
+            name: "paste.txt".to_string(),
+            text: "clipboard contents".to_string(),
+        }];
+        assert_eq!(
+            turn_content("see below", &attachments),
+            serde_json::json!([{
+                "type": "text",
+                "text": "see below\n\n[Attached: paste.txt]\nclipboard contents",
+            }])
+        );
+    }
+
+    #[test]
+    fn more_than_five_attachments_are_refused_naming_each_one() {
+        let attachments = (0..7)
+            .map(|i| Attachment::Path {
+                path: format!("/abs/f{i}.txt"),
+            })
+            .collect::<Vec<_>>();
+        let (accepted, notices) = resolve_attachments(attachments);
+        assert_eq!(accepted.len(), MAX_ATTACHMENTS);
+        assert_eq!(notices.len(), 2);
+        assert!(notices[0].contains("f5.txt"), "{notices:?}");
+        assert!(notices[1].contains("f6.txt"), "{notices:?}");
+    }
+
+    #[test]
+    fn an_oversized_inline_image_is_refused_but_the_rest_of_the_message_goes() {
+        let attachments = vec![
+            Attachment::Image {
+                name: "big.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: BASE64.encode(vec![0u8; MAX_IMAGE_BYTES + 1]),
+            },
+            Attachment::Path {
+                path: "/abs/notes.txt".to_string(),
+            },
+        ];
+        let (accepted, notices) = resolve_attachments(attachments);
+        assert_eq!(
+            accepted,
+            vec![Attachment::Path {
+                path: "/abs/notes.txt".to_string()
+            }]
+        );
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("big.png"), "{notices:?}");
+        // Podium-owned text only — the multi-megabyte payload must never
+        // land in a chat notice.
+        assert!(!notices[0].contains("AAAA"), "{notices:?}");
+    }
+
+    #[test]
+    fn inline_text_over_the_cap_is_refused() {
+        let attachments = vec![Attachment::Text {
+            name: "paste.txt".to_string(),
+            text: "x".repeat(MAX_INLINE_TEXT_BYTES + 1),
+        }];
+        let (accepted, notices) = resolve_attachments(attachments);
+        assert!(accepted.is_empty());
+        assert!(notices[0].contains("paste.txt"), "{notices:?}");
+        // Podium-owned text only — the (100kB+) payload must never land in a
+        // chat notice.
+        assert!(!notices[0].contains("xxxx"), "{notices:?}");
+    }
+
+    #[test]
+    fn a_relative_path_attachment_is_refused() {
+        let attachments = vec![Attachment::Path {
+            path: "relative/file.txt".to_string(),
+        }];
+        let (accepted, notices) = resolve_attachments(attachments);
+        assert!(accepted.is_empty());
+        assert!(notices[0].contains("file.txt"), "{notices:?}");
+    }
+
+    #[test]
+    fn an_image_looking_path_is_read_from_disk_and_promoted_to_inline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("photo.png");
+        std::fs::write(&path, b"not really a png, just bytes").expect("write");
+
+        let (accepted, notices) = resolve_attachments(vec![Attachment::Path {
+            path: path.to_string_lossy().into_owned(),
+        }]);
+        assert!(notices.is_empty(), "{notices:?}");
+        assert_eq!(
+            accepted,
+            vec![Attachment::Image {
+                name: "photo.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: BASE64.encode(b"not really a png, just bytes"),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_missing_image_path_is_refused_rather_than_kept_as_a_path() {
+        let (accepted, notices) = resolve_attachments(vec![Attachment::Path {
+            path: "/no/such/photo.png".to_string(),
+        }]);
+        assert!(accepted.is_empty());
+        assert!(notices[0].contains("photo.png"), "{notices:?}");
+    }
+
+    #[test]
+    fn a_non_image_path_passes_through_unchanged() {
+        let (accepted, notices) = resolve_attachments(vec![Attachment::Path {
+            path: "/abs/report.pdf".to_string(),
+        }]);
+        assert!(notices.is_empty(), "{notices:?}");
+        assert_eq!(
+            accepted,
+            vec![Attachment::Path {
+                path: "/abs/report.pdf".to_string()
+            }]
+        );
     }
 }

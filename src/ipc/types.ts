@@ -383,6 +383,29 @@ export type AssistantEvent =
 export type PendingKind = "user" | "nudge" | "notice";
 
 /**
+ * One attachment riding along with a chat turn
+ * (`podium_core::assistant::Attachment`). An image always travels inline as
+ * base64 (a path is read from disk on the backend first when there is one,
+ * e.g. a drop or a picker selection); anything else is an absolute path for
+ * the assistant's own Read tool, or — with no file on disk, e.g. a clipboard
+ * paste — inline text.
+ */
+export type Attachment =
+  | { kind: "image"; name: string; mediaType: string; data: string }
+  | { kind: "path"; path: string }
+  | { kind: "text"; name: string; text: string };
+
+/**
+ * Lightweight summary of one attachment on a queued message — never the
+ * image bytes themselves, since the frontend already holds those
+ * (`podium_core::assistant::AttachmentInfo`).
+ */
+export interface AttachmentInfo {
+  kind: "image" | "path" | "text";
+  name: string;
+}
+
+/**
  * One turn waiting for the assistant's session to become free
  * (`podium_core::assistant::QueuedMessage`).
  */
@@ -390,6 +413,7 @@ export interface QueuedMessage {
   id: string;
   kind: PendingKind;
   text: string;
+  attachments: AttachmentInfo[];
 }
 
 /** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */

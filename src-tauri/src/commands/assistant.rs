@@ -7,17 +7,28 @@
 
 use tauri::State;
 
-use podium_core::{AutonomyMode, PendingId, ProposalId, TranscriptEntry};
+use podium_core::{Attachment, AutonomyMode, PendingId, ProposalId, TranscriptEntry};
 
 use crate::error::IpcError;
 use crate::state::AppState;
 
 /// Send a chat turn to the assistant, spawning its headless session on first
-/// use. The reply arrives as `assistant:event` payloads, not as the return
-/// value.
+/// use. `attachments` ride along per `podium_core::Attachment`: an image
+/// travels inline (read from disk first when only a path was given), other
+/// files pass their absolute path — or inline text when there is none — for
+/// the assistant's own `Read` tool. An attachment over the limits is refused
+/// on its own; the rest of the message still goes. The reply arrives as
+/// `assistant:event` payloads, not as the return value.
 #[tauri::command]
-pub async fn assistant_send(state: State<'_, AppState>, text: String) -> Result<(), IpcError> {
-    state.orchestrator.assistant_send(&text).await?;
+pub async fn assistant_send(
+    state: State<'_, AppState>,
+    text: String,
+    attachments: Vec<Attachment>,
+) -> Result<(), IpcError> {
+    state
+        .orchestrator
+        .assistant_send_with_attachments(&text, attachments)
+        .await?;
     Ok(())
 }
 

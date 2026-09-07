@@ -388,6 +388,36 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   *waiting* message's turn comes up — the very first, immediately-delivered
   message needs no such event, since the sender already shows it itself.
 
+  **Attachments** ride along with a turn (`assistant_send`'s `attachments`,
+  `podium_core::Attachment`). An **image** always travels as its own inline
+  `{"type":"image","source":{"type":"base64",…}}` content block — the CLI's
+  stdin schema for `--input-format stream-json` is not documented, so this
+  was verified empirically against the real CLI (an inline PNG it described
+  correctly), not assumed. Anything else is handed over as an **absolute
+  path** for the assistant's own `Read` tool (its cwd is the app data dir, so
+  a relative path is refused), or — for something that only exists on the
+  clipboard — as **inline text**. `resolve_attachments` reads an
+  image-looking path from disk and promotes it to an inline image, and
+  refuses individually (a `queueNotice` naming the file, never its content)
+  anything past 5 attachments per message, an image over 5 MB, inline text
+  over 100 kB, or a relative path — the rest of the message still goes.
+  `turn_content` folds path/text attachments into the turn's own text block,
+  and a turn with no attachments serialises byte-for-byte as it did before
+  they existed. Attachments survive queueing: `PendingInput` carries them,
+  and `QueuedMessage` reports only their names (`AttachmentInfo`), never the
+  bytes the frontend already holds. The composer takes them three ways — drop
+  on the panel, paste into the composer, or the paperclip picker
+  (`@tauri-apps/plugin-dialog`) — and shows a removable chip per attachment.
+  Drop/paste give bytes but no path, so a binary file arriving that way is
+  reported by name rather than vanishing; the picker gives a path, which is
+  why a large PDF should go through it.
+
+  A **user turn's transcript row is appended before the turn is written** to
+  the child's stdin (`record_before_write`): the stdout task records the
+  reply on its own task, so appending afterwards let a fast reply land
+  *above* the message it answers, and a restart replayed the conversation out
+  of order. It is idempotent, since a failed write re-queues the same item.
+
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so
   it survives new conversations. The assistant maintains it itself through the
@@ -489,7 +519,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
-| `assistant_send`        | `{ text }`                                  | – (reply streams as `assistant:event`) |
+| `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | – (reply streams as `assistant:event`) |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
 | `assistant_new_conversation` | –                                      | –                 |
 | `assistant_memory_get`  | –                                           | `string`          |
