@@ -973,6 +973,57 @@ async fn flipping_the_queue_setting_off_mid_turn_still_drains_what_was_already_q
     orch.shutdown().await;
 }
 
+#[tokio::test]
+async fn nudges_that_piled_up_are_delivered_as_one_turn_ahead_of_the_user() {
+    // Podium's own status lines used to go out one per turn, so after a
+    // quiet spell the user's next message waited behind the whole backlog.
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    orch.set_assistant_queue_messages(true)
+        .expect("enable queue");
+    let mut rx = orch.subscribe_events();
+
+    // Occupy the session so everything after this has to wait.
+    orch.assistant_send("first").await.expect("send first");
+    orch.assistant_nudge("[Podium] an agent finished".to_string())
+        .await;
+    orch.assistant_nudge("[Podium] another agent crashed".to_string())
+        .await;
+    // Repeated verbatim, the way the 6-hourly sweep does: must not stack.
+    orch.assistant_nudge("[Podium] an agent finished".to_string())
+        .await;
+    orch.assistant_send("what is open?").await.expect("queue");
+
+    // First turn, then the merged nudge turn, then the user's own.
+    for _ in 0..3 {
+        collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    }
+
+    let lines = recorded_stdin(dir.path(), 3).await;
+    let text_of = |i: usize| {
+        lines[i]
+            .pointer("/message/content/0/text")
+            .and_then(|t| t.as_str())
+            .expect("text block")
+            .to_string()
+    };
+    assert_eq!(text_of(0), "first");
+    let merged = text_of(1);
+    assert!(merged.contains("an agent finished"), "{merged}");
+    assert!(merged.contains("another agent crashed"), "{merged}");
+    assert_eq!(
+        merged.matches("an agent finished").count(),
+        1,
+        "the repeated nudge was deduped: {merged}"
+    );
+    assert_eq!(
+        text_of(2),
+        "what is open?",
+        "the user is not stuck behind it"
+    );
+
+    orch.shutdown().await;
+}
+
 // -- attachments -------------------------------------------------------
 
 #[tokio::test]

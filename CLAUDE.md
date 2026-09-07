@@ -377,8 +377,17 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   turn like everything else. Flipping the setting mid-turn never touches
   what is already queued — only where the *next* user message goes.
   `TurnEnd` (`drain_next`)
-  delivers exactly one waiting item as its own turn — never merged — and a
-  `TurnEnd` carrying an error still advances the queue. Only a *user*
+  delivers exactly one waiting *user* item as its own turn — never merged —
+  and a `TurnEnd` carrying an error still advances the queue. **Consecutive
+  nudges are the exception**: they go out as one turn, and a nudge whose text
+  is already waiting is not queued a second time. Both exist because Podium's
+  own status lines used to arrive one per turn: the 6-hourly sweep repeats
+  itself verbatim, so a day without chatting stacked the same line several
+  times over, and the user's own next message then queued up behind the whole
+  backlog — they watched Podium narrate yesterday before it answered today.
+  Read together those lines are a summary of where things stand, which is
+  what they are for; user messages stay unmerged, since those are separate
+  thoughts. Only a *user*
   message is editable/removable (`assistant_queue_edit` /
   `assistant_queue_remove`, `kind: "user"` only); a nudge or a
   proposal-outcome notice is Podium's own text, delivered verbatim. The

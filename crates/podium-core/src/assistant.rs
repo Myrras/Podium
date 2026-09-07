@@ -1240,6 +1240,19 @@ async fn deliver_or_queue(
             }
         }
     }
+    // A nudge saying exactly what one already waiting says adds nothing.
+    // The 6-hourly sweep re-reports the same lingering to-do every pass, so
+    // a day without chatting stacked the same line four times over — which
+    // is most of what "a pile of [Podium] notices at once" was. Only nudges
+    // are deduped: two identical user messages are two deliberate sends.
+    if item.kind == PendingKind::Nudge
+        && state
+            .pending
+            .iter()
+            .any(|p| p.kind == PendingKind::Nudge && p.text == item.text)
+    {
+        return;
+    }
     state.pending.push_back(item);
     if state.pending.len() > MAX_PENDING {
         state.pending.pop_front();
@@ -1275,6 +1288,23 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     let Some(mut item) = state.pending.pop_front() else {
         return;
     };
+    // Consecutive nudges go out as one turn. Delivering them one per
+    // `TurnEnd` meant the user's own next message queued up behind the
+    // whole backlog, so after a quiet spell they watched Podium narrate
+    // yesterday before answering today's question. Read together they are a
+    // summary of where things stand, which is what they are for. User
+    // messages are still never merged — those are separate thoughts.
+    if item.kind == PendingKind::Nudge {
+        while state
+            .pending
+            .front()
+            .is_some_and(|next| next.kind == PendingKind::Nudge)
+        {
+            let next = state.pending.pop_front().expect("front was just checked");
+            item.text.push_str("\n\n");
+            item.text.push_str(&next.text);
+        }
+    }
     record_before_write(store, &mut item);
     match write_turn(session, &item.text, &item.attachments).await {
         Ok(()) => {
@@ -2360,6 +2390,43 @@ mod tests {
             }
         }
         assert!(saw_drop_notice, "the drop must be reported in the chat");
+    }
+
+    #[tokio::test]
+    async fn an_identical_nudge_is_not_queued_twice() {
+        // The lingering-to-do sweep repeats verbatim every 6 hours; with
+        // nobody chatting, that used to stack up in the queue.
+        let manager = AssistantManager::new(EventBus::new());
+        manager
+            .nudge("[Podium] a to-do has been open a while".to_string())
+            .await;
+        manager
+            .nudge("[Podium] a to-do has been open a while".to_string())
+            .await;
+        manager
+            .nudge("[Podium] a different thing happened".to_string())
+            .await;
+
+        let state = manager.state.lock().await;
+        let texts: Vec<&str> = state.pending.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "[Podium] a to-do has been open a while",
+                "[Podium] a different thing happened",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn two_identical_user_messages_both_stay_queued() {
+        // Deduping is for Podium's own status lines only — sending the same
+        // thing twice on purpose must still be two turns.
+        let manager = AssistantManager::new(EventBus::new());
+        seed_pending(&manager, PendingKind::User, "ping").await;
+        seed_pending(&manager, PendingKind::User, "ping").await;
+
+        assert_eq!(manager.state.lock().await.pending.len(), 2);
     }
 
     #[tokio::test]
