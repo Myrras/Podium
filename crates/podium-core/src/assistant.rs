@@ -223,6 +223,17 @@ const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Largest a text fallback (no file on disk to hand over a path for) may be.
 const MAX_INLINE_TEXT_BYTES: usize = 100 * 1024;
 
+/// Longest edge an image is sent at. Claude's vision pipeline downscales
+/// anything larger than this itself, so the extra pixels only cost upload
+/// and memory — a phone screenshot is several megabytes of base64 that buys
+/// nothing.
+const MAX_IMAGE_EDGE: u32 = 1568;
+
+/// Ceiling on the bitmap a decode may allocate. The 5 MB input cap does not
+/// bound this on its own: a small, highly compressible file can still decode
+/// to an enormous surface.
+const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+
 /// One attachment riding along with a chat turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1554,6 +1565,55 @@ fn read_image_attachment(path: &str, media_type: &'static str) -> Result<Attachm
     })
 }
 
+/// Shrink an image that is larger than the assistant will ever look at.
+/// Returns the media type and bytes to send — unchanged whenever there is
+/// nothing to gain, so a small image travels byte-for-byte as it arrived.
+///
+/// **GIFs are never re-encoded**: this crate decodes one frame, so
+/// re-encoding an animated GIF would silently throw the animation away, and
+/// the animation is usually the reason it was attached. A GIF is only ever
+/// subject to the plain size cap.
+///
+/// A file that fails to decode is passed through rather than refused — the
+/// CLI may well understand a format this crate does not, and dropping the
+/// user's attachment over our own decoder is the worse failure.
+fn compress_image(media_type: &str, bytes: Vec<u8>) -> (String, Vec<u8>) {
+    if media_type == "image/gif" {
+        return (media_type.to_string(), bytes);
+    }
+    let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()
+    else {
+        return (media_type.to_string(), bytes);
+    };
+    let mut reader = reader;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    reader.limits(limits);
+    let Ok(image) = reader.decode() else {
+        return (media_type.to_string(), bytes);
+    };
+    if image.width() <= MAX_IMAGE_EDGE && image.height() <= MAX_IMAGE_EDGE {
+        return (media_type.to_string(), bytes);
+    }
+
+    let resized = image.resize(
+        MAX_IMAGE_EDGE,
+        MAX_IMAGE_EDGE,
+        image::imageops::FilterType::Triangle,
+    );
+    // Keep JPEG as JPEG (a photo re-encoded as PNG would grow); everything
+    // else becomes PNG, which is lossless and keeps any alpha channel.
+    let (out_type, format) = match media_type {
+        "image/jpeg" => ("image/jpeg", image::ImageFormat::Jpeg),
+        _ => ("image/png", image::ImageFormat::Png),
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    match resized.write_to(&mut out, format) {
+        Ok(()) => (out_type.to_string(), out.into_inner()),
+        Err(_) => (media_type.to_string(), bytes),
+    }
+}
+
 /// Turn `attachments` into what will actually be sent, plus one chat notice
 /// per rejected item — Podium-owned text naming the file, never its raw
 /// content — so the rest of the message still goes out. A `Path` attachment
@@ -1591,10 +1651,41 @@ fn resolve_attachments(attachments: Vec<Attachment>) -> (Vec<Attachment>, Vec<St
                 "\"{}\" was not sent: {reason}.",
                 attachment_label(&attachment)
             )),
-            None => accepted.push(attachment),
+            // Shrink only what was accepted, so the 5 MB cap still judges
+            // what actually arrived rather than what we managed to squeeze.
+            // Every image — pasted, dropped, or read from a picked path —
+            // reaches this one point, so all three input paths are covered.
+            None => accepted.push(shrink_if_image(attachment)),
         }
     }
     (accepted, notices)
+}
+
+/// [`compress_image`] applied to an image attachment; anything else is
+/// returned untouched.
+fn shrink_if_image(attachment: Attachment) -> Attachment {
+    let Attachment::Image {
+        name,
+        media_type,
+        data,
+    } = attachment
+    else {
+        return attachment;
+    };
+    // The cap above already proved this decodes.
+    let Ok(raw) = BASE64.decode(&data) else {
+        return Attachment::Image {
+            name,
+            media_type,
+            data,
+        };
+    };
+    let (media_type, raw) = compress_image(&media_type, raw);
+    Attachment::Image {
+        name,
+        media_type,
+        data: BASE64.encode(raw),
+    }
 }
 
 /// Why an already-resolved attachment cannot be sent, if any.
@@ -2449,6 +2540,93 @@ mod tests {
         }]);
         assert!(accepted.is_empty());
         assert!(notices[0].contains("photo.png"), "{notices:?}");
+    }
+
+    /// A blank image of `w`x`h`, encoded in `format`.
+    fn encoded_image(w: u32, h: u32, format: image::ImageFormat) -> Vec<u8> {
+        let img = match format {
+            // The JPEG encoder has no alpha channel to write.
+            image::ImageFormat::Jpeg => image::DynamicImage::ImageRgb8(image::RgbImage::new(w, h)),
+            _ => image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, h)),
+        };
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, format).expect("encode fixture");
+        out.into_inner()
+    }
+
+    fn decoded_size(bytes: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory(bytes).expect("decode");
+        (img.width(), img.height())
+    }
+
+    #[test]
+    fn an_oversized_image_is_downscaled_before_it_is_sent() {
+        let original = encoded_image(3000, 2000, image::ImageFormat::Png);
+        let (media_type, sent) = compress_image("image/png", original.clone());
+
+        assert_eq!(media_type, "image/png");
+        let (w, h) = decoded_size(&sent);
+        assert_eq!(w, MAX_IMAGE_EDGE, "the long edge is the one capped");
+        assert!(h < MAX_IMAGE_EDGE, "aspect ratio is kept: {w}x{h}");
+    }
+
+    #[test]
+    fn an_image_within_the_limit_travels_byte_for_byte() {
+        let original = encoded_image(800, 600, image::ImageFormat::Png);
+        let (media_type, sent) = compress_image("image/png", original.clone());
+
+        assert_eq!(media_type, "image/png");
+        assert_eq!(sent, original, "nothing to gain, so nothing re-encoded");
+    }
+
+    #[test]
+    fn a_photo_stays_a_jpeg_rather_than_growing_into_a_png() {
+        let original = encoded_image(4000, 3000, image::ImageFormat::Jpeg);
+        let (media_type, sent) = compress_image("image/jpeg", original);
+
+        assert_eq!(media_type, "image/jpeg");
+        assert_eq!(decoded_size(&sent).0, MAX_IMAGE_EDGE);
+    }
+
+    #[test]
+    fn a_gif_is_never_re_encoded_so_it_keeps_its_animation() {
+        // Deliberately not a decodable GIF: the point is that the media type
+        // alone short-circuits the whole decode/resize path, so an animated
+        // one cannot be flattened to its first frame.
+        let original = b"GIF89a ... several frames ...".to_vec();
+        let (media_type, sent) = compress_image("image/gif", original.clone());
+
+        assert_eq!(media_type, "image/gif");
+        assert_eq!(sent, original);
+    }
+
+    #[test]
+    fn an_image_this_crate_cannot_decode_is_sent_as_is() {
+        // Losing the user's attachment to our own decoder is worse than
+        // sending it unshrunk — the CLI may well understand the format.
+        let original = b"not an image at all".to_vec();
+        let (media_type, sent) = compress_image("image/png", original.clone());
+
+        assert_eq!(media_type, "image/png");
+        assert_eq!(sent, original);
+    }
+
+    #[test]
+    fn an_accepted_image_is_shrunk_but_the_cap_still_judges_what_arrived() {
+        let big = encoded_image(2400, 2400, image::ImageFormat::Png);
+        let (accepted, notices) = resolve_attachments(vec![Attachment::Image {
+            name: "screenshot.png".to_string(),
+            media_type: "image/png".to_string(),
+            data: BASE64.encode(&big),
+        }]);
+
+        assert!(notices.is_empty(), "{notices:?}");
+        let Attachment::Image { data, .. } = &accepted[0] else {
+            panic!("still an image");
+        };
+        let sent = BASE64.decode(data).expect("valid base64");
+        assert_eq!(decoded_size(&sent), (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE));
+        assert!(sent.len() < big.len(), "{} vs {}", sent.len(), big.len());
     }
 
     #[test]

@@ -401,6 +401,18 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   refuses individually (a `queueNotice` naming the file, never its content)
   anything past 5 attachments per message, an image over 5 MB, inline text
   over 100 kB, or a relative path — the rest of the message still goes.
+  An accepted image is then **shrunk** (`compress_image`) to at most 1568px
+  on its long edge — the size Claude's vision pipeline downscales to anyway,
+  so the extra pixels only cost upload and memory. It runs on what the cap
+  already accepted, so the 5 MB limit still judges what *arrived*. A JPEG
+  stays a JPEG (re-encoding a photo as PNG would grow it), anything else
+  becomes PNG, and an image already within the limit travels byte-for-byte.
+  **A GIF is never re-encoded** — this crate decodes a single frame, so
+  re-encoding an animated one would silently drop the animation; a GIF is
+  only ever subject to the plain size cap. An image that fails to decode is
+  sent as-is rather than refused: the CLI may understand a format the
+  `image` crate does not, and losing the user's attachment to our own
+  decoder is the worse failure.
   `turn_content` folds path/text attachments into the turn's own text block,
   and a turn with no attachments serialises byte-for-byte as it did before
   they existed. Attachments survive queueing: `PendingInput` carries them,

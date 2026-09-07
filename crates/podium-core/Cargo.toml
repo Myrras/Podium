@@ -36,6 +36,14 @@ reqwest = { version = "0.13.3", default-features = false }
 # Encoding an image attachment read from disk into a `stream-json` content
 # block; already a dependency of `src-tauri` for terminal bytes.
 base64 = "0.22"
+# Shrinking an oversized image attachment before it travels as base64.
+# Decode/encode only — no filters beyond the resize, hence the trimmed
+# feature set (GIFs are passed through untouched, so no gif codec).
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "webp",
+] }
 
 # Unix-only: process-group signalling for graceful stop (killpg SIGTERM →
 # SIGKILL). Windows kills the ConPTY child via portable-pty's ChildKiller.
