@@ -15,6 +15,7 @@ import { create } from "zustand";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
+  assistantDayStart,
   assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
@@ -129,6 +130,12 @@ interface AssistantState {
   saveMemory: (content: string) => Promise<void>;
   /** Send a turn; returns whether it was accepted (the input clears then). */
   send: (text: string, attachments?: Attachment[]) => Promise<boolean>;
+  /**
+   * Trigger the day-start summary as a normal user turn. No optimistic
+   * bubble: the backend sends the actual prompt, which arrives through the
+   * normal event stream like any other turn.
+   */
+  dayStart: () => Promise<void>;
   /** Push a local notice (e.g. a client-side attachment-limit rejection). */
   pushNotice: (text: string) => void;
   /** Load the stored autonomy mode (on mount). */
@@ -275,6 +282,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         ...(idle ? { busy: false } : {}),
       }));
       return false;
+    }
+  },
+  dayStart: async () => {
+    try {
+      await assistantDayStart();
+    } catch (e) {
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
     }
   },
   pushNotice: (text) =>

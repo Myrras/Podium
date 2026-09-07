@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 29 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **75 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **76 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with edit/remove and an interrupt control while a turn
   runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 75 commands.
+  IPC wrappers over all 76 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -342,10 +342,17 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   the same kind of store as `todos.json`): Claude's own session id plus the
   chat rows the panel replays — user turns, assistant prose, actions run and
   actions that failed, capped at the most recent 500. On the next spawn that id
-  comes back as `--resume`, so a restart continues the same conversation
+  comes back as `--resume`, so the conversation continues *within* a run
   instead of meeting a stranger; a session that dies without ever announcing
   itself makes Podium drop the stored id, so a pruned session cannot wedge
-  every later turn. The panel's **new-conversation** button
+  every later turn. **An app launch, however, deliberately starts blank**:
+  `src-tauri`'s `setup` calls `assistant_new_conversation` before the webview
+  can ask for the transcript (`block_on`, not a spawned task — a task would
+  race that call and replay a conversation the panel is about to drop), so a
+  transcript from days ago is never dumped into a fresh panel and any nudge
+  backlog from an earlier run goes with it. That makes `assistant-memory.md`
+  the *only* continuity between days, which is why the identity prompt now
+  insists on keeping it current. The panel's **new-conversation** button
   (`assistant_new_conversation`) kills the session and drops transcript,
   session id, pending proposals and the message queue — that kill is
   deliberate, so it is not reported as `exited` (any messages the queue was
@@ -444,16 +451,25 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   exited (finished or crashed), a running agent that has printed nothing for
   5 minutes (so it is probably waiting on a question — `Orchestrator::idle_agents`,
   measured from the scrollback's last append, or from the process start when it
-  never printed), a 6-hourly sweep for to-dos open longer than a week, and one
-  day-start summary the first time Podium opens on a given day (claimed in
-  `assistant.json`, so restarts do not re-ask). Each becomes one `[Podium] …`
+  never printed), and a 6-hourly sweep for to-dos open longer than a week. Each becomes one `[Podium] …`
   turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
   milliseconds. A nudge **never spawns the CLI child**: with no live,
   idle session it waits in the message queue described above (see
   _Message queue_) and is delivered as its own turn once one exists and
   frees up — a fresh session would have no idea what the nudge was about.
-  Switching the setting off silences all of it, day-start claim included.
+  Switching the setting off silences all of it.
+
+  The **day-start summary** used to be a fourth trigger here and is now the
+  panel's **"Start my day" button** (`assistant_day_start`, shown in the
+  empty state). A nudge never spawns the CLI, so as a nudge it only surfaced
+  whenever the user next happened to type — which is exactly the complaint
+  that moved it. The button sends `DAY_START_PROMPT` through the ordinary
+  `assistant_send` path instead: it spawns the session, shows as a user turn
+  and respects the queue setting. It asks for open work across all projects
+  *prioritised with a reason*, and to ask the user rather than guess when the
+  to-dos and agents do not settle the order. There is deliberately no
+  once-a-day lock — pressing it is explicit, so refusing would only annoy.
   The watcher holds
   only a weak reference, so it ends with the orchestrator. **Settings →
   Assistant** holds this toggle plus the autonomy mode (the chat header keeps
@@ -532,6 +548,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
 | `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | – (reply streams as `assistant:event`) |
+| `assistant_day_start`   | –                                           | – (reply streams as `assistant:event`) |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
 | `assistant_new_conversation` | –                                      | –                 |
 | `assistant_memory_get`  | –                                           | `string`          |

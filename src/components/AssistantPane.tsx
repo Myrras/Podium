@@ -202,6 +202,7 @@ export function AssistantPane() {
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
   const hydrate = useAssistantStore((s) => s.hydrate);
+  const dayStart = useAssistantStore((s) => s.dayStart);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const width = useLayoutStore((s) => s.assistantWidth);
   const [draft, setDraft] = useState("");
@@ -401,9 +402,21 @@ export function AssistantPane() {
 
       <div className={styles.log} ref={logRef}>
         {messages.length === 0 && pending.length === 0 && (
-          <p className={styles.empty}>
-            Ask for anything across your projects — to-dos, agents, an overview.
-          </p>
+          <div className={styles.emptyState}>
+            <p className={styles.empty}>
+              Ask for anything across your projects — to-dos, agents, an
+              overview.
+            </p>
+            <button
+              type="button"
+              className={styles.confirmBtn}
+              aria-label="Start my day"
+              title="Get a summary of what's open across your projects"
+              onClick={() => void dayStart()}
+            >
+              Start my day
+            </button>
+          </div>
         )}
         {messages.map((m) => (
           <div key={m.id} className={styles.message} data-role={m.role}>

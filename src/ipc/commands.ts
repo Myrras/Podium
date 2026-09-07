@@ -585,6 +585,15 @@ export function assistantTranscript(): Promise<TranscriptEntry[]> {
 }
 
 /**
+ * Send the day-start summary prompt as a normal user turn (spawning the
+ * session if needed). Like {@link assistantSend}, the reply streams back as
+ * `assistant:event`, not as this promise's value.
+ */
+export function assistantDayStart(): Promise<void> {
+  return invoke("assistant_day_start");
+}
+
+/**
  * Drop the conversation (session, transcript and pending proposals) and start
  * fresh. The assistant's memory is kept.
  */

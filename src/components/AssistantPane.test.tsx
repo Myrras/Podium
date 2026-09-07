@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
   assistantSend: vi.fn(() => Promise.resolve()),
+  assistantDayStart: vi.fn(() => Promise.resolve()),
   assistantAutonomyGet: vi.fn(() => Promise.resolve("confirm-destructive")),
   assistantAutonomySet: vi.fn((mode: string) => Promise.resolve(mode)),
   assistantResolveProposal: vi.fn(() => Promise.resolve()),
@@ -34,6 +35,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
+  assistantDayStart,
   assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
@@ -52,6 +54,8 @@ describe("AssistantPane", () => {
   beforeEach(() => {
     vi.mocked(assistantSend).mockReset();
     vi.mocked(assistantSend).mockResolvedValue(undefined);
+    vi.mocked(assistantDayStart).mockReset();
+    vi.mocked(assistantDayStart).mockResolvedValue(undefined);
     vi.mocked(assistantAutonomyGet).mockReset();
     vi.mocked(assistantAutonomyGet).mockResolvedValue("confirm-destructive");
     vi.mocked(assistantAutonomySet).mockReset();
@@ -561,6 +565,26 @@ describe("AssistantPane", () => {
 
       await user.keyboard("{ArrowUp}");
       expect(input).toHaveValue("typing");
+    });
+  });
+
+  describe("day start", () => {
+    it("shows the day-start button in the empty state and triggers it", async () => {
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+
+      await user.click(screen.getByLabelText("Start my day"));
+
+      expect(assistantDayStart).toHaveBeenCalled();
+    });
+
+    it("hides the day-start button once there are messages", () => {
+      useAssistantStore.setState({
+        messages: [{ id: 1, role: "user", text: "hi" }],
+      });
+      render(<AssistantPane />);
+
+      expect(screen.queryByLabelText("Start my day")).toBeNull();
     });
   });
 

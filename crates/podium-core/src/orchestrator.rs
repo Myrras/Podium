@@ -324,10 +324,13 @@ impl Orchestrator {
         self.assistant.nudge(text).await;
     }
 
-    /// Claim today's day-start summary; true only the first time on a given
-    /// day, so restarts do not re-ask.
-    pub fn assistant_claim_day_start(&self) -> bool {
-        self.assistant.store().claim_day_start()
+    /// Ask the assistant for a day-start summary (the panel's button). Goes
+    /// in as a normal user turn rather than a nudge: a nudge never spawns the
+    /// CLI, so pressing the button with no conversation running would do
+    /// nothing visible.
+    pub async fn assistant_day_start(&self) -> CoreResult<()> {
+        self.assistant_send(crate::assistant::DAY_START_PROMPT)
+            .await
     }
 
     /// Running agents that have printed nothing for at least `min_idle` —

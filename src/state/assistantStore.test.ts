@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
   assistantSend: vi.fn(() => Promise.resolve()),
+  assistantDayStart: vi.fn(() => Promise.resolve()),
   assistantProactivityGet: vi.fn(() => Promise.resolve(true)),
   assistantProactivitySet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
@@ -25,6 +26,7 @@ vi.mock("../ipc/commands", () => ({
 }));
 
 import {
+  assistantDayStart,
   assistantInterrupt,
   assistantProactivityGet,
   assistantProactivitySet,
@@ -50,6 +52,8 @@ describe("assistantStore", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     vi.mocked(assistantSend).mockClear();
     vi.mocked(assistantSend).mockResolvedValue(undefined);
+    vi.mocked(assistantDayStart).mockClear();
+    vi.mocked(assistantDayStart).mockResolvedValue(undefined);
     vi.mocked(assistantProactivityGet).mockClear();
     vi.mocked(assistantProactivitySet).mockClear();
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
@@ -95,6 +99,27 @@ describe("assistantStore", () => {
     expect(
       useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
     ).toEqual([["user", "hello"]]);
+  });
+
+  it("triggers the day-start summary without an optimistic bubble", async () => {
+    await useAssistantStore.getState().dayStart();
+
+    expect(assistantDayStart).toHaveBeenCalled();
+    expect(useAssistantStore.getState().messages).toEqual([]);
+  });
+
+  it("reports a failed day-start trigger as a notice", async () => {
+    vi.mocked(assistantDayStart).mockRejectedValueOnce({
+      kind: "io",
+      message: "could not spawn the session",
+    });
+    await useAssistantStore.getState().dayStart();
+
+    const msgs = useAssistantStore.getState().messages;
+    expect(msgs[msgs.length - 1]).toMatchObject({
+      role: "notice",
+      text: "could not spawn the session",
+    });
   });
 
   it("tracks the running tool as activity, cleared at turn end", () => {

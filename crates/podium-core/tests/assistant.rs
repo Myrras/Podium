@@ -476,11 +476,9 @@ async fn an_agent_that_finished_is_reported_in_the_chat() {
     let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
     let mut rx = orch.subscribe_events();
 
-    // A live session to nudge, and the day-start summary claimed up front so
-    // it is not what we end up asserting on.
+    // A live session to nudge.
     orch.assistant_send("hello").await.expect("send");
     collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-    assert!(orch.assistant_claim_day_start());
     // Only the exit is under test here: a login shell can take longer to
     // start than the fast idle threshold, which would flag the agent as stuck
     // first.
@@ -516,7 +514,6 @@ async fn a_stuck_agent_is_reported_once() {
 
     orch.assistant_send("hello").await.expect("send");
     collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-    assert!(orch.assistant_claim_day_start());
 
     let project = orch
         .open_project(dir.path().to_path_buf())
@@ -570,7 +567,7 @@ async fn proactivity_off_keeps_podium_quiet() {
         .expect("add agent");
     orch.start_process(agent).await.expect("start agent");
 
-    // Not the day-start summary, not the exited agent, nothing.
+    // Not a word about the exited agent, nothing.
     let quiet = timeout(Duration::from_millis(400), async {
         loop {
             if let Ok(PodiumEvent::AssistantEvent {
@@ -583,10 +580,6 @@ async fn proactivity_off_keeps_podium_quiet() {
     })
     .await;
     assert!(quiet.is_err(), "nudged while proactivity is off");
-    assert!(
-        orch.assistant_claim_day_start(),
-        "the day-start summary must not be claimed while switched off"
-    );
     orch.shutdown().await;
 }
 
@@ -596,8 +589,15 @@ async fn a_nudge_with_nobody_chatting_waits_for_the_next_turn() {
     let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
     let mut rx = orch.subscribe_events();
 
-    // No session yet: the day-start nudge must not start the CLI on its own —
-    // a fresh session would not know what the nudge is about.
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    orch.add_todo(project, "Fix the login redirect")
+        .expect("add todo");
+
+    // No session yet: a nudge must not start the CLI on its own — a fresh
+    // session would not know what the nudge is about.
     podium_core::proactivity::spawn(&orch, fast_proactivity());
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!dir.path().join("argv.txt").exists(), "spawned for a nudge");
@@ -605,7 +605,32 @@ async fn a_nudge_with_nobody_chatting_waits_for_the_next_turn() {
     // The user's first turn takes it along.
     orch.assistant_send("morning").await.expect("send");
     let notice = next_notice(&mut rx).await;
-    assert!(notice.contains("day-start summary"), "{notice}");
+    assert!(notice.contains("Fix the login redirect"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_day_start_button_sends_a_real_user_turn() {
+    let (orch, _dir) = setup(FAKE_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    // Nothing has been sent yet: unlike a nudge, this must spawn the session
+    // by itself and run a turn — that is the whole point of it being a
+    // button and not proactivity.
+    orch.assistant_day_start().await.expect("day start");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let first = orch
+        .assistant_transcript()
+        .into_iter()
+        .next()
+        .expect("a transcript row");
+    assert_eq!(first.role, TranscriptRole::User);
+    // Prioritising with a reason, and asking rather than guessing, are what
+    // the summary is for.
+    assert!(first.text.contains("day-start summary"), "{}", first.text);
+    assert!(first.text.contains("picking up first"), "{}", first.text);
+    assert!(first.text.contains("ask me"), "{}", first.text);
     orch.shutdown().await;
 }
 
@@ -655,7 +680,6 @@ async fn to_dos_left_open_are_swept_into_the_chat() {
 
     orch.assistant_send("hello").await.expect("send");
     collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-    assert!(orch.assistant_claim_day_start());
 
     let project = orch
         .open_project(dir.path().to_path_buf())

@@ -1,5 +1,6 @@
-//! Personal-assistant commands: sending a turn, replaying the stored
-//! transcript, starting over, its memory, the autonomy, proactivity and
+//! Personal-assistant commands: sending a turn, asking for the day-start
+//! summary, replaying the stored transcript, starting over, its memory, the
+//! autonomy, proactivity and
 //! message-queue settings, deciding on a proposed action, and managing the
 //! pending-input queue (edit/remove a waiting message, interrupt the running
 //! turn). Replies (and the outcome of a proposal, and queue changes) stream
@@ -29,6 +30,16 @@ pub async fn assistant_send(
         .orchestrator
         .assistant_send_with_attachments(&text, attachments)
         .await?;
+    Ok(())
+}
+
+/// Ask the assistant for a day-start summary (the panel's button). It goes in
+/// as a normal user turn, so it spawns the session, shows in the chat and
+/// respects the queue setting; the reply arrives as `assistant:event`
+/// payloads.
+#[tauri::command]
+pub async fn assistant_day_start(state: State<'_, AppState>) -> Result<(), IpcError> {
+    state.orchestrator.assistant_day_start().await?;
     Ok(())
 }
 

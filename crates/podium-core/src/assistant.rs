@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -110,10 +110,22 @@ concrete; the panel is narrow. When a choice materially affects what happens \
 (e.g. which model to run a spawned agent with), ask the user in the chat \
 instead of silently picking a default. If something the user wants cannot be \
 done with the tools available, say so and ask rather than quietly doing \
-something else. What you learn about the user and their work \
-belongs in the memory below: call update_assistant_memory with the full new \
-text (it replaces what is there) whenever something is worth having next \
-time.";
+something else. Every conversation starts empty — the \
+memory below is your only continuity between days, so keep it current: call \
+update_assistant_memory with the full new text (it replaces what is there) \
+whenever you learn what the user is working on, what was decided, or what is \
+blocked. Write down what the next session needs in order to prioritise; \
+anything you leave out is gone.";
+
+/// The day-start summary, sent as a normal user turn by the panel's button
+/// (`Orchestrator::assistant_day_start`). Not a proactivity nudge: a nudge
+/// never spawns the CLI, so with no conversation running it would only sit in
+/// the queue until the user happened to type something.
+pub(crate) const DAY_START_PROMPT: &str = "\
+Give me a day-start summary. Look at what is open across my projects — to-dos \
+and running agents — and tell me what is worth picking up first, with a short \
+reason for the order you put things in. Where the priority cannot be worked \
+out from the to-dos and agents alone, ask me instead of guessing.";
 
 /// Tools that only read state. Never gated — in any mode.
 const READ_ONLY_TOOLS: &[&str] = &[
@@ -459,10 +471,6 @@ struct StoredConversation {
     session_id: Option<String>,
     #[serde(default)]
     transcript: Vec<TranscriptEntry>,
-    /// The last day Podium asked for a day-start summary, so restarting the
-    /// app three times in one afternoon does not ask three more times.
-    #[serde(default)]
-    last_day_start: Option<NaiveDate>,
 }
 
 struct StoreInner {
@@ -533,14 +541,10 @@ impl AssistantStore {
         }
     }
 
-    /// Start over: no transcript, no session to resume. The day-start claim
-    /// survives — it is about the day, not the conversation.
+    /// Start over: no transcript, no session to resume.
     fn clear(&self) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.conversation = StoredConversation {
-            last_day_start: inner.conversation.last_day_start,
-            ..StoredConversation::default()
-        };
+        inner.conversation = StoredConversation::default();
         let _ = save_conversation(&inner);
     }
 
@@ -585,19 +589,6 @@ impl AssistantStore {
             // signals, not chat.
             _ => {}
         }
-    }
-
-    /// Claim today's day-start summary: true the first time it is called on a
-    /// given (local) day, false afterwards — including after a restart.
-    pub fn claim_day_start(&self) -> bool {
-        let today = chrono::Local::now().date_naive();
-        let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        if inner.conversation.last_day_start == Some(today) {
-            return false;
-        }
-        inner.conversation.last_day_start = Some(today);
-        let _ = save_conversation(&inner);
-        true
     }
 
     /// What the assistant remembers across conversations (empty when there is
@@ -2195,17 +2186,22 @@ mod tests {
     }
 
     #[test]
-    fn the_day_start_summary_is_claimed_once_per_day() {
+    fn a_conversation_file_from_before_the_day_start_button_still_loads() {
+        // `lastDayStart` was dropped when the day-start summary became a
+        // button. `StoredConversation` is not `deny_unknown_fields`, so the
+        // leftover key is ignored — a user's transcript must not be wiped by
+        // an upgrade.
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = store_in(dir.path());
-        assert!(store.claim_day_start());
-        assert!(!store.claim_day_start());
+        std::fs::write(
+            dir.path().join("assistant.json"),
+            r#"{"sessionId":"old-session","transcript":[{"role":"user","text":"hi",
+               "at":"2024-01-01T00:00:00Z"}],"lastDayStart":"2024-01-01"}"#,
+        )
+        .expect("write legacy file");
 
-        // A restart must not re-ask, and neither must a new conversation.
-        let reloaded = store_in(dir.path());
-        assert!(!reloaded.claim_day_start());
-        reloaded.clear();
-        assert!(!reloaded.claim_day_start());
+        let store = store_in(dir.path());
+        assert_eq!(store.session_id().as_deref(), Some("old-session"));
+        assert_eq!(store.transcript().len(), 1);
     }
 
     #[test]

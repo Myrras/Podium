@@ -157,9 +157,20 @@ pub fn run() {
                     cwd: Some(app.path().app_data_dir()?),
                     data_dir: Some(app.path().app_data_dir()?),
                 });
+            // Every launch starts the assistant on a blank conversation: the
+            // panel's day-start button is the way back in, and a transcript
+            // replayed from days ago is mostly noise. `assistant-memory.md`
+            // survives this, and is what carries continuity instead.
+            // `block_on` rather than a spawned task: `setup` runs on the main
+            // thread with no reactor of its own (spawning a bare `tokio` task
+            // here once aborted the app), and the clear must be done *before*
+            // the frontend asks for the transcript — a task racing that call
+            // would replay the old conversation into a fresh panel. There is
+            // no session to kill this early, so this only rewrites one file.
+            tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation());
             // Watch the workspace on the assistant's behalf: an agent that
-            // finished or crashed, one that looks stuck, lingering to-dos and
-            // a day-start summary become chat nudges. Silent while the
+            // finished or crashed, one that looks stuck and lingering to-dos
+            // become chat nudges. Silent while the
             // proactivity setting is off, and it never spawns the assistant's
             // CLI just to deliver one. Spawned from inside the async runtime:
             // `setup` runs on the main thread, where the watcher's
@@ -214,6 +225,7 @@ pub fn run() {
             commands::process::process_resize,
             commands::process::process_attach,
             commands::assistant::assistant_send,
+            commands::assistant::assistant_day_start,
             commands::assistant::assistant_transcript,
             commands::assistant::assistant_new_conversation,
             commands::assistant::assistant_memory_get,

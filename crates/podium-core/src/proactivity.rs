@@ -6,8 +6,7 @@
 //!
 //! - an agent exited — finished or crashed;
 //! - a running agent has been silent long enough to look stuck on a question;
-//! - to-dos that have been open for a long time (a periodic sweep);
-//! - a day-start summary, once per day, when Podium opens.
+//! - to-dos that have been open for a long time (a periodic sweep).
 //!
 //! Each of those becomes one `[Podium] …` turn handed to the assistant, which
 //! answers in the chat panel like it would to the user. Nudges never spawn the
@@ -66,14 +65,11 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     let mut watcher = Watcher {
         config,
         idle_nudged: HashSet::new(),
-        // The day-start nudge is this run's opening summary; the first sweep
-        // comes a whole interval later so the two do not pile up.
+        // The first sweep comes a whole interval after startup, not the
+        // moment the app opens.
         last_sweep: Instant::now(),
     };
     tokio::spawn(async move {
-        if let Some(orchestrator) = weak.upgrade() {
-            watcher.day_start(&orchestrator).await;
-        }
         let mut ticker = tokio::time::interval(watcher.config.tick);
         loop {
             let event = tokio::select! {
@@ -112,21 +108,6 @@ impl Watcher {
             return;
         }
         orchestrator.assistant_nudge(text).await;
-    }
-
-    /// Ask for a summary of the workspace, at most once per day.
-    async fn day_start(&mut self, orchestrator: &Orchestrator) {
-        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_claim_day_start() {
-            return;
-        }
-        self.nudge(
-            orchestrator,
-            "[Podium] Podium just opened, and this is the first time today. Give the user \
-             a short day-start summary: what is open across their projects (to-dos, running \
-             agents) and what looks worth picking up first."
-                .to_string(),
-        )
-        .await;
     }
 
     async fn on_event(&mut self, orchestrator: &Orchestrator, event: PodiumEvent) {
