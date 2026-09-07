@@ -331,8 +331,15 @@ const MAX_IMAGE_EDGE: u32 = 1568;
 const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// One attachment riding along with a chat turn.
+// `rename_all` renames the *variants*; the fields inside them need
+// `rename_all_fields` of their own, or `media_type` reaches the wire in
+// snake_case and every image the panel sends is rejected as a missing field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Attachment {
     /// An image, base64-encoded, sent as its own content block.
     Image {
@@ -2613,6 +2620,26 @@ mod tests {
         assert_eq!(
             turn_content("hello", &[]),
             serde_json::json!([{ "type": "text", "text": "hello" }])
+        );
+    }
+
+    #[test]
+    fn an_attachment_deserializes_from_the_panel_s_camel_case_json() {
+        // Exactly what `assistant_send` receives from the frontend — the
+        // Rust-side constructors below never exercise the wire format.
+        let json = serde_json::json!({
+            "kind": "image",
+            "name": "shot.png",
+            "mediaType": "image/png",
+            "data": "Zm9v",
+        });
+        assert_eq!(
+            serde_json::from_value::<Attachment>(json).expect("image attachment"),
+            Attachment::Image {
+                name: "shot.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: "Zm9v".to_string(),
+            }
         );
     }
 
