@@ -74,6 +74,14 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
       return Promise.resolve(false);
     case "assistant_queue_messages_set":
       return Promise.resolve((args as { enabled: boolean }).enabled);
+    case "assistant_polling_get":
+      return Promise.resolve({
+        intervalMinutes: 10,
+        slack: true,
+        teams: true,
+      });
+    case "assistant_polling_set":
+      return Promise.resolve(args);
     default:
       return Promise.resolve(null);
   }
@@ -226,6 +234,47 @@ describe("SettingsModal — Assistant tab", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("assistant_queue_messages_set", {
         enabled: true,
+      }),
+    );
+  });
+
+  it("shows the polling interval and source toggles, and saves changes", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    const interval = await screen.findByLabelText(
+      "Sweep interval, in minutes (0 = off)",
+    );
+    expect(interval).toHaveValue(10);
+
+    fireEvent.change(interval, { target: { value: "30" } });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_polling_set", {
+        intervalMinutes: 30,
+        slack: true,
+        teams: true,
+      }),
+    );
+
+    const slack = screen.getByRole("switch", { name: "Slack" });
+    expect(slack).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(slack);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_polling_set", {
+        intervalMinutes: 30,
+        slack: false,
+        teams: true,
+      }),
+    );
+
+    const teams = screen.getByRole("switch", { name: "Teams" });
+    expect(teams).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(teams);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_polling_set", {
+        intervalMinutes: 30,
+        slack: false,
+        teams: false,
       }),
     );
   });

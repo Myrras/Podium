@@ -21,6 +21,7 @@ import type {
   McpStatus,
   MergeMode,
   NewProcess,
+  PollingSettings,
   ProcessId,
   ProcessInfo,
   ProjectId,
@@ -631,6 +632,20 @@ export function assistantProactivityGet(): Promise<boolean> {
 /** Turn those nudges on or off; returns what was stored. */
 export function assistantProactivitySet(enabled: boolean): Promise<boolean> {
   return invoke("assistant_proactivity_set", { enabled });
+}
+
+/** Settings for the proactive external-source (Slack/Teams) polling sweep. */
+export function assistantPollingGet(): Promise<PollingSettings> {
+  return invoke("assistant_polling_get");
+}
+
+/** Change the polling settings; returns what was stored. */
+export function assistantPollingSet(
+  intervalMinutes: number,
+  slack: boolean,
+  teams: boolean,
+): Promise<PollingSettings> {
+  return invoke("assistant_polling_set", { intervalMinutes, slack, teams });
 }
 
 /**

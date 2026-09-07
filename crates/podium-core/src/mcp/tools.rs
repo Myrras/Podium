@@ -595,7 +595,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Report back to the personal assistant when you finish your work, or when you are blocked and need the user. Pass your own process_id (the PODIUM_PROCESS_ID environment variable) and a short summary of what you did and what is left — no code or diffs. Delivered like a proactivity nudge: straight into a live assistant conversation, or queued for the user's next turn if none is running."
+        description = "Report back to the personal assistant when you finish your work, or when you are blocked and need the user. Pass your own process_id (the PODIUM_PROCESS_ID environment variable) and a short summary of what you did and what is left — no code or diffs. Delivered like a proactivity nudge: straight into a live assistant conversation, starting one if none is running, so the user hears about it when it happens rather than the next time they type."
     )]
     pub async fn report_to_assistant(
         &self,

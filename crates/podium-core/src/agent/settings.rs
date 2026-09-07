@@ -18,7 +18,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::assistant::{AssistantSettings, AutonomyMode};
+use crate::assistant::{AssistantPolling, AssistantSettings, AutonomyMode};
 use crate::error::{CoreError, CoreResult};
 
 const LOCK_POISONED: &str = "agent settings store lock poisoned";
@@ -192,6 +192,17 @@ impl AgentSettingsStore {
     pub fn set_assistant_queue_messages(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.assistant.queue_messages = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Set the assistant's external-sweep settings (interval in minutes, 0 =
+    /// off; which sources it looks at); returns the updated settings.
+    pub fn set_assistant_polling(&self, polling: AssistantPolling) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.assistant.poll_interval_minutes = polling.interval_minutes;
+        inner.settings.assistant.poll_slack = polling.slack;
+        inner.settings.assistant.poll_teams = polling.teams;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -462,6 +473,38 @@ mod tests {
         let reloaded = AgentSettingsStore::new();
         reloaded.set_path(file);
         assert!(reloaded.get().assistant.queue_messages);
+    }
+
+    #[test]
+    fn assistant_polling_defaults_to_ten_minutes_on_both_sources_and_persists() {
+        let defaults = AgentSettings::default().assistant;
+        assert_eq!(defaults.poll_interval_minutes, 10);
+        assert!(defaults.poll_slack && defaults.poll_teams);
+        // A legacy file without the fields loads as those same defaults —
+        // an existing install gets the sweep, not a silent 0-minute off.
+        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
+        assert_eq!(legacy.assistant.poll_interval_minutes, 10);
+        assert!(legacy.assistant.poll_slack && legacy.assistant.poll_teams);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agents.json");
+        let store = AgentSettingsStore::new();
+        store.set_path(file.clone());
+        let updated = store
+            .set_assistant_polling(AssistantPolling {
+                interval_minutes: 0,
+                slack: false,
+                teams: true,
+            })
+            .unwrap();
+        assert_eq!(updated.assistant.poll_interval_minutes, 0);
+        assert!(!updated.assistant.poll_slack);
+
+        let reloaded = AgentSettingsStore::new();
+        reloaded.set_path(file);
+        let back = reloaded.get().assistant;
+        assert_eq!(back.poll_interval_minutes, 0);
+        assert!(!back.poll_slack && back.poll_teams);
     }
 
     #[test]

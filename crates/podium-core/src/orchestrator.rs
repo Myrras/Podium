@@ -13,8 +13,8 @@ use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode}
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
-    AssistantConfig, AssistantManager, Attachment, AutonomyMode, ProposalAction, ProposalInfo,
-    TranscriptEntry,
+    AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
+    ProposalInfo, TranscriptEntry,
 };
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
@@ -318,16 +318,41 @@ impl Orchestrator {
     }
 
     /// Hand the assistant something Podium noticed. Delivered to a live
-    /// session, or queued for the user's next turn — never worth spawning the
-    /// CLI for on its own.
+    /// session, or — with none — into one started for it, so the user hears
+    /// about a finished agent when it finishes rather than whenever they next
+    /// happen to type.
     pub async fn assistant_nudge(&self, text: String) {
-        self.assistant.nudge(text).await;
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.nudge(text, mcp).await;
+    }
+
+    /// Ask the assistant to sweep the user's external sources. Like a nudge
+    /// it starts the session if there is none, but it stays out of the chat:
+    /// only an answer worth having is ever shown (see
+    /// [`crate::assistant::poll_prompt`]).
+    pub async fn assistant_poll(&self, text: String) {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.poll(text, mcp).await;
+    }
+
+    /// The assistant's external-sweep settings (Settings → Assistant).
+    pub fn assistant_polling(&self) -> AssistantPolling {
+        self.agent_settings.get().assistant.into()
+    }
+
+    /// Change them; returns what was stored. A new interval is picked up by
+    /// the running watcher on its next tick — no restart.
+    pub fn set_assistant_polling(&self, polling: AssistantPolling) -> CoreResult<AssistantPolling> {
+        Ok(self
+            .agent_settings
+            .set_assistant_polling(polling)?
+            .assistant
+            .into())
     }
 
     /// Ask the assistant for a day-start summary (the panel's button). Goes
-    /// in as a normal user turn rather than a nudge: a nudge never spawns the
-    /// CLI, so pressing the button with no conversation running would do
-    /// nothing visible.
+    /// in as a normal user turn rather than a nudge: it is something the user
+    /// asked for, so it belongs in the transcript and always wants an answer.
     pub async fn assistant_day_start(&self) -> CoreResult<()> {
         self.assistant_send(crate::assistant::DAY_START_PROMPT)
             .await

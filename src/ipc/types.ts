@@ -437,6 +437,18 @@ export interface TranscriptEntry {
  */
 export type AutonomyMode = "full" | "confirm-destructive" | "propose-all";
 
+/**
+ * Settings for the assistant's proactive external-source polling sweep
+ * (`podium_core::assistant::AssistantPolling`). `intervalMinutes` is how often the sweep
+ * runs; `0` turns it off. Each source toggle governs whether that source is
+ * swept at all.
+ */
+export interface PollingSettings {
+  intervalMinutes: number;
+  slack: boolean;
+  teams: boolean;
+}
+
 /** Structured error every IPC command can reject with (`IpcError`). */
 export interface IpcError {
   /** Human-readable, sanitized description. */

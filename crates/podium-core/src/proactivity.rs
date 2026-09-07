@@ -9,12 +9,25 @@
 //! - to-dos that have been open for a long time (a periodic sweep).
 //!
 //! Each of those becomes one `[Podium] …` turn handed to the assistant, which
-//! answers in the chat panel like it would to the user. Nudges never spawn the
-//! assistant's CLI child: with no conversation running they queue and ride
-//! along with the user's next message (see [`crate::assistant::AssistantManager::nudge`]).
+//! answers in the chat panel like it would to the user. A nudge **starts the
+//! session** when there is none ([`crate::assistant::AssistantManager::nudge`]):
+//! the fast lane is event-driven, so a quiet day costs nothing, but when
+//! something does happen the user hears about it then — not whenever they next
+//! happen to type.
+//!
+//! There is a second, slower lane: every `poll_interval_minutes` (default 10,
+//! 0 = off) the assistant is asked to look at the user's enabled external
+//! sources — Slack, Microsoft Teams — and speak only if something needs them.
+//! It reaches those through the user's *own* MCP servers, which the assistant
+//! inherits; Podium contributes the timer and the wording, no integration. A
+//! sweep that found nothing answers with the
+//! [`NOTHING_TO_REPORT`](crate::assistant::NOTHING_TO_REPORT) sentinel, which
+//! is swallowed before it can become a chat row or a notification.
 //!
 //! The whole thing is silent while the `proactive` setting is off — the switch
-//! is checked per nudge, so flipping it takes effect immediately.
+//! is checked per nudge, so flipping it takes effect immediately. Likewise the
+//! poll settings are read on every tick, so a changed interval applies without
+//! a restart.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -22,6 +35,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::assistant::poll_prompt;
 use crate::events::PodiumEvent;
 use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
@@ -42,6 +56,10 @@ pub struct ProactivityConfig {
     pub lingering_after: Duration,
     /// How often the lingering-to-do sweep runs.
     pub sweep_every: Duration,
+    /// What one "minute" of `poll_interval_minutes` is worth. Real time in
+    /// the app; milliseconds in tests, so the slow lane can be exercised
+    /// without waiting for it.
+    pub poll_unit: Duration,
 }
 
 impl Default for ProactivityConfig {
@@ -53,6 +71,7 @@ impl Default for ProactivityConfig {
             idle_after: Duration::from_secs(5 * 60),
             lingering_after: Duration::from_secs(7 * 24 * 60 * 60),
             sweep_every: Duration::from_secs(6 * 60 * 60),
+            poll_unit: Duration::from_secs(60),
         }
     }
 }
@@ -66,8 +85,9 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
         config,
         idle_nudged: HashSet::new(),
         // The first sweep comes a whole interval after startup, not the
-        // moment the app opens.
+        // moment the app opens. Same for the external poll.
         last_sweep: Instant::now(),
+        last_poll: Instant::now(),
     };
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(watcher.config.tick);
@@ -99,6 +119,7 @@ struct Watcher {
     /// exits) drops out and can be flagged afresh.
     idle_nudged: HashSet<ProcessId>,
     last_sweep: Instant,
+    last_poll: Instant,
 }
 
 impl Watcher {
@@ -108,6 +129,15 @@ impl Watcher {
             return;
         }
         orchestrator.assistant_nudge(text).await;
+    }
+
+    /// Hand the assistant an external-sweep errand, unless the user switched
+    /// proactivity off. Same gate as a nudge, but it stays out of the chat.
+    async fn poll(&self, orchestrator: &Orchestrator, text: String) {
+        if !orchestrator.assistant_proactivity() {
+            return;
+        }
+        orchestrator.assistant_poll(text).await;
     }
 
     async fn on_event(&mut self, orchestrator: &Orchestrator, event: PodiumEvent) {
@@ -148,6 +178,31 @@ impl Watcher {
             self.last_sweep = Instant::now();
             self.sweep_lingering_todos(orchestrator).await;
         }
+        self.poll_external(orchestrator).await;
+    }
+
+    /// The slow lane: every `poll_interval_minutes`, ask the assistant to
+    /// check the enabled external sources. Settings are read here rather than
+    /// captured at startup, so turning the poll off (or changing its
+    /// interval) takes effect on the next tick.
+    async fn poll_external(&mut self, orchestrator: &Orchestrator) {
+        let polling = orchestrator.assistant_polling();
+        if !polling.is_active() {
+            // Keep the clock rolling forward while it is off, so switching it
+            // back on waits a full interval instead of firing at once.
+            self.last_poll = Instant::now();
+            return;
+        }
+        let every = u32::try_from(polling.interval_minutes)
+            .ok()
+            .and_then(|minutes| self.config.poll_unit.checked_mul(minutes))
+            // An absurd interval is "practically never", not an overflow panic.
+            .unwrap_or(Duration::MAX);
+        if self.last_poll.elapsed() < every {
+            return;
+        }
+        self.last_poll = Instant::now();
+        self.poll(orchestrator, poll_prompt(polling)).await;
     }
 
     /// Flag running agents that have gone quiet: a Claude Code session that

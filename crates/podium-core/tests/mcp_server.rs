@@ -1120,7 +1120,7 @@ async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn report_to_assistant_queues_without_spawning_a_session() {
+async fn report_to_assistant_starts_the_session_when_nobody_is_chatting() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(
         Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
@@ -1151,7 +1151,9 @@ async fn report_to_assistant_queues_without_spawning_a_session() {
         .await
         .expect("spawn agent");
 
-    // No conversation is running: the report must queue, not spawn the CLI.
+    // No conversation is running: the report starts one rather than waiting
+    // for the user to happen to type — an agent that is blocked is worth
+    // hearing about now.
     tools
         .report_to_assistant(Parameters(ReportToAssistantParams {
             process_id: agent.to_string(),
@@ -1160,13 +1162,17 @@ async fn report_to_assistant_queues_without_spawning_a_session() {
         .await
         .expect("report_to_assistant");
 
+    // The CLI records its argv on spawn, on its own task.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !dir.path().join("argv.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a report must start the assistant's CLI");
     assert!(
-        !dir.path().join("argv.txt").exists(),
-        "a report must not spawn the assistant's CLI"
-    );
-    assert!(
-        orch.assistant_transcript().is_empty(),
-        "the report is queued, not yet delivered"
+        !orch.assistant_transcript().is_empty(),
+        "the report was delivered, so it shows in the chat"
     );
 
     orch.shutdown().await;

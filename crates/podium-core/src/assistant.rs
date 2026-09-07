@@ -22,14 +22,17 @@
 //!
 //! Podium can also speak first: [`AssistantManager::nudge`] writes a tagged
 //! `[Podium]` turn into the session (see [`crate::proactivity`] for what
-//! triggers one).
+//! triggers one), starting the session when there is none — so an agent that
+//! finished is reported when it finishes, not whenever the user next happens
+//! to type. A nudge whose answer is exactly [`NOTHING_TO_REPORT`] is
+//! swallowed, so a sweep that found nothing stays silent.
 //!
 //! Only one turn is ever in flight at a time. A nudge and a proposal-outcome
 //! notice (`notify`) — Podium's own inputs — always route through one
-//! pending-input queue: written while a turn is running (or before any
-//! session exists, for a nudge) they wait instead of interleaving into the
-//! turn in progress, and are delivered as their own turn once the current one
-//! ends (`TurnEnd`) — one waiting item per turn, oldest first, never merged.
+//! pending-input queue: written while a turn is running they wait instead of
+//! interleaving into the turn in progress, and are delivered as their own
+//! turn once the current one ends (`TurnEnd`) — one waiting item per turn,
+//! oldest first, and only consecutive nudges are merged.
 //! Whether the user's *own* messages join that same queue is the
 //! `queue_messages` setting (Settings → Assistant, default **off**): off, a
 //! message typed mid-turn goes straight into the live session as it always
@@ -117,10 +120,19 @@ whenever you learn what the user is working on, what was decided, or what is \
 blocked. Write down what the next session needs in order to prioritise; \
 anything you leave out is gone.";
 
+/// What the assistant answers — on its own, with nothing else around it —
+/// when a poll found nothing the user has to act on. Such a reply is
+/// swallowed: no chat row, no transcript entry, and therefore (the panel
+/// pings once per turn that produced a reply) no notification either.
+///
+/// Only an *exact* match counts. A reply that merely mentions the sentinel
+/// while saying something real is a real reply.
+pub const NOTHING_TO_REPORT: &str = "NOTHING_TO_REPORT";
+
 /// The day-start summary, sent as a normal user turn by the panel's button
-/// (`Orchestrator::assistant_day_start`). Not a proactivity nudge: a nudge
-/// never spawns the CLI, so with no conversation running it would only sit in
-/// the queue until the user happened to type something.
+/// (`Orchestrator::assistant_day_start`). Deliberately a user turn, not a
+/// nudge: it belongs in the transcript as something the user asked for, and
+/// it always wants an answer — where a nudge may end in silence.
 pub(crate) const DAY_START_PROMPT: &str = "\
 Give me a day-start summary. Look at what is open across my projects — to-dos \
 and running agents — and tell me what is worth picking up first, with a short \
@@ -185,11 +197,29 @@ pub struct AssistantSettings {
     /// regardless of this setting.
     #[serde(default)]
     pub queue_messages: bool,
+    /// How often (in minutes) the slow lane sweeps the enabled external
+    /// sources; **0 turns it off**. Defaults to 10, also for an
+    /// `agents.json` written before this field existed.
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_minutes: u64,
+    /// Whether that sweep looks at Slack. Defaults to on.
+    #[serde(default = "default_true")]
+    pub poll_slack: bool,
+    /// Whether that sweep looks at Microsoft Teams. Defaults to on.
+    #[serde(default = "default_true")]
+    pub poll_teams: bool,
 }
 
 fn default_true() -> bool {
     true
 }
+
+fn default_poll_interval() -> u64 {
+    DEFAULT_POLL_INTERVAL_MINUTES
+}
+
+/// How often the external sweep runs when nobody has changed the setting.
+pub const DEFAULT_POLL_INTERVAL_MINUTES: u64 = 10;
 
 impl Default for AssistantSettings {
     fn default() -> Self {
@@ -197,6 +227,60 @@ impl Default for AssistantSettings {
             autonomy: AutonomyMode::default(),
             proactive: true,
             queue_messages: false,
+            poll_interval_minutes: DEFAULT_POLL_INTERVAL_MINUTES,
+            poll_slack: true,
+            poll_teams: true,
+        }
+    }
+}
+
+/// The external-sweep settings as one value — both what
+/// [`crate::Orchestrator::assistant_polling`] answers and the shape the
+/// Tauri command puts on the wire (`{ intervalMinutes, slack, teams }`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantPolling {
+    /// Minutes between sweeps; 0 = off.
+    pub interval_minutes: u64,
+    pub slack: bool,
+    pub teams: bool,
+}
+
+impl AssistantPolling {
+    /// Whether the sweep should run at all: an interval and something to look
+    /// at. (The `proactive` switch is checked separately, by the nudge path.)
+    pub fn is_active(&self) -> bool {
+        self.interval_minutes > 0 && (self.slack || self.teams)
+    }
+}
+
+/// The turn the external sweep sends. It names only the enabled sources, and
+/// spells out the silence contract: nothing to act on means exactly
+/// [`NOTHING_TO_REPORT`], which Podium swallows. Nothing else is needed to
+/// reach Slack/Teams — the assistant inherits the user's own MCP servers
+/// (`--strict-mcp-config` is deliberately not passed), so this is wording,
+/// not an integration.
+pub fn poll_prompt(polling: AssistantPolling) -> String {
+    let sources = match (polling.slack, polling.teams) {
+        (true, true) => "Slack and Microsoft Teams",
+        (false, true) => "Microsoft Teams",
+        _ => "Slack",
+    };
+    format!(
+        "[Podium] Routine check: look at {sources} for messages to the user since you last \
+         looked, and judge whether any of them actually need the user to act or answer. If \
+         something does, say what it is and what it needs, in a line or two. If nothing does, \
+         reply with exactly {NOTHING_TO_REPORT} and nothing else — no greeting, no \
+         explanation, no summary of what you checked. Do not tell the user you ran this check."
+    )
+}
+
+impl From<AssistantSettings> for AssistantPolling {
+    fn from(settings: AssistantSettings) -> Self {
+        Self {
+            interval_minutes: settings.poll_interval_minutes,
+            slack: settings.poll_slack,
+            teams: settings.poll_teams,
         }
     }
 }
@@ -780,20 +864,7 @@ impl AssistantManager {
             self.publish(AssistantEvent::QueueNotice { text: notice });
         }
         let mut state = self.state.lock().await;
-        // A session that exited (crash, missing CLI) is replaced rather than
-        // written to: the write would only fail with a broken pipe.
-        if state
-            .session
-            .as_mut()
-            .is_some_and(|s| matches!(s.child.try_wait(), Ok(Some(_)) | Err(_)))
-        {
-            state.session = None;
-            state.in_flight = false;
-        }
-        if state.session.is_none() {
-            let config = self.config.lock().expect(LOCK_POISONED).clone();
-            state.session = Some(self.spawn(&config, mcp.as_ref())?);
-        }
+        self.ensure_session(&mut state, mcp.as_ref())?;
         let item = PendingInput {
             id: PendingId::new(),
             kind: PendingKind::User,
@@ -1005,14 +1076,42 @@ impl AssistantManager {
     }
 
     /// Hand the assistant something Podium noticed (an agent finished, a
-    /// to-do is lingering, …). Delivered straight away if a live session is
-    /// idle; queued (busy, or no session at all) otherwise — Podium never
-    /// starts the CLI just to deliver a nudge.
-    pub async fn nudge(&self, text: String) {
+    /// to-do is lingering, an external sweep is due, …). Like [`send`] this
+    /// spawns the session when there is none — otherwise the user only ever
+    /// heard about a finished agent whenever they next happened to type,
+    /// which for a weekend meant a pile of stale `[Podium]` lines at once. A
+    /// fresh session is not a stranger: every app start clears the
+    /// conversation anyway, and `assistant-memory.md` carries the continuity.
+    ///
+    /// A spawn that fails is not fatal — the nudge simply waits in the queue,
+    /// exactly as it did before. It is still not a user message: it never
+    /// joins the transcript as one, and it merges/dedupes with other nudges.
+    ///
+    /// [`send`]: Self::send
+    pub async fn nudge(&self, text: String, mcp: Option<McpConnectInfo>) {
+        self.deliver_own(PendingKind::Nudge, text, mcp).await;
+    }
+
+    /// Ask the assistant to sweep the user's external sources (the slow lane
+    /// in [`crate::proactivity`]). Spawns the session like a nudge, but goes
+    /// in as a `Notice` — Podium's own errand, not something worth a row in
+    /// the chat every interval. The user only ever sees the *answer*, and
+    /// only when there is one: a sweep that found nothing replies
+    /// [`NOTHING_TO_REPORT`], which is swallowed.
+    pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
+        self.deliver_own(PendingKind::Notice, text, mcp).await;
+    }
+
+    /// The shared body of [`nudge`](Self::nudge) and [`poll`](Self::poll):
+    /// Podium's own input, into a session it starts if there is none.
+    async fn deliver_own(&self, kind: PendingKind, text: String, mcp: Option<McpConnectInfo>) {
         let mut state = self.state.lock().await;
+        if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
+            tracing::warn!("could not start the assistant for a nudge: {e}");
+        }
         let item = PendingInput {
             id: PendingId::new(),
-            kind: PendingKind::Nudge,
+            kind,
             text,
             attachments: Vec::new(),
             recorded: false,
@@ -1049,6 +1148,31 @@ impl AssistantManager {
         if let Some(mut session) = self.state.lock().await.session.take() {
             let _ = session.child.kill().await;
         }
+    }
+
+    /// Make sure `state` holds a live session, spawning one if it does not.
+    /// Shared by [`send`](Self::send) and [`nudge`](Self::nudge) so both
+    /// reach the assistant whether or not anyone is chatting.
+    fn ensure_session(
+        &self,
+        state: &mut SessionState,
+        mcp: Option<&McpConnectInfo>,
+    ) -> CoreResult<()> {
+        // A session that exited (crash, missing CLI) is replaced rather than
+        // written to: the write would only fail with a broken pipe.
+        if state
+            .session
+            .as_mut()
+            .is_some_and(|s| matches!(s.child.try_wait(), Ok(Some(_)) | Err(_)))
+        {
+            state.session = None;
+            state.in_flight = false;
+        }
+        if state.session.is_none() {
+            let config = self.config.lock().expect(LOCK_POISONED).clone();
+            state.session = Some(self.spawn(&config, mcp)?);
+        }
+        Ok(())
     }
 
     fn spawn(&self, config: &AssistantConfig, mcp: Option<&McpConnectInfo>) -> CoreResult<Session> {
@@ -1128,6 +1252,14 @@ impl AssistantManager {
             while let Ok(Some(line)) = lines.next_line().await {
                 for event in parse_stream_line(&line) {
                     started |= matches!(event, AssistantEvent::Started { .. });
+                    // A poll that found nothing must cost the user nothing:
+                    // no chat row, no transcript entry, and — since the panel
+                    // pings once per turn that produced a reply — no
+                    // notification. Dropping it here is what makes that true
+                    // without any frontend change.
+                    if is_nothing_to_report(&event) {
+                        continue;
+                    }
                     let is_turn_end = matches!(event, AssistantEvent::TurnEnd { .. });
                     store.record(&event);
                     events.publish(PodiumEvent::AssistantEvent { event });
@@ -1184,6 +1316,14 @@ impl AssistantManager {
             quiet_exit,
         })
     }
+}
+
+/// Whether `event` is the assistant saying "nothing needs you" and nothing
+/// else. Matched on the *whole* trimmed message: a reply that happens to
+/// quote the sentinel while also reporting something real is a real reply and
+/// must reach the user.
+fn is_nothing_to_report(event: &AssistantEvent) -> bool {
+    matches!(event, AssistantEvent::Message { text } if text.trim() == NOTHING_TO_REPORT)
 }
 
 /// Write `item` straight into the live session, regardless of whether a turn
@@ -1244,7 +1384,12 @@ async fn deliver_or_queue(
     // The 6-hourly sweep re-reports the same lingering to-do every pass, so
     // a day without chatting stacked the same line four times over — which
     // is most of what "a pile of [Podium] notices at once" was. Only nudges
-    // are deduped: two identical user messages are two deliberate sends.
+    // are deduped: two identical user messages are two deliberate sends, and
+    // two identical proposal outcomes are two real answers the assistant is
+    // waiting on.
+    // ponytail: that leaves an external poll (a `Notice`) able to stack when
+    // a turn outlives two intervals — harmless, since a poll shows no chat
+    // row and a duplicate "nothing to report" answer is swallowed anyway.
     if item.kind == PendingKind::Nudge
         && state
             .pending
@@ -2262,16 +2407,29 @@ mod tests {
         );
     }
 
+    /// Queue a nudge straight into the pending queue, without going near a
+    /// session. `nudge` itself now *starts* one, which a unit test has no
+    /// fake CLI for — the spawn path is covered by the integration tests.
+    async fn queue_nudge(manager: &AssistantManager, text: &str) {
+        let mut state = manager.state.lock().await;
+        let item = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Nudge,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            recorded: false,
+        };
+        deliver_or_queue(&mut state, item, &manager.store, &manager.events).await;
+    }
+
     #[tokio::test]
     async fn a_nudge_without_a_session_is_queued_rather_than_dropped() {
         let manager = AssistantManager::new(EventBus::new());
         let mut rx = manager.events.subscribe();
 
-        // No session, so nothing is spawned for it — but the UI still learns
-        // it is waiting.
-        manager
-            .nudge("[Podium] an agent finished".to_string())
-            .await;
+        // With no session to write into it waits instead of vanishing, and
+        // the UI still learns it is queued.
+        queue_nudge(&manager, "[Podium] an agent finished").await;
         assert_eq!(
             manager.state.lock().await.pending.len(),
             1,
@@ -2375,7 +2533,7 @@ mod tests {
         let mut rx = manager.events.subscribe();
         // Busy with no live session: every nudge just queues.
         for i in 0..MAX_PENDING + 1 {
-            manager.nudge(format!("nudge {i}")).await;
+            queue_nudge(&manager, &format!("nudge {i}")).await;
         }
         let state = manager.state.lock().await;
         assert_eq!(state.pending.len(), MAX_PENDING);
@@ -2397,15 +2555,9 @@ mod tests {
         // The lingering-to-do sweep repeats verbatim every 6 hours; with
         // nobody chatting, that used to stack up in the queue.
         let manager = AssistantManager::new(EventBus::new());
-        manager
-            .nudge("[Podium] a to-do has been open a while".to_string())
-            .await;
-        manager
-            .nudge("[Podium] a to-do has been open a while".to_string())
-            .await;
-        manager
-            .nudge("[Podium] a different thing happened".to_string())
-            .await;
+        queue_nudge(&manager, "[Podium] a to-do has been open a while").await;
+        queue_nudge(&manager, "[Podium] a to-do has been open a while").await;
+        queue_nudge(&manager, "[Podium] a different thing happened").await;
 
         let state = manager.state.lock().await;
         let texts: Vec<&str> = state.pending.iter().map(|p| p.text.as_str()).collect();
@@ -2704,5 +2856,44 @@ mod tests {
                 path: "/abs/report.pdf".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn only_the_bare_sentinel_is_swallowed() {
+        let message = |text: &str| AssistantEvent::Message {
+            text: text.to_string(),
+        };
+        assert!(is_nothing_to_report(&message(NOTHING_TO_REPORT)));
+        // Trailing whitespace/newlines from the CLI still count.
+        assert!(is_nothing_to_report(&message("  NOTHING_TO_REPORT\n")));
+        // A real reply that merely mentions it must reach the user.
+        assert!(!is_nothing_to_report(&message(
+            "Not NOTHING_TO_REPORT: a build is failing."
+        )));
+        assert!(!is_nothing_to_report(&message("NOTHING_TO_REPORT yet")));
+        // Only prose is ever swallowed, never a tool call or a turn end.
+        assert!(!is_nothing_to_report(&AssistantEvent::Tool {
+            name: NOTHING_TO_REPORT.to_string(),
+        }));
+    }
+
+    #[test]
+    fn polling_defaults_to_ten_minutes_on_both_sources() {
+        let polling = AssistantPolling::from(AssistantSettings::default());
+        assert_eq!(polling.interval_minutes, DEFAULT_POLL_INTERVAL_MINUTES);
+        assert!(polling.slack && polling.teams);
+        assert!(polling.is_active());
+        // Zero minutes is the off switch, and so is having nothing to look at.
+        assert!(!AssistantPolling {
+            interval_minutes: 0,
+            ..polling
+        }
+        .is_active());
+        assert!(!AssistantPolling {
+            slack: false,
+            teams: false,
+            ..polling
+        }
+        .is_active());
     }
 }

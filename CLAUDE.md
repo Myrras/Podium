@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 29 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **76 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with edit/remove and an interrupt control while a turn
   runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 76 commands.
+  IPC wrappers over all 78 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -463,11 +463,37 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   never printed), and a 6-hourly sweep for to-dos open longer than a week. Each becomes one `[Podium] …`
   turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
-  milliseconds. A nudge **never spawns the CLI child**: with no live,
-  idle session it waits in the message queue described above (see
-  _Message queue_) and is delivered as its own turn once one exists and
-  frees up — a fresh session would have no idea what the nudge was about.
-  Switching the setting off silences all of it.
+  milliseconds. A nudge **starts the session when there is none**
+  (`ensure_session`, the same path `send` uses) — otherwise the user only
+  learned an agent had finished whenever they next happened to type, which is
+  how a weekend's worth of `[Podium]` lines came to arrive in one pile. This
+  reverses the original phase-4 rule; the reasoning behind that rule ("a fresh
+  session would not know what the nudge is about") no longer holds now that
+  every launch starts blank and `assistant-memory.md` carries the context. A
+  spawn that fails falls back to queuing, so a nudge is never lost. Switching
+  the setting off silences all of it.
+
+  Because these are event-driven — Podium already sees an exit or a silent
+  agent for free — **a quiet day costs no turns at all**.
+
+  Alongside that runs a slow lane: the **external sweep**, every
+  `poll_interval_minutes` (default 10; `0` is off), asking the assistant to
+  check the enabled sources for anything needing the user. Slack and Teams
+  need no integration — the assistant already inherits the user's own
+  user-scope MCP servers — so this is `poll_prompt` wording plus a timer, and
+  it is skipped entirely with both sources off or proactivity off. It is
+  delivered as a `Notice`, not a `Nudge`: a nudge renders a muted `[Podium]`
+  row on arrival, and a routine check doing that every 10 minutes would
+  recreate the very pile-up it exists to prevent.
+
+  **The silence contract**: a sweep that found nothing must say nothing. The
+  prompt instructs the assistant to answer with exactly `NOTHING_TO_REPORT`,
+  and a `Message` whose *trimmed text equals* that sentinel is dropped before
+  it is recorded or published — no chat row, no transcript row. Only an exact
+  match counts; a reply that merely mentions the sentinel is a real reply.
+  That is also what makes notifications right with no frontend code: the
+  panel already pings once per `turnEnd` that produced a reply, so a
+  swallowed reply is a turn that produced none.
 
   The **day-start summary** used to be a fourth trigger here and is now the
   panel's **"Start my day" button** (`assistant_day_start`, shown in the
@@ -566,6 +592,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
 | `assistant_proactivity_get` | –                                       | `boolean`         |
 | `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
+| `assistant_polling_get` | –                                           | `AssistantPolling` |
+| `assistant_polling_set` | `{ intervalMinutes, slack, teams }` (0 = off) | `AssistantPolling` |
 | `assistant_queue_messages_get` | –                                    | `boolean`         |
 | `assistant_queue_messages_set` | `{ enabled }`                        | `boolean`         |
 | `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |

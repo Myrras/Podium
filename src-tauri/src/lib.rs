@@ -170,9 +170,12 @@ pub fn run() {
             tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation());
             // Watch the workspace on the assistant's behalf: an agent that
             // finished or crashed, one that looks stuck and lingering to-dos
-            // become chat nudges. Silent while the
-            // proactivity setting is off, and it never spawns the assistant's
-            // CLI just to deliver one. Spawned from inside the async runtime:
+            // become chat nudges — each starting the assistant's CLI if it is
+            // not already running, so the user hears about it there and then.
+            // A second, slower lane asks it to check the user's external
+            // sources (Slack, Teams) every few minutes and stay quiet unless
+            // something needs them. Silent while the proactivity setting is
+            // off. Spawned from inside the async runtime:
             // `setup` runs on the main thread, where the watcher's
             // `tokio::spawn` has no reactor and aborts the app.
             let orchestrator = Arc::clone(&state.orchestrator);
@@ -236,6 +239,8 @@ pub fn run() {
             commands::assistant::assistant_proactivity_set,
             commands::assistant::assistant_queue_messages_get,
             commands::assistant::assistant_queue_messages_set,
+            commands::assistant::assistant_polling_get,
+            commands::assistant::assistant_polling_set,
             commands::assistant::assistant_resolve_proposal,
             commands::assistant::assistant_queue_edit,
             commands::assistant::assistant_queue_remove,

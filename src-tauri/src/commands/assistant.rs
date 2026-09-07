@@ -1,6 +1,6 @@
 //! Personal-assistant commands: sending a turn, asking for the day-start
 //! summary, replaying the stored transcript, starting over, its memory, the
-//! autonomy, proactivity and
+//! autonomy, proactivity, external-poll and
 //! message-queue settings, deciding on a proposed action, and managing the
 //! pending-input queue (edit/remove a waiting message, interrupt the running
 //! turn). Replies (and the outcome of a proposal, and queue changes) stream
@@ -8,6 +8,7 @@
 
 use tauri::State;
 
+use podium_core::assistant::AssistantPolling;
 use podium_core::{Attachment, AutonomyMode, PendingId, ProposalId, TranscriptEntry};
 
 use crate::error::IpcError;
@@ -122,6 +123,31 @@ pub async fn assistant_queue_messages_set(
     enabled: bool,
 ) -> Result<bool, IpcError> {
     Ok(state.orchestrator.set_assistant_queue_messages(enabled)?)
+}
+
+/// How often the assistant sweeps the user's external sources, and which of
+/// them it looks at. `intervalMinutes` of 0 turns the sweep off.
+#[tauri::command]
+pub async fn assistant_polling_get(
+    state: State<'_, AppState>,
+) -> Result<AssistantPolling, IpcError> {
+    Ok(state.orchestrator.assistant_polling())
+}
+
+/// Change those; returns what was stored. A new interval is picked up by the
+/// running watcher on its next tick — no restart needed.
+#[tauri::command]
+pub async fn assistant_polling_set(
+    state: State<'_, AppState>,
+    interval_minutes: u64,
+    slack: bool,
+    teams: bool,
+) -> Result<AssistantPolling, IpcError> {
+    Ok(state.orchestrator.set_assistant_polling(AssistantPolling {
+        interval_minutes,
+        slack,
+        teams,
+    })?)
 }
 
 /// Confirm (`approved`) or reject one proposed action. A confirmed proposal

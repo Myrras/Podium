@@ -1,9 +1,9 @@
 /**
  * App settings dialog with four tabs: General (appearance, terminal), Agents
  * (per-adapter command override + default arguments, plus the argument merge
- * mode), Assistant (autonomy mode + proactive nudges), and MCP (one-click
- * registration of the stdio bridge with external clients like Claude Code and
- * Auggie).
+ * mode), Assistant (autonomy mode, proactive nudges, external polling), and
+ * MCP (one-click registration of the stdio bridge with external clients like
+ * Claude Code and Auggie).
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -262,9 +262,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
 /**
  * Assistant tab: the same autonomy setting the chat panel's header exposes
- * (both mirror the one persisted value), plus whether Podium may nudge the
- * assistant unprompted, and whether a message you send mid-turn waits its
- * turn or goes straight in.
+ * (both mirror the one persisted value), whether Podium may nudge the
+ * assistant unprompted, whether a message you send mid-turn waits its turn
+ * or goes straight in, and the proactive external-source (Slack/Teams)
+ * polling sweep's interval and per-source toggles.
  */
 function AssistantTab() {
   const autonomy = useAssistantStore((s) => s.autonomy);
@@ -276,13 +277,17 @@ function AssistantTab() {
   const queueMessages = useAssistantStore((s) => s.queueMessages);
   const setQueueMessages = useAssistantStore((s) => s.setQueueMessages);
   const loadQueueMessages = useAssistantStore((s) => s.loadQueueMessages);
+  const polling = useAssistantStore((s) => s.polling);
+  const setPolling = useAssistantStore((s) => s.setPolling);
+  const loadPolling = useAssistantStore((s) => s.loadPolling);
   const newConversation = useAssistantStore((s) => s.newConversation);
 
   useEffect(() => {
     void loadAutonomy();
     void loadProactivity();
     void loadQueueMessages();
-  }, [loadAutonomy, loadProactivity, loadQueueMessages]);
+    void loadPolling();
+  }, [loadAutonomy, loadProactivity, loadQueueMessages, loadPolling]);
 
   return (
     <>
@@ -322,6 +327,48 @@ function AssistantTab() {
           help="Off: a message you send while it is answering goes straight in and may land mid-answer. On: it waits its turn and is sent once the current reply ends."
           value={queueMessages}
           onChange={(enabled) => void setQueueMessages(enabled)}
+        />
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>External polling</h3>
+        <small className={styles.rowHelp}>
+          Periodically sweeps the sources below and only speaks up when
+          something needs your action. Each sweep is a real conversation turn,
+          so a shorter interval costs proportionally more.
+        </small>
+        <div className={styles.field}>
+          <label htmlFor="polling-interval">
+            Sweep interval, in minutes (0 = off)
+          </label>
+          <input
+            id="polling-interval"
+            type="number"
+            min={0}
+            value={polling.intervalMinutes}
+            onChange={(e) =>
+              void setPolling({
+                ...polling,
+                intervalMinutes: Math.max(0, Number(e.target.value) || 0),
+              })
+            }
+          />
+        </div>
+        <SettingToggle
+          label="Slack"
+          help="Lets a sweep read your Slack messages into the assistant's conversation to judge what needs action."
+          value={polling.slack}
+          onChange={(enabled) =>
+            void setPolling({ ...polling, slack: enabled })
+          }
+        />
+        <SettingToggle
+          label="Teams"
+          help="Lets a sweep read your Teams messages into the assistant's conversation to judge what needs action."
+          value={polling.teams}
+          onChange={(enabled) =>
+            void setPolling({ ...polling, teams: enabled })
+          }
         />
       </section>
 

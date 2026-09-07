@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use podium_core::assistant::{AssistantEvent, TranscriptRole};
+use podium_core::assistant::{AssistantEvent, AssistantPolling, TranscriptRole};
 use podium_core::{
     AssistantConfig, Attachment, McpConnectInfo, Orchestrator, PodiumEvent, ProactivityConfig,
     ProcessKind, ProcessSpec, RestartPolicy,
@@ -25,6 +25,26 @@ echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
 while IFS= read -r _line; do
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"},{"type":"tool_use","name":"list_todos"}]}}'
   echo '{"type":"result","subtype":"success","is_error":false,"result":"hi there"}'
+done
+"#;
+
+/// A fake CLI that always answers with the bare sentinel — what the assistant
+/// says when a sweep found nothing the user has to act on.
+const SILENT_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r _line; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"NOTHING_TO_REPORT"}]}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+done
+"#;
+
+/// A fake CLI whose answer *mentions* the sentinel while still reporting
+/// something real — that must reach the user untouched.
+const MENTIONS_SENTINEL_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r _line; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Not NOTHING_TO_REPORT: a deploy is waiting on you."}]}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 done
 "#;
 
@@ -177,6 +197,22 @@ fn fast_proactivity() -> ProactivityConfig {
         idle_after: Duration::from_millis(50),
         lingering_after: Duration::from_millis(10),
         sweep_every: Duration::from_millis(30),
+        // Real minutes, so the default 10-minute external sweep never fires
+        // during a millisecond test. The poll tests shrink this themselves.
+        poll_unit: Duration::from_secs(60),
+    }
+}
+
+/// Watcher timings whose external sweep fires almost at once: one "minute" of
+/// `poll_interval_minutes` is 10ms here.
+fn fast_polling() -> ProactivityConfig {
+    ProactivityConfig {
+        // Nothing else may speak, or it would be indistinguishable from a poll.
+        idle_after: Duration::from_secs(60),
+        lingering_after: Duration::from_secs(60 * 60),
+        sweep_every: Duration::from_secs(60 * 60),
+        poll_unit: Duration::from_millis(10),
+        ..fast_proactivity()
     }
 }
 
@@ -584,9 +620,9 @@ async fn proactivity_off_keeps_podium_quiet() {
 }
 
 #[tokio::test]
-async fn a_nudge_with_nobody_chatting_waits_for_the_next_turn() {
+async fn a_nudge_with_nobody_chatting_starts_the_session_itself() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
     let mut rx = orch.subscribe_events();
 
     let project = orch
@@ -596,16 +632,16 @@ async fn a_nudge_with_nobody_chatting_waits_for_the_next_turn() {
     orch.add_todo(project, "Fix the login redirect")
         .expect("add todo");
 
-    // No session yet: a nudge must not start the CLI on its own — a fresh
-    // session would not know what the nudge is about.
+    // Nobody has chatted, so there is no session — the nudge must start one
+    // rather than wait for the user to happen to type. (A fresh session is
+    // not a stranger: every app start clears the conversation anyway, and
+    // the memory file carries the continuity.)
     podium_core::proactivity::spawn(&orch, fast_proactivity());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!dir.path().join("argv.txt").exists(), "spawned for a nudge");
 
-    // The user's first turn takes it along.
-    orch.assistant_send("morning").await.expect("send");
     let notice = next_notice(&mut rx).await;
     assert!(notice.contains("Fix the login redirect"), "{notice}");
+    // And it really ran a turn, unprompted.
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
     orch.shutdown().await;
 }
 
@@ -1144,5 +1180,144 @@ async fn a_queued_message_keeps_its_attachment_until_delivered() {
     assert!(text.contains("second"), "{text}");
     assert!(text.contains("/abs/report.pdf"), "{text}");
 
+    orch.shutdown().await;
+}
+
+// -- the external sweep (slow lane) and its silence contract ------------
+
+#[tokio::test]
+async fn a_reply_that_is_only_the_sentinel_never_reaches_the_user() {
+    let (orch, _dir) = setup(SILENT_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("anything to act on?")
+        .await
+        .expect("send");
+    let events = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    // No `Message` at all: the turn came and went without a word. That is
+    // also what keeps the panel from firing a notification for it.
+    assert_eq!(
+        events,
+        vec![
+            AssistantEvent::Started {
+                session_id: "fake-session".to_string()
+            },
+            AssistantEvent::TurnEnd { error: None },
+        ]
+    );
+    // And it is not in the transcript either — only the user's own row.
+    let roles: Vec<_> = orch
+        .assistant_transcript()
+        .into_iter()
+        .map(|r| r.role)
+        .collect();
+    assert_eq!(roles, vec![TranscriptRole::User]);
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_that_merely_mentions_the_sentinel_is_a_real_reply() {
+    let (orch, _dir) = setup(MENTIONS_SENTINEL_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("anything to act on?")
+        .await
+        .expect("send");
+    let events = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    assert!(
+        events.contains(&AssistantEvent::Message {
+            text: "Not NOTHING_TO_REPORT: a deploy is waiting on you.".to_string()
+        }),
+        "{events:?}"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_external_sweep_asks_about_the_enabled_sources() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), RECORDS_STDIN_CLAUDE));
+
+    orch.set_assistant_polling(AssistantPolling {
+        interval_minutes: 1,
+        slack: true,
+        teams: false,
+    })
+    .expect("set polling");
+    // Nobody is chatting: like a nudge, the sweep starts the session itself.
+    podium_core::proactivity::spawn(&orch, fast_polling());
+
+    let lines = recorded_stdin(dir.path(), 1).await;
+    let text = lines[0]
+        .pointer("/message/content/0/text")
+        .and_then(|t| t.as_str())
+        .expect("text block")
+        .to_string();
+    assert!(text.contains("Slack"), "{text}");
+    assert!(
+        !text.contains("Teams"),
+        "disabled source asked about: {text}"
+    );
+    // The silence contract must be spelled out, or a quiet sweep still talks.
+    assert!(text.contains("NOTHING_TO_REPORT"), "{text}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_external_sweep_stays_off_without_a_source_or_without_proactivity() {
+    // Both sources off: nothing to look at, so nothing to ask.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
+    orch.set_assistant_polling(AssistantPolling {
+        interval_minutes: 1,
+        slack: false,
+        teams: false,
+    })
+    .expect("set polling");
+    podium_core::proactivity::spawn(&orch, fast_polling());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !dir.path().join("argv.txt").exists(),
+        "swept with no source enabled"
+    );
+    orch.shutdown().await;
+
+    // Sources on, but the user switched Podium's unprompted speaking off.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
+    orch.set_assistant_proactivity(false).expect("switch off");
+    orch.set_assistant_polling(AssistantPolling {
+        interval_minutes: 1,
+        slack: true,
+        teams: true,
+    })
+    .expect("set polling");
+    podium_core::proactivity::spawn(&orch, fast_polling());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !dir.path().join("argv.txt").exists(),
+        "swept while proactivity is off"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_zero_interval_turns_the_external_sweep_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
+    orch.set_assistant_polling(AssistantPolling {
+        interval_minutes: 0,
+        slack: true,
+        teams: true,
+    })
+    .expect("set polling");
+    podium_core::proactivity::spawn(&orch, fast_polling());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !dir.path().join("argv.txt").exists(),
+        "swept with the interval set to 0"
+    );
     orch.shutdown().await;
 }

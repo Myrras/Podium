@@ -20,6 +20,8 @@ import {
   assistantMemoryGet,
   assistantMemorySet,
   assistantNewConversation,
+  assistantPollingGet,
+  assistantPollingSet,
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
@@ -35,6 +37,7 @@ import type {
   Attachment,
   AssistantEvent,
   AutonomyMode,
+  PollingSettings,
   QueuedMessage,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
@@ -102,6 +105,12 @@ interface AssistantState {
    * off — governs only the user's own messages.
    */
   queueMessages: boolean;
+  /**
+   * The proactive external-source (Slack/Teams) polling sweep; mirrors the
+   * persisted setting. Seeded with the backend's own defaults so the tab
+   * shows a sane value before the load round-trip completes.
+   */
+  polling: PollingSettings;
   /** What the assistant remembers across conversations; `null` until loaded. */
   memory: string | null;
   /** Whether the stored transcript was already replayed this app run. */
@@ -150,6 +159,10 @@ interface AssistantState {
   loadQueueMessages: () => Promise<void>;
   /** Turn the message queue on or off. */
   setQueueMessages: (enabled: boolean) => Promise<void>;
+  /** Load the stored polling settings (Settings → Assistant). */
+  loadPolling: () => Promise<void>;
+  /** Replace the polling settings (interval + per-source toggles) as one. */
+  setPolling: (settings: PollingSettings) => Promise<void>;
   /** Confirm or reject a proposed action. */
   resolveProposal: (id: string, approved: boolean) => Promise<void>;
   /** Change a waiting user message's text before it is delivered. */
@@ -191,6 +204,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   autonomy: "confirm-destructive",
   proactive: true,
   queueMessages: false,
+  polling: { intervalMinutes: 10, slack: true, teams: true },
   memory: null,
   hydrated: false,
   pending: [],
@@ -348,6 +362,31 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     } catch (e) {
       set((s) => ({
         queueMessages: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  loadPolling: async () => {
+    try {
+      set({ polling: await assistantPollingGet() });
+    } catch {
+      // The panel still works on the default; the backend stays the truth.
+    }
+  },
+  setPolling: async (settings) => {
+    const previous = get().polling;
+    set({ polling: settings });
+    try {
+      set({
+        polling: await assistantPollingSet(
+          settings.intervalMinutes,
+          settings.slack,
+          settings.teams,
+        ),
+      });
+    } catch (e) {
+      set((s) => ({
+        polling: previous,
         messages: [...s.messages, message("notice", toIpcError(e).message)],
       }));
     }

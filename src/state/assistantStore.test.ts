@@ -12,6 +12,13 @@ vi.mock("../ipc/commands", () => ({
   assistantQueueMessagesSet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
   ),
+  assistantPollingGet: vi.fn(() =>
+    Promise.resolve({ intervalMinutes: 10, slack: true, teams: true }),
+  ),
+  assistantPollingSet: vi.fn(
+    (intervalMinutes: number, slack: boolean, teams: boolean) =>
+      Promise.resolve({ intervalMinutes, slack, teams }),
+  ),
   assistantQueueEdit: vi.fn(() => Promise.resolve()),
   assistantQueueRemove: vi.fn(() => Promise.resolve()),
   assistantInterrupt: vi.fn(() => Promise.resolve()),
@@ -28,6 +35,8 @@ vi.mock("../ipc/commands", () => ({
 import {
   assistantDayStart,
   assistantInterrupt,
+  assistantPollingGet,
+  assistantPollingSet,
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
@@ -39,7 +48,8 @@ import {
 
 const notifyAssistant = vi.fn();
 vi.mock("../lib/notify", () => ({
-  notifyAssistant: (title: string, body: string) => notifyAssistant(title, body),
+  notifyAssistant: (title: string, body: string) =>
+    notifyAssistant(title, body),
 }));
 
 import { useLayoutStore } from "./layoutStore";
@@ -64,6 +74,12 @@ describe("assistantStore", () => {
     vi.mocked(assistantQueueMessagesSet).mockImplementation((enabled) =>
       Promise.resolve(enabled),
     );
+    vi.mocked(assistantPollingGet).mockClear();
+    vi.mocked(assistantPollingSet).mockClear();
+    vi.mocked(assistantPollingSet).mockImplementation(
+      (intervalMinutes, slack, teams) =>
+        Promise.resolve({ intervalMinutes, slack, teams }),
+    );
     vi.mocked(assistantQueueEdit).mockClear();
     vi.mocked(assistantQueueEdit).mockResolvedValue(undefined);
     vi.mocked(assistantQueueRemove).mockClear();
@@ -76,6 +92,7 @@ describe("assistantStore", () => {
       activity: null,
       proactive: true,
       queueMessages: false,
+      polling: { intervalMinutes: 10, slack: true, teams: true },
       pending: [],
       turnReplyText: null,
     });
@@ -197,6 +214,42 @@ describe("assistantStore", () => {
     expect(last?.text).toBe("disk is full");
   });
 
+  it("loads the polling settings and rolls back a failed save", async () => {
+    await useAssistantStore.getState().loadPolling();
+    expect(assistantPollingGet).toHaveBeenCalled();
+    expect(useAssistantStore.getState().polling).toEqual({
+      intervalMinutes: 10,
+      slack: true,
+      teams: true,
+    });
+
+    await useAssistantStore
+      .getState()
+      .setPolling({ intervalMinutes: 30, slack: false, teams: true });
+    expect(assistantPollingSet).toHaveBeenCalledWith(30, false, true);
+    expect(useAssistantStore.getState().polling).toEqual({
+      intervalMinutes: 30,
+      slack: false,
+      teams: true,
+    });
+
+    vi.mocked(assistantPollingSet).mockRejectedValueOnce({
+      kind: "io",
+      message: "disk is full",
+    });
+    await useAssistantStore
+      .getState()
+      .setPolling({ intervalMinutes: 0, slack: false, teams: false });
+    // Rolled back to what the backend last confirmed.
+    expect(useAssistantStore.getState().polling).toEqual({
+      intervalMinutes: 30,
+      slack: false,
+      teams: true,
+    });
+    const msgs = useAssistantStore.getState().messages;
+    expect(msgs[msgs.length - 1]?.text).toBe("disk is full");
+  });
+
   describe("the pending queue", () => {
     it("sends straight through without touching the queue while idle", async () => {
       await useAssistantStore.getState().send("hello");
@@ -245,7 +298,9 @@ describe("assistantStore", () => {
     it("promotes a delivered waiting message into the log and re-busies the panel", () => {
       useAssistantStore.setState({
         busy: false,
-        pending: [{ id: "p-1", kind: "user", text: "its turn came", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "its turn came", attachments: [] },
+        ],
       });
 
       useAssistantStore.getState().apply({
@@ -261,7 +316,9 @@ describe("assistantStore", () => {
 
     it("edits a waiting message optimistically and rolls back on failure", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "first draft", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "first draft", attachments: [] },
+        ],
       });
 
       await useAssistantStore.getState().editPending("p-1", "final draft");
@@ -281,7 +338,9 @@ describe("assistantStore", () => {
 
     it("ignores a blank edit rather than sending it", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "first draft", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "first draft", attachments: [] },
+        ],
       });
 
       await useAssistantStore.getState().editPending("p-1", "   ");
@@ -292,7 +351,9 @@ describe("assistantStore", () => {
 
     it("removes a waiting message optimistically and rolls back on failure", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "withdraw me", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "withdraw me", attachments: [] },
+        ],
       });
 
       await useAssistantStore.getState().removePending("p-1");
@@ -300,7 +361,9 @@ describe("assistantStore", () => {
       expect(useAssistantStore.getState().pending).toEqual([]);
 
       useAssistantStore.setState({
-        pending: [{ id: "p-2", kind: "user", text: "keep me", attachments: [] }],
+        pending: [
+          { id: "p-2", kind: "user", text: "keep me", attachments: [] },
+        ],
       });
       vi.mocked(assistantQueueRemove).mockRejectedValueOnce({
         kind: "queueItemNotFound",
@@ -426,7 +489,12 @@ describe("assistantStore", () => {
       });
       notifyAssistant.mockClear();
 
-      apply({ type: "proposalResolved", id: "p-1", approved: true, error: null });
+      apply({
+        type: "proposalResolved",
+        id: "p-1",
+        approved: true,
+        error: null,
+      });
 
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
