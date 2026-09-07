@@ -105,6 +105,9 @@ struct ManagedProcess {
     restart: RestartState,
     /// When the current incarnation started, for backoff reset.
     started_at: Option<Instant>,
+    /// When the UI last saw an input prompt on this agent's screen — see
+    /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
+    waiting_since: Option<Instant>,
 }
 
 impl ManagedProcess {
@@ -378,6 +381,51 @@ impl Orchestrator {
                     .last_append_at()
                     .or(p.started_at)?;
                 (now.duration_since(last) >= min_idle).then(|| p.info(*id))
+            })
+            .collect()
+    }
+
+    /// The UI saw an input prompt on this agent's screen (a permission
+    /// question, a credential request). Recorded so [`crate::proactivity`]
+    /// can tell the user *now* instead of waiting out its silence timer —
+    /// which is a blunt proxy: it cannot tell "waiting for you" from
+    /// "finished thinking". Anything that is not a running agent is ignored.
+    ///
+    /// An agent blocked on a permission prompt cannot call
+    /// `report_to_assistant` itself — it is blocked *inside* the harness that
+    /// would make the call — so this screen reading is the only signal there
+    /// is.
+    pub fn report_agent_waiting(&self, id: ProcessId) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let Some(process) = inner.processes.get_mut(&id) else {
+            return;
+        };
+        if matches!(process.spec.kind, ProcessKind::Agent { .. })
+            && matches!(process.status, ProcessStatus::Running { .. })
+        {
+            process.waiting_since = Some(Instant::now());
+        }
+    }
+
+    /// Running agents with a reported prompt that have printed nothing
+    /// since. Output after the report means the prompt was answered (or
+    /// misread), so the flag simply stops counting — no clearing needed. An
+    /// agent that redraws its prompt would fall out the same way and land
+    /// back on the silence timer, which is the safe direction to fail.
+    pub fn agents_awaiting_input(&self) -> Vec<ProcessInfo> {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
+            .processes
+            .iter()
+            .filter(|(_, p)| matches!(p.spec.kind, ProcessKind::Agent { .. }))
+            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+            .filter_map(|(id, p)| {
+                let since = p.waiting_since?;
+                let last = p.scrollback.lock().expect(LOCK_POISONED).last_append_at();
+                match last {
+                    Some(last) if last > since => None,
+                    _ => Some(p.info(*id)),
+                }
             })
             .collect()
     }
@@ -2182,6 +2230,7 @@ fn insert_process(
             from_config,
             restart: RestartState::default(),
             started_at: None,
+            waiting_since: None,
         },
     );
 }

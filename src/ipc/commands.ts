@@ -166,6 +166,15 @@ export function processGitBranch(processId: ProcessId): Promise<string | null> {
   return invoke("process_git_branch", { processId });
 }
 
+/**
+ * Tell the backend this agent is sitting on an input prompt, so the assistant
+ * hears about it now rather than after the watcher's silence timer. Called
+ * once per prompt episode, from the activity monitor that already detects it.
+ */
+export function processReportWaiting(processId: ProcessId): Promise<void> {
+  return invoke("process_report_waiting", { processId });
+}
+
 /** Rename a process's display label; blank names are rejected. */
 export function processRename(
   processId: ProcessId,

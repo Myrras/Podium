@@ -543,6 +543,41 @@ async fn an_agent_that_finished_is_reported_in_the_chat() {
 }
 
 #[tokio::test]
+async fn an_agent_sitting_on_a_prompt_is_reported_without_waiting_out_the_timer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    // A silence timer far longer than the test: only the reported prompt can
+    // produce a nudge here.
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            idle_after: Duration::from_secs(60),
+            ..fast_proactivity()
+        },
+    );
+    orch.report_agent_waiting(agent);
+
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("fix-login"), "{notice}");
+    assert!(notice.contains("sitting on a prompt"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_stuck_agent_is_reported_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));

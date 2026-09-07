@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 29 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with edit/remove and an interrupt control while a turn
   runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 78 commands.
+  IPC wrappers over all 79 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -457,10 +457,18 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   **Proactivity** (`proactivity.rs`, setting `proactive` in the same
   `assistant` block, default **on**) lets Podium speak first. One task watches
   the `EventBus` and, on a slow tick, the process/to-do state: an agent that
-  exited (finished or crashed), a running agent that has printed nothing for
+  exited (finished or crashed), an agent the UI reported an input prompt on
+  (`process_report_waiting` → `Orchestrator::report_agent_waiting` /
+  `agents_awaiting_input`), a running agent that has printed nothing for
   5 minutes (so it is probably waiting on a question — `Orchestrator::idle_agents`,
   measured from the scrollback's last append, or from the process start when it
-  never printed), and a 6-hourly sweep for to-dos open longer than a week. Each becomes one `[Podium] …`
+  never printed), and a 6-hourly sweep for to-dos open longer than a week.
+  The prompt report and the silence timer share one dedupe set, and a
+  reported prompt wins the wording, so a blocked agent is announced once —
+  at the next tick rather than five minutes later. The silence timer stays
+  as the backstop for agents whose terminal has never been opened, where
+  there is no screen to read. A report stops counting as soon as the agent
+  prints anything again, so nothing has to clear it. Each becomes one `[Podium] …`
   turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
   milliseconds. A nudge **starts the session when there is none**
@@ -539,6 +547,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_remove`        | `{ processId }`                             | –                 |
 | `process_list`          | `{ projectId? }`                            | `ProcessInfo[]`   |
 | `process_git_branch`    | `{ processId }`                             | `string \| null`  |
+| `process_report_waiting` | `{ processId }` (agent showing a prompt)   | –                 |
 | `process_rename`        | `{ processId, name }`                       | `ProcessInfo`     |
 | `process_start`         | `{ processId }`                             | –                 |
 | `process_stop`          | `{ processId }`                             | –                 |

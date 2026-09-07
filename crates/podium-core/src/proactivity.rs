@@ -205,24 +205,48 @@ impl Watcher {
         self.poll(orchestrator, poll_prompt(polling)).await;
     }
 
-    /// Flag running agents that have gone quiet: a Claude Code session that
-    /// stops printing is usually waiting for an answer.
+    /// Flag running agents that need the user: one the UI saw a prompt on
+    /// (told at the next tick, not in five minutes), and — as a backstop for
+    /// agents whose terminal has never been opened, where there is no screen
+    /// to read — one that has simply gone quiet for long enough.
     async fn check_idle_agents(&mut self, orchestrator: &Orchestrator) {
-        let idle = orchestrator.idle_agents(self.config.idle_after);
-        let ids: HashSet<ProcessId> = idle.iter().map(|p| p.id).collect();
+        // A prompt actually on screen beats the silence timer for the same
+        // agent: one nudge, and the wording that says what is really going on.
+        let mut agents: Vec<(ProcessInfo, bool)> = orchestrator
+            .agents_awaiting_input()
+            .into_iter()
+            .map(|p| (p, true))
+            .collect();
+        let prompting: HashSet<ProcessId> = agents.iter().map(|(p, _)| p.id).collect();
+        agents.extend(
+            orchestrator
+                .idle_agents(self.config.idle_after)
+                .into_iter()
+                .filter(|p| !prompting.contains(&p.id))
+                .map(|p| (p, false)),
+        );
+        let ids: HashSet<ProcessId> = agents.iter().map(|(p, _)| p.id).collect();
         // An agent that spoke again is no longer stuck, so it may be flagged
         // again later.
         self.idle_nudged.retain(|id| ids.contains(id));
-        for process in idle {
+        for (process, prompting) in agents {
             if !self.idle_nudged.insert(process.id) {
                 continue;
             }
-            let text = format!(
-                "[Podium] The agent {} has printed nothing for {}. It is probably waiting on \
-                 input — read its last output and tell the user what it needs.",
-                describe(orchestrator, &process),
-                minutes(self.config.idle_after),
-            );
+            let where_ = describe(orchestrator, &process);
+            let text = if prompting {
+                format!(
+                    "[Podium] The agent {where_} is sitting on a prompt and cannot go on \
+                     without the user. Read its last output and tell the user what it is \
+                     asking for."
+                )
+            } else {
+                format!(
+                    "[Podium] The agent {where_} has printed nothing for {}. It is probably \
+                     waiting on input — read its last output and tell the user what it needs.",
+                    minutes(self.config.idle_after),
+                )
+            };
             self.nudge(orchestrator, text).await;
         }
     }
