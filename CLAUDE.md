@@ -496,9 +496,14 @@ one lock acquisition, atomically, before the async `podium.yml` load.
 
   **The silence contract**: a sweep that found nothing must say nothing. The
   prompt instructs the assistant to answer with exactly `NOTHING_TO_REPORT`,
-  and a `Message` whose *trimmed text equals* that sentinel is dropped before
-  it is recorded or published — no chat row, no transcript row. Only an exact
-  match counts; a reply that merely mentions the sentinel is a real reply.
+  and a `Message` carrying that sentinel **on a line of its own** — anywhere
+  in the reply — is dropped before it is recorded or published: no chat row,
+  no transcript row. It is deliberately not an exact-whole-message match:
+  models keep prefixing the word with the very summary the prompt forbids
+  ("Same messages as last check.\n\nNOTHING_TO_REPORT"), and matching exactly
+  let all of that through as a notification — the noise this contract exists
+  to prevent. A reply that quotes the sentinel *mid-sentence* while reporting
+  something real is still a real reply.
   That is also what makes notifications right with no frontend code: the
   panel already pings once per `turnEnd` that produced a reply, so a
   swallowed reply is a turn that produced none.

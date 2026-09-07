@@ -24,8 +24,8 @@
 //! `[Podium]` turn into the session (see [`crate::proactivity`] for what
 //! triggers one), starting the session when there is none — so an agent that
 //! finished is reported when it finishes, not whenever the user next happens
-//! to type. A nudge whose answer is exactly [`NOTHING_TO_REPORT`] is
-//! swallowed, so a sweep that found nothing stays silent.
+//! to type. A nudge whose answer carries [`NOTHING_TO_REPORT`] on a line of
+//! its own is swallowed, so a sweep that found nothing stays silent.
 //!
 //! Only one turn is ever in flight at a time. A nudge and a proposal-outcome
 //! notice (`notify`) — Podium's own inputs — always route through one
@@ -125,8 +125,9 @@ anything you leave out is gone.";
 /// swallowed: no chat row, no transcript entry, and therefore (the panel
 /// pings once per turn that produced a reply) no notification either.
 ///
-/// Only an *exact* match counts. A reply that merely mentions the sentinel
-/// while saying something real is a real reply.
+/// It counts on a line of its own, wherever in the reply it stands — models
+/// keep prefixing it with a summary of what they checked. Quoted inside a
+/// sentence it is a real reply; see [`is_nothing_to_report`].
 pub const NOTHING_TO_REPORT: &str = "NOTHING_TO_REPORT";
 
 /// The day-start summary, sent as a normal user turn by the panel's button
@@ -1325,12 +1326,19 @@ impl AssistantManager {
     }
 }
 
-/// Whether `event` is the assistant saying "nothing needs you" and nothing
-/// else. Matched on the *whole* trimmed message: a reply that happens to
-/// quote the sentinel while also reporting something real is a real reply and
-/// must reach the user.
+/// Whether `event` is the assistant saying "nothing needs you".
+///
+/// The sentinel counts wherever it stands **on a line of its own**, not only
+/// as the entire message. Asking for the bare word is what the prompt does,
+/// but models routinely wrap it in the very summary the prompt forbids
+/// ("Same messages as last check.\n\nNOTHING_TO_REPORT") — and an exact match
+/// let all of that through as a real notification, which is precisely the
+/// noise the silence contract exists to prevent. A reply that merely quotes
+/// the sentinel mid-sentence while reporting something real still reaches the
+/// user.
 fn is_nothing_to_report(event: &AssistantEvent) -> bool {
-    matches!(event, AssistantEvent::Message { text } if text.trim() == NOTHING_TO_REPORT)
+    matches!(event, AssistantEvent::Message { text }
+        if text.lines().any(|line| line.trim() == NOTHING_TO_REPORT))
 }
 
 /// Write `item` straight into the live session, regardless of whether a turn
@@ -2886,13 +2894,22 @@ mod tests {
     }
 
     #[test]
-    fn only_the_bare_sentinel_is_swallowed() {
+    fn a_sentinel_on_its_own_line_is_swallowed() {
         let message = |text: &str| AssistantEvent::Message {
             text: text.to_string(),
         };
         assert!(is_nothing_to_report(&message(NOTHING_TO_REPORT)));
         // Trailing whitespace/newlines from the CLI still count.
         assert!(is_nothing_to_report(&message("  NOTHING_TO_REPORT\n")));
+        // What a real sweep answered: the forbidden summary, then the word.
+        assert!(is_nothing_to_report(&message(
+            "Same messages as last check, nothing newer. Teams scan also \
+             returned nothing new.\n\nNOTHING_TO_REPORT"
+        )));
+        // …and the other way round, verdict first.
+        assert!(is_nothing_to_report(&message(
+            "NOTHING_TO_REPORT\n\nChecked Slack and Teams."
+        )));
         // A real reply that merely mentions it must reach the user.
         assert!(!is_nothing_to_report(&message(
             "Not NOTHING_TO_REPORT: a build is failing."
