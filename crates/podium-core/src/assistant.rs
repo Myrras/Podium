@@ -807,8 +807,9 @@ struct SessionState {
     pending: VecDeque<PendingInput>,
     /// Whether anything the *user* wrote went into the running turn. Set at
     /// write time (a "send now" folds a user message into a turn Podium
-    /// started, which makes that turn the user's too) and cleared at
-    /// `TurnEnd`; it decides `TurnEnd { notify }`.
+    /// started, which makes that turn the user's too) and cleared whenever
+    /// the turn ends, via [`SessionState::end_turn`]; it decides
+    /// `TurnEnd { notify }`.
     turn_from_user: bool,
 }
 
@@ -820,6 +821,21 @@ impl SessionState {
             pending: VecDeque::new(),
             turn_from_user: false,
         }
+    }
+
+    /// No turn is running any more — however it ended: its `TurnEnd`, an
+    /// interrupt, a cleared conversation, or the session dying under it.
+    ///
+    /// `turn_from_user` belongs to the turn that just ended, so it has to go
+    /// with it. Clearing `in_flight` on its own left "the user is waiting on
+    /// this" set for good whenever a user turn ended any other way than its
+    /// own `TurnEnd` — a crash mid-turn, a stale `--resume` the CLI exits on,
+    /// an interrupt — and every later nudge or poll then inherited it and
+    /// pinged the desktop. One place to clear both is what keeps that from
+    /// coming back.
+    fn end_turn(&mut self) {
+        self.in_flight = false;
+        self.turn_from_user = false;
     }
 }
 
@@ -922,7 +938,7 @@ impl AssistantManager {
                 session.quiet_exit.store(true, Ordering::Relaxed);
                 let _ = session.child.kill().await;
             }
-            state.in_flight = false;
+            state.end_turn();
             std::mem::take(&mut state.pending)
         };
         self.proposals.lock().expect(LOCK_POISONED).clear();
@@ -945,7 +961,7 @@ impl AssistantManager {
             session.quiet_exit.store(true, Ordering::Relaxed);
             let _ = session.child.kill().await;
         }
-        state.in_flight = false;
+        state.end_turn();
         let event = AssistantEvent::QueueNotice {
             text: "[Podium] The current turn was interrupted.".to_string(),
         };
@@ -1217,7 +1233,7 @@ impl AssistantManager {
             .is_some_and(|s| matches!(s.child.try_wait(), Ok(Some(_)) | Err(_)))
         {
             state.session = None;
-            state.in_flight = false;
+            state.end_turn();
         }
         if state.session.is_none() {
             let config = self.config.lock().expect(LOCK_POISONED).clone();
@@ -1331,11 +1347,10 @@ impl AssistantManager {
                             error,
                             notify: st.turn_from_user || action_required,
                         };
-                        st.turn_from_user = false;
+                        st.end_turn();
                         action_required = false;
                         store.record(&event);
                         events.publish(PodiumEvent::AssistantEvent { event });
-                        st.in_flight = false;
                         drain_next(&mut st, &store, &events).await;
                         continue;
                     }
@@ -1362,7 +1377,7 @@ impl AssistantManager {
                     .is_some_and(|s| Arc::ptr_eq(&s.quiet_exit, &quiet))
                 {
                     st.session = None;
-                    st.in_flight = false;
+                    st.end_turn();
                     std::mem::take(&mut st.pending)
                 } else {
                     VecDeque::new()

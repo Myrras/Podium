@@ -111,6 +111,22 @@ read -r _line
 exit 1
 "#;
 
+/// A fake CLI that crashes on its *first* turn only (a marker file next to it
+/// remembers it already did), then behaves normally — for asserting that a
+/// user turn lost to a crash does not leave "the user is waiting" set behind.
+const CRASHES_ONCE_THEN_OK_CLAUDE: &str = r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+if [ ! -f "$(dirname "$0")/crashed" ]; then
+  : > "$(dirname "$0")/crashed"
+  read -r _line
+  exit 1
+fi
+while IFS= read -r _line; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"an agent finished"}]}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+done
+"#;
+
 /// A fake CLI that appends every turn's raw stdin line to `stdin.jsonl` next
 /// to it, so a test can inspect exactly what content blocks a turn carried —
 /// for asserting an attachment reaches the child's stdin intact.
@@ -957,6 +973,34 @@ async fn a_session_that_crashes_mid_turn_reports_the_queued_message_as_undeliver
         rows.iter()
             .any(|r| r.text.contains("second") && r.text.contains("delivered")),
         "the queued message must be reported, not silently dropped: {rows:?}"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_user_turn_lost_to_a_crash_does_not_make_later_nudges_notify() {
+    let (orch, _dir) = setup(CRASHES_ONCE_THEN_OK_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    // The user's turn goes out and the session dies under it — no `TurnEnd`
+    // ever arrives for it.
+    orch.assistant_send("what is going on?")
+        .await
+        .expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Exited)).await;
+
+    // Podium's own next turn is nobody's question: it must stay in the panel.
+    orch.assistant_nudge("[Podium] The agent \"fix-login\" finished.".to_string())
+        .await;
+    let events = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    assert_eq!(
+        events.last(),
+        Some(&AssistantEvent::TurnEnd {
+            error: None,
+            notify: false,
+        }),
+        "a nudge after a crashed user turn must not inherit its notification: {events:?}"
     );
     orch.shutdown().await;
 }
