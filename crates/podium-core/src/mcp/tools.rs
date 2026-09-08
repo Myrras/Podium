@@ -46,6 +46,19 @@ pub struct ProcessParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct RespawnAgentParams {
+    /// UUID of the stuck agent process (from `list_processes`).
+    pub process_id: String,
+    /// The answer to the question the agent is stuck on, in full — the fresh
+    /// session gets it in its prompt and must not have to ask again.
+    pub answer: String,
+    /// What the fresh agent should do. Only needed when the stuck agent owns
+    /// no to-do: the replacement inherits the to-dos, and those carry the
+    /// task. With neither, the call is refused.
+    pub task: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetProcessOutputParams {
     /// Process UUID (from `list_processes`).
     pub process_id: String,
@@ -473,6 +486,22 @@ impl PodiumTools {
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
+    }
+
+    #[tool(
+        description = "Stop an agent that is stuck waiting on a question and put a fresh one on the same work, with the answer already in its prompt. Nothing can type into a running agent's terminal, so this is the only way to unblock one. The replacement inherits the stuck agent's to-dos and adapter, and gets a new name so the two are told apart; pass `task` as well when the agent owns no to-do. Returns the new agent's process snapshot."
+    )]
+    pub async fn respawn_agent(
+        &self,
+        Parameters(p): Parameters<RespawnAgentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_process_id(&p.process_id)?;
+        let spawned = self
+            .orchestrator
+            .respawn_agent(id, &p.answer, p.task.as_deref())
+            .await
+            .map_err(core_error)?;
+        json_result(&self.find_process(spawned)?)
     }
 
     #[tool(description = "Restart a process: stop it if running, wait for exit, start again.")]

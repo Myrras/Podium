@@ -114,10 +114,15 @@ genuinely cannot tell what the user wants and guessing would waste real work \
 — otherwise take the sensible default, do it, and say what you did. When an \
 agent stays blocked on the same question across more than one check, stop \
 relaying it: say which answer you would pick and why, as something the user \
-can wave through in a word. You cannot type into an agent's terminal, so the \
-fallback is to offer to stop it and spawn a fresh agent with the answer \
-already in its prompt. Speak up when work has plainly been stuck a while, \
-even if nobody asked. If something the user wants cannot be \
+can wave through in a word. You cannot type into an agent's terminal, so once \
+they have agreed to an answer, use respawn_agent to stop the stuck session \
+and start a fresh one carrying that answer — do not leave it sitting there. Speak up when work has plainly been stuck a while, \
+even if nobody asked. When a reply of yours needs the user to do something \
+now — decide, unblock an agent, look at something broken — end it with \
+ACTION_REQUIRED on a line of its own. That is what reaches them on the \
+desktop when the panel is not in front of them, so leave it off anything \
+that merely keeps them posted; an agent that simply finished is news, not a \
+task. If something the user wants cannot be \
 done with the tools available, say so and ask rather than quietly doing \
 something else. Every conversation starts empty — the \
 memory below is your only continuity between days, so keep it current: call \
@@ -135,6 +140,17 @@ anything you leave out is gone.";
 /// keep prefixing it with a summary of what they checked. Quoted inside a
 /// sentence it is a real reply; see [`is_nothing_to_report`].
 pub const NOTHING_TO_REPORT: &str = "NOTHING_TO_REPORT";
+
+/// What the assistant puts on a line of its own when its reply needs the user
+/// to act *now* — a decision an agent is blocked on, something broken. It is
+/// the only thing that raises a desktop notification for a turn Podium itself
+/// started (an agent report, a nudge, a poll): those otherwise stay in the
+/// panel, so a steady trickle of "agent finished" cannot spam the desktop.
+///
+/// Read on a line of its own for the same reason as [`NOTHING_TO_REPORT`],
+/// and stripped from the text before anyone sees it — it is a signal to
+/// Podium, not something to show the user.
+pub const ACTION_REQUIRED: &str = "ACTION_REQUIRED";
 
 /// The day-start summary, sent as a normal user turn by the panel's button
 /// (`Orchestrator::assistant_day_start`). Deliberately a user turn, not a
@@ -161,6 +177,9 @@ const READ_ONLY_TOOLS: &[&str] = &[
 /// [`AutonomyMode::ConfirmDestructive`] holds back.
 const DESTRUCTIVE_TOOLS: &[&str] = &[
     "stop_process",
+    // Kills a running agent, so it is confirmed like a plain stop — even
+    // though the point of it is that a replacement starts straight after.
+    "respawn_agent",
     "restart_process",
     "remove_process",
     "set_todo_archived",
@@ -493,8 +512,12 @@ pub enum AssistantEvent {
         approved: bool,
         error: Option<String>,
     },
-    /// The turn finished; `error` is set when it ended badly.
-    TurnEnd { error: Option<String> },
+    /// The turn finished; `error` is set when it ended badly. `notify` says
+    /// whether this turn is worth a desktop notification: true for anything
+    /// the user asked for, and for an unprompted turn only when the assistant
+    /// marked its reply [`ACTION_REQUIRED`]. Decided here rather than in the
+    /// panel because only the session knows who started the turn.
+    TurnEnd { error: Option<String>, notify: bool },
     /// The session ended (crashed, or the CLI is missing). A later send
     /// starts a fresh one.
     Exited,
@@ -782,6 +805,11 @@ struct SessionState {
     /// current turn to end. FIFO — oldest delivered next, one per `TurnEnd`,
     /// never merged.
     pending: VecDeque<PendingInput>,
+    /// Whether anything the *user* wrote went into the running turn. Set at
+    /// write time (a "send now" folds a user message into a turn Podium
+    /// started, which makes that turn the user's too) and cleared at
+    /// `TurnEnd`; it decides `TurnEnd { notify }`.
+    turn_from_user: bool,
 }
 
 impl SessionState {
@@ -790,6 +818,7 @@ impl SessionState {
             session: None,
             in_flight: false,
             pending: VecDeque::new(),
+            turn_from_user: false,
         }
     }
 }
@@ -1270,6 +1299,10 @@ impl AssistantManager {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             let mut started = false;
+            // Set by an `ACTION_REQUIRED` marker anywhere in the turn, read
+            // and cleared at its `TurnEnd`. A plain local: this task sees one
+            // session's events in order, so nothing else can race it.
+            let mut action_required = false;
             // Non-JSON noise (a chatty shell profile) is skipped, not fatal.
             while let Ok(Some(line)) = lines.next_line().await {
                 for event in parse_stream_line(&line) {
@@ -1282,18 +1315,32 @@ impl AssistantManager {
                     if is_nothing_to_report(&event) {
                         continue;
                     }
-                    let is_turn_end = matches!(event, AssistantEvent::TurnEnd { .. });
-                    store.record(&event);
-                    events.publish(PodiumEvent::AssistantEvent { event });
-                    if is_turn_end {
+                    // The marker is for Podium, not the user: take it out of
+                    // the prose. A message that was nothing but the marker
+                    // has nothing left to show.
+                    let Some(event) = take_action_required(event, &mut action_required) else {
+                        continue;
+                    };
+                    if let AssistantEvent::TurnEnd { error, .. } = event {
                         // The turn is over, so the next waiting item (if any)
                         // becomes its own turn right away — never merged, and
                         // this advances the queue even when the turn ended in
                         // error.
                         let mut st = state.lock().await;
+                        let event = AssistantEvent::TurnEnd {
+                            error,
+                            notify: st.turn_from_user || action_required,
+                        };
+                        st.turn_from_user = false;
+                        action_required = false;
+                        store.record(&event);
+                        events.publish(PodiumEvent::AssistantEvent { event });
                         st.in_flight = false;
                         drain_next(&mut st, &store, &events).await;
+                        continue;
                     }
+                    store.record(&event);
+                    events.publish(PodiumEvent::AssistantEvent { event });
                 }
             }
             // A session that never announced itself is a session that never
@@ -1355,6 +1402,30 @@ fn is_nothing_to_report(event: &AssistantEvent) -> bool {
         if text.lines().any(|line| line.trim() == NOTHING_TO_REPORT))
 }
 
+/// Strip an [`ACTION_REQUIRED`] line out of a message, setting `flag` if one
+/// was there. Returns `None` when nothing but the marker is left — the
+/// assistant answered with the bare signal, which is not a chat row.
+///
+/// Anything that is not a message passes through untouched.
+fn take_action_required(event: AssistantEvent, flag: &mut bool) -> Option<AssistantEvent> {
+    let AssistantEvent::Message { text } = event else {
+        return Some(event);
+    };
+    if !text.lines().any(|line| line.trim() == ACTION_REQUIRED) {
+        return Some(AssistantEvent::Message { text });
+    }
+    *flag = true;
+    let stripped = text
+        .lines()
+        .filter(|line| line.trim() != ACTION_REQUIRED)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stripped = stripped.trim();
+    (!stripped.is_empty()).then(|| AssistantEvent::Message {
+        text: stripped.to_string(),
+    })
+}
+
 /// Write `item` straight into the live session, regardless of whether a turn
 /// is already running — what "send now" on a waiting message does. An
 /// in-progress turn's output can interleave with this new one; that is the
@@ -1372,6 +1443,7 @@ async fn deliver_bypassing_queue(
         match write_turn(session, &item.text, &item.attachments).await {
             Ok(()) => {
                 state.in_flight = true;
+                state.turn_from_user |= item.kind == PendingKind::User;
                 record_delivered(store, events, &item);
                 return;
             }
@@ -1400,6 +1472,7 @@ async fn deliver_or_queue(
             match write_turn(session, &item.text, &item.attachments).await {
                 Ok(()) => {
                     state.in_flight = true;
+                    state.turn_from_user |= item.kind == PendingKind::User;
                     record_delivered(store, events, &item);
                     return;
                 }
@@ -1481,6 +1554,7 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     match write_turn(session, &item.text, &item.attachments).await {
         Ok(()) => {
             state.in_flight = true;
+            state.turn_from_user |= item.kind == PendingKind::User;
             record_delivered(store, events, &item);
             // The direct-write path (an immediately-delivered message) is
             // already shown by its own caller; this one was waiting and
@@ -1619,7 +1693,12 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
                     .unwrap_or("the assistant turn failed")
                     .to_string()
             });
-            vec![AssistantEvent::TurnEnd { error }]
+            // `notify` is not in the stream — the stdout task fills it in
+            // once it knows who started the turn.
+            vec![AssistantEvent::TurnEnd {
+                error,
+                notify: false,
+            }]
         }
         _ => Vec::new(),
     }
@@ -2008,7 +2087,10 @@ mod tests {
             tool: "set_todo_archived".to_string(),
             summary: "{}".to_string(),
         });
-        store.record(&AssistantEvent::TurnEnd { error: None });
+        store.record(&AssistantEvent::TurnEnd {
+            error: None,
+            notify: true,
+        });
         store.record(&AssistantEvent::Exited);
 
         let rows: Vec<_> = store
@@ -2105,6 +2187,56 @@ mod tests {
         assert!(IDENTITY_PROMPT.contains("stop relaying it"));
     }
 
+    /// The marker is the whole notification gate for unprompted turns, and it
+    /// only ever arrives if the prompt asks for it — nothing else enforces it.
+    #[test]
+    fn the_identity_asks_for_the_action_required_marker() {
+        assert!(IDENTITY_PROMPT.contains(ACTION_REQUIRED));
+        assert!(IDENTITY_PROMPT.contains("on a line of its own"));
+    }
+
+    #[test]
+    fn the_action_required_marker_is_taken_out_of_the_reply() {
+        let mut flag = false;
+        let event = take_action_required(
+            AssistantEvent::Message {
+                text: "Elements is stuck on which branch to use.\nACTION_REQUIRED".to_string(),
+            },
+            &mut flag,
+        );
+        assert!(flag);
+        assert_eq!(
+            event,
+            Some(AssistantEvent::Message {
+                text: "Elements is stuck on which branch to use.".to_string(),
+            })
+        );
+    }
+
+    /// A bare marker is a signal, not a chat row — dropping it keeps an empty
+    /// bubble out of the panel.
+    #[test]
+    fn a_reply_that_is_only_the_marker_is_dropped() {
+        let mut flag = false;
+        let event = take_action_required(
+            AssistantEvent::Message {
+                text: "  ACTION_REQUIRED\n".to_string(),
+            },
+            &mut flag,
+        );
+        assert!(flag);
+        assert_eq!(event, None);
+    }
+
+    #[test]
+    fn an_ordinary_reply_is_left_alone_and_raises_nothing() {
+        let mut flag = false;
+        let text = "The agent finished; nothing needs you.".to_string();
+        let event = take_action_required(AssistantEvent::Message { text: text.clone() }, &mut flag);
+        assert!(!flag);
+        assert_eq!(event, Some(AssistantEvent::Message { text }));
+    }
+
     #[test]
     fn init_line_yields_the_session_id() {
         let events = parse_stream_line(
@@ -2153,7 +2285,13 @@ mod tests {
         let events = parse_stream_line(
             r#"{"type":"result","subtype":"success","is_error":false,"result":"done"}"#,
         );
-        assert_eq!(events, vec![AssistantEvent::TurnEnd { error: None }]);
+        assert_eq!(
+            events,
+            vec![AssistantEvent::TurnEnd {
+                error: None,
+                notify: false,
+            }]
+        );
     }
 
     #[test]
@@ -2163,7 +2301,8 @@ mod tests {
         assert_eq!(
             events,
             vec![AssistantEvent::TurnEnd {
-                error: Some("error_max_turns".to_string())
+                error: Some("error_max_turns".to_string()),
+                notify: false,
             }]
         );
     }
@@ -2185,10 +2324,14 @@ mod tests {
             json,
             serde_json::json!({ "type": "started", "sessionId": "s" })
         );
-        let json = serde_json::to_value(AssistantEvent::TurnEnd { error: None }).unwrap();
+        let json = serde_json::to_value(AssistantEvent::TurnEnd {
+            error: None,
+            notify: true,
+        })
+        .unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "type": "turnEnd", "error": null })
+            serde_json::json!({ "type": "turnEnd", "error": null, "notify": true })
         );
     }
 

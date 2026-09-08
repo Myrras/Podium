@@ -103,7 +103,9 @@ describe("assistantStore", () => {
     expect(assistantSend).toHaveBeenCalledWith("hello", []);
     expect(useAssistantStore.getState().busy).toBe(true);
 
-    useAssistantStore.getState().apply({ type: "turnEnd", error: null });
+    useAssistantStore
+      .getState()
+      .apply({ type: "turnEnd", error: null, notify: true });
     expect(useAssistantStore.getState().busy).toBe(false);
     expect(
       useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
@@ -145,7 +147,7 @@ describe("assistantStore", () => {
       "mcp__podium__list_todos",
     );
 
-    apply({ type: "turnEnd", error: null });
+    apply({ type: "turnEnd", error: null, notify: true });
     expect(useAssistantStore.getState().activity).toBeNull();
   });
 
@@ -386,7 +388,7 @@ describe("assistantStore", () => {
     it("notifies once at turn end, using the last streamed block as the body", () => {
       apply({ type: "message", text: "partial…" });
       apply({ type: "message", text: "Two to-dos are open." });
-      apply({ type: "turnEnd", error: null });
+      apply({ type: "turnEnd", error: null, notify: true });
 
       expect(notifyAssistant).toHaveBeenCalledOnce();
       expect(notifyAssistant).toHaveBeenCalledWith(
@@ -400,7 +402,7 @@ describe("assistantStore", () => {
       useLayoutStore.setState({ assistantOpen: true });
 
       apply({ type: "message", text: "Two to-dos are open." });
-      apply({ type: "turnEnd", error: null });
+      apply({ type: "turnEnd", error: null, notify: true });
 
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
@@ -410,7 +412,7 @@ describe("assistantStore", () => {
       useLayoutStore.setState({ assistantOpen: true });
 
       apply({ type: "message", text: "reply" });
-      apply({ type: "turnEnd", error: null });
+      apply({ type: "turnEnd", error: null, notify: true });
 
       expect(notifyAssistant).toHaveBeenCalledOnce();
     });
@@ -420,20 +422,29 @@ describe("assistantStore", () => {
       useLayoutStore.setState({ assistantOpen: false });
 
       apply({ type: "message", text: "reply" });
-      apply({ type: "turnEnd", error: null });
+      apply({ type: "turnEnd", error: null, notify: true });
 
       expect(notifyAssistant).toHaveBeenCalledOnce();
     });
 
     it("does not notify when the turn produced nothing", () => {
-      apply({ type: "turnEnd", error: null });
+      apply({ type: "turnEnd", error: null, notify: true });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("stays silent for an unprompted turn the backend did not flag", () => {
+      // A nudge the assistant answered with plain news — the panel shows it,
+      // the desktop does not hear about it.
+      apply({ type: "message", text: "The agent finished its to-do." });
+      apply({ type: "turnEnd", error: null, notify: false });
 
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
 
     it("does not notify when the turn failed", () => {
       apply({ type: "message", text: "reply" });
-      apply({ type: "turnEnd", error: "error_max_turns" });
+      apply({ type: "turnEnd", error: "error_max_turns", notify: true });
 
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
@@ -481,7 +492,7 @@ describe("assistantStore", () => {
     it("resets the reply tracked per turn when a queued message is delivered", () => {
       apply({ type: "message", text: "first turn's reply" });
       apply({ type: "queueItemDelivered", text: "next queued message" });
-      apply({ type: "turnEnd", error: null });
+      apply({ type: "turnEnd", error: null, notify: true });
 
       // The stale reply from before the queued turn started must not leak
       // into a notification for a turn that produced nothing new.

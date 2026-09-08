@@ -1742,6 +1742,101 @@ impl Orchestrator {
         do_start(&self.inner, &self.events, self.supervisor, id, true)
     }
 
+    /// Stop a stuck agent and put a fresh one on the same work, with the
+    /// answer it was waiting for already in its prompt.
+    ///
+    /// Nothing can type into a running agent's terminal, so an agent blocked
+    /// on a question it will never get an answer to is dead weight — the only
+    /// way through is a new session that never has to ask. Doing it here
+    /// rather than leaving the caller to stop and spawn keeps the one thing
+    /// it cannot reconstruct: the to-dos the old session owned, which is what
+    /// carries the task over. `task` supplies that context for an agent
+    /// spawned without a to-do; with neither, the replacement would start
+    /// knowing only an answer to a question nobody asked it, so that is
+    /// refused rather than spawned.
+    ///
+    /// The replacement is deliberately not given the old name: both sessions
+    /// stay in the list, and a distinct name is what tells them apart.
+    pub async fn respawn_agent(
+        &self,
+        process_id: ProcessId,
+        answer: &str,
+        task: Option<&str>,
+    ) -> CoreResult<ProcessId> {
+        let answer = answer.trim();
+        if answer.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "an answer for the fresh agent is required".to_string(),
+            ));
+        }
+        let (project_id, adapter_id) = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner
+                .processes
+                .get(&process_id)
+                .ok_or(CoreError::ProcessNotFound)?;
+            match &proc.spec.kind {
+                ProcessKind::Agent { adapter } => (proc.project_id, adapter.clone()),
+                _ => {
+                    return Err(CoreError::InvalidInput(
+                        "only an agent can be respawned".to_string(),
+                    ))
+                }
+            }
+        };
+        let todo_ids: Vec<TodoId> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .todo_assignments
+                .iter()
+                .filter(|(_, pid)| **pid == process_id)
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        let task = task.map(str::trim).filter(|t| !t.is_empty());
+        if todo_ids.is_empty() && task.is_none() {
+            return Err(CoreError::InvalidInput(
+                "the agent owns no to-do, so the fresh one needs a task as well as an answer"
+                    .to_string(),
+            ));
+        }
+        // Stop first so the old session cannot keep working (or answer its
+        // own question) while its replacement starts. A stop that fails
+        // because it already exited is fine — the point is that it is not
+        // running when the new one does.
+        // ponytail: the stop is a SIGTERM, and a process still `Stopping`
+        // counts towards the 8-agents cap, so a respawn in a project already
+        // at the limit fails; waiting for the exit would need a watch on the
+        // event bus, which is not worth it for that corner.
+        match self.stop_process(process_id).await {
+            Ok(()) | Err(CoreError::ProcessNotRunning) => {}
+            Err(e) => return Err(e),
+        }
+        let mut prompt = String::new();
+        if let Some(task) = task {
+            prompt.push_str(task);
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(
+            "The previous session on this work was stopped while it sat waiting on a \
+             question. Here is the answer, so you can carry straight on without asking \
+             it again:\n\n",
+        );
+        prompt.push_str(answer);
+        self.spawn_agent(
+            project_id,
+            Some(adapter_id),
+            None,
+            Some(prompt),
+            todo_ids,
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await
+    }
+
     /// Request a graceful stop (SIGTERM, then SIGKILL after a grace period).
     /// Also cancels a pending supervised restart; if only a restart was
     /// pending (the process already exited), that cancellation is success.

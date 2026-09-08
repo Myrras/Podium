@@ -285,7 +285,10 @@ async fn a_chat_turn_streams_prose_tool_calls_and_a_turn_end() {
             AssistantEvent::Tool {
                 name: "list_todos".to_string()
             },
-            AssistantEvent::TurnEnd { error: None },
+            AssistantEvent::TurnEnd {
+                error: None,
+                notify: true,
+            },
         ]
     );
     orch.shutdown().await;
@@ -311,7 +314,10 @@ async fn a_second_turn_reuses_the_same_session() {
             AssistantEvent::Tool {
                 name: "list_todos".to_string()
             },
-            AssistantEvent::TurnEnd { error: None },
+            AssistantEvent::TurnEnd {
+                error: None,
+                notify: true,
+            },
         ]
     );
     orch.shutdown().await;
@@ -876,7 +882,8 @@ async fn a_turn_that_ends_in_error_still_advances_the_queue() {
     assert_eq!(
         turn1.last(),
         Some(&AssistantEvent::TurnEnd {
-            error: Some("error_max_turns".to_string())
+            error: Some("error_max_turns".to_string()),
+            notify: true,
         })
     );
 
@@ -1266,7 +1273,10 @@ async fn a_reply_that_is_only_the_sentinel_never_reaches_the_user() {
             AssistantEvent::Started {
                 session_id: "fake-session".to_string()
             },
-            AssistantEvent::TurnEnd { error: None },
+            AssistantEvent::TurnEnd {
+                error: None,
+                notify: true,
+            },
         ]
     );
     // And it is not in the transcript either — only the user's own row.

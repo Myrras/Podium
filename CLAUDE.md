@@ -53,7 +53,7 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 29 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 30 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
 - ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
@@ -106,7 +106,7 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 29 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 30 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
@@ -410,6 +410,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   snapshot on every change (`queueChanged`), plus `queueItemDelivered` when a
   *waiting* message's turn comes up — the very first, immediately-delivered
   message needs no such event, since the sender already shows it itself.
+  In the panel the busy row and the waiting rows sit together in one
+  **sticky** block pinned to the bottom of the transcript (`.tail`), waiting
+  rows *below* the "thinking" indicator: what is about to happen should not
+  scroll out of sight while you read back. It renders only when something is
+  running or waiting, so an idle panel looks exactly as it did.
 
   **Attachments** ride along with a turn (`assistant_send`'s `attachments`,
   `podium_core::Attachment`). An **image** always travels as its own inline
@@ -479,9 +484,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   That record then **escalates rather than repeats**: an agent still blocked
   `escalate_after` later (default 10 minutes) is raised again, but with
   wording that asks the assistant to say which answer it would pick and why —
-  something the user can wave through in a word — and, failing that, to offer
-  stopping the agent and spawning a fresh one with the answer already in its
-  prompt (nothing can type into an agent's terminal). It is kept **for as
+  something the user can wave through in a word — and, once that answer is
+  agreed, to call `respawn_agent` (nothing can type into an agent's
+  terminal). It is kept **for as
   long as the agent lives**, not only while it looks stuck: an agent that
   prints one line and falls silent again is waiting on the same unanswered
   question, and re-reporting it from scratch was exactly the "it just keeps
@@ -498,6 +503,20 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   every launch starts blank and `assistant-memory.md` carries the context. A
   spawn that fails falls back to queuing, so a nudge is never lost. Switching
   the setting off silences all of it.
+
+  **Unblocking a stuck agent** is `respawn_agent`
+  (`Orchestrator::respawn_agent`): it stops the agent and spawns a fresh one
+  carrying the answer in its prompt. Nothing can type into a running agent's
+  terminal, so a session blocked on a question is otherwise dead weight, and
+  a plain `stop_process` + `spawn_agent` pair would lose the one thing the
+  caller cannot reassemble — the **to-dos the old session owned**, which are
+  what carry the task over. Those (and the adapter) are inherited; the
+  replacement is deliberately *not* given the old name, so the two sessions
+  are told apart in the sidebar. An agent that owns no to-do has nothing to
+  inherit, so `task` must be supplied as well or the call is refused rather
+  than burning a session on an answer to a question nobody asked it. It is
+  classified **destructive**, so `confirm-destructive` (the default) shows
+  the user a card first.
 
   Because these are event-driven — Podium already sees an exit or a silent
   agent for free — **a quiet day costs no turns at all**.
@@ -525,6 +544,23 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   That is also what makes notifications right with no frontend code: the
   panel already pings once per `turnEnd` that produced a reply, so a
   swallowed reply is a turn that produced none.
+
+  **The desktop-notification gate** is its mirror image. A reply the user
+  asked for pings when the panel is not in front of them, as it always did;
+  a turn *Podium* started (an agent report, a nudge, the sweep) only pings
+  when the assistant ends it with `ACTION_REQUIRED` on a line of its own —
+  the marker the identity prompt asks for when the user has to decide,
+  unblock or look at something now. Without it a steady trickle of "agent
+  finished" would reach the desktop, which is the spam the user asked not to
+  get; with it, an agent stuck on a question still gets through. The marker
+  is **stripped from the prose** (`take_action_required`) before anything is
+  recorded or published — it is a signal to Podium, not something to show —
+  and a reply that is *only* the marker is dropped like a swallowed one.
+  Both halves are folded into `TurnEnd { notify }` in the stdout task, the
+  only place that knows both who started the turn (`SessionState`'s
+  `turn_from_user`, set at write time so a **send now** makes a Podium turn
+  the user's too) and whether the marker appeared; the panel just obeys the
+  flag alongside its existing "is the pane in front of you" check.
 
   The **day-start summary** used to be a fourth trigger here and is now the
   panel's **"Start my day" button** (`assistant_day_start`, shown in the

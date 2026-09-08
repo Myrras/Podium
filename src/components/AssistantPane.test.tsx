@@ -51,6 +51,7 @@ import {
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { AssistantPane } from "./AssistantPane";
+import styles from "./AssistantPane.module.css";
 
 describe("AssistantPane", () => {
   beforeEach(() => {
@@ -157,7 +158,7 @@ describe("AssistantPane", () => {
       apply({ type: "message", text: "**Two** agents are running" });
       apply({ type: "tool", name: "mcp__podium__list_processes" });
       apply({ type: "toolFailed", message: "to-do not found" });
-      apply({ type: "turnEnd", error: "error_max_turns" });
+      apply({ type: "turnEnd", error: "error_max_turns", notify: true });
     });
 
     expect(screen.getByText("Two")).toBeInTheDocument();
@@ -464,6 +465,35 @@ describe("AssistantPane", () => {
       await user.click(screen.getByLabelText("Interrupt"));
 
       expect(assistantInterrupt).toHaveBeenCalled();
+    });
+
+    // jsdom has no layout, so these assert the *structure* the pinning needs
+    // (one container, busy row first), never actual stickiness or pixels.
+    it("keeps the waiting rows below the busy indicator, in one pinned row", () => {
+      useAssistantStore.setState({
+        busy: true,
+        pending: [
+          { id: "p-1", kind: "user", text: "queued while busy", attachments: [] },
+        ],
+      });
+      const { container } = render(<AssistantPane />);
+
+      const tail = container.querySelector(`.${styles.tail}`);
+      const busyRow = screen.getByRole("status");
+      const waiting = screen.getByText("queued while busy");
+
+      expect(tail).not.toBeNull();
+      expect(tail).toContainElement(busyRow);
+      expect(tail).toContainElement(waiting);
+      expect(
+        busyRow.compareDocumentPosition(waiting) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("renders no pinned row when idle with an empty queue", () => {
+      const { container } = render(<AssistantPane />);
+      expect(container.querySelector(`.${styles.tail}`)).toBeNull();
     });
   });
 

@@ -507,8 +507,16 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "turnEnd":
           // One ping per turn, using the last reply streamed during it — not
           // one per streamed block — and only when nothing came back is
-          // there nothing to tell the user about.
-          if (!event.error && s.turnReplyText && !isAssistantVisible()) {
+          // there nothing to tell the user about. `notify` is the backend's
+          // call: an unprompted turn only reaches the desktop when the
+          // assistant said the user has to act, so a run of "agent finished"
+          // reports stays in the panel.
+          if (
+            !event.error &&
+            s.turnReplyText &&
+            event.notify &&
+            !isAssistantVisible()
+          ) {
             notifyAssistant("Assistant replied", s.turnReplyText);
           }
           return {

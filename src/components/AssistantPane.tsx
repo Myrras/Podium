@@ -435,26 +435,36 @@ export function AssistantPane() {
             )}
           </div>
         ))}
-        {pending.map((p) => (
-          <PendingRow key={p.id} item={p} />
-        ))}
-        {busy && (
-          <div className={styles.working} role="status">
-            <span>{activity ? `${actionLabel(activity)}…` : "thinking…"}</span>
-            <span className={styles.workingDots} aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </span>
-            <button
-              type="button"
-              className={styles.interruptBtn}
-              aria-label="Interrupt"
-              title="Stop this turn and send what's waiting"
-              onClick={() => void interrupt()}
-            >
-              <StopIcon />
-            </button>
+        {/* Pinned to the bottom of the log: what the turn is doing, and what
+            is queued behind it. A message the turn has picked up is gone from
+            `pending` by then (the backend's queue snapshot), so nothing
+            already in flight lingers here. */}
+        {(busy || pending.length > 0) && (
+          <div className={styles.tail}>
+            {busy && (
+              <div className={styles.working} role="status">
+                <span>
+                  {activity ? `${actionLabel(activity)}…` : "thinking…"}
+                </span>
+                <span className={styles.workingDots} aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <button
+                  type="button"
+                  className={styles.interruptBtn}
+                  aria-label="Interrupt"
+                  title="Stop this turn and send what's waiting"
+                  onClick={() => void interrupt()}
+                >
+                  <StopIcon />
+                </button>
+              </div>
+            )}
+            {pending.map((p) => (
+              <PendingRow key={p.id} item={p} />
+            ))}
           </div>
         )}
       </div>

@@ -8,8 +8,8 @@ use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
     CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
     ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
-    ReportToAssistantParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
-    UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
+    ReportToAssistantParams, RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams,
+    SpawnAgentParams, UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
@@ -1261,6 +1261,190 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
     orch.shutdown().await;
 }
 
+/// Like [`FakeAgentAdapter`], but writes the prompt into the command line so
+/// a test can see what the agent was actually launched with.
+struct PromptEchoAdapter;
+
+impl AgentAdapter for PromptEchoAdapter {
+    fn id(&self) -> &'static str {
+        "echo"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Echo"
+    }
+
+    fn binary(&self) -> &'static str {
+        "echo-agent"
+    }
+
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        Ok(LaunchPlan {
+            command: format!("sleep 30 # {}", ctx.prompt.unwrap_or("")),
+            env: Vec::new(),
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn respawn_agent_hands_the_to_do_and_the_answer_to_a_fresh_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(PromptEchoAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let todo = orch
+        .add_todo(project_id, "wire up auth")
+        .expect("add to-do");
+    let stuck = orch
+        .spawn_agent(
+            project_id,
+            Some("echo".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn the stuck agent");
+
+    let spawned = tools
+        .respawn_agent(Parameters(RespawnAgentParams {
+            process_id: stuck.to_string(),
+            answer: "Use the release branch, not main.".to_string(),
+            task: None,
+        }))
+        .await
+        .expect("respawn over MCP");
+    let info: serde_json::Value =
+        serde_json::from_str(&first_text(&spawned)).expect("process json");
+    let fresh: ProcessId = info["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("process id");
+    assert_ne!(fresh, stuck, "a replacement, not the same session");
+
+    // The answer travels in the prompt, and so does the to-do it inherited —
+    // that context is exactly what the caller could not have reassembled.
+    let command = info["command"].as_str().expect("command");
+    assert!(
+        command.contains("Use the release branch, not main."),
+        "the answer is missing from the prompt: {command}"
+    );
+    assert!(
+        command.contains("wire up auth"),
+        "the inherited to-do is missing from the prompt: {command}"
+    );
+
+    // The to-do changed hands, so the sidebar shows the live session owning it.
+    let owner = orch
+        .list_todos(project_id)
+        .expect("list to-dos")
+        .into_iter()
+        .find(|t| t.id == todo.id)
+        .expect("the to-do")
+        .assigned_agent
+        .expect("assigned");
+    assert_eq!(owner.process_id, fresh);
+
+    // The stuck one is on its way out rather than left running alongside.
+    let old = orch
+        .list_processes(Some(project_id))
+        .into_iter()
+        .find(|p| p.id == stuck)
+        .expect("the stuck agent");
+    assert!(
+        !matches!(old.status, ProcessStatus::Running { .. }),
+        "the stuck agent kept running: {:?}",
+        old.status
+    );
+
+    orch.shutdown().await;
+}
+
+/// Without a to-do there is nothing to carry the task, so an answer on its own
+/// would spawn a session that knows only the reply to a question nobody asked
+/// it. Refusing beats burning an agent.
+#[tokio::test(flavor = "multi_thread")]
+async fn respawning_an_agent_with_no_to_do_needs_a_task_as_well() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(PromptEchoAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let stuck = orch
+        .spawn_agent(
+            project_id,
+            Some("echo".to_string()),
+            None,
+            Some("look at the failing build".to_string()),
+            Vec::new(),
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn the stuck agent");
+
+    let refused = tools
+        .respawn_agent(Parameters(RespawnAgentParams {
+            process_id: stuck.to_string(),
+            answer: "Use the release branch.".to_string(),
+            task: None,
+        }))
+        .await;
+    assert!(refused.is_err(), "a contextless respawn should be refused");
+    assert!(
+        matches!(
+            orch.list_processes(Some(project_id))
+                .into_iter()
+                .find(|p| p.id == stuck)
+                .expect("the stuck agent")
+                .status,
+            ProcessStatus::Running { .. }
+        ),
+        "a refused respawn must not have stopped anything"
+    );
+
+    // With the task supplied it goes through, carrying both halves.
+    let spawned = tools
+        .respawn_agent(Parameters(RespawnAgentParams {
+            process_id: stuck.to_string(),
+            answer: "Use the release branch.".to_string(),
+            task: Some("look at the failing build".to_string()),
+        }))
+        .await
+        .expect("respawn with a task");
+    let command = serde_json::from_str::<serde_json::Value>(&first_text(&spawned))
+        .expect("process json")["command"]
+        .as_str()
+        .expect("command")
+        .to_string();
+    assert!(command.contains("look at the failing build"), "{command}");
+    assert!(command.contains("Use the release branch."), "{command}");
+
+    orch.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn spawning_on_a_scratchpad_assigns_the_agent_and_unassign_clears_it() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2361,6 +2545,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("spawn_agent", false, false),
     ("start_process", false, false),
     ("stop_process", false, true),
+    ("respawn_agent", false, true),
     ("restart_process", false, true),
     ("remove_process", false, true),
     ("add_todo", false, false),

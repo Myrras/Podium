@@ -268,8 +268,8 @@ impl Watcher {
                      question to the user again: read its last output, work out what the \
                      answer should be and say which one you would pick and why, as something \
                      they can wave through in a word. You cannot type into an agent's \
-                     terminal, so if it is stuck for good, offer to stop it and spawn a fresh \
-                     agent with the answer already in its prompt."
+                     terminal, so once they have agreed, call respawn_agent: it stops the \
+                     stuck session and starts a fresh one carrying that answer."
                 )
             } else if prompting {
                 format!(

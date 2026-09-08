@@ -349,8 +349,15 @@ export type AssistantEvent =
       approved: boolean;
       error: string | null;
     }
-  /** The turn finished; `error` is set when it ended badly. */
-  | { type: "turnEnd"; error: string | null }
+  /**
+   * The turn finished; `error` is set when it ended badly. `notify` is the
+   * backend's verdict on whether this turn is worth a desktop notification:
+   * always for something the user asked for, and for an unprompted turn (an
+   * agent report, a nudge, a poll) only when the assistant marked its reply
+   * as needing action. Only the session knows who started the turn, so the
+   * decision is made there, not here.
+   */
+  | { type: "turnEnd"; error: string | null; notify: boolean }
   /** The session ended; the next message starts a fresh one. */
   | { type: "exited" }
   /**
