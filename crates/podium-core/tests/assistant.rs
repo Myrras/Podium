@@ -195,6 +195,9 @@ fn fast_proactivity() -> ProactivityConfig {
     ProactivityConfig {
         tick: Duration::from_millis(20),
         idle_after: Duration::from_millis(50),
+        // Longer than any test that is not about escalation, so a stuck
+        // agent is raised exactly once there.
+        escalate_after: Duration::from_secs(60),
         lingering_after: Duration::from_millis(10),
         sweep_every: Duration::from_millis(30),
         // Real minutes, so the default 10-minute external sweep never fires
@@ -614,6 +617,56 @@ async fn a_stuck_agent_is_reported_once() {
     })
     .await;
     assert!(repeated.is_err(), "nudged twice about the same agent");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_still_stuck_later_is_raised_again_asking_for_a_decision() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            escalate_after: Duration::from_millis(60),
+            ..fast_proactivity()
+        },
+    );
+
+    let first = next_notice(&mut rx).await;
+    assert!(first.contains("waiting on input"), "{first}");
+
+    // Nobody answered, so the next pass must ask the assistant to decide
+    // rather than put the same question a second time. (Consecutive nudges
+    // can be merged into one turn, hence "a notice containing it" rather
+    // than "the next notice".)
+    let escalated = timeout(TEST_TIMEOUT, async {
+        loop {
+            let notice = next_notice(&mut rx).await;
+            if notice.contains("still blocked") {
+                return notice;
+            }
+        }
+    })
+    .await
+    .expect("the stuck agent is raised again");
+    assert!(
+        escalated.contains("which one you would pick"),
+        "{escalated}"
+    );
     orch.shutdown().await;
 }
 

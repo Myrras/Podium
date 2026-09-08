@@ -187,7 +187,6 @@ impl AgentSettingsStore {
         Ok(inner.settings.clone())
     }
 
-
     /// Set the assistant's external-sweep settings (interval in minutes, 0 =
     /// off; which sources it looks at); returns the updated settings.
     pub fn set_assistant_polling(&self, polling: AssistantPolling) -> CoreResult<AgentSettings> {

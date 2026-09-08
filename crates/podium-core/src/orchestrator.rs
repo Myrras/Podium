@@ -245,9 +245,7 @@ impl Orchestrator {
         attachments: Vec<Attachment>,
     ) -> CoreResult<()> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        self.assistant
-            .send(text, attachments, mcp)
-            .await
+        self.assistant.send(text, attachments, mcp).await
     }
 
     /// The persisted chat rows the panel replays after a restart.

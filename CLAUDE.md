@@ -313,9 +313,16 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   skipped, stderr is dropped, and the binary + cwd are injectable
   (`AssistantConfig`) so integration tests drive a fake `claude` script. The
   assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
-  refused at the CLI regardless of permission mode, and implementation work is
-  meant to go out as a to-do + spawned agent (its `--append-system-prompt`
-  identity says so).
+  refused at the CLI regardless of permission mode, and implementation work
+  goes out to a spawned agent (its `--append-system-prompt` identity says so).
+  That identity also leans hard towards **acting rather than checking in**:
+  a request that plainly implies dev work is spawned straight away instead of
+  proposed first, and a **to-do is only for work that runs long or is meant
+  for later** — a small request that can be done now goes into the agent's
+  prompt with no to-do at all. Asking is reserved for what it genuinely
+  cannot tell; everything else takes the sensible default and reports what it
+  did. All of that is wording, not a gate — pinned by a unit test so a later
+  prompt edit cannot quietly drop it.
 
   It reaches Podium over its **own MCP endpoint** (`/mcp-assistant`), wired in
   via a 0600 `assistant.json` next to the per-agent configs — the whole tool
@@ -463,12 +470,23 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   5 minutes (so it is probably waiting on a question — `Orchestrator::idle_agents`,
   measured from the scrollback's last append, or from the process start when it
   never printed), and a 6-hourly sweep for to-dos open longer than a week.
-  The prompt report and the silence timer share one dedupe set, and a
+  The prompt report and the silence timer share one dedupe record, and a
   reported prompt wins the wording, so a blocked agent is announced once —
   at the next tick rather than five minutes later. The silence timer stays
   as the backstop for agents whose terminal has never been opened, where
-  there is no screen to read. A report stops counting as soon as the agent
-  prints anything again, so nothing has to clear it. Each becomes one `[Podium] …`
+  there is no screen to read.
+
+  That record then **escalates rather than repeats**: an agent still blocked
+  `escalate_after` later (default 10 minutes) is raised again, but with
+  wording that asks the assistant to say which answer it would pick and why —
+  something the user can wave through in a word — and, failing that, to offer
+  stopping the agent and spawning a fresh one with the answer already in its
+  prompt (nothing can type into an agent's terminal). It is kept **for as
+  long as the agent lives**, not only while it looks stuck: an agent that
+  prints one line and falls silent again is waiting on the same unanswered
+  question, and re-reporting it from scratch was exactly the "it just keeps
+  asking me the same thing" repetition the escalation replaces. Only the
+  agent exiting (or vanishing) clears it. Each becomes one `[Podium] …`
   turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
   milliseconds. A nudge **starts the session when there is none**

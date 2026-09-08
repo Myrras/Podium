@@ -6,6 +6,9 @@
 //!
 //! - an agent exited — finished or crashed;
 //! - a running agent has been silent long enough to look stuck on a question;
+//! - that same agent *still* blocked a while later — raised again, but with
+//!   wording that asks the assistant to propose an answer instead of relaying
+//!   the question a second time;
 //! - to-dos that have been open for a long time (a periodic sweep).
 //!
 //! Each of those becomes one `[Podium] …` turn handed to the assistant, which
@@ -29,7 +32,7 @@
 //! poll settings are read on every tick, so a changed interval applies without
 //! a restart.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,6 +55,10 @@ pub struct ProactivityConfig {
     pub tick: Duration,
     /// Silence after which a running agent is assumed to be waiting on input.
     pub idle_after: Duration,
+    /// How long a flagged agent may stay blocked before Podium raises it
+    /// again — and then asks the assistant to propose an answer rather than
+    /// repeat the question.
+    pub escalate_after: Duration,
     /// How old an open to-do must be to count as lingering.
     pub lingering_after: Duration,
     /// How often the lingering-to-do sweep runs.
@@ -69,6 +76,10 @@ impl Default for ProactivityConfig {
             // Long enough that a thinking agent is not "stuck": Claude Code
             // prints tokens as it works, so real silence means a prompt.
             idle_after: Duration::from_secs(5 * 60),
+            // Long enough that the user has had a real chance to answer the
+            // first nudge, short enough that a forgotten agent does not sit
+            // there all afternoon.
+            escalate_after: Duration::from_secs(10 * 60),
             lingering_after: Duration::from_secs(7 * 24 * 60 * 60),
             sweep_every: Duration::from_secs(6 * 60 * 60),
             poll_unit: Duration::from_secs(60),
@@ -83,7 +94,7 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     let mut events = orchestrator.subscribe_events();
     let mut watcher = Watcher {
         config,
-        idle_nudged: HashSet::new(),
+        waiting: HashMap::new(),
         // The first sweep comes a whole interval after startup, not the
         // moment the app opens. Same for the external poll.
         last_sweep: Instant::now(),
@@ -114,12 +125,23 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
 
 struct Watcher {
     config: ProactivityConfig,
-    /// Agents already flagged as possibly waiting, so one stuck agent is
-    /// mentioned once and not on every tick. An agent that speaks again (or
-    /// exits) drops out and can be flagged afresh.
-    idle_nudged: HashSet<ProcessId>,
+    /// Agents already flagged as possibly waiting, so one stuck agent is not
+    /// mentioned on every tick. Kept for as long as the agent lives — *not*
+    /// only while it looks stuck — because an agent that prints one line and
+    /// falls silent again is still waiting on the same unanswered question,
+    /// and re-reporting it from scratch is exactly the repetition the
+    /// escalation exists to replace.
+    waiting: HashMap<ProcessId, Waiting>,
     last_sweep: Instant,
     last_poll: Instant,
+}
+
+/// What Podium has already said about one blocked agent.
+struct Waiting {
+    /// How many times this agent has been raised with the assistant.
+    nudges: u32,
+    /// When it was last raised, so the next one waits out `escalate_after`.
+    last: Instant,
 }
 
 impl Watcher {
@@ -151,7 +173,7 @@ impl Watcher {
             return;
         };
         // A dead agent cannot be waiting on input any more.
-        self.idle_nudged.remove(&process_id);
+        self.waiting.remove(&process_id);
         let Some(process) = find_agent(orchestrator, process_id) else {
             return;
         };
@@ -209,6 +231,10 @@ impl Watcher {
     /// (told at the next tick, not in five minutes), and — as a backstop for
     /// agents whose terminal has never been opened, where there is no screen
     /// to read — one that has simply gone quiet for long enough.
+    ///
+    /// An agent that is *still* blocked `escalate_after` later is raised
+    /// again, with wording that asks for a decision instead of a repeat of
+    /// the question.
     async fn check_idle_agents(&mut self, orchestrator: &Orchestrator) {
         // A prompt actually on screen beats the silence timer for the same
         // agent: one nudge, and the wording that says what is really going on.
@@ -225,16 +251,27 @@ impl Watcher {
                 .filter(|p| !prompting.contains(&p.id))
                 .map(|p| (p, false)),
         );
-        let ids: HashSet<ProcessId> = agents.iter().map(|(p, _)| p.id).collect();
-        // An agent that spoke again is no longer stuck, so it may be flagged
-        // again later.
-        self.idle_nudged.retain(|id| ids.contains(id));
+        // Forget agents that are gone, but keep the ones merely off the stuck
+        // list this tick: their question is still unanswered, so the count
+        // has to survive the odd line of output.
+        let alive = live_agents(orchestrator);
+        self.waiting.retain(|id, _| alive.contains(id));
         for (process, prompting) in agents {
-            if !self.idle_nudged.insert(process.id) {
+            let Some(nudges) = self.next_nudge(process.id) else {
                 continue;
-            }
+            };
             let where_ = describe(orchestrator, &process);
-            let text = if prompting {
+            let text = if nudges > 1 {
+                format!(
+                    "[Podium] The agent {where_} is still blocked on the same question — \
+                     raised {nudges} times now and nobody has answered. Do not put the \
+                     question to the user again: read its last output, work out what the \
+                     answer should be and say which one you would pick and why, as something \
+                     they can wave through in a word. You cannot type into an agent's \
+                     terminal, so if it is stuck for good, offer to stop it and spawn a fresh \
+                     agent with the answer already in its prompt."
+                )
+            } else if prompting {
                 format!(
                     "[Podium] The agent {where_} is sitting on a prompt and cannot go on \
                      without the user. Read its last output and tell the user what it is \
@@ -248,6 +285,30 @@ impl Watcher {
                 )
             };
             self.nudge(orchestrator, text).await;
+        }
+    }
+
+    /// How many times this agent will have been raised if we speak now, or
+    /// `None` when it is too soon to say anything about it again.
+    fn next_nudge(&mut self, agent: ProcessId) -> Option<u32> {
+        let now = Instant::now();
+        match self.waiting.get_mut(&agent) {
+            None => {
+                self.waiting.insert(
+                    agent,
+                    Waiting {
+                        nudges: 1,
+                        last: now,
+                    },
+                );
+                Some(1)
+            }
+            Some(waiting) if waiting.last.elapsed() >= self.config.escalate_after => {
+                waiting.nudges += 1;
+                waiting.last = now;
+                Some(waiting.nudges)
+            }
+            Some(_) => None,
         }
     }
 
@@ -293,6 +354,17 @@ impl Watcher {
         )
         .await;
     }
+}
+
+/// Ids of every agent process that is still running.
+fn live_agents(orchestrator: &Orchestrator) -> HashSet<ProcessId> {
+    orchestrator
+        .list_processes(None)
+        .into_iter()
+        .filter(|p| matches!(p.kind, ProcessKind::Agent { .. }))
+        .filter(|p| matches!(p.status, ProcessStatus::Running { .. }))
+        .map(|p| p.id)
+        .collect()
 }
 
 /// The agent process with this id, or `None` when it is gone or not an agent.
