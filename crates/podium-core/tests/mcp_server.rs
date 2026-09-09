@@ -10,6 +10,7 @@ use podium_core::mcp::tools::{
     ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
     ReportToAssistantParams, RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams,
     SpawnAgentParams, UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
+    VerifySenderParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
@@ -283,6 +284,7 @@ async fn tools_list_includes_scratchpad_tools() {
         "create_worktree",
         "list_worktrees",
         "remove_worktree",
+        "verify_sender",
     ] {
         assert!(
             tools.contains(&name),
@@ -2542,6 +2544,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("list_todos", true, false),
     ("list_scratchpads", true, false),
     ("list_worktrees", true, false),
+    ("verify_sender", true, false),
     ("spawn_agent", false, false),
     ("start_process", false, false),
     ("stop_process", false, true),
@@ -2620,4 +2623,78 @@ async fn every_tool_is_classified_for_the_autonomy_gate() {
     }
 
     server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_sender_answers_from_podiums_own_registry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    let verify = |name: &str| {
+        let tools = tools.clone();
+        let name = name.to_string();
+        async move {
+            let result = tools
+                .verify_sender(Parameters(VerifySenderParams { name }))
+                .await
+                .expect("verify_sender");
+            serde_json::from_str::<serde_json::Value>(&first_text(&result)).expect("json result")
+        }
+    };
+
+    // The assistant's tag is random per app run, so no local session can
+    // claim to be the assistant by picking a well-known name.
+    let assistant_tag = orch.assistant_peer_tag();
+    assert_eq!(assistant_tag.len(), 8);
+    let verdict = verify(&podium_core::agent::peer_session_name(&assistant_tag)).await;
+    assert_eq!(verdict["fleet"], true);
+    assert_eq!(verdict["kind"], "assistant");
+
+    // A live agent session resolves to its Podium process...
+    let agent_id = orch
+        .add_process(
+            project_id,
+            ProcessSpec {
+                name: "worker".to_string(),
+                command: "sleep 30".to_string(),
+                cwd: dir.path().to_path_buf(),
+                env: Vec::new(),
+                kind: ProcessKind::Agent {
+                    adapter: "claude-code".to_string(),
+                },
+                restart_policy: RestartPolicy::Never,
+                color: None,
+            },
+        )
+        .await
+        .expect("add process");
+    orch.start_process(agent_id).await.expect("start process");
+    let agent_tag = podium_core::agent::peer_tag(&agent_id.to_string());
+    let verdict = verify(&podium_core::agent::peer_session_name(&agent_tag)).await;
+    assert_eq!(verdict["fleet"], true);
+    assert_eq!(verdict["kind"], "agent");
+    assert_eq!(verdict["processId"], agent_id.to_string());
+    assert_eq!(verdict["session"], "worker");
+
+    // ...and any other local session of this OS user does not, however its
+    // message describes itself.
+    for name in ["release-notes", "podium-assistant", "podium-00000000"] {
+        assert_eq!(verify(name).await["fleet"], false, "{name} must not verify");
+    }
+
+    // A stopped agent's tag is stale: it cannot be the one talking.
+    orch.stop_process(agent_id).await.expect("stop process");
+    wait_for_exit(&orch, agent_id).await;
+    assert_eq!(
+        verify(&podium_core::agent::peer_session_name(&agent_tag)).await["fleet"],
+        false,
+        "an exited session must not verify"
+    );
+
+    orch.shutdown().await;
 }

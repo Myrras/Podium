@@ -532,6 +532,34 @@ async fn the_session_may_never_edit_files_itself() {
 }
 
 #[tokio::test]
+async fn the_session_accepts_peer_messages_and_carries_a_verifiable_name() {
+    let (orch, dir) = setup(ARGV_RECORDING_CLAUDE);
+
+    orch.assistant_send("hello").await.expect("send");
+    let args = recorded_argv(dir.path()).await;
+
+    // This session bypasses permission prompts, so without an explicit
+    // accept the CLI holds every message from a prompting session (every
+    // Podium-spawned agent) for an approval a `-p` session has no TTY to
+    // show — the message would simply expire after `dialogExpiry`. The
+    // accept goes in this session's own --settings, never the user's file.
+    assert_eq!(
+        arg_after(&args, "--settings")
+            .map(|v| serde_json::from_str::<serde_json::Value>(&v).expect("valid json")),
+        Some(serde_json::json!({ "crossSessionInbound": "accept" })),
+    );
+
+    // The name is what lets Podium resolve a peer message back to this
+    // session, instead of the model being asked to trust what it claims.
+    let name = arg_after(&args, "-n").expect("-n passed");
+    let tag = orch.assistant_peer_tag();
+    assert_eq!(name, podium_core::agent::peer_session_name(&tag));
+    assert!(podium_core::agent::peer_name_carries(&name, &tag));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_agent_that_finished_is_reported_in_the_chat() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));

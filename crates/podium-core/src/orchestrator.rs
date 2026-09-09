@@ -149,6 +149,22 @@ struct Inner {
     scratchpad_assignments: HashMap<ScratchpadId, ProcessId>,
 }
 
+/// Who a verified cross-session message came from, as resolved by
+/// [`Orchestrator::verify_peer_sender`].
+#[derive(Debug, Clone)]
+pub enum PeerSender {
+    /// The personal assistant's own session.
+    Assistant,
+    /// A live agent session Podium spawned.
+    Agent {
+        // Boxed: `ProcessInfo` dwarfs the unit variant otherwise.
+        process: Box<ProcessInfo>,
+        /// Display name of the project it runs in; `None` if that project has
+        /// since been closed.
+        project: Option<String>,
+    },
+}
+
 /// Owns all projects and processes; every UI/adapter goes through this.
 pub struct Orchestrator {
     inner: Arc<Mutex<Inner>>,
@@ -272,6 +288,48 @@ impl Orchestrator {
     /// keeps the prompt it started with — the new text lands on its next spawn.
     pub fn set_assistant_memory(&self, content: &str) -> CoreResult<()> {
         self.assistant.store().set_memory(content)
+    }
+
+    /// Tag identifying the assistant's own CLI session in an inbound
+    /// cross-session message's sender name (see [`crate::agent::peer_tag`]).
+    pub fn assistant_peer_tag(&self) -> String {
+        self.assistant.peer_tag().to_string()
+    }
+
+    /// Resolve a cross-session message's sender name to the Podium session it
+    /// belongs to, or `None` when no live session of Podium's own answers to
+    /// it.
+    ///
+    /// This is the whole of Podium's sender verification, and it deliberately
+    /// lives here rather than in a prompt: the answer comes from Podium's own
+    /// process registry plus the assistant's per-run tag, reached over the
+    /// bearer-token-authenticated MCP channel. Nothing the message asserts
+    /// about its origin is consulted, so a message cannot argue its way into
+    /// being verified.
+    pub fn verify_peer_sender(&self, sender_name: &str) -> Option<PeerSender> {
+        if crate::agent::peer_name_carries(sender_name, &self.assistant_peer_tag()) {
+            return Some(PeerSender::Assistant);
+        }
+        self.list_processes(None)
+            .into_iter()
+            // Only agents get a Podium-stamped session name, and only a live
+            // one can be talking: a tag from an exited session is stale.
+            .find(|p| {
+                matches!(p.kind, ProcessKind::Agent { .. })
+                    && matches!(p.status, ProcessStatus::Running { .. })
+                    && crate::agent::peer_name_carries(
+                        sender_name,
+                        &crate::agent::peer_tag(&p.id.to_string()),
+                    )
+            })
+            .map(|p| PeerSender::Agent {
+                project: self
+                    .list_projects()
+                    .into_iter()
+                    .find(|proj| proj.id == p.project_id)
+                    .map(|proj| proj.name),
+                process: Box::new(p),
+            })
     }
 
     /// How much the assistant may do without asking (Settings → Assistant).

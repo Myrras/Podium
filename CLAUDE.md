@@ -53,7 +53,7 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 30 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
 - ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
@@ -106,7 +106,7 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 30 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
@@ -192,7 +192,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `report_to_assistant` (a finished or blocked agent handing the assistant a
   short summary of its own work, routed to `Orchestrator::assistant_nudge` so
   it gets the same live-or-queued delivery, cap and proactivity switch as any
-  other nudge).
+  other nudge), and `verify_sender` (see _Cross-session messaging_).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -213,6 +213,35 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   installed-check reading `auggie mcp list --json`; all via the login
   shell) — each surfaced in the Settings → MCP tab as a one-click Run/Copy
   card with an installed indicator.
+- **Cross-session messaging**: Podium's own sessions — the assistant and
+  every spawned agent — can reach each other with Claude Code's `SendMessage`
+  / `ListAgents`. Two things make that work, both set per session so the
+  user's own `~/.claude/settings.json` is never touched:
+  - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
+    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    from the two sessions' permission-mode classes, and the assistant
+    (`bypassPermissions`) never matches an agent (prompting): a message to an
+    agent is held for approval, and one to the assistant expires after
+    `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
+    A `--settings` the user put in `extra_args` wins over Podium's.
+  - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
+    first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
+    assistant's tag is a random per-app-run UUID prefix, not a fixed literal
+    any local session could name itself. Sender verification is
+    `Orchestrator::verify_peer_sender`, exposed as the **`verify_sender`**
+    MCP tool: it resolves a sender name against Podium's own process registry
+    (live agent sessions) plus that tag, and answers `fleet: false` for
+    everything else. It is deliberately **not** a secret the model compares —
+    a value in the model's context can be leaked or argued about by a
+    prompt-injected message; the authority here is Podium's Rust layer,
+    reached over the bearer-token-authenticated MCP channel, and nothing the
+    message asserts about its own origin is consulted. `verify_sender` is
+    classified read-only so the autonomy gate can never park a security check
+    as a proposal. Note what this is *not*: inbound peer messages arrive on
+    the CLI's own inbox socket (`/tmp/cc-socks`, owner-only), never through
+    Podium, so Podium cannot filter them before the model sees them —
+    the OS-user boundary remains the real trust boundary, and `verify_sender`
+    is what tells Podium's fleet apart inside it.
 - **To-dos** (`todo.rs`): each project has a shared to-do list, visible to
   the user (sidebar) and every agent (MCP). Persisted in one `todos.json`
   in the app data dir — **keyed by project root path**, not project id, so
