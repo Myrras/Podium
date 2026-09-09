@@ -8,7 +8,7 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
-## [1.7.0] - 2026-09-09
+## [2.0.0] - 2026-09-09
 
 ### Added
 
@@ -73,9 +73,12 @@ yet set up.)
 
 ### Changed
 
-- **The MCP to-do listing is leaner.** Comment bodies no longer ride along
-  with every to-do in `list_todos`, which used to fill an agent's context
-  with discussion it did not ask for.
+- **Breaking: the MCP `list_todos` tool no longer returns comment bodies.**
+  Every to-do now carries a `commentCount` instead of its `comments` array —
+  the full history used to fill an agent's context with discussion it never
+  asked for. Pass the new `todo_id` argument to read one to-do in full,
+  comments included. An external MCP client reading `comments` off the list
+  response has to switch to that.
 
 ### Security
 
