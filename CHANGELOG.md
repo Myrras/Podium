@@ -80,6 +80,17 @@ yet set up.)
   comments included. An external MCP client reading `comments` off the list
   response has to switch to that.
 
+### Fixed
+
+- **Agents and worktrees launch on Windows again.** Every agent spawn failed
+  with `os error 5`, for two separate reasons: the project root was handed to
+  Windows as a `\\?\`-prefixed verbatim path, which it refuses as a working
+  directory, and the agent's own binary was resolved by a PATH search that
+  accepted the first matching *directory* — Claude Code's data folder — as
+  the executable. Both are fixed, and a Windows project's existing to-dos,
+  scratchpads and sidebar entries are migrated onto the corrected path so its
+  history does not fork in two.
+
 ### Security
 
 - **An agent can no longer make a to-do comment look like you wrote it.**

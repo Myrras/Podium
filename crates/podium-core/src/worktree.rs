@@ -149,7 +149,12 @@ fn is_dirty(path: &Path) -> bool {
 /// already exists) at `.podium/worktrees/<name>`, on a fresh `podium/<name>`
 /// branch off HEAD.
 pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // `dunce::canonicalize`, not `std::fs::canonicalize` — see the comment
+    // on the equivalent call in `orchestrator::Orchestrator::open_project`.
+    // The worktree path built from `root` here becomes the agent's spawn
+    // `cwd`, so a `\\?\`-prefixed root would break agent launches on Windows
+    // the same way.
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     ensure_git_repo(&root)?;
     let slug = slugify(name)?;
     let dir = worktrees_dir(&root);
@@ -197,7 +202,7 @@ pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
 /// parsed out of `git worktree list --porcelain`. `in_use` is always
 /// `false` here — the orchestrator fills it in from its process table.
 pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     ensure_git_repo(&root)?;
     let out = git(&root, &["worktree", "list", "--porcelain"])
         .ok_or_else(|| CoreError::Git("git worktree list failed".to_string()))?;
@@ -240,7 +245,7 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
 /// The `podium/<name>` branch is intentionally kept — commits are never
 /// thrown away here.
 pub fn remove(root: &Path, name: &str, force: bool) -> CoreResult<()> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let entry = list(&root)?
         .into_iter()
         .find(|w| w.name == name)
@@ -307,6 +312,21 @@ mod tests {
             .expect("git runs");
         assert!(out.status.success(), "git {args:?} failed");
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    // A `\\?\`-prefixed worktree path breaks agent spawn on Windows the same
+    // way a verbatim project root does (see the comment on `create`'s
+    // `dunce::canonicalize` call) — the path here becomes the agent's `cwd`.
+    #[test]
+    #[cfg(windows)]
+    fn create_worktree_path_has_no_verbatim_prefix_on_windows() {
+        let repo = init_repo();
+        let wt = create(repo.path(), "Fix Login").expect("create");
+        assert!(
+            !wt.path.to_string_lossy().starts_with(r"\\?\"),
+            "worktree path must not be a verbatim path: {:?}",
+            wt.path
+        );
     }
 
     #[test]

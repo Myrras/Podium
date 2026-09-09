@@ -161,6 +161,30 @@ impl TodoStore {
         inner.todos = todos;
     }
 
+    /// Merge any to-dos stored under `legacy_root`'s key into `root`'s key
+    /// (appended, then re-sorted by `created_at` so the merged list reads in
+    /// chronological order) and drop the legacy entry. A no-op when the two
+    /// keys are equal or nothing is stored under `legacy_root`. See
+    /// `project::legacy_canonical_root` for why this exists: switching
+    /// `Orchestrator::open_project` from `std::fs::canonicalize` to
+    /// `dunce::canonicalize` changed this store's key for every existing
+    /// Windows project, which would otherwise orphan its to-dos.
+    pub fn migrate_legacy_root(&self, root: &Path, legacy_root: &Path) {
+        let new_key = key(root);
+        let legacy_key = key(legacy_root);
+        if new_key == legacy_key {
+            return;
+        }
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let Some(mut legacy) = inner.todos.remove(&legacy_key) else {
+            return;
+        };
+        let merged = inner.todos.entry(new_key).or_default();
+        merged.append(&mut legacy);
+        merged.sort_by_key(|t| t.created_at);
+        let _ = save(&inner);
+    }
+
     /// The active (non-archived) to-dos for a project. Before listing, any
     /// done to-do whose completion fell on an earlier day than today is
     /// auto-archived, so yesterday's finished items drop out of the list the
@@ -566,6 +590,45 @@ mod tests {
 
     fn ids() -> (ProjectId, PathBuf) {
         (ProjectId::new(), PathBuf::from("/tmp/fixture-project"))
+    }
+
+    #[test]
+    fn migrate_legacy_root_merges_sorts_by_created_at_and_drops_legacy_key() {
+        let store = TodoStore::new();
+        let (project, root) = ids();
+        let legacy_root = PathBuf::from("/tmp/fixture-project-legacy");
+
+        let newer = store
+            .add(project, &root, "added under the new key")
+            .unwrap();
+        let older = store
+            .add(project, &legacy_root, "added under the legacy key")
+            .unwrap();
+        // Force an unambiguous chronological order regardless of call timing.
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.todos.get_mut(&key(&root)).unwrap()[0].created_at += chrono::Duration::hours(1);
+        }
+
+        store.migrate_legacy_root(&root, &legacy_root);
+
+        let listed = store.list(project, &root);
+        assert_eq!(
+            listed.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![older.id, newer.id]
+        );
+        assert!(store.list(project, &legacy_root).is_empty());
+    }
+
+    #[test]
+    fn migrate_legacy_root_is_a_no_op_when_nothing_is_stored_under_the_legacy_key() {
+        let store = TodoStore::new();
+        let (project, root) = ids();
+        store.add(project, &root, "unrelated").unwrap();
+
+        store.migrate_legacy_root(&root, &PathBuf::from("/tmp/never-opened"));
+
+        assert_eq!(store.list(project, &root).len(), 1);
     }
 
     #[test]

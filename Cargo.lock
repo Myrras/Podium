@@ -2879,6 +2879,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "dunce",
  "image",
  "nix 0.30.1",
  "portable-pty",
