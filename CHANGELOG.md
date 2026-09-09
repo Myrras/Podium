@@ -8,6 +8,81 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [1.7.0] - 2026-09-09
+
+### Added
+
+- **Podium has a personal assistant.** A collapsible, resizable chat panel on
+  the right side of the window, backed by a long-lived headless Claude Code
+  session that sees your whole workspace — every project, its processes,
+  agents, to-dos and scratchpads. Ask it what is going on, hand it work, or
+  press **Start my day** in the empty state for a prioritised rundown of open
+  work across all projects. It never edits code itself; implementation work
+  goes out to a spawned agent. The transcript is replayed when you reopen the
+  panel, each launch starts a fresh conversation, and **Settings → Assistant**
+  holds the autonomy mode and the proactivity toggle (the chat header keeps
+  its own autonomy picker; conversation reset moved there too).
+- **The assistant acts in Podium, gated by an autonomy mode.** It spawns
+  agents, starts and stops processes, and manages to-dos and scratchpads
+  through Podium itself. `confirm-destructive` (the default) parks stopping,
+  archiving and removing actions as a proposal card you Confirm or Reject
+  before anything runs; `propose-all` asks for everything that changes state,
+  `full` asks for nothing. The gate is enforced by Podium, not by prompt
+  wording, and a tool it does not recognise counts as state-changing.
+- **The assistant keeps a memory you can read and edit.** Free-form markdown
+  that survives new conversations and app restarts — it maintains the file
+  itself, and the panel's memory view lets you read, edit or clear it.
+- **Podium speaks first when something needs you.** With proactivity on
+  (default), Podium raises an agent that finished or crashed, an agent stuck
+  on a prompt or silent for five minutes, and — every six hours — to-dos left
+  open longer than a week. A stuck agent that is still blocked ten minutes
+  later is escalated: the assistant proposes the answer it would give, and
+  once you agree it respawns the agent with it, since nothing can type into a
+  running agent's terminal. Each notice says why the assistant is speaking.
+  Desktop notifications stay quiet for these unless the assistant marks the
+  turn as needing you now, so a steady trickle of "agent finished" does not
+  reach your desktop.
+- **The assistant can check your external sources.** Every ten minutes by
+  default it looks over the enabled sources (Slack, Teams) for anything
+  needing you, using your own MCP servers — no separate integration. A sweep
+  that finds nothing says nothing: no chat row, no notification.
+- **Send images and files to the assistant.** Drop them on the panel, paste
+  into the composer, or use the paperclip picker; each attachment shows as a
+  removable chip. Images travel inline and are shrunk to what the vision
+  pipeline uses anyway; other files are handed over by path for the assistant
+  to read. Oversized or unreadable attachments are refused by name — the rest
+  of the message still goes.
+- **Messages you send mid-turn wait their turn instead of landing
+  mid-answer.** Waiting messages sit in a sticky block at the bottom of the
+  transcript, below the thinking indicator, where each can be sent into the
+  running turn right away, edited, or removed. An interrupt control stops the
+  turn in flight and picks the conversation back up. Podium's own notices are
+  delivered verbatim and consecutive ones arrive as a single turn, so a quiet
+  day no longer stacks up a backlog.
+- **The composer recalls what you sent before** with the arrow keys.
+- **Podium's own sessions can message each other.** The assistant and every
+  spawned agent can reach each other directly, and a session can ask Podium
+  to verify who a message really came from — answered from Podium's own
+  process registry, not from anything the message claims about itself.
+- **New MCP tools for agents.** `report_to_assistant` (a finished or blocked
+  agent hands the assistant a short summary), `respawn_agent` (replace a
+  stuck agent, inheriting the to-dos it owned), `remove_process`,
+  `verify_sender`, and `update_assistant_memory`. `spawn_agent` also takes
+  extra CLI args now, so a caller can pick the model or reasoning effort for
+  the agent it spawns.
+
+### Changed
+
+- **The MCP to-do listing is leaner.** Comment bodies no longer ride along
+  with every to-do in `list_todos`, which used to fill an agent's context
+  with discussion it did not ask for.
+
+### Security
+
+- **An agent can no longer make a to-do comment look like you wrote it.**
+  Author values that impersonate the user fall back to "agent", enforced by
+  Podium rather than by asking politely.
+
 ## [1.6.0] - 2026-08-20
 
 ### Added
