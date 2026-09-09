@@ -894,12 +894,19 @@ impl AssistantManager {
     /// `attachments` beyond the limits are refused individually (a chat
     /// notice names the file) before the rest of the message goes out — see
     /// [`resolve_attachments`].
+    ///
+    /// Returns whether the message went **straight into the session** rather
+    /// than onto the queue. The panel needs that answer from here: a turn
+    /// Podium started for itself (a poll, a nudge) publishes nothing the
+    /// panel can see, so it cannot tell a busy session from an idle one, and
+    /// guessing meant an optimistic chat bubble for a message the queue then
+    /// showed as still waiting — the same message on screen twice.
     pub async fn send(
         &self,
         text: &str,
         attachments: Vec<Attachment>,
         mcp: Option<McpConnectInfo>,
-    ) -> CoreResult<()> {
+    ) -> CoreResult<bool> {
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -919,8 +926,7 @@ impl AssistantManager {
             attachments,
             recorded: false,
         };
-        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
-        Ok(())
+        Ok(deliver_or_queue(&mut state, item, &self.store, &self.events).await)
     }
 
     /// Drop the conversation: kill the session, forget the transcript, the
@@ -1183,7 +1189,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             recorded: false,
         };
-        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
+        let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
 
     /// Write a Podium-side message into a *live* session, queuing it if a
@@ -1205,7 +1211,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             recorded: false,
         };
-        deliver_or_queue(&mut state, item, &self.store, &self.events).await;
+        let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
 
     /// Kill the session, if any (app shutdown). Whatever is still waiting is
@@ -1475,12 +1481,15 @@ async fn deliver_bypassing_queue(
 /// already ahead of it. A write that fails (a session that died between the
 /// caller's checks and this one) falls back to queuing rather than losing the
 /// item outright.
+///
+/// Returns whether it was delivered rather than queued, so a caller can tell
+/// the panel which of the two happened instead of guessing at it.
 async fn deliver_or_queue(
     state: &mut SessionState,
     mut item: PendingInput,
     store: &AssistantStore,
     events: &EventBus,
-) {
+) -> bool {
     if !state.in_flight && state.pending.is_empty() {
         if let Some(session) = state.session.as_mut() {
             record_before_write(store, &mut item);
@@ -1489,7 +1498,7 @@ async fn deliver_or_queue(
                     state.in_flight = true;
                     state.turn_from_user |= item.kind == PendingKind::User;
                     record_delivered(store, events, &item);
-                    return;
+                    return true;
                 }
                 Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
             }
@@ -1511,7 +1520,7 @@ async fn deliver_or_queue(
             .iter()
             .any(|p| p.kind == PendingKind::Nudge && p.text == item.text)
     {
-        return;
+        return false;
     }
     state.pending.push_back(item);
     if state.pending.len() > MAX_PENDING {
@@ -1532,6 +1541,7 @@ async fn deliver_or_queue(
         // coming to drain it. Get the front moving now.
         drain_next(state, store, events).await;
     }
+    false
 }
 
 /// Deliver the oldest waiting item into an already-live, already-idle
@@ -1571,6 +1581,11 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
             state.in_flight = true;
             state.turn_from_user |= item.kind == PendingKind::User;
             record_delivered(store, events, &item);
+            // Shrink the queue *before* announcing the delivery: the panel
+            // applies these two in order, and the other way round left one
+            // render where the message sat in the log and in the waiting
+            // list at the same time.
+            publish_queue(state, events);
             // The direct-write path (an immediately-delivered message) is
             // already shown by its own caller; this one was waiting and
             // nothing else announces its turn starting.
@@ -1585,9 +1600,9 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
         Err(e) => {
             tracing::warn!("could not deliver a queued assistant message: {e}");
             state.pending.push_front(item);
+            publish_queue(state, events);
         }
     }
-    publish_queue(state, events);
 }
 
 /// Record/publish a just-delivered item the same way it always would have

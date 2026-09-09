@@ -90,7 +90,13 @@ export interface ChatMessage {
 
 interface AssistantState {
   messages: ChatMessage[];
-  /** True from sending a turn until the assistant's reply ends. */
+  /**
+   * True from the moment a turn Podium told us about started until its reply
+   * ends. Only turns the panel can see count: an external-sources poll or a
+   * nudge runs without publishing anything, so this can be `false` while the
+   * session is in fact busy. Never use it to predict whether a message will
+   * be delivered or queued — the backend answers that (see `send`).
+   */
   busy: boolean;
   /** The tool currently running, or `null` between tool calls (still busy). */
   activity: string | null;
@@ -258,20 +264,22 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   send: async (text, attachments = []) => {
     const trimmed = text.trim();
     if (!trimmed) return false;
-    // Busy already means a turn is running: the backend will queue this one
-    // rather than deliver it, and the `queueChanged` event that follows adds
-    // its own waiting row — an optimistic "user" bubble here would show it
-    // twice, once as if sent and once as waiting.
-    const idle = !get().busy;
-    if (idle) {
-      set((s) => ({
-        messages: [...s.messages, message("user", trimmed)],
-        busy: true,
-        turnReplyText: null,
-      }));
-    }
     try {
-      await assistantSend(trimmed, attachments);
+      // The backend says whether it delivered or queued; only a delivered
+      // message gets a chat bubble, because a queued one already shows as a
+      // waiting row via `queueChanged`. `busy` is not usable as a stand-in
+      // here: a turn Podium started for itself (the external-sources poll, a
+      // nudge) publishes nothing the panel can see, so the panel reads as
+      // idle while the session is busy — and the bubble it added on that
+      // guess put the same message on screen twice, once as sent and once as
+      // waiting.
+      if (await assistantSend(trimmed, attachments)) {
+        set((s) => ({
+          messages: [...s.messages, message("user", trimmed)],
+          busy: true,
+          turnReplyText: null,
+        }));
+      }
       return true;
     } catch (e) {
       const err = toIpcError(e);
@@ -279,31 +287,27 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // one place the user follows the conversation.
       set((s) => ({
         messages: [...s.messages, message("notice", err.message)],
-        ...(idle ? { busy: false } : {}),
       }));
       return false;
     }
   },
   dayStart: async () => {
-    // Same optimistic echo as `send` — a user turn publishes no event, so
-    // without it the panel sits empty (and the button stays clickable, so it
-    // invites a second click) for the seconds the CLI takes to boot. The
-    // bubble is the button's own wording; the transcript keeps the longer
-    // prompt the backend actually sent.
-    const idle = !get().busy;
-    if (idle) {
-      set((s) => ({
-        messages: [...s.messages, message("user", "Start my day")],
-        busy: true,
-        turnReplyText: null,
-      }));
-    }
     try {
-      await assistantDayStart();
+      // Echoed like `send`, and on the same delivered-or-queued answer: a
+      // user turn publishes no event of its own, so without the bubble the
+      // panel sits empty for the seconds the CLI takes to boot. The bubble is
+      // the button's own wording; the transcript keeps the longer prompt the
+      // backend actually sent. Queued instead, the waiting row covers it.
+      if (await assistantDayStart()) {
+        set((s) => ({
+          messages: [...s.messages, message("user", "Start my day")],
+          busy: true,
+          turnReplyText: null,
+        }));
+      }
     } catch (e) {
       set((s) => ({
         messages: [...s.messages, message("notice", toIpcError(e).message)],
-        ...(idle ? { busy: false } : {}),
       }));
     }
   },

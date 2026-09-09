@@ -229,7 +229,10 @@ impl Orchestrator {
 
     /// Send a chat turn to the personal assistant, spawning its session on
     /// first use. Replies arrive as [`PodiumEvent::AssistantEvent`]s.
-    pub async fn assistant_send(&self, text: &str) -> CoreResult<()> {
+    ///
+    /// Returns whether it went straight into the session (`false` = it is
+    /// waiting behind a turn already running).
+    pub async fn assistant_send(&self, text: &str) -> CoreResult<bool> {
         self.assistant_send_with_attachments(text, Vec::new()).await
     }
 
@@ -243,7 +246,7 @@ impl Orchestrator {
         &self,
         text: &str,
         attachments: Vec<Attachment>,
-    ) -> CoreResult<()> {
+    ) -> CoreResult<bool> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.send(text, attachments, mcp).await
     }
@@ -336,7 +339,7 @@ impl Orchestrator {
     /// Ask the assistant for a day-start summary (the panel's button). Goes
     /// in as a normal user turn rather than a nudge: it is something the user
     /// asked for, so it belongs in the transcript and always wants an answer.
-    pub async fn assistant_day_start(&self) -> CoreResult<()> {
+    pub async fn assistant_day_start(&self) -> CoreResult<bool> {
         self.assistant_send(crate::assistant::DAY_START_PROMPT)
             .await
     }

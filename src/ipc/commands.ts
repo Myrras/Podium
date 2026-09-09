@@ -581,11 +581,16 @@ export function scratchpadUnassign(
  * assistant's own Read tool. An attachment over the limits is refused on its
  * own; the rest of the message still goes. The reply streams back as
  * `assistant:event` events, not as this promise's value.
+ *
+ * Resolves to whether the message went straight into the session. `false`
+ * means it is waiting behind a running turn — including one Podium started
+ * for itself (a poll, a nudge), which the panel cannot see and so must not
+ * try to guess at.
  */
 export function assistantSend(
   text: string,
   attachments: Attachment[] = [],
-): Promise<void> {
+): Promise<boolean> {
   return invoke("assistant_send", { text, attachments });
 }
 
@@ -597,9 +602,10 @@ export function assistantTranscript(): Promise<TranscriptEntry[]> {
 /**
  * Send the day-start summary prompt as a normal user turn (spawning the
  * session if needed). Like {@link assistantSend}, the reply streams back as
- * `assistant:event`, not as this promise's value.
+ * `assistant:event`, not as this promise's value, and it resolves to whether
+ * the prompt went straight in rather than onto the queue.
  */
-export function assistantDayStart(): Promise<void> {
+export function assistantDayStart(): Promise<boolean> {
   return invoke("assistant_day_start");
 }
 

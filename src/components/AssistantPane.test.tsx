@@ -10,8 +10,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
-  assistantSend: vi.fn(() => Promise.resolve()),
-  assistantDayStart: vi.fn(() => Promise.resolve()),
+  assistantSend: vi.fn(() => Promise.resolve(true)),
+  assistantDayStart: vi.fn(() => Promise.resolve(true)),
   assistantAutonomyGet: vi.fn(() => Promise.resolve("confirm-destructive")),
   assistantAutonomySet: vi.fn((mode: string) => Promise.resolve(mode)),
   assistantResolveProposal: vi.fn(() => Promise.resolve()),
@@ -56,9 +56,9 @@ import styles from "./AssistantPane.module.css";
 describe("AssistantPane", () => {
   beforeEach(() => {
     vi.mocked(assistantSend).mockReset();
-    vi.mocked(assistantSend).mockResolvedValue(undefined);
+    vi.mocked(assistantSend).mockResolvedValue(true);
     vi.mocked(assistantDayStart).mockReset();
-    vi.mocked(assistantDayStart).mockResolvedValue(undefined);
+    vi.mocked(assistantDayStart).mockResolvedValue(true);
     vi.mocked(assistantAutonomyGet).mockReset();
     vi.mocked(assistantAutonomyGet).mockResolvedValue("confirm-destructive");
     vi.mocked(assistantAutonomySet).mockReset();

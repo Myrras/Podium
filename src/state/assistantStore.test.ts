@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
-  assistantSend: vi.fn(() => Promise.resolve()),
-  assistantDayStart: vi.fn(() => Promise.resolve()),
+  assistantSend: vi.fn(() => Promise.resolve(true)),
+  assistantDayStart: vi.fn(() => Promise.resolve(true)),
   assistantProactivityGet: vi.fn(() => Promise.resolve(true)),
   assistantProactivitySet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
@@ -57,9 +57,9 @@ describe("assistantStore", () => {
     useLayoutStore.setState({ assistantOpen: false });
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     vi.mocked(assistantSend).mockClear();
-    vi.mocked(assistantSend).mockResolvedValue(undefined);
+    vi.mocked(assistantSend).mockResolvedValue(true);
     vi.mocked(assistantDayStart).mockClear();
-    vi.mocked(assistantDayStart).mockResolvedValue(undefined);
+    vi.mocked(assistantDayStart).mockResolvedValue(true);
     vi.mocked(assistantProactivityGet).mockClear();
     vi.mocked(assistantProactivitySet).mockClear();
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
@@ -112,16 +112,23 @@ describe("assistantStore", () => {
     ).toEqual([["user", "hello"]]);
   });
 
-  it("shows the day-start turn before the backend answers", async () => {
-    const pending = useAssistantStore.getState().dayStart();
-    // Before the await settles: the panel must already look busy.
+  it("shows the day-start turn as soon as the backend takes it", async () => {
+    await useAssistantStore.getState().dayStart();
+
+    expect(assistantDayStart).toHaveBeenCalled();
     expect(
       useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
     ).toEqual([["user", "Start my day"]]);
     expect(useAssistantStore.getState().busy).toBe(true);
-    await pending;
+  });
 
-    expect(assistantDayStart).toHaveBeenCalled();
+  it("shows no day-start bubble when the backend queued it instead", async () => {
+    vi.mocked(assistantDayStart).mockResolvedValueOnce(false);
+    await useAssistantStore.getState().dayStart();
+
+    // It is waiting behind a running turn, and the waiting row shows it.
+    expect(useAssistantStore.getState().messages).toEqual([]);
+    expect(useAssistantStore.getState().busy).toBe(false);
   });
 
   it("reports a failed day-start trigger as a notice", async () => {
@@ -242,8 +249,8 @@ describe("assistantStore", () => {
       ]);
     });
 
-    it("does not show an optimistic bubble for a message sent while busy", async () => {
-      useAssistantStore.setState({ busy: true });
+    it("does not show an optimistic bubble for a message the backend queued", async () => {
+      vi.mocked(assistantSend).mockResolvedValueOnce(false);
 
       const sent = await useAssistantStore.getState().send("queue me");
 
@@ -251,7 +258,33 @@ describe("assistantStore", () => {
       expect(assistantSend).toHaveBeenCalledWith("queue me", []);
       // No local bubble: the backend's `queueChanged` event is what shows it.
       expect(useAssistantStore.getState().messages).toEqual([]);
-      expect(useAssistantStore.getState().busy).toBe(true);
+    });
+
+    // The bug this guards: an external-sources poll or a nudge is a turn the
+    // panel is never told about, so `busy` reads false while the session is
+    // in fact busy. Deciding on that instead of on the backend's answer put
+    // the message on screen twice — as a sent bubble and as a waiting row.
+    it("trusts the backend over its own busy flag when a turn it cannot see is running", async () => {
+      vi.mocked(assistantSend).mockResolvedValueOnce(false);
+      expect(useAssistantStore.getState().busy).toBe(false);
+
+      await useAssistantStore.getState().send("start the release");
+      useAssistantStore.getState().apply({
+        type: "queueChanged",
+        items: [
+          {
+            id: "p-1",
+            kind: "user",
+            text: "start the release",
+            attachments: [],
+          },
+        ],
+      });
+
+      expect(useAssistantStore.getState().messages).toEqual([]);
+      expect(useAssistantStore.getState().pending.map((p) => p.text)).toEqual([
+        "start the release",
+      ]);
     });
 
     it("mirrors a queueChanged snapshot exactly", () => {

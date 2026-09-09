@@ -21,27 +21,29 @@ use crate::state::AppState;
 /// the assistant's own `Read` tool. An attachment over the limits is refused
 /// on its own; the rest of the message still goes. The reply arrives as
 /// `assistant:event` payloads, not as the return value.
+///
+/// Returns whether the message went straight into the session; `false` means
+/// it is waiting behind a turn already running (including one Podium started
+/// for itself, which the panel has no other way of knowing about).
 #[tauri::command]
 pub async fn assistant_send(
     state: State<'_, AppState>,
     text: String,
     attachments: Vec<Attachment>,
-) -> Result<(), IpcError> {
-    state
+) -> Result<bool, IpcError> {
+    Ok(state
         .orchestrator
         .assistant_send_with_attachments(&text, attachments)
-        .await?;
-    Ok(())
+        .await?)
 }
 
 /// Ask the assistant for a day-start summary (the panel's button). It goes in
 /// as a normal user turn, so it spawns the session, shows in the chat and
 /// respects the queue setting; the reply arrives as `assistant:event`
-/// payloads.
+/// payloads. Returns the same delivered-or-queued answer as `assistant_send`.
 #[tauri::command]
-pub async fn assistant_day_start(state: State<'_, AppState>) -> Result<(), IpcError> {
-    state.orchestrator.assistant_day_start().await?;
-    Ok(())
+pub async fn assistant_day_start(state: State<'_, AppState>) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.assistant_day_start().await?)
 }
 
 /// The stored chat rows, oldest first — what the panel replays on startup.

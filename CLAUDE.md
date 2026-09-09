@@ -410,6 +410,17 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   snapshot on every change (`queueChanged`), plus `queueItemDelivered` when a
   *waiting* message's turn comes up — the very first, immediately-delivered
   message needs no such event, since the sender already shows it itself.
+  `assistant_send` (and `assistant_day_start`) therefore **return whether the
+  message was delivered rather than queued**, and the panel adds its chat
+  bubble only on `true`. It cannot work that out on its own: a turn Podium
+  started for itself — the external-sources poll, a nudge — publishes nothing
+  the panel can see, so its `busy` flag reads idle while the session is busy.
+  Guessing from `busy` meant a bubble for a message the backend had in fact
+  queued, and `queueChanged` then added a waiting row for the same text: the
+  user's message on screen twice, with the poll's unrelated answer landing
+  between them. For the same reason `drain_next` publishes the shrunken
+  `queueChanged` *before* `queueItemDelivered`, so no render has the message
+  in both lists.
   In the panel the busy row and the waiting rows sit together in one
   **sticky** block pinned to the bottom of the transcript (`.tail`), waiting
   rows *below* the "thinking" indicator: what is about to happen should not
@@ -650,8 +661,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
-| `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | – (reply streams as `assistant:event`) |
-| `assistant_day_start`   | –                                           | – (reply streams as `assistant:event`) |
+| `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | `bool` — delivered, not queued (reply streams as `assistant:event`) |
+| `assistant_day_start`   | –                                           | `bool` — as `assistant_send` |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
 | `assistant_new_conversation` | –                                      | –                 |
 | `assistant_memory_get`  | –                                           | `string`          |

@@ -887,6 +887,93 @@ async fn queued_messages_are_delivered_one_per_turn_in_order() {
 }
 
 #[tokio::test]
+async fn a_message_sent_during_podiums_own_turn_reports_itself_as_queued() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    // The external-sources sweep: Podium's own turn, and one the panel never
+    // sees — it publishes no chat row and no busy signal of any kind.
+    orch.assistant_poll("[Podium] check Slack".to_string())
+        .await;
+
+    // So the panel cannot tell the session is busy, and the answer has to
+    // come from here: this went on the queue, not into the session. Guessing
+    // it instead is what showed the message twice — once as an optimistic
+    // chat bubble, once as the waiting row `QueueChanged` then added.
+    assert!(
+        !orch
+            .assistant_send("start the release")
+            .await
+            .expect("send"),
+        "a message sent behind Podium's own turn must report itself as queued"
+    );
+
+    // The sweep's own turn runs first and answers the sweep, not the user.
+    let sweep = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(
+        sweep
+            .iter()
+            .any(|e| matches!(e, AssistantEvent::Message { text } if text.contains("check Slack"))),
+        "{sweep:?}"
+    );
+
+    // Then the user's message becomes its own turn, announced exactly once.
+    let turn = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    let delivered = turn
+        .iter()
+        .filter(|e| {
+            matches!(e, AssistantEvent::QueueItemDelivered { text } if text == "start the release")
+        })
+        .count();
+    assert_eq!(delivered, 1, "{turn:?}");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_message_sent_into_an_idle_session_reports_itself_as_delivered() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+
+    assert!(
+        orch.assistant_send("first").await.expect("send first"),
+        "nothing was running, so this went straight in"
+    );
+    assert!(
+        !orch.assistant_send("second").await.expect("send second"),
+        "the first turn is in flight, so this one waits"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_queued_message_leaves_the_waiting_list_before_it_is_announced() {
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    orch.assistant_send("second").await.expect("queue second");
+
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    // The panel applies these in order and renders between them, so the
+    // queue snapshot that drops "second" has to come first — the other way
+    // round leaves a frame with the message in the log *and* still waiting.
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    let queue_shrank = turn2
+        .iter()
+        .position(|e| matches!(e, AssistantEvent::QueueChanged { items } if items.is_empty()));
+    let announced = turn2
+        .iter()
+        .position(|e| matches!(e, AssistantEvent::QueueItemDelivered { .. }));
+    assert!(
+        matches!((queue_shrank, announced), (Some(q), Some(a)) if q < a),
+        "{turn2:?}"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_turn_that_ends_in_error_still_advances_the_queue() {
     let (orch, _dir) = setup(ERRORS_ONCE_THEN_OK_CLAUDE);
     let mut rx = orch.subscribe_events();
