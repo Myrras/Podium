@@ -312,6 +312,9 @@
 .commentText {
   font-size: var(--fs-md);
   color: var(--text);
+  /* Read-only rendered comment body — selectable/copyable like the textarea
+     above it, unlike the pane's chrome. */
+  user-select: text;
 }
 
 /* Inline comment editor: textarea over right-aligned Cancel / Save. */

@@ -27,7 +27,7 @@ dev:
 [doc("Build + launch a debug .app with a stable signing identity (macOS)")]
 dev-signed:
     pnpm tauri build --debug --bundles app --config src-tauri/tauri.dev-signed.conf.json
-    open target/debug/bundle/macos/Podium.app
+    open "$CARGO_TARGET_DIR/debug/bundle/macos/Podium.app"
 
 # RELEASE build (.app + .dmg) — this is what CI ships. For a local install use
 # `just install-signed` instead.
@@ -50,12 +50,12 @@ build:
 build-signed:
     pnpm install
     pnpm tauri build --bundles app --config src-tauri/tauri.dev-signed.conf.json
-    open target/release/bundle/macos
+    open "$CARGO_TARGET_DIR/release/bundle/macos"
 
 # Build the signed release and copy it straight into /Applications.
 install-signed: build-signed
     rm -rf "/Applications/Podium.app"
-    cp -R target/release/bundle/macos/Podium.app "/Applications/Podium.app"
+    cp -R "$CARGO_TARGET_DIR/release/bundle/macos/Podium.app" "/Applications/Podium.app"
     @echo "Installed → /Applications/Podium.app"
 
 # Type-check the whole Rust workspace without building.

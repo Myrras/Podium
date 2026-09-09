@@ -97,3 +97,29 @@ export function notifyAgentWaiting(name: string, isAgent = true): void {
     }
   });
 }
+
+/** Keep a notification body short — chat content can run arbitrarily long. */
+const MAX_ASSISTANT_NOTIFICATION_BODY = 200;
+
+/**
+ * Alert the user that the personal assistant has something for them — a
+ * finished reply, or a proposed action awaiting confirm/reject. Callers are
+ * responsible for only firing this while the user isn't already looking at
+ * the assistant pane (see `isAssistantVisible` in `assistantStore`).
+ */
+export function notifyAssistant(title: string, body: string): void {
+  const truncated =
+    body.length > MAX_ASSISTANT_NOTIFICATION_BODY
+      ? `${body.slice(0, MAX_ASSISTANT_NOTIFICATION_BODY - 1)}…`
+      : body;
+  toastInfo(title, truncated);
+  playNotifySound();
+  void ensureNotificationPermission().then((granted) => {
+    if (!granted) return;
+    try {
+      sendNotification({ title, body: truncated });
+    } catch (e) {
+      logWarning("notification", (e as Error).message ?? String(e));
+    }
+  });
+}

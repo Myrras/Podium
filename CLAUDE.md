@@ -53,10 +53,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 25 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **60 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -68,8 +68,12 @@ them in sync when you add a command or MCP tool.
   modal, agent activity ("working…"/idle) heuristic, to-do and scratchpad
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
-  theme (dark/light/retro) + toasts, Zustand stores, typed IPC wrappers over
-  all 60 commands.
+  theme (dark/light/retro) + toasts, a collapsible, resizable right-side
+  assistant chat panel (replayed transcript, action + proposal cards,
+  waiting-message rows with send-now/edit/remove and an interrupt control
+  while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
+  conversation reset lives in Settings → Assistant), Zustand stores, typed
+  IPC wrappers over all 78 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -102,7 +106,9 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 25 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -113,7 +119,7 @@ podium/
 │  ├─ state.rs                 # AppState: Arc<Orchestrator> + McpServer handle
 │  ├─ events.rs                # PodiumEvent → global Tauri events ("process:status", …)
 │  ├─ error.rs                 # IpcError { kind, message } ← CoreError
-│  └─ commands/{project,recents,workspace,process,agent,mcp,todo}.rs
+│  └─ commands/{project,recents,workspace,process,agent,assistant,mcp,todo}.rs
 └─ src/                        # React + Vite frontend
    ├─ components/              # Sidebar, ProcessRow, TodoSubsection, TerminalPane/View, StatusDot, modals, …
    ├─ state/                   # Zustand stores (project, process, todo, layout, settings, theme, toast)
@@ -165,18 +171,32 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
   `get_process_output` (tail, ANSI-stripped, default 100 / max 2000 lines),
-  `spawn_agent`, `start_process`, `stop_process`, `restart_process`,
-  `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`,
+  `spawn_agent` (its `args` param sets the model/reasoning effort for that
+  agent, e.g. `["--model", "opus"]`), `start_process`, `stop_process`,
+  `restart_process`, `remove_process`,
+  `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`
+  (its `author` is rejected server-side if it impersonates the user —
+  "you"/"user"/"gebruiker", case/whitespace-insensitive — falling back to
+  `agent`, so no MCP caller can make a comment read as if the user wrote it),
   `add_todo_link` (pin an issue/PR URL to the top of a to-do),
-  `assign_todo` (a running agent self-assigns a to-do via its
+  `set_todo_archived`, `assign_todo` (a running agent self-assigns a to-do via its
   `PODIUM_PROCESS_ID`, so the user sees who owns it — blocked if the to-do is
   already owned by another live session),
   `rename_session` (a running agent renames itself via its
   `PODIUM_PROCESS_ID` to reflect what the session is about), the
   scratchpad tools `list_scratchpads`, `create_scratchpad`,
   `update_scratchpad`, `add_scratchpad_tag`, `remove_scratchpad_tag`,
-  `set_scratchpad_archived`, and the worktree tools `create_worktree`,
-  `list_worktrees`, `remove_worktree`.
+  `set_scratchpad_archived`, the worktree tools `create_worktree`,
+  `list_worktrees`, `remove_worktree`, `update_assistant_memory` (the
+  personal assistant rewriting its own long-term memory), and
+  `report_to_assistant` (a finished or blocked agent handing the assistant a
+  short summary of its own work, routed to `Orchestrator::assistant_nudge` so
+  it gets the same live-or-queued delivery, cap and proactivity switch as any
+  other nudge), and `verify_sender` (see _Cross-session messaging_).
+  The same surface is served a second time at **`/mcp-assistant`**
+  (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
+  route is its identity, and `PodiumTools::call_tool` puts calls arriving there
+  through the autonomy gate (see _Personal assistant_).
   Spawned agents get the URL + token via 0600 per-agent config files under
   `{app_data_dir}/mcp` (wiped on every start); the same dir holds
   `server.json` (current URL + token, 0600) for the **stdio bridge**:
@@ -193,6 +213,35 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   installed-check reading `auggie mcp list --json`; all via the login
   shell) — each surfaced in the Settings → MCP tab as a one-click Run/Copy
   card with an installed indicator.
+- **Cross-session messaging**: Podium's own sessions — the assistant and
+  every spawned agent — can reach each other with Claude Code's `SendMessage`
+  / `ListAgents`. Two things make that work, both set per session so the
+  user's own `~/.claude/settings.json` is never touched:
+  - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
+    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    from the two sessions' permission-mode classes, and the assistant
+    (`bypassPermissions`) never matches an agent (prompting): a message to an
+    agent is held for approval, and one to the assistant expires after
+    `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
+    A `--settings` the user put in `extra_args` wins over Podium's.
+  - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
+    first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
+    assistant's tag is a random per-app-run UUID prefix, not a fixed literal
+    any local session could name itself. Sender verification is
+    `Orchestrator::verify_peer_sender`, exposed as the **`verify_sender`**
+    MCP tool: it resolves a sender name against Podium's own process registry
+    (live agent sessions) plus that tag, and answers `fleet: false` for
+    everything else. It is deliberately **not** a secret the model compares —
+    a value in the model's context can be leaked or argued about by a
+    prompt-injected message; the authority here is Podium's Rust layer,
+    reached over the bearer-token-authenticated MCP channel, and nothing the
+    message asserts about its own origin is consulted. `verify_sender` is
+    classified read-only so the autonomy gate can never park a security check
+    as a proposal. Note what this is *not*: inbound peer messages arrive on
+    the CLI's own inbox socket (`/tmp/cc-socks`, owner-only), never through
+    Podium, so Podium cannot filter them before the model sees them —
+    the OS-user boundary remains the real trust boundary, and `verify_sender`
+    is what tells Podium's fleet apart inside it.
 - **To-dos** (`todo.rs`): each project has a shared to-do list, visible to
   the user (sidebar) and every agent (MCP). Persisted in one `todos.json`
   in the app data dir — **keyed by project root path**, not project id, so
@@ -273,6 +322,306 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
 
+- **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
+  by **one long-lived headless Claude Code child** — a plain piped process
+  (`$SHELL -lic 'exec claude -p --input-format stream-json --output-format
+  stream-json --verbose --permission-mode bypassPermissions --disallowedTools
+  …'`), not a PTY, not in the sidebar process list. `--permission-mode
+  bypassPermissions` is required because `-p`/stream-json mode has no TTY for
+  an interactive permission prompt — without it the CLI would stall asking
+  approval for every Podium MCP tool it can never answer; deny rules still
+  take precedence over it (see below), so this does not loosen what the
+  assistant can touch. It is spawned lazily on the first message and killed on
+  shutdown; a session that died is replaced on the next turn. User turns are
+  written to its stdin as one JSON line each; its stdout stream is parsed by
+  `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
+  `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
+  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered`) published
+  on the `EventBus` and forwarded to the webview as `assistant:event`.
+  Unparseable lines (a chatty shell profile) are
+  skipped, stderr is dropped, and the binary + cwd are injectable
+  (`AssistantConfig`) so integration tests drive a fake `claude` script. The
+  assistant never edits code itself: `Edit`/`Write`/`NotebookEdit`/`Bash` are
+  refused at the CLI regardless of permission mode, and implementation work
+  goes out to a spawned agent (its `--append-system-prompt` identity says so).
+  That identity also leans hard towards **acting rather than checking in**:
+  a request that plainly implies dev work is spawned straight away instead of
+  proposed first, and a **to-do is only for work that runs long or is meant
+  for later** — a small request that can be done now goes into the agent's
+  prompt with no to-do at all. Asking is reserved for what it genuinely
+  cannot tell; everything else takes the sensible default and reports what it
+  did. All of that is wording, not a gate — pinned by a unit test so a later
+  prompt edit cannot quietly drop it.
+
+  It reaches Podium over its **own MCP endpoint** (`/mcp-assistant`), wired in
+  via a 0600 `assistant.json` next to the per-agent configs — the whole tool
+  surface, workspace-wide. `--strict-mcp-config` is deliberately *not* passed,
+  so the user's own MCP servers (mail, Slack, …) stay available.
+
+  **Autonomy** (`AutonomyMode`, stored in `agents.json` under `assistant`,
+  default `confirm-destructive`) is enforced **server-side**, not by prompt
+  wording: `PodiumTools::call_tool` asks `assistant::requires_proposal` whether
+  this tool needs the user, and a gated call never runs. Instead it is parked as
+  a `ProposalInfo` — carrying a closure that replays that very dispatch later —
+  and the tool answers that a proposal is awaiting the user. `full` gates
+  nothing; `confirm-destructive` gates the stopping/archiving/removing tools;
+  `propose-all` gates everything that is not read-only (an *unknown* tool counts
+  as state-changing, so a tool added later cannot slip through). Proposals live
+  in memory (never expiring, but lost on restart) and surface as
+  `assistant:event` `proposal` / `proposalResolved`; the user's Confirm/Reject
+  in the chat calls `assistant_resolve_proposal`, which runs the stored action
+  and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
+  A failed tool call is never silent: `tool_result` blocks flagged `is_error`
+  become a `toolFailed` event.
+
+  **Persistence** is one `assistant.json` in the app data dir (atomic writes,
+  the same kind of store as `todos.json`): Claude's own session id plus the
+  chat rows the panel replays — user turns, assistant prose, actions run and
+  actions that failed, capped at the most recent 500. On the next spawn that id
+  comes back as `--resume`, so the conversation continues *within* a run
+  instead of meeting a stranger; a session that dies without ever announcing
+  itself makes Podium drop the stored id, so a pruned session cannot wedge
+  every later turn. **An app launch, however, deliberately starts blank**:
+  `src-tauri`'s `setup` calls `assistant_new_conversation` before the webview
+  can ask for the transcript (`block_on`, not a spawned task — a task would
+  race that call and replay a conversation the panel is about to drop), so a
+  transcript from days ago is never dumped into a fresh panel and any nudge
+  backlog from an earlier run goes with it. That makes `assistant-memory.md`
+  the *only* continuity between days, which is why the identity prompt now
+  insists on keeping it current. The panel's **new-conversation** button
+  (`assistant_new_conversation`) kills the session and drops transcript,
+  session id, pending proposals and the message queue — that kill is
+  deliberate, so it is not reported as `exited` (any messages the queue was
+  still holding are instead reported undelivered as the first row of the
+  now-fresh transcript).
+
+  **Message queue**: only one turn is ever in flight. `AssistantManager`
+  pairs the session with an `in_flight` flag and one
+  `VecDeque<PendingInput>`, all under the *same* lock — so a queued item can
+  never slip past a turn that starts between two lock acquisitions. The
+  proactivity/`report_to_assistant` nudge drain (`nudge`) and a proposal
+  outcome (`notify`) always route through one `deliver_or_queue`: idle with
+  nothing already ahead of it → written immediately, exactly as its caller
+  already expects; otherwise it waits, FIFO. The user's own turn (`send`)
+  goes through the same path, so a message typed mid-turn waits instead of
+  landing mid-answer. It can still be pushed into the running turn on
+  demand — `assistant_queue_send_now` / `send_pending_now`, the **send now**
+  action on the waiting row — which writes it straight into the live
+  session, interleaved output and all. That replaced a `queue_messages`
+  setting deciding the same thing for every message in advance: the choice
+  only ever matters for one message at a time, when you are looking at it.
+  A nudge or a proposal-outcome notice has no such escape hatch — their
+  ordering is Podium's business.
+  `TurnEnd` (`drain_next`)
+  delivers exactly one waiting *user* item as its own turn — never merged —
+  and a `TurnEnd` carrying an error still advances the queue. **Consecutive
+  nudges are the exception**: they go out as one turn, and a nudge whose text
+  is already waiting is not queued a second time. Both exist because Podium's
+  own status lines used to arrive one per turn: the 6-hourly sweep repeats
+  itself verbatim, so a day without chatting stacked the same line several
+  times over, and the user's own next message then queued up behind the whole
+  backlog — they watched Podium narrate yesterday before it answered today.
+  Read together those lines are a summary of where things stand, which is
+  what they are for; user messages stay unmerged, since those are separate
+  thoughts. Only a *user*
+  message is editable/removable (`assistant_queue_edit` /
+  `assistant_queue_remove`, `kind: "user"` only); a nudge or a
+  proposal-outcome notice is Podium's own text, delivered verbatim. The
+  queue caps at the newest 20, dropping the oldest with a `queueNotice`.
+  `assistant_interrupt` kills the running child — there is no documented
+  stdin control message for interrupting `--input-format stream-json` mode —
+  and respawns it (picking the conversation back up via `--resume`),
+  immediately delivering whatever is waiting rather than for a `TurnEnd`
+  that would never come; with nothing running it is a no-op. The queue is
+  **not persisted**, matching `proposals`: a session ending for any reason
+  (crash, `new_conversation`, shutdown) drops it and reports which messages
+  were never delivered via `queueNotice`. The frontend gets the whole
+  snapshot on every change (`queueChanged`), plus `queueItemDelivered` when a
+  *waiting* message's turn comes up — the very first, immediately-delivered
+  message needs no such event, since the sender already shows it itself.
+  `assistant_send` (and `assistant_day_start`) therefore **return whether the
+  message was delivered rather than queued**, and the panel adds its chat
+  bubble only on `true`. It cannot work that out on its own: a turn Podium
+  started for itself — the external-sources poll, a nudge — publishes nothing
+  the panel can see, so its `busy` flag reads idle while the session is busy.
+  Guessing from `busy` meant a bubble for a message the backend had in fact
+  queued, and `queueChanged` then added a waiting row for the same text: the
+  user's message on screen twice, with the poll's unrelated answer landing
+  between them. For the same reason `drain_next` publishes the shrunken
+  `queueChanged` *before* `queueItemDelivered`, so no render has the message
+  in both lists.
+  In the panel the busy row and the waiting rows sit together in one
+  **sticky** block pinned to the bottom of the transcript (`.tail`), waiting
+  rows *below* the "thinking" indicator: what is about to happen should not
+  scroll out of sight while you read back. It renders only when something is
+  running or waiting, so an idle panel looks exactly as it did.
+
+  **Attachments** ride along with a turn (`assistant_send`'s `attachments`,
+  `podium_core::Attachment`). An **image** always travels as its own inline
+  `{"type":"image","source":{"type":"base64",…}}` content block — the CLI's
+  stdin schema for `--input-format stream-json` is not documented, so this
+  was verified empirically against the real CLI (an inline PNG it described
+  correctly), not assumed. Anything else is handed over as an **absolute
+  path** for the assistant's own `Read` tool (its cwd is the app data dir, so
+  a relative path is refused), or — for something that only exists on the
+  clipboard — as **inline text**. `resolve_attachments` reads an
+  image-looking path from disk and promotes it to an inline image, and
+  refuses individually (a `queueNotice` naming the file, never its content)
+  anything past 5 attachments per message, an image over 5 MB, inline text
+  over 100 kB, or a relative path — the rest of the message still goes.
+  An accepted image is then **shrunk** (`compress_image`) to at most 1568px
+  on its long edge — the size Claude's vision pipeline downscales to anyway,
+  so the extra pixels only cost upload and memory. It runs on what the cap
+  already accepted, so the 5 MB limit still judges what *arrived*. A JPEG
+  stays a JPEG (re-encoding a photo as PNG would grow it), anything else
+  becomes PNG, and an image already within the limit travels byte-for-byte.
+  **A GIF is never re-encoded** — this crate decodes a single frame, so
+  re-encoding an animated one would silently drop the animation; a GIF is
+  only ever subject to the plain size cap. An image that fails to decode is
+  sent as-is rather than refused: the CLI may understand a format the
+  `image` crate does not, and losing the user's attachment to our own
+  decoder is the worse failure.
+  `turn_content` folds path/text attachments into the turn's own text block,
+  and a turn with no attachments serialises byte-for-byte as it did before
+  they existed. Attachments survive queueing: `PendingInput` carries them,
+  and `QueuedMessage` reports only their names (`AttachmentInfo`), never the
+  bytes the frontend already holds. The composer takes them three ways — drop
+  on the panel, paste into the composer, or the paperclip picker
+  (`@tauri-apps/plugin-dialog`) — and shows a removable chip per attachment.
+  Drop/paste give bytes but no path, so a binary file arriving that way is
+  reported by name rather than vanishing; the picker gives a path, which is
+  why a large PDF should go through it.
+
+  A **user turn's transcript row is appended before the turn is written** to
+  the child's stdin (`record_before_write`): the stdout task records the
+  reply on its own task, so appending afterwards let a fast reply land
+  *above* the message it answers, and a restart replayed the conversation out
+  of order. It is idempotent, since a failed write re-queues the same item.
+
+  **Memory** is a separate `assistant-memory.md` in the same dir: free-form
+  markdown appended to the identity prompt at spawn under `# Your memory`, so
+  it survives new conversations. The assistant maintains it itself through the
+  `update_assistant_memory` MCP tool (full replace — an empty string clears
+  it), and the user can read, edit or clear it in the panel's memory view. It
+  is read fresh from disk on every spawn, so hand-editing the file works; a
+  change reaches a *running* session only on its next spawn.
+
+  **Proactivity** (`proactivity.rs`, setting `proactive` in the same
+  `assistant` block, default **on**) lets Podium speak first. One task watches
+  the `EventBus` and, on a slow tick, the process/to-do state: an agent that
+  exited (finished or crashed), an agent the UI reported an input prompt on
+  (`process_report_waiting` → `Orchestrator::report_agent_waiting` /
+  `agents_awaiting_input`), a running agent that has printed nothing for
+  5 minutes (so it is probably waiting on a question — `Orchestrator::idle_agents`,
+  measured from the scrollback's last append, or from the process start when it
+  never printed), and a 6-hourly sweep for to-dos open longer than a week.
+  The prompt report and the silence timer share one dedupe record, and a
+  reported prompt wins the wording, so a blocked agent is announced once —
+  at the next tick rather than five minutes later. The silence timer stays
+  as the backstop for agents whose terminal has never been opened, where
+  there is no screen to read.
+
+  That record then **escalates rather than repeats**: an agent still blocked
+  `escalate_after` later (default 10 minutes) is raised again, but with
+  wording that asks the assistant to say which answer it would pick and why —
+  something the user can wave through in a word — and, once that answer is
+  agreed, to call `respawn_agent` (nothing can type into an agent's
+  terminal). It is kept **for as
+  long as the agent lives**, not only while it looks stuck: an agent that
+  prints one line and falls silent again is waiting on the same unanswered
+  question, and re-reporting it from scratch was exactly the "it just keeps
+  asking me the same thing" repetition the escalation replaces. Only the
+  agent exiting (or vanishing) clears it. Each becomes one `[Podium] …`
+  turn plus a `notice` event, so the chat says why the assistant is speaking
+  unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
+  milliseconds. A nudge **starts the session when there is none**
+  (`ensure_session`, the same path `send` uses) — otherwise the user only
+  learned an agent had finished whenever they next happened to type, which is
+  how a weekend's worth of `[Podium]` lines came to arrive in one pile. This
+  reverses the original phase-4 rule; the reasoning behind that rule ("a fresh
+  session would not know what the nudge is about") no longer holds now that
+  every launch starts blank and `assistant-memory.md` carries the context. A
+  spawn that fails falls back to queuing, so a nudge is never lost. Switching
+  the setting off silences all of it.
+
+  **Unblocking a stuck agent** is `respawn_agent`
+  (`Orchestrator::respawn_agent`): it stops the agent and spawns a fresh one
+  carrying the answer in its prompt. Nothing can type into a running agent's
+  terminal, so a session blocked on a question is otherwise dead weight, and
+  a plain `stop_process` + `spawn_agent` pair would lose the one thing the
+  caller cannot reassemble — the **to-dos the old session owned**, which are
+  what carry the task over. Those (and the adapter) are inherited; the
+  replacement is deliberately *not* given the old name, so the two sessions
+  are told apart in the sidebar. An agent that owns no to-do has nothing to
+  inherit, so `task` must be supplied as well or the call is refused rather
+  than burning a session on an answer to a question nobody asked it. It is
+  classified **destructive**, so `confirm-destructive` (the default) shows
+  the user a card first.
+
+  Because these are event-driven — Podium already sees an exit or a silent
+  agent for free — **a quiet day costs no turns at all**.
+
+  Alongside that runs a slow lane: the **external sweep**, every
+  `poll_interval_minutes` (default 10; `0` is off), asking the assistant to
+  check the enabled sources for anything needing the user. Slack and Teams
+  need no integration — the assistant already inherits the user's own
+  user-scope MCP servers — so this is `poll_prompt` wording plus a timer, and
+  it is skipped entirely with both sources off or proactivity off. It is
+  delivered as a `Notice`, not a `Nudge`: a nudge renders a muted `[Podium]`
+  row on arrival, and a routine check doing that every 10 minutes would
+  recreate the very pile-up it exists to prevent.
+
+  **The silence contract**: a sweep that found nothing must say nothing. The
+  prompt instructs the assistant to answer with exactly `NOTHING_TO_REPORT`,
+  and a `Message` carrying that sentinel **on a line of its own** — anywhere
+  in the reply — is dropped before it is recorded or published: no chat row,
+  no transcript row. It is deliberately not an exact-whole-message match:
+  models keep prefixing the word with the very summary the prompt forbids
+  ("Same messages as last check.\n\nNOTHING_TO_REPORT"), and matching exactly
+  let all of that through as a notification — the noise this contract exists
+  to prevent. A reply that quotes the sentinel *mid-sentence* while reporting
+  something real is still a real reply.
+  That is also what makes notifications right with no frontend code: the
+  panel already pings once per `turnEnd` that produced a reply, so a
+  swallowed reply is a turn that produced none.
+
+  **The desktop-notification gate** is its mirror image. A reply the user
+  asked for pings when the panel is not in front of them, as it always did;
+  a turn *Podium* started (an agent report, a nudge, the sweep) only pings
+  when the assistant ends it with `ACTION_REQUIRED` on a line of its own —
+  the marker the identity prompt asks for when the user has to decide,
+  unblock or look at something now. Without it a steady trickle of "agent
+  finished" would reach the desktop, which is the spam the user asked not to
+  get; with it, an agent stuck on a question still gets through. The marker
+  is **stripped from the prose** (`take_action_required`) before anything is
+  recorded or published — it is a signal to Podium, not something to show —
+  and a reply that is *only* the marker is dropped like a swallowed one.
+  Both halves are folded into `TurnEnd { notify }` in the stdout task, the
+  only place that knows both who started the turn (`SessionState`'s
+  `turn_from_user`, set at write time so a **send now** makes a Podium turn
+  the user's too) and whether the marker appeared; the panel just obeys the
+  flag alongside its existing "is the pane in front of you" check.
+
+  The **day-start summary** used to be a fourth trigger here and is now the
+  panel's **"Start my day" button** (`assistant_day_start`, shown in the
+  empty state). A nudge never spawns the CLI, so as a nudge it only surfaced
+  whenever the user next happened to type — which is exactly the complaint
+  that moved it. The button sends `DAY_START_PROMPT` through the ordinary
+  `assistant_send` path instead: it spawns the session, shows as a user turn
+  and respects the queue setting. It asks for open work across all projects
+  *prioritised with a reason*, and to ask the user rather than guess when the
+  to-dos and agents do not settle the order. There is deliberately no
+  once-a-day lock — pressing it is explicit, so refusing would only annoy.
+  The watcher holds
+  only a weak reference, so it ends with the orchestrator. **Settings →
+  Assistant** holds this toggle plus the autonomy mode (the chat header keeps
+  its own autonomy picker — both mirror the one stored value).
+
+  A pending proposal is also dropped when **its project closes**
+  (`invalidate_proposals_for_project`, keyed off the call's `project_id`
+  argument): confirming it later could only fail, so the card resolves itself
+  with the reason and the assistant is told.
+
 ### Tauri IPC contract
 
 Commands return `Result<T, IpcError>` where `IpcError = { kind, message }`
@@ -297,6 +646,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_remove`        | `{ processId }`                             | –                 |
 | `process_list`          | `{ projectId? }`                            | `ProcessInfo[]`   |
 | `process_git_branch`    | `{ processId }`                             | `string \| null`  |
+| `process_report_waiting` | `{ processId }` (agent showing a prompt)   | –                 |
 | `process_rename`        | `{ processId, name }`                       | `ProcessInfo`     |
 | `process_start`         | `{ processId }`                             | –                 |
 | `process_stop`          | `{ processId }`                             | –                 |
@@ -340,6 +690,23 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
+| `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | `bool` — delivered, not queued (reply streams as `assistant:event`) |
+| `assistant_day_start`   | –                                           | `bool` — as `assistant_send` |
+| `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
+| `assistant_new_conversation` | –                                      | –                 |
+| `assistant_memory_get`  | –                                           | `string`          |
+| `assistant_memory_set`  | `{ content }` (blank clears)                | –                 |
+| `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
+| `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
+| `assistant_proactivity_get` | –                                       | `boolean`         |
+| `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
+| `assistant_polling_get` | –                                           | `AssistantPolling` |
+| `assistant_polling_set` | `{ intervalMinutes, slack, teams }` (0 = off) | `AssistantPolling` |
+| `assistant_resolve_proposal` | `{ id, approved }`                     | – (outcome streams as `assistant:event`) |
+| `assistant_queue_edit`  | `{ id, text }`                              | –                 |
+| `assistant_queue_send_now` | `{ id }` (waiting user message)          | –                 |
+| `assistant_queue_remove` | `{ id }`                                   | –                 |
+| `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:
@@ -377,7 +744,8 @@ output never travels this path): `process:added` / `process:removed` /
 `process:updated` `{projectId, processId}`, `process:status`
 `{projectId, processId, status}`, `project:opened` / `project:updated` /
 `project:closed` / `todo:changed` / `scratchpad:changed` /
-`worktree:changed` `{projectId}`.
+`worktree:changed` `{projectId}`, plus `assistant:event`
+(the assistant's chat stream — a bare, `type`-tagged `AssistantEvent`).
 
 > ⚠️ **Field casing for the frontend:** everything on the wire is
 > **camelCase** — DTO fields (`projectId`, `dataB64`, `configError`, …) and
@@ -386,8 +754,10 @@ output never travels this path): `process:added` / `process:removed` /
 > (`notStarted`/`running {pid, since}`/`stopping`/`exited {code, crashed, …}`),
 > `TermEvent` by `type` (`snapshot`/`data`/`lagged`). The one exception:
 > `RestartPolicy` values are **kebab-case** (`never`/`on-crash`/`always`) —
-> matching `podium.yml`'s `auto_restart`. Match these exactly in the
-> hand-written types in `src/ipc/types.ts`.
+> matching `podium.yml`'s `auto_restart` — and so are `MergeMode` and
+> `AutonomyMode` (`full`/`confirm-destructive`/`propose-all`), which share the
+> settings file with it. Match these exactly in the hand-written types in
+> `src/ipc/types.ts`.
 
 ### `podium.yml`
 
@@ -429,6 +799,32 @@ credential request (`sudo` password, ssh passphrase) reads as **"needs
 input"** instead — derived for **every** running process, not just agents, so
 a terminal stalled on `sudo` surfaces the same way; non-agents only show that
 state ("working…"/"idle" is noise for a plain shell).
+
+`notifyAgentWaiting` (`src/lib/notify.ts`) has a sibling, `notifyAssistant`,
+for the same toast+OS-notification+sound treatment on the personal assistant.
+`assistantStore.apply` (`src/state/assistantStore.ts`) fires it in exactly
+two places, both gated on `isAssistantVisible()` (focused window **and**
+`useLayoutStore.getState().assistantOpen`) so a user already watching the
+pane is never pinged: once at `turnEnd` when the turn produced a reply (the
+*last* `message` event streamed that turn — tracked in `turnReplyText`,
+reset whenever a new turn starts, so three streamed blocks make one
+notification, not three, and a turn with no reply or an error makes none),
+and once when a `proposal` event arrives (the assistant waiting on
+confirm/reject, same shape as an agent waiting on a permission prompt). A
+proactive nudge (`notice`/`nudge` row) never itself notifies — only the
+reply it may provoke does, through the same `turnEnd` path.
+
+The composer (`AssistantPane.tsx`) supports shell-style history recall:
+arrow-up/down walk the sent `user` rows already in `messages` (no separate
+persisted history — they come back for free via transcript `hydrate()`).
+Recall only fires when the caret sits on the composer's first line
+(arrow-up) or last line (arrow-down, only while already recalling) — checked
+by literal `\n`s around the caret (`isCaretOnFirstLine`/`isCaretOnLastLine`),
+not visual wrapping, since a plain textarea gives no other way to ask —
+so a multi-line draft still lets the arrows move the cursor normally.
+Walking past the newest entry restores whatever was being typed before the
+first arrow-up; recalling never sends, and editing a recalled message before
+sending appends a new entry rather than rewriting history.
 
 ## Build, run, test
 

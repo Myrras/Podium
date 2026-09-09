@@ -1,6 +1,7 @@
 //! Bounded ring buffer of raw terminal output (ANSI bytes included).
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 /// Default byte cap: 2 MiB of raw output per process.
 pub const DEFAULT_CAP_BYTES: usize = 2 * 1024 * 1024;
@@ -14,6 +15,9 @@ pub struct ScrollbackBuffer {
     total_bytes: usize,
     cap_bytes: usize,
     next_seq: u64,
+    /// When the last chunk arrived; `None` before any output. Drives the
+    /// assistant's "this agent may be waiting on input" detection.
+    last_append_at: Option<Instant>,
 }
 
 impl ScrollbackBuffer {
@@ -27,11 +31,13 @@ impl ScrollbackBuffer {
             total_bytes: 0,
             cap_bytes,
             next_seq: 0,
+            last_append_at: None,
         }
     }
 
     /// Append a chunk and return the sequence number assigned to it.
     pub fn append(&mut self, bytes: &[u8]) -> u64 {
+        self.last_append_at = Some(Instant::now());
         let seq = self.next_seq;
         self.next_seq += 1;
         self.total_bytes += bytes.len();
@@ -53,6 +59,12 @@ impl ScrollbackBuffer {
             out.extend_from_slice(chunk);
         }
         (out, self.next_seq)
+    }
+
+    /// When output last arrived, or `None` while the process has been silent
+    /// since it started.
+    pub fn last_append_at(&self) -> Option<Instant> {
+        self.last_append_at
     }
 
     /// The last `max` bytes of retained output.

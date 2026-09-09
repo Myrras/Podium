@@ -18,6 +18,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::assistant::{AssistantPolling, AssistantSettings, AutonomyMode};
 use crate::error::{CoreError, CoreResult};
 
 const LOCK_POISONED: &str = "agent settings store lock poisoned";
@@ -67,6 +68,11 @@ pub struct AgentSettings {
     /// `agents.json` written before this field existed).
     #[serde(default = "default_true")]
     pub suggest_worktree: bool,
+    /// The personal assistant's preferences. It is not an adapter-driven
+    /// agent, but it is the same kind of global, cross-project setting, so it
+    /// shares this document rather than adding a second one-field file.
+    #[serde(default)]
+    pub assistant: AssistantSettings,
 }
 
 fn default_true() -> bool {
@@ -80,6 +86,7 @@ impl Default for AgentSettings {
             default_adapter: None,
             overrides: BTreeMap::new(),
             suggest_worktree: true,
+            assistant: AssistantSettings::default(),
         }
     }
 }
@@ -159,6 +166,34 @@ impl AgentSettingsStore {
     pub fn set_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.suggest_worktree = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Set the assistant's autonomy mode; returns the updated settings.
+    pub fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.assistant.autonomy = mode;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Turn the assistant's proactive nudges on or off; returns the updated
+    /// settings.
+    pub fn set_assistant_proactive(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.assistant.proactive = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Set the assistant's external-sweep settings (interval in minutes, 0 =
+    /// off; which sources it looks at); returns the updated settings.
+    pub fn set_assistant_polling(&self, polling: AssistantPolling) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.assistant.poll_interval_minutes = polling.interval_minutes;
+        inner.settings.assistant.poll_slack = polling.slack;
+        inner.settings.assistant.poll_teams = polling.teams;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -385,6 +420,62 @@ mod tests {
         let reloaded = AgentSettingsStore::new();
         reloaded.set_path(file);
         assert!(!reloaded.get().suggest_worktree);
+    }
+
+    #[test]
+    fn assistant_autonomy_defaults_to_confirming_and_persists() {
+        assert_eq!(
+            AgentSettings::default().assistant.autonomy,
+            AutonomyMode::ConfirmDestructive
+        );
+        // A legacy file without the section loads as the default.
+        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
+        assert_eq!(legacy.assistant.autonomy, AutonomyMode::ConfirmDestructive);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agents.json");
+        let store = AgentSettingsStore::new();
+        store.set_path(file.clone());
+        let updated = store
+            .set_assistant_autonomy(AutonomyMode::ProposeAll)
+            .unwrap();
+        assert_eq!(updated.assistant.autonomy, AutonomyMode::ProposeAll);
+
+        let reloaded = AgentSettingsStore::new();
+        reloaded.set_path(file);
+        assert_eq!(reloaded.get().assistant.autonomy, AutonomyMode::ProposeAll);
+    }
+
+    #[test]
+    fn assistant_polling_defaults_to_ten_minutes_on_both_sources_and_persists() {
+        let defaults = AgentSettings::default().assistant;
+        assert_eq!(defaults.poll_interval_minutes, 10);
+        assert!(defaults.poll_slack && defaults.poll_teams);
+        // A legacy file without the fields loads as those same defaults —
+        // an existing install gets the sweep, not a silent 0-minute off.
+        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
+        assert_eq!(legacy.assistant.poll_interval_minutes, 10);
+        assert!(legacy.assistant.poll_slack && legacy.assistant.poll_teams);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agents.json");
+        let store = AgentSettingsStore::new();
+        store.set_path(file.clone());
+        let updated = store
+            .set_assistant_polling(AssistantPolling {
+                interval_minutes: 0,
+                slack: false,
+                teams: true,
+            })
+            .unwrap();
+        assert_eq!(updated.assistant.poll_interval_minutes, 0);
+        assert!(!updated.assistant.poll_slack);
+
+        let reloaded = AgentSettingsStore::new();
+        reloaded.set_path(file);
+        let back = reloaded.get().assistant;
+        assert_eq!(back.poll_interval_minutes, 0);
+        assert!(!back.poll_slack && back.poll_teams);
     }
 
     #[test]

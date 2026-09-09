@@ -143,6 +143,14 @@ pub fn process_list(state: State<'_, AppState>, project_id: Option<ProjectId>) -
     state.orchestrator.list_processes(project_id)
 }
 
+/// The UI saw an input prompt on this agent's screen. Fire-and-forget: the
+/// core records it so the proactivity watcher can tell the user the agent is
+/// blocked, instead of waiting out its five-minute silence timer.
+#[tauri::command]
+pub fn process_report_waiting(state: State<'_, AppState>, process_id: ProcessId) {
+    state.orchestrator.report_agent_waiting(process_id);
+}
+
 /// The git branch checked out in the process's working directory, or `null`
 /// when it is not a git repo / detached HEAD. Shells out to git via the login
 /// shell (seconds of shell-profile startup), so it runs on a blocking thread —
