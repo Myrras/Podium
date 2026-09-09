@@ -12,6 +12,8 @@ import type {
   AdapterInfo,
   AgentSettingsDto,
   AgentSpawnOptions,
+  Attachment,
+  AutonomyMode,
   CommentId,
   IpcError,
   LinkId,
@@ -19,6 +21,7 @@ import type {
   McpStatus,
   MergeMode,
   NewProcess,
+  PollingSettings,
   ProcessId,
   ProcessInfo,
   ProjectId,
@@ -29,6 +32,7 @@ import type {
   TermEvent,
   TodoId,
   TodoInfo,
+  TranscriptEntry,
   WorktreeInfo,
 } from "./types";
 
@@ -160,6 +164,15 @@ export function processList(projectId?: ProjectId): Promise<ProcessInfo[]> {
  */
 export function processGitBranch(processId: ProcessId): Promise<string | null> {
   return invoke("process_git_branch", { processId });
+}
+
+/**
+ * Tell the backend this agent is sitting on an input prompt, so the assistant
+ * hears about it now rather than after the watcher's silence timer. Called
+ * once per prompt episode, from the activity monitor that already detects it.
+ */
+export function processReportWaiting(processId: ProcessId): Promise<void> {
+  return invoke("process_report_waiting", { processId });
 }
 
 /** Rename a process's display label; blank names are rejected. */
@@ -555,6 +568,140 @@ export function scratchpadUnassign(
   id: ScratchpadId,
 ): Promise<ScratchpadInfo> {
   return invoke("scratchpad_unassign", { projectId, id });
+}
+
+// ---------------------------------------------------------------------------
+// Assistant
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a chat turn to the personal assistant (spawning its headless session
+ * on first use). `attachments` ride along per `Attachment`: an image travels
+ * inline, other files as an absolute path (or inline text with none) for the
+ * assistant's own Read tool. An attachment over the limits is refused on its
+ * own; the rest of the message still goes. The reply streams back as
+ * `assistant:event` events, not as this promise's value.
+ *
+ * Resolves to whether the message went straight into the session. `false`
+ * means it is waiting behind a running turn — including one Podium started
+ * for itself (a poll, a nudge), which the panel cannot see and so must not
+ * try to guess at.
+ */
+export function assistantSend(
+  text: string,
+  attachments: Attachment[] = [],
+): Promise<boolean> {
+  return invoke("assistant_send", { text, attachments });
+}
+
+/** The stored chat rows, oldest first — replayed into the panel on startup. */
+export function assistantTranscript(): Promise<TranscriptEntry[]> {
+  return invoke("assistant_transcript");
+}
+
+/**
+ * Send the day-start summary prompt as a normal user turn (spawning the
+ * session if needed). Like {@link assistantSend}, the reply streams back as
+ * `assistant:event`, not as this promise's value, and it resolves to whether
+ * the prompt went straight in rather than onto the queue.
+ */
+export function assistantDayStart(): Promise<boolean> {
+  return invoke("assistant_day_start");
+}
+
+/**
+ * Drop the conversation (session, transcript and pending proposals) and start
+ * fresh. The assistant's memory is kept.
+ */
+export function assistantNewConversation(): Promise<void> {
+  return invoke("assistant_new_conversation");
+}
+
+/** What the assistant remembers across conversations (markdown, may be ""). */
+export function assistantMemoryGet(): Promise<string> {
+  return invoke("assistant_memory_get");
+}
+
+/** Replace that memory; `""` clears it. */
+export function assistantMemorySet(content: string): Promise<void> {
+  return invoke("assistant_memory_set", { content });
+}
+
+/** The assistant's autonomy mode (how much it may do unasked). */
+export function assistantAutonomyGet(): Promise<AutonomyMode> {
+  return invoke("assistant_autonomy_get");
+}
+
+/** Change the autonomy mode; resolves with what was stored. */
+export function assistantAutonomySet(
+  mode: AutonomyMode,
+): Promise<AutonomyMode> {
+  return invoke("assistant_autonomy_set", { mode });
+}
+
+/** Whether Podium may nudge the assistant unprompted. */
+export function assistantProactivityGet(): Promise<boolean> {
+  return invoke("assistant_proactivity_get");
+}
+
+/** Turn those nudges on or off; returns what was stored. */
+export function assistantProactivitySet(enabled: boolean): Promise<boolean> {
+  return invoke("assistant_proactivity_set", { enabled });
+}
+
+/** Settings for the proactive external-source (Slack/Teams) polling sweep. */
+export function assistantPollingGet(): Promise<PollingSettings> {
+  return invoke("assistant_polling_get");
+}
+
+/** Change the polling settings; returns what was stored. */
+export function assistantPollingSet(
+  intervalMinutes: number,
+  slack: boolean,
+  teams: boolean,
+): Promise<PollingSettings> {
+  return invoke("assistant_polling_set", { intervalMinutes, slack, teams });
+}
+
+/**
+ * Confirm or reject one action the assistant proposed. A confirmed proposal
+ * runs right away; the outcome streams back as `assistant:event`.
+ */
+export function assistantResolveProposal(
+  id: string,
+  approved: boolean,
+): Promise<void> {
+  return invoke("assistant_resolve_proposal", { id, approved });
+}
+
+/**
+ * Push a waiting user message into the running turn instead of letting it
+ * wait for its own. It may land mid-answer — that is what asking for it now
+ * means.
+ */
+export function assistantQueueSendNow(id: string): Promise<void> {
+  return invoke("assistant_queue_send_now", { id });
+}
+
+/**
+ * Change a waiting user message's text before it is delivered. Nudges and
+ * proposal-outcome notices are not editable — they are Podium's own text.
+ */
+export function assistantQueueEdit(id: string, text: string): Promise<void> {
+  return invoke("assistant_queue_edit", { id, text });
+}
+
+/** Withdraw a waiting user message so nothing is delivered for it. */
+export function assistantQueueRemove(id: string): Promise<void> {
+  return invoke("assistant_queue_remove", { id });
+}
+
+/**
+ * Stop the assistant's current turn, if any, and immediately hand the next
+ * waiting message over. With nothing running this does nothing.
+ */
+export function assistantInterrupt(): Promise<void> {
+  return invoke("assistant_interrupt");
 }
 
 // ---------------------------------------------------------------------------

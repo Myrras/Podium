@@ -324,6 +324,138 @@ export interface ScratchpadInfo {
   assignedAgent: AssignedAgent | null;
 }
 
+/**
+ * One item from the personal assistant's output stream
+ * (`podium_core::AssistantEvent`), delivered as the `assistant:event`
+ * payload. Tagged by `type`, camelCase like every other wire shape.
+ */
+export type AssistantEvent =
+  /** The session is up; `sessionId` is Claude's own id for it. */
+  | { type: "started"; sessionId: string }
+  /** A chunk of assistant prose (markdown). */
+  | { type: "message"; text: string }
+  /** The assistant invoked a tool — name only, never its arguments. */
+  | { type: "tool"; name: string }
+  /** A tool call came back as an error, so no action fails silently. */
+  | { type: "toolFailed"; message: string }
+  /** Podium nudged the assistant itself (an agent finished, to-dos linger, …). */
+  | { type: "notice"; text: string }
+  /** A tool call the autonomy gate held back: it needs the user's decision. */
+  | { type: "proposal"; id: string; tool: string; summary: string }
+  /** That decision landed; `error` is set when the confirmed action failed. */
+  | {
+      type: "proposalResolved";
+      id: string;
+      approved: boolean;
+      error: string | null;
+    }
+  /**
+   * The turn finished; `error` is set when it ended badly. `notify` is the
+   * backend's verdict on whether this turn is worth a desktop notification:
+   * always for something the user asked for, and for an unprompted turn (an
+   * agent report, a nudge, a poll) only when the assistant marked its reply
+   * as needing action. Only the session knows who started the turn, so the
+   * decision is made there, not here.
+   */
+  | { type: "turnEnd"; error: string | null; notify: boolean }
+  /** The session ended; the next message starts a fresh one. */
+  | { type: "exited" }
+  /**
+   * The pending-input queue changed (queued, delivered, edited, removed,
+   * dropped by the cap, or emptied when the session ended). Carries the
+   * whole queue, oldest first — a snapshot, not a delta.
+   */
+  | { type: "queueChanged"; items: QueuedMessage[] }
+  /**
+   * A plain notice for the *user* — not routed to the assistant, unlike
+   * `"notice"` above — e.g. a queued message was dropped by the cap, a turn
+   * was interrupted, or messages were left undelivered when the session
+   * ended.
+   */
+  | { type: "queueNotice"; text: string }
+  /**
+   * A user message that was waiting in the queue was just delivered as its
+   * own turn. Unlike the very first, immediately-delivered message (shown by
+   * the sender itself), nothing else announces this one starting, so the UI
+   * promotes its waiting row into the ordinary log.
+   */
+  | { type: "queueItemDelivered"; text: string };
+
+/**
+ * Whether a queued item can be edited or withdrawn before delivery. Only a
+ * user message can; a nudge or a proposal-outcome notice is Podium's own
+ * text, delivered verbatim once its turn comes
+ * (`podium_core::assistant::PendingKind`).
+ */
+export type PendingKind = "user" | "nudge" | "notice";
+
+/**
+ * One attachment riding along with a chat turn
+ * (`podium_core::assistant::Attachment`). An image always travels inline as
+ * base64 (a path is read from disk on the backend first when there is one,
+ * e.g. a drop or a picker selection); anything else is an absolute path for
+ * the assistant's own Read tool, or — with no file on disk, e.g. a clipboard
+ * paste — inline text.
+ */
+export type Attachment =
+  | { kind: "image"; name: string; mediaType: string; data: string }
+  | { kind: "path"; path: string }
+  | { kind: "text"; name: string; text: string };
+
+/**
+ * Lightweight summary of one attachment on a queued message — never the
+ * image bytes themselves, since the frontend already holds those
+ * (`podium_core::assistant::AttachmentInfo`).
+ */
+export interface AttachmentInfo {
+  kind: "image" | "path" | "text";
+  name: string;
+}
+
+/**
+ * One turn waiting for the assistant's session to become free
+ * (`podium_core::assistant::QueuedMessage`).
+ */
+export interface QueuedMessage {
+  id: string;
+  kind: PendingKind;
+  text: string;
+  attachments: AttachmentInfo[];
+}
+
+/** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */
+export type TranscriptRole = "user" | "assistant" | "tool" | "notice" | "nudge";
+
+/**
+ * One persisted chat row (`podium_core::TranscriptEntry`), replayed into the
+ * assistant panel on startup. Proposals are runtime-only, so they never
+ * appear here.
+ */
+export interface TranscriptEntry {
+  role: TranscriptRole;
+  text: string;
+  /** RFC 3339 timestamp. */
+  at: string;
+}
+
+/**
+ * How much the assistant may do without asking (`podium_core::AutonomyMode`).
+ * Kebab-case on the wire, like `RestartPolicy` / `MergeMode`.
+ */
+export type AutonomyMode = "full" | "confirm-destructive" | "propose-all";
+
+/**
+ * Settings for the assistant's proactive external-source polling sweep
+ * (`podium_core::assistant::AssistantPolling`). `intervalMinutes` is how often the sweep
+ * runs; `0` turns it off. Each source toggle governs whether that source is
+ * swept at all.
+ */
+export interface PollingSettings {
+  intervalMinutes: number;
+  slack: boolean;
+  teams: boolean;
+}
+
 /** Structured error every IPC command can reject with (`IpcError`). */
 export interface IpcError {
   /** Human-readable, sanitized description. */

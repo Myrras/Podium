@@ -1,8 +1,9 @@
 /**
- * App settings dialog with three tabs: General (appearance, terminal), Agents
+ * App settings dialog with four tabs: General (appearance, terminal), Agents
  * (per-adapter command override + default arguments, plus the argument merge
- * mode), and MCP (one-click registration of the stdio bridge with external
- * clients like Claude Code and Auggie).
+ * mode), Assistant (autonomy mode, proactive nudges, external polling), and
+ * MCP (one-click registration of the stdio bridge with external clients like
+ * Claude Code and Auggie).
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -10,6 +11,8 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { useThemeStore, type ThemeMode } from "../state/themeStore";
 import { useSettingsStore } from "../state/settingsStore";
+import { useAssistantStore } from "../state/assistantStore";
+import { AUTONOMY_LABELS } from "./AssistantPane";
 import {
   agentSettingsGet,
   agentSettingsSetAdapter,
@@ -23,6 +26,7 @@ import {
 import type {
   AgentAdapterConfig,
   AgentSettingsDto,
+  AutonomyMode,
   McpClientInfo,
   MergeMode,
 } from "../ipc/types";
@@ -36,7 +40,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "agents" | "mcp";
+type SettingsTab = "general" | "agents" | "assistant" | "mcp";
 
 const THEMES: {
   mode: ThemeMode;
@@ -204,6 +208,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           [
             ["general", "General"],
             ["agents", "Agents"],
+            ["assistant", "Assistant"],
             ["mcp", "MCP"],
           ] as [SettingsTab, string][]
         ).map(([id, label]) => (
@@ -246,10 +251,124 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </section>
       ) : tab === "agents" ? (
         <AgentsTab />
+      ) : tab === "assistant" ? (
+        <AssistantTab />
       ) : (
         <GeneralTab />
       )}
     </Modal>
+  );
+}
+
+/**
+ * Assistant tab: the same autonomy setting the chat panel's header exposes
+ * (both mirror the one persisted value), whether Podium may nudge the
+ * assistant unprompted, whether a message you send mid-turn waits its turn
+ * or goes straight in, and the proactive external-source (Slack/Teams)
+ * polling sweep's interval and per-source toggles.
+ */
+function AssistantTab() {
+  const autonomy = useAssistantStore((s) => s.autonomy);
+  const setAutonomy = useAssistantStore((s) => s.setAutonomy);
+  const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
+  const proactive = useAssistantStore((s) => s.proactive);
+  const setProactivity = useAssistantStore((s) => s.setProactivity);
+  const loadProactivity = useAssistantStore((s) => s.loadProactivity);
+  const polling = useAssistantStore((s) => s.polling);
+  const setPolling = useAssistantStore((s) => s.setPolling);
+  const loadPolling = useAssistantStore((s) => s.loadPolling);
+  const newConversation = useAssistantStore((s) => s.newConversation);
+
+  useEffect(() => {
+    void loadAutonomy();
+    void loadProactivity();
+    void loadPolling();
+  }, [loadAutonomy, loadProactivity, loadPolling]);
+
+  return (
+    <>
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Autonomy</h3>
+        <small className={styles.rowHelp}>
+          How much the assistant may do without asking. Anything it may not do
+          on its own shows up as a card to confirm in the chat.
+        </small>
+        <select
+          aria-label="Assistant autonomy"
+          value={autonomy}
+          onChange={(e) => void setAutonomy(e.target.value as AutonomyMode)}
+        >
+          {Object.entries(AUTONOMY_LABELS).map(([mode, label]) => (
+            <option key={mode} value={mode}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Proactivity</h3>
+        <SettingToggle
+          label="Let the assistant speak first"
+          help="When on, it reports agents that finished, crashed or look stuck, sweeps for lingering to-dos, and gives a day-start summary."
+          value={proactive}
+          onChange={(enabled) => void setProactivity(enabled)}
+        />
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>External polling</h3>
+        <small className={styles.rowHelp}>
+          Periodically sweeps the sources below and only speaks up when
+          something needs your action. Each sweep is a real conversation turn,
+          so a shorter interval costs proportionally more.
+        </small>
+        <div className={styles.field}>
+          <label htmlFor="polling-interval">
+            Sweep interval, in minutes (0 = off)
+          </label>
+          <input
+            id="polling-interval"
+            type="number"
+            min={0}
+            value={polling.intervalMinutes}
+            onChange={(e) =>
+              void setPolling({
+                ...polling,
+                intervalMinutes: Math.max(0, Number(e.target.value) || 0),
+              })
+            }
+          />
+        </div>
+        <SettingToggle
+          label="Slack"
+          help="Lets a sweep read your Slack messages into the assistant's conversation to judge what needs action."
+          value={polling.slack}
+          onChange={(enabled) =>
+            void setPolling({ ...polling, slack: enabled })
+          }
+        />
+        <SettingToggle
+          label="Teams"
+          help="Lets a sweep read your Teams messages into the assistant's conversation to judge what needs action."
+          value={polling.teams}
+          onChange={(enabled) =>
+            void setPolling({ ...polling, teams: enabled })
+          }
+        />
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Conversation</h3>
+        <small className={styles.rowHelp}>
+          Day to day you stay in the one ongoing session. Resetting starts a
+          fresh conversation; the assistant&apos;s memory is kept.
+        </small>
+        <button type="button" onClick={() => void newConversation()}>
+          Reset conversation
+        </button>
+      </section>
+    </>
   );
 }
 

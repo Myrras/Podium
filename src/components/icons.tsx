@@ -16,8 +16,10 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowUp,
   Bold,
   Bot,
+  Brain,
   Code,
   Code2,
   Heading1,
@@ -50,6 +52,7 @@ import {
   Check,
   X,
   Minus,
+  Sparkles,
   Sun,
   Moon,
   Monitor,
@@ -64,6 +67,9 @@ import {
   ExternalLink,
   GitBranch,
   GripVertical,
+  Paperclip,
+  Image as ImageGlyph,
+  File as FileGlyph,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
@@ -84,6 +90,14 @@ function icon(Glyph: LucideIcon, defaults?: Partial<LucideProps>) {
   Icon.displayName = `Icon(${Glyph.displayName ?? "lucide"})`;
   return Icon;
 }
+
+// The personal assistant: panel toggle + its send button.
+export const AssistantIcon = icon(Sparkles);
+export const MemoryIcon = icon(Brain);
+export const SendIcon = icon(ArrowUp, { size: 15 });
+export const AttachIcon = icon(Paperclip, { size: 15 });
+export const ImageAttachmentIcon = icon(ImageGlyph, { size: 14 });
+export const FileAttachmentIcon = icon(FileGlyph, { size: 14 });
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.
 export const AgentIcon = icon(Bot);

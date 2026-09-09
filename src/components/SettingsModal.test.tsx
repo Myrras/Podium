@@ -50,7 +50,7 @@ const sampleClients: McpClientInfo[] = [
   },
 ];
 
-const invoke = vi.fn((cmd: string, _args?: unknown) => {
+const invoke = vi.fn((cmd: string, args?: unknown) => {
   switch (cmd) {
     case "mcp_clients_status":
       return Promise.resolve(sampleClients);
@@ -62,6 +62,22 @@ const invoke = vi.fn((cmd: string, _args?: unknown) => {
     case "agent_settings_set_merge_mode":
     case "agent_settings_set_suggest_worktree":
       return Promise.resolve(sampleDto);
+    case "assistant_autonomy_get":
+      return Promise.resolve("confirm-destructive");
+    case "assistant_autonomy_set":
+      return Promise.resolve((args as { mode: string }).mode);
+    case "assistant_proactivity_get":
+      return Promise.resolve(true);
+    case "assistant_proactivity_set":
+      return Promise.resolve((args as { enabled: boolean }).enabled);
+    case "assistant_polling_get":
+      return Promise.resolve({
+        intervalMinutes: 10,
+        slack: true,
+        teams: true,
+      });
+    case "assistant_polling_set":
+      return Promise.resolve(args);
     default:
       return Promise.resolve(null);
   }
@@ -168,6 +184,92 @@ describe("SettingsModal — Agents tab", () => {
       expect(invoke).toHaveBeenCalledWith(
         "agent_settings_set_suggest_worktree",
         { enabled: false },
+      ),
+    );
+  });
+});
+
+describe("SettingsModal — Assistant tab", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+  });
+
+  it("saves the autonomy mode and the proactivity toggle", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    const autonomy = await screen.findByLabelText("Assistant autonomy");
+    fireEvent.change(autonomy, { target: { value: "propose-all" } });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_autonomy_set", {
+        mode: "propose-all",
+      }),
+    );
+
+    const toggle = screen.getByRole("switch", {
+      name: "Let the assistant speak first",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_proactivity_set", {
+        enabled: false,
+      }),
+    );
+  });
+
+  it("shows the polling interval and source toggles, and saves changes", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    const interval = await screen.findByLabelText(
+      "Sweep interval, in minutes (0 = off)",
+    );
+    expect(interval).toHaveValue(10);
+
+    fireEvent.change(interval, { target: { value: "30" } });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_polling_set", {
+        intervalMinutes: 30,
+        slack: true,
+        teams: true,
+      }),
+    );
+
+    const slack = screen.getByRole("switch", { name: "Slack" });
+    expect(slack).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(slack);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_polling_set", {
+        intervalMinutes: 30,
+        slack: false,
+        teams: true,
+      }),
+    );
+
+    const teams = screen.getByRole("switch", { name: "Teams" });
+    expect(teams).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(teams);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("assistant_polling_set", {
+        intervalMinutes: 30,
+        slack: false,
+        teams: false,
+      }),
+    );
+  });
+
+  it("resets the conversation from the settings tab", async () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Reset conversation" }),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "assistant_new_conversation",
+        undefined,
       ),
     );
   });

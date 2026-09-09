@@ -145,6 +145,46 @@ pub fn run() {
             state
                 .orchestrator
                 .set_agent_settings_path(app.path().app_data_dir()?.join("agents.json"));
+            // The personal assistant's headless CLI child runs in the app
+            // data dir: a stable, writable cwd that is not one of the user's
+            // projects (it is workspace-wide, not per project). Its
+            // transcript (`assistant.json`) and memory
+            // (`assistant-memory.md`) live there too.
+            state
+                .orchestrator
+                .configure_assistant(podium_core::AssistantConfig {
+                    command: "claude".to_string(),
+                    cwd: Some(app.path().app_data_dir()?),
+                    data_dir: Some(app.path().app_data_dir()?),
+                });
+            // Every launch starts the assistant on a blank conversation: the
+            // panel's day-start button is the way back in, and a transcript
+            // replayed from days ago is mostly noise. `assistant-memory.md`
+            // survives this, and is what carries continuity instead.
+            // `block_on` rather than a spawned task: `setup` runs on the main
+            // thread with no reactor of its own (spawning a bare `tokio` task
+            // here once aborted the app), and the clear must be done *before*
+            // the frontend asks for the transcript — a task racing that call
+            // would replay the old conversation into a fresh panel. There is
+            // no session to kill this early, so this only rewrites one file.
+            tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation());
+            // Watch the workspace on the assistant's behalf: an agent that
+            // finished or crashed, one that looks stuck and lingering to-dos
+            // become chat nudges — each starting the assistant's CLI if it is
+            // not already running, so the user hears about it there and then.
+            // A second, slower lane asks it to check the user's external
+            // sources (Slack, Teams) every few minutes and stay quiet unless
+            // something needs them. Silent while the proactivity setting is
+            // off. Spawned from inside the async runtime:
+            // `setup` runs on the main thread, where the watcher's
+            // `tokio::spawn` has no reactor and aborts the app.
+            let orchestrator = Arc::clone(&state.orchestrator);
+            tauri::async_runtime::spawn(async move {
+                podium_core::proactivity::spawn(
+                    &orchestrator,
+                    podium_core::ProactivityConfig::default(),
+                );
+            });
             // Start the built-in MCP server (ephemeral localhost port, per-run
             // bearer token). Agents get the URL + token via 0600 config files
             // under `{app_data_dir}/mcp`, which is wiped on every start. A
@@ -180,6 +220,7 @@ pub fn run() {
             commands::process::process_remove,
             commands::process::process_list,
             commands::process::process_git_branch,
+            commands::process::process_report_waiting,
             commands::process::process_rename,
             commands::process::process_start,
             commands::process::process_stop,
@@ -187,6 +228,23 @@ pub fn run() {
             commands::process::process_write,
             commands::process::process_resize,
             commands::process::process_attach,
+            commands::assistant::assistant_send,
+            commands::assistant::assistant_day_start,
+            commands::assistant::assistant_transcript,
+            commands::assistant::assistant_new_conversation,
+            commands::assistant::assistant_memory_get,
+            commands::assistant::assistant_memory_set,
+            commands::assistant::assistant_autonomy_get,
+            commands::assistant::assistant_autonomy_set,
+            commands::assistant::assistant_proactivity_get,
+            commands::assistant::assistant_proactivity_set,
+            commands::assistant::assistant_polling_get,
+            commands::assistant::assistant_polling_set,
+            commands::assistant::assistant_resolve_proposal,
+            commands::assistant::assistant_queue_edit,
+            commands::assistant::assistant_queue_send_now,
+            commands::assistant::assistant_queue_remove,
+            commands::assistant::assistant_interrupt,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,
             commands::agent::agent_settings_get,

@@ -192,22 +192,22 @@ export function ScratchpadToolbar({ editor }: { editor: Editor | null }) {
 
   return (
     <div className={styles.toolbar} role="toolbar" aria-label="Formatting">
-      {ACTIONS.filter(({ isEnabled }) => !editor || !isEnabled || isEnabled(editor)).map(
-        ({ label, Icon, isActive, run }) => (
-          <button
-            key={label}
-            type="button"
-            className={styles.button}
-            aria-label={label}
-            aria-pressed={editor ? isActive(editor) : false}
-            data-active={editor ? isActive(editor) : false}
-            disabled={!editor}
-            onClick={() => editor && run(editor)}
-          >
-            <Icon />
-          </button>
-        ),
-      )}
+      {ACTIONS.filter(
+        ({ isEnabled }) => !editor || !isEnabled || isEnabled(editor),
+      ).map(({ label, Icon, isActive, run }) => (
+        <button
+          key={label}
+          type="button"
+          className={styles.button}
+          aria-label={label}
+          aria-pressed={editor ? isActive(editor) : false}
+          data-active={editor ? isActive(editor) : false}
+          disabled={!editor}
+          onClick={() => editor && run(editor)}
+        >
+          <Icon />
+        </button>
+      ))}
     </div>
   );
 }

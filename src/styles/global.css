@@ -65,6 +65,10 @@ button {
     box-shadow var(--dur-1) var(--ease-out),
     opacity var(--dur-1) var(--ease-out);
   white-space: nowrap;
+  /* Stay unselectable even inside a container that opts into `user-select:
+     text` (chat log, comment threads, …) — a button's label is an action, not
+     prose to select. */
+  user-select: none;
 }
 
 button:hover:not(:disabled) {

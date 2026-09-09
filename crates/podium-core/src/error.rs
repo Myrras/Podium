@@ -55,6 +55,12 @@ pub enum CoreError {
     #[error("process is not running")]
     ProcessNotRunning,
 
+    #[error("proposal not found: it was already confirmed, rejected or lost on restart")]
+    ProposalNotFound,
+
+    #[error("queued message not found: it was already delivered, removed, or lost when the session ended")]
+    QueuedMessageNotFound,
+
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
 
