@@ -389,7 +389,14 @@ describe("AssistantPane", () => {
 
     it("renders a waiting user message with edit/remove controls", () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "queued while busy", attachments: [] }],
+        pending: [
+          {
+            id: "p-1",
+            kind: "user",
+            text: "queued while busy",
+            attachments: [],
+          },
+        ],
       });
       render(<AssistantPane />);
 
@@ -404,7 +411,12 @@ describe("AssistantPane", () => {
     it("does not offer edit/remove for a nudge or notice waiting its turn", () => {
       useAssistantStore.setState({
         pending: [
-          { id: "n-1", kind: "nudge", text: "[Podium] an agent finished", attachments: [] },
+          {
+            id: "n-1",
+            kind: "nudge",
+            text: "[Podium] an agent finished",
+            attachments: [],
+          },
         ],
       });
       render(<AssistantPane />);
@@ -419,7 +431,9 @@ describe("AssistantPane", () => {
     it("edits a waiting message on Enter", async () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "first draft", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "first draft", attachments: [] },
+        ],
       });
       render(<AssistantPane />);
 
@@ -434,7 +448,9 @@ describe("AssistantPane", () => {
     it("sends a waiting message now", async () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "send me now", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "send me now", attachments: [] },
+        ],
       });
       render(<AssistantPane />);
 
@@ -446,7 +462,9 @@ describe("AssistantPane", () => {
     it("removes a waiting message", async () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "withdraw me", attachments: [] }],
+        pending: [
+          { id: "p-1", kind: "user", text: "withdraw me", attachments: [] },
+        ],
       });
       render(<AssistantPane />);
 
@@ -473,7 +491,12 @@ describe("AssistantPane", () => {
       useAssistantStore.setState({
         busy: true,
         pending: [
-          { id: "p-1", kind: "user", text: "queued while busy", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "queued while busy",
+            attachments: [],
+          },
         ],
       });
       const { container } = render(<AssistantPane />);
@@ -650,7 +673,10 @@ describe("AssistantPane", () => {
       await user.click(screen.getByLabelText("Attach files"));
       expect(screen.getByText("notes.txt")).toBeInTheDocument();
 
-      await user.type(screen.getByLabelText("Message the assistant"), "read it");
+      await user.type(
+        screen.getByLabelText("Message the assistant"),
+        "read it",
+      );
       await user.click(screen.getByLabelText("Send"));
 
       expect(assistantSend).toHaveBeenCalledWith("read it", [
@@ -694,7 +720,10 @@ describe("AssistantPane", () => {
     it("refuses more than five attachments, naming each one it dropped", async () => {
       const user = userEvent.setup();
       vi.mocked(openFileDialog).mockResolvedValue(
-        Array.from({ length: 7 }, (_, i) => `/abs/f${i}.txt`) as unknown as string,
+        Array.from(
+          { length: 7 },
+          (_, i) => `/abs/f${i}.txt`,
+        ) as unknown as string,
       );
       render(<AssistantPane />);
 
@@ -703,12 +732,8 @@ describe("AssistantPane", () => {
       expect(screen.getByText("f4.txt")).toBeInTheDocument();
       expect(screen.queryByText("f5.txt")).toBeNull();
       // The two over the cap are reported, not silently dropped.
-      expect(
-        screen.getByText(/"f5.txt" was not added/),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(/"f6.txt" was not added/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/"f5.txt" was not added/)).toBeInTheDocument();
+      expect(screen.getByText(/"f6.txt" was not added/)).toBeInTheDocument();
     });
 
     it("attaches a pasted image as inline base64", async () => {
@@ -727,7 +752,12 @@ describe("AssistantPane", () => {
         fireEvent.click(screen.getByLabelText("Send"));
       });
       expect(assistantSend).toHaveBeenCalledWith("(sent without a message)", [
-        { kind: "image", name: "shot.png", mediaType: "image/png", data: "AQID" },
+        {
+          kind: "image",
+          name: "shot.png",
+          mediaType: "image/png",
+          data: "AQID",
+        },
       ]);
     });
 

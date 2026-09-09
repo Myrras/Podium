@@ -89,7 +89,12 @@ interface PendingAttachment {
 function toAttachment(a: PendingAttachment): Attachment {
   switch (a.kind) {
     case "image":
-      return { kind: "image", name: a.name, mediaType: a.mediaType!, data: a.data! };
+      return {
+        kind: "image",
+        name: a.name,
+        mediaType: a.mediaType!,
+        data: a.data!,
+      };
     case "path":
       return { kind: "path", path: a.path! };
     case "text":
@@ -218,9 +223,7 @@ export function AssistantPane() {
   // stored transcript, it only reads the `user` rows already in `messages`.
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [draftBeforeRecall, setDraftBeforeRecall] = useState("");
-  const history = messages
-    .filter((m) => m.role === "user")
-    .map((m) => m.text);
+  const history = messages.filter((m) => m.role === "user").map((m) => m.text);
 
   // Both are persisted server-side; the store only mirrors them.
   useEffect(() => {
@@ -503,64 +506,64 @@ export function AssistantPane() {
         )}
 
         <div className={styles.composerRow}>
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label="Attach files"
-          title="Attach images or files"
-          onClick={() => void pickFiles()}
-        >
-          <AttachIcon />
-        </button>
-        <textarea
-          ref={inputRef}
-          className={styles.input}
-          value={draft}
-          rows={2}
-          placeholder="Message the assistant…"
-          aria-label="Message the assistant"
-          onChange={(e) => setDraft(e.target.value)}
-          onPaste={(e) => {
-            // Only intercept a paste that carries files (a screenshot, a
-            // copied file); plain text keeps the browser's own behaviour.
-            const files = Array.from(e.clipboardData.files);
-            if (files.length === 0) return;
-            e.preventDefault();
-            void addFiles(files);
-          }}
-          onKeyDown={(e) => {
-            // Enter sends, Shift+Enter is a newline (chat convention).
-            if (e.key === "Enter" && !e.shiftKey) {
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Attach files"
+            title="Attach images or files"
+            onClick={() => void pickFiles()}
+          >
+            <AttachIcon />
+          </button>
+          <textarea
+            ref={inputRef}
+            className={styles.input}
+            value={draft}
+            rows={2}
+            placeholder="Message the assistant…"
+            aria-label="Message the assistant"
+            onChange={(e) => setDraft(e.target.value)}
+            onPaste={(e) => {
+              // Only intercept a paste that carries files (a screenshot, a
+              // copied file); plain text keeps the browser's own behaviour.
+              const files = Array.from(e.clipboardData.files);
+              if (files.length === 0) return;
               e.preventDefault();
-              void submit();
-              return;
-            }
-            // Recall only from the edge line the arrow would otherwise
-            // leave the composer through — anywhere else the arrow just
-            // moves the cursor, as it must in a multi-line draft.
-            if (e.key === "ArrowUp" && isCaretOnFirstLine(e.currentTarget)) {
-              if (history.length === 0) return;
-              e.preventDefault();
-              recall(-1);
-            } else if (
-              e.key === "ArrowDown" &&
-              isCaretOnLastLine(e.currentTarget) &&
-              historyIndex !== null
-            ) {
-              e.preventDefault();
-              recall(1);
-            }
-          }}
-        />
-        <button
-          type="submit"
-          className={styles.sendBtn}
-          aria-label="Send"
-          title="Send"
-          disabled={!draft.trim() && attachments.length === 0}
-        >
-          <SendIcon />
-        </button>
+              void addFiles(files);
+            }}
+            onKeyDown={(e) => {
+              // Enter sends, Shift+Enter is a newline (chat convention).
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+                return;
+              }
+              // Recall only from the edge line the arrow would otherwise
+              // leave the composer through — anywhere else the arrow just
+              // moves the cursor, as it must in a multi-line draft.
+              if (e.key === "ArrowUp" && isCaretOnFirstLine(e.currentTarget)) {
+                if (history.length === 0) return;
+                e.preventDefault();
+                recall(-1);
+              } else if (
+                e.key === "ArrowDown" &&
+                isCaretOnLastLine(e.currentTarget) &&
+                historyIndex !== null
+              ) {
+                e.preventDefault();
+                recall(1);
+              }
+            }}
+          />
+          <button
+            type="submit"
+            className={styles.sendBtn}
+            aria-label="Send"
+            title="Send"
+            disabled={!draft.trim() && attachments.length === 0}
+          >
+            <SendIcon />
+          </button>
         </div>
       </form>
     </aside>

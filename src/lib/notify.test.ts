@@ -22,7 +22,10 @@ async function freshNotify() {
     import("./notify"),
     import("../state/toastStore"),
   ]);
-  return { notifyAssistant: notify.notifyAssistant, toastStore: toast.useToastStore };
+  return {
+    notifyAssistant: notify.notifyAssistant,
+    toastStore: toast.useToastStore,
+  };
 }
 
 describe("notifyAssistant", () => {
