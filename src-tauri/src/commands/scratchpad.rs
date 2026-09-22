@@ -34,7 +34,8 @@ pub fn scratchpad_list_archived(
         .map_err(Into::into)
 }
 
-/// Create a new scratchpad (auto-generated timestamp title, empty content).
+/// Create a new scratchpad (empty content, named after its content once
+/// there is any).
 /// Always attributed to `"User"` — this command is only ever called from the
 /// human-facing UI; agents get their own MCP tool.
 #[tauri::command]
@@ -48,7 +49,8 @@ pub fn scratchpad_add(
         .map_err(Into::into)
 }
 
-/// Replace a scratchpad's content (bumps its version). Always attributed to
+/// Replace a scratchpad's content (bumps its version, and renames an
+/// auto-titled scratchpad after it). Always attributed to
 /// `"User"`. `expected_updated_at` must match the scratchpad's current
 /// `updatedAt` or this fails with `IpcError.kind === "scratchpadConflict"` —
 /// someone else (an agent, most likely) edited it first.
@@ -66,7 +68,8 @@ pub fn scratchpad_update_content(
         .map_err(Into::into)
 }
 
-/// Revise a scratchpad's title (blank falls back to a timestamp title).
+/// Revise a scratchpad's title, pinning it (blank hands the name back to the
+/// content).
 /// Always attributed to `"User"`. `expected_updated_at` is checked the same
 /// way as in `scratchpad_update_content`.
 #[tauri::command]

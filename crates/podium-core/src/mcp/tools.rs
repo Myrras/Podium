@@ -81,6 +81,8 @@ pub struct AddTodoParams {
     pub project_id: String,
     /// The to-do text (must not be blank).
     pub text: String,
+    /// Longer detail for the to-do (optional; blank leaves it unset).
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -566,7 +568,9 @@ impl PodiumTools {
         }
     }
 
-    #[tool(description = "Add a to-do item to a project's shared to-do list.")]
+    #[tool(
+        description = "Add a to-do item to a project's shared to-do list, optionally with a longer description."
+    )]
     pub async fn add_todo(
         &self,
         Parameters(p): Parameters<AddTodoParams>,
@@ -575,7 +579,7 @@ impl PodiumTools {
         json_result(&without_comments(
             &self
                 .orchestrator
-                .add_todo(project_id, &p.text)
+                .add_todo(project_id, &p.text, p.description.as_deref())
                 .map_err(core_error)?,
         ))
     }
@@ -783,7 +787,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Create a new scratchpad in a project (auto-generated timestamp title, empty content). Returns the created scratchpad."
+        description = "Create a new scratchpad in a project (empty content; its title is taken from the first line of its content, so start the content with a short heading). Returns the created scratchpad."
     )]
     pub async fn create_scratchpad(
         &self,
@@ -800,7 +804,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Replace a scratchpad's content (bumps its version). Requires expected_updated_at (from your last read of the scratchpad) — if someone else edited it since, this fails as a conflict; re-fetch with list_scratchpads and retry. Returns the updated scratchpad."
+        description = "Replace a scratchpad's content (bumps its version; a scratchpad nobody has named itself is renamed after the new content's first line). Requires expected_updated_at (from your last read of the scratchpad) — if someone else edited it since, this fails as a conflict; re-fetch with list_scratchpads and retry. Returns the updated scratchpad."
     )]
     pub async fn update_scratchpad(
         &self,

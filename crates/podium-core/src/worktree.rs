@@ -6,8 +6,9 @@
 //! Git is invoked directly via `platform::git_binary()` (a path resolved once
 //! through the login shell, then reused) rather than re-spawning a login
 //! shell on every call — list/create/remove can each fire several git calls,
-//! and a login shell per call is slow on heavy shell profiles. stderr is
-//! always discarded so git output can never leak into `CoreError` messages.
+//! and a login shell per call is slow on heavy shell profiles. stderr never
+//! reaches a `CoreError` message (it can contain repo paths), but is logged
+//! via `tracing::warn!` on failure so the real cause is diagnosable.
 //! There is no persistence, and `list` has no events (`git worktree list
 //! --porcelain` is the source of truth); `create`/`remove` do emit
 //! `WorktreesChanged` via the orchestrator.
@@ -37,21 +38,29 @@ pub struct WorktreeInfo {
 const MAX_SLUG_LEN: usize = 40;
 
 /// Run `git -C <root> <args…>` directly (no shell in between — args are
-/// passed as argv, so no quoting is needed), discarding stderr; `Some(stdout)`
-/// on success, `None` on any failure. Output never reaches an error message.
+/// passed as argv, so no quoting is needed); `Some(stdout)` on success,
+/// `None` on any failure. stderr never reaches an error message (it can
+/// contain repo paths), but is logged via `tracing` so the real cause of a
+/// failure (e.g. "dubious ownership", git missing, wrong cwd) is visible in
+/// the app logs instead of collapsing into a generic error.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(crate::platform::git_binary())
         .arg("-C")
         .arg(root)
         .args(args)
         .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    if !output.status.success() {
+        tracing::warn!(
+            root = %root.display(),
+            args = ?args,
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "git command failed"
+        );
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// The current branch checked out at `cwd`, or `None` when it is not a git

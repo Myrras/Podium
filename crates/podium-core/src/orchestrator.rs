@@ -934,10 +934,16 @@ impl Orchestrator {
             .copied()
     }
 
-    /// Add a to-do to a project. Blank text is rejected.
-    pub fn add_todo(&self, project_id: ProjectId, text: &str) -> CoreResult<TodoInfo> {
+    /// Add a to-do to a project. Blank text is rejected; a blank or missing
+    /// `description` leaves it unset.
+    pub fn add_todo(
+        &self,
+        project_id: ProjectId,
+        text: &str,
+        description: Option<&str>,
+    ) -> CoreResult<TodoInfo> {
         let root = self.project_root(project_id)?;
-        let info = self.todos.add(project_id, &root, text)?;
+        let info = self.todos.add(project_id, &root, text, description)?;
         self.events
             .publish(PodiumEvent::TodosChanged { project_id });
         Ok(info)
@@ -1094,8 +1100,9 @@ impl Orchestrator {
         Ok(scratchpads)
     }
 
-    /// Create a new scratchpad in a project (auto-generated timestamp title,
-    /// empty content). Freshly created, so it can never already be assigned.
+    /// Create a new scratchpad in a project (empty content, named after its
+    /// content once there is any). Freshly created, so it can never already
+    /// be assigned.
     pub fn add_scratchpad(
         &self,
         project_id: ProjectId,
@@ -1123,7 +1130,8 @@ impl Orchestrator {
         Ok(info)
     }
 
-    /// Replace a scratchpad's content (bumps its version). `expected_updated_at`
+    /// Replace a scratchpad's content (bumps its version, and renames an
+    /// auto-titled scratchpad after the new content). `expected_updated_at`
     /// must match the scratchpad's current `updated_at` or the call fails
     /// with [`CoreError::ScratchpadConflict`] (a concurrent edit landed
     /// first).
@@ -1153,7 +1161,8 @@ impl Orchestrator {
         Ok(info)
     }
 
-    /// Revise a scratchpad's title (blank falls back to a timestamp title).
+    /// Revise a scratchpad's title, pinning it (blank hands the name back to
+    /// the content).
     /// `expected_updated_at` is checked the same way as in
     /// [`Self::update_scratchpad_content`].
     pub fn update_scratchpad_title(
@@ -2907,7 +2916,7 @@ mod tests {
         let mut rx = orch.subscribe_events();
 
         let added = orch.add_scratchpad(project_id, "User").unwrap();
-        assert!(added.title.ends_with("Scratchpad"));
+        assert_eq!(added.title, "Untitled scratchpad");
 
         let event = rx.try_recv().expect("event published");
         assert!(matches!(

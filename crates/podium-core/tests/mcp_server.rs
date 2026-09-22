@@ -398,11 +398,16 @@ async fn todo_tools_update_and_comment_round_trip() {
         .add_todo(Parameters(AddTodoParams {
             project_id: project_id.to_string(),
             text: "wire up auth".to_string(),
+            description: Some("start from the existing session handler".to_string()),
         }))
         .await
         .expect("add_todo");
-    let todo_id = serde_json::from_str::<serde_json::Value>(&first_text(&added))
-        .expect("todo json")["id"]
+    let added_text = first_text(&added);
+    assert!(
+        added_text.contains("start from the existing session handler"),
+        "{added_text:?}"
+    );
+    let todo_id = serde_json::from_str::<serde_json::Value>(&added_text).expect("todo json")["id"]
         .as_str()
         .expect("todo id")
         .to_string();
@@ -768,7 +773,7 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
         .expect("open project");
 
     let todo = orch
-        .add_todo(project_id, "wire up OAuth")
+        .add_todo(project_id, "wire up OAuth", None)
         .expect("add todo");
 
     // No explicit name: the window inherits the to-do's text.
@@ -846,7 +851,7 @@ async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
         .await
         .expect("open project");
     let todo = orch
-        .add_todo(project_id, "wire up OAuth")
+        .add_todo(project_id, "wire up OAuth", None)
         .expect("add todo");
 
     // Before any agent, the to-do has no assignment.
@@ -900,7 +905,7 @@ async fn removing_an_agent_clears_its_todo_assignment() {
         .await
         .expect("open project");
     let todo = orch
-        .add_todo(project_id, "wire up OAuth")
+        .add_todo(project_id, "wire up OAuth", None)
         .expect("add todo");
     let agent = orch
         .spawn_agent(
@@ -955,7 +960,7 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
         .await
         .expect("spawn bare agent");
     let todo = orch
-        .add_todo(project_id, "wire up OAuth")
+        .add_todo(project_id, "wire up OAuth", None)
         .expect("add todo");
     assert_eq!(orch.agent_for_todo(todo.id), None);
 
@@ -1222,8 +1227,12 @@ async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
         .expect("open project");
     let tools = PodiumTools::new(Arc::clone(&orch));
 
-    let a = orch.add_todo(project_id, "wire up auth").expect("todo a");
-    let b = orch.add_todo(project_id, "write tests").expect("todo b");
+    let a = orch
+        .add_todo(project_id, "wire up auth", None)
+        .expect("todo a");
+    let b = orch
+        .add_todo(project_id, "write tests", None)
+        .expect("todo b");
 
     // Both to-dos (with `todo_id` overlapping `todo_ids` to prove dedup) go to
     // one agent. With several grouped, picking one to-do's text as the name is
@@ -1305,7 +1314,7 @@ async fn respawn_agent_hands_the_to_do_and_the_answer_to_a_fresh_session() {
     let tools = PodiumTools::new(Arc::clone(&orch));
 
     let todo = orch
-        .add_todo(project_id, "wire up auth")
+        .add_todo(project_id, "wire up auth", None)
         .expect("add to-do");
     let stuck = orch
         .spawn_agent(
@@ -1514,7 +1523,7 @@ async fn spawning_on_both_todo_and_scratchpad_ignores_the_scratchpad() {
         .await
         .expect("open project");
     let todo = orch
-        .add_todo(project_id, "wire up OAuth")
+        .add_todo(project_id, "wire up OAuth", None)
         .expect("add todo");
     let pad = orch
         .add_scratchpad(project_id, "User")
@@ -1556,7 +1565,7 @@ async fn spawning_on_a_todo_with_a_bogus_scratchpad_still_succeeds() {
         .await
         .expect("open project");
     let todo = orch
-        .add_todo(project_id, "wire up OAuth")
+        .add_todo(project_id, "wire up OAuth", None)
         .expect("add todo");
     let bogus_id = podium_core::ScratchpadId::new();
 
@@ -2235,8 +2244,12 @@ async fn assign_todo_is_blocked_when_already_owned_by_another_session() {
     };
     let first = spawn_bare().await.expect("spawn first agent");
     let second = spawn_bare().await.expect("spawn second agent");
-    let todo = orch.add_todo(project_id, "wire up OAuth").expect("todo");
-    let todo2 = orch.add_todo(project_id, "write tests").expect("todo2");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth", None)
+        .expect("todo");
+    let todo2 = orch
+        .add_todo(project_id, "write tests", None)
+        .expect("todo2");
 
     let claim = |todo_id: TodoId, process_id: ProcessId| {
         tools.assign_todo(Parameters(AssignTodoParams {
@@ -2341,7 +2354,7 @@ async fn project_with_todo(orch: &Orchestrator, dir: &std::path::Path) -> (Proje
         .await
         .expect("open project");
     let todo = orch
-        .add_todo(project_id, "review the onboarding copy")
+        .add_todo(project_id, "review the onboarding copy", None)
         .expect("add todo");
     (project_id, todo.id)
 }
