@@ -924,10 +924,10 @@ per test file.
   that alters what a user can **see or do** — a feature, a keyboard/mouse
   interaction, a setting, a `podium.yml` key, an MCP tool — updates the README
   **in the same change**, not as a follow-up. Its _Feature tour_, _Settings_
-  and _Things you'd otherwise never find_ sections go stale first. The
-  `<!-- MEDIA: … -->` comments mark where the maintainer adds
-  screenshots/GIFs — leave them in place rather than filling them in, and add
-  one when a new feature is better shown than described. Internal-only
+  and _Things you'd otherwise never find_ sections go stale first. Its
+  screenshots/GIFs live in `docs/media/` and are the maintainer's to record —
+  when a change makes one of them wrong, or a new feature is better shown
+  than described, say so rather than replacing the file yourself. Internal-only
   changes (layering, test harnesses, build plumbing) stay in this file alone.
 
 ## Git workflow

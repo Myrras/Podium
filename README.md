@@ -7,7 +7,7 @@ a real terminal view and lifecycle supervision. A built-in MCP server lets the
 agents inside Podium inspect and orchestrate the very processes Podium manages,
 including spawning more agents.
 
-<!-- MEDIA: overview screenshot of the app (sidebar + terminal + assistant panel) -->
+![Podium — the sidebar, a running agent's terminal and the assistant panel](docs/media/overview.gif)
 
 ## The shape of it
 
@@ -74,7 +74,7 @@ shows an activity state: **working…** (output in the last 2.5 s), **idle**,
 or **needs input** — the last one is derived for *every* process, so a
 terminal stalled on a `sudo` prompt surfaces the same way.
 
-<!-- MEDIA: GIF — spawning an agent from a to-do, colour tint appearing on both rows, "working…" dot -->
+![Spawning an agent from a to-do — both rows pick up the same session colour](docs/media/agent.gif)
 
 ### To-dos
 
@@ -134,7 +134,7 @@ to a spawned agent.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 
-<!-- MEDIA: GIF — assistant proposing an action, the confirm card, an agent being spawned from chat -->
+![The assistant parking a destructive action as a proposal card, then spawning an agent](docs/media/assistant.gif)
 
 ### Built-in MCP server
 
