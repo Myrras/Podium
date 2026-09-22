@@ -926,6 +926,16 @@ per test file.
     (`just test` / `just test-core` / `pnpm vitest run`) before reporting
     done. Only skip adding a test when it is genuinely infeasible (e.g. a
     pure canvas/xterm path jsdom can't exercise) — say so explicitly.
+- **Documentation (always-on):** this file is the contributor-facing
+  documentation and [`README.md`](./README.md) the user-facing one. A change
+  that alters what a user can **see or do** — a feature, a keyboard/mouse
+  interaction, a setting, a `podium.yml` key, an MCP tool — updates the README
+  **in the same change**, not as a follow-up. Its _Feature tour_, _Settings_
+  and _Things you'd otherwise never find_ sections go stale first. Its
+  screenshots/GIFs live in `docs/media/` and are the maintainer's to record —
+  when a change makes one of them wrong, or a new feature is better shown
+  than described, say so rather than replacing the file yourself. Internal-only
+  changes (layering, test harnesses, build plumbing) stay in this file alone.
 
 ## Git workflow
 
