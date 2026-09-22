@@ -81,6 +81,8 @@ pub struct AddTodoParams {
     pub project_id: String,
     /// The to-do text (must not be blank).
     pub text: String,
+    /// Longer detail for the to-do (optional; blank leaves it unset).
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -566,7 +568,9 @@ impl PodiumTools {
         }
     }
 
-    #[tool(description = "Add a to-do item to a project's shared to-do list.")]
+    #[tool(
+        description = "Add a to-do item to a project's shared to-do list, optionally with a longer description."
+    )]
     pub async fn add_todo(
         &self,
         Parameters(p): Parameters<AddTodoParams>,
@@ -575,7 +579,7 @@ impl PodiumTools {
         json_result(&without_comments(
             &self
                 .orchestrator
-                .add_todo(project_id, &p.text)
+                .add_todo(project_id, &p.text, p.description.as_deref())
                 .map_err(core_error)?,
         ))
     }

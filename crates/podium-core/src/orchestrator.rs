@@ -934,10 +934,16 @@ impl Orchestrator {
             .copied()
     }
 
-    /// Add a to-do to a project. Blank text is rejected.
-    pub fn add_todo(&self, project_id: ProjectId, text: &str) -> CoreResult<TodoInfo> {
+    /// Add a to-do to a project. Blank text is rejected; a blank or missing
+    /// `description` leaves it unset.
+    pub fn add_todo(
+        &self,
+        project_id: ProjectId,
+        text: &str,
+        description: Option<&str>,
+    ) -> CoreResult<TodoInfo> {
         let root = self.project_root(project_id)?;
-        let info = self.todos.add(project_id, &root, text)?;
+        let info = self.todos.add(project_id, &root, text, description)?;
         self.events
             .publish(PodiumEvent::TodosChanged { project_id });
         Ok(info)
