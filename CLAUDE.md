@@ -274,7 +274,14 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `updatedAt` — a stale value (a concurrent user or agent edit landed first)
   is rejected as `CoreError::ScratchpadConflict` instead of silently
   overwriting it; the frontend surfaces this as an in-pane reload/force-save
-  choice rather than a toast.
+  choice rather than a toast. A scratchpad is **named after its content**: the
+  title is the first usable line (heading/bullet/quote markers stripped,
+  truncated to 60 chars on a word boundary), refreshed on every content
+  update, with `Untitled scratchpad` until something is written. Setting a
+  title (`update_title`) pins it, so later content edits leave it alone;
+  a blank title hands the name back to the content. Scratchpads stored with
+  the old `MM-DD-HH-MM Scratchpad` title adopt their content's name on load
+  (`adopt_auto_titles`, idempotent — a hand-picked name is left alone).
 - **Worktrees** (`worktree.rs`): Podium-managed git worktrees for agent
   isolation, at `<project_root>/.podium/worktrees/<name>` (name slugified,
   auto-de-duplicated with `-2`, `-3`, …). `create(root, name)` checks out a

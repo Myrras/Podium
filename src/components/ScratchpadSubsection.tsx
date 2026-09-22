@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectId, ScratchpadId, ScratchpadInfo } from "../ipc/types";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
@@ -68,7 +69,7 @@ function ScratchpadRow({
         <button
           type="button"
           className={styles.textToggle}
-          title={`Open "${scratchpad.title}" — Cmd/Ctrl+click to select`}
+          title={`Open "${textPreview(scratchpad.title)}" — Cmd/Ctrl+click to select`}
           onClick={onActivate}
         >
           <span className={styles.text}>{scratchpad.title}</span>

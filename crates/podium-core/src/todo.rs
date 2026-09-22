@@ -226,17 +226,27 @@ impl TodoStore {
         archived
     }
 
-    pub fn add(&self, project_id: ProjectId, root: &Path, text: &str) -> CoreResult<TodoInfo> {
+    pub fn add(
+        &self,
+        project_id: ProjectId,
+        root: &Path,
+        text: &str,
+        description: Option<&str>,
+    ) -> CoreResult<TodoInfo> {
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
                 "to-do text must not be empty".to_string(),
             ));
         }
+        let description = description
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(str::to_string);
         let todo = StoredTodo {
             id: TodoId::new(),
             text: text.to_string(),
-            description: None,
+            description,
             done: false,
             created_at: Utc::now(),
             done_at: None,
@@ -599,10 +609,10 @@ mod tests {
         let legacy_root = PathBuf::from("/tmp/fixture-project-legacy");
 
         let newer = store
-            .add(project, &root, "added under the new key")
+            .add(project, &root, "added under the new key", None)
             .unwrap();
         let older = store
-            .add(project, &legacy_root, "added under the legacy key")
+            .add(project, &legacy_root, "added under the legacy key", None)
             .unwrap();
         // Force an unambiguous chronological order regardless of call timing.
         {
@@ -624,7 +634,7 @@ mod tests {
     fn migrate_legacy_root_is_a_no_op_when_nothing_is_stored_under_the_legacy_key() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        store.add(project, &root, "unrelated").unwrap();
+        store.add(project, &root, "unrelated", None).unwrap();
 
         store.migrate_legacy_root(&root, &PathBuf::from("/tmp/never-opened"));
 
@@ -636,7 +646,7 @@ mod tests {
         let store = TodoStore::new();
         let (project, root) = ids();
 
-        let added = store.add(project, &root, "  write tests  ").unwrap();
+        let added = store.add(project, &root, "  write tests  ", None).unwrap();
         assert_eq!(added.text, "write tests");
         assert!(!added.done);
 
@@ -653,10 +663,26 @@ mod tests {
     }
 
     #[test]
+    fn add_stores_a_trimmed_description_and_drops_a_blank_one() {
+        let store = TodoStore::new();
+        let (project, root) = ids();
+
+        let with = store
+            .add(project, &root, "write tests", Some("  cover the edges  "))
+            .unwrap();
+        assert_eq!(with.description.as_deref(), Some("cover the edges"));
+
+        let blank = store
+            .add(project, &root, "write docs", Some("   "))
+            .unwrap();
+        assert!(blank.description.is_none());
+    }
+
+    #[test]
     fn update_edits_text_and_description() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        let added = store.add(project, &root, "draft").unwrap();
+        let added = store.add(project, &root, "draft", None).unwrap();
         assert!(added.description.is_none());
 
         let updated = store
@@ -692,7 +718,7 @@ mod tests {
     fn comments_append_in_order_with_author_fallback() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        let added = store.add(project, &root, "task").unwrap();
+        let added = store.add(project, &root, "task", None).unwrap();
 
         store
             .add_comment(project, &root, added.id, "claude", "started")
@@ -720,7 +746,7 @@ mod tests {
     fn comments_can_be_edited_and_removed_by_id() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        let added = store.add(project, &root, "task").unwrap();
+        let added = store.add(project, &root, "task", None).unwrap();
         let after = store
             .add_comment(project, &root, added.id, "claude", "frist draft")
             .unwrap();
@@ -757,7 +783,7 @@ mod tests {
     fn links_are_added_deduped_and_removed() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        let added = store.add(project, &root, "task").unwrap();
+        let added = store.add(project, &root, "task", None).unwrap();
         assert!(added.links.is_empty());
 
         let url = "https://gitlab.example.com/acme/web/-/issues/42";
@@ -800,8 +826,8 @@ mod tests {
     fn manual_archive_hides_from_list_and_unarchive_restores() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        let a = store.add(project, &root, "keep").unwrap();
-        let b = store.add(project, &root, "archive me").unwrap();
+        let a = store.add(project, &root, "keep", None).unwrap();
+        let b = store.add(project, &root, "archive me", None).unwrap();
 
         let archived = store.set_archived(project, &root, b.id, true).unwrap();
         assert!(archived.archived);
@@ -828,9 +854,9 @@ mod tests {
         use chrono::Duration;
         let store = TodoStore::new();
         let (project, root) = ids();
-        let yesterday_done = store.add(project, &root, "done yesterday").unwrap();
-        let today_done = store.add(project, &root, "done today").unwrap();
-        let open = store.add(project, &root, "still open").unwrap();
+        let yesterday_done = store.add(project, &root, "done yesterday", None).unwrap();
+        let today_done = store.add(project, &root, "done today", None).unwrap();
+        let open = store.add(project, &root, "still open", None).unwrap();
 
         // Mark two done, then back-date one completion into yesterday.
         store
@@ -866,7 +892,9 @@ mod tests {
         use chrono::Duration;
         let store = TodoStore::new();
         let (project, root) = ids();
-        let t = store.add(project, &root, "finished last week").unwrap();
+        let t = store
+            .add(project, &root, "finished last week", None)
+            .unwrap();
 
         // Complete it and back-date the completion so it auto-archives.
         store.set_done(project, &root, t.id, true).unwrap();
@@ -894,7 +922,7 @@ mod tests {
     fn get_returns_the_todo_or_none() {
         let store = TodoStore::new();
         let (project, root) = ids();
-        let added = store.add(project, &root, "task").unwrap();
+        let added = store.add(project, &root, "task", None).unwrap();
         assert_eq!(store.get(project, &root, added.id).unwrap().id, added.id);
         assert!(store.get(project, &root, TodoId::new()).is_none());
     }
@@ -905,7 +933,7 @@ mod tests {
         let (project, root) = ids();
 
         assert!(matches!(
-            store.add(project, &root, "   "),
+            store.add(project, &root, "   ", None),
             Err(CoreError::InvalidInput(_))
         ));
         assert!(matches!(
@@ -925,7 +953,7 @@ mod tests {
         let root_a = PathBuf::from("/tmp/fixture-a");
         let root_b = PathBuf::from("/tmp/fixture-b");
 
-        store.add(project, &root_a, "only in a").unwrap();
+        store.add(project, &root_a, "only in a", None).unwrap();
         assert_eq!(store.list(project, &root_a).len(), 1);
         assert!(store.list(project, &root_b).is_empty());
     }
@@ -938,7 +966,9 @@ mod tests {
 
         let store = TodoStore::new();
         store.set_path(file.clone());
-        let added = store.add(project, &root, "survive a restart").unwrap();
+        let added = store
+            .add(project, &root, "survive a restart", None)
+            .unwrap();
         store.set_done(project, &root, added.id, true).unwrap();
 
         let reloaded = TodoStore::new();

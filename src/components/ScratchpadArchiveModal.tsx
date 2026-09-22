@@ -11,6 +11,7 @@ import { useEffect } from "react";
 
 import type { ProjectId } from "../ipc/types";
 import { formatTime } from "../lib/dateFormat";
+import { textPreview } from "../lib/textPreview";
 import { useScratchpadStore } from "../state/scratchpadStore";
 import styles from "./ArchiveModal.module.css";
 import { Modal } from "./Modal";
@@ -53,7 +54,7 @@ export function ScratchpadArchiveModal({
         <ul className={styles.list}>
           {archived.map((sp) => (
             <li key={sp.id} className={styles.item}>
-              <span className={styles.text} title={sp.title}>
+              <span className={styles.text} title={textPreview(sp.title)}>
                 {sp.title}
               </span>
               <span className={styles.when}>{formatTime(sp.archivedAt)}</span>
