@@ -8,6 +8,18 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.1.0] - 2026-09-22
+
+### Added
+
+- **What you have selected is handed to the assistant.** Open a to-do,
+  scratchpad or agent, or select text anywhere — including in a terminal — and
+  it appears as a chip above the assistant's composer. Your next message
+  carries it along, so you can ask "what's left here?" instead of pasting an
+  id or re-explaining which item you mean. Each chip has an × if you'd rather
+  not send it, and a selection you make inside the chat panel itself is left
+  alone.
+
 ## [2.0.1] - 2026-09-22
 
 ### Added
