@@ -767,7 +767,7 @@ async fn a_nudge_with_nobody_chatting_starts_the_session_itself() {
         .open_project(dir.path().to_path_buf())
         .await
         .expect("open project");
-    orch.add_todo(project, "Fix the login redirect")
+    orch.add_todo(project, "Fix the login redirect", None)
         .expect("add todo");
 
     // Nobody has chatted, so there is no session — the nudge must start one
@@ -859,7 +859,7 @@ async fn to_dos_left_open_are_swept_into_the_chat() {
         .open_project(dir.path().to_path_buf())
         .await
         .expect("open project");
-    orch.add_todo(project, "Fix the login redirect")
+    orch.add_todo(project, "Fix the login redirect", None)
         .expect("add todo");
     // Anything older than 10ms counts as lingering here.
     podium_core::proactivity::spawn(

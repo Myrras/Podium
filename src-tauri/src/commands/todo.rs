@@ -56,7 +56,7 @@ pub fn todo_add(
 ) -> Result<TodoInfo, IpcError> {
     state
         .orchestrator
-        .add_todo(project_id, &text)
+        .add_todo(project_id, &text, None)
         .map_err(Into::into)
 }
 
