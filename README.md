@@ -20,8 +20,6 @@ One window, three columns:
 - **Right — the personal assistant.** A chat panel that can see and drive
   everything Podium manages, across all open projects.
 
-<!-- MEDIA: GIF — opening a project folder, sidebar filling up, dev server auto-starting -->
-
 ## Feature tour
 
 ### Projects
@@ -37,8 +35,6 @@ Each project also gets an **Open in Warp** action and a **Commands** modal
 that lists the `just` recipes it finds in the project's `justfile` alongside
 your own saved per-project commands — one click runs any of them in a fresh
 terminal.
-
-<!-- MEDIA: GIF — dragging projects to reorder, double-click rename -->
 
 ### Processes, terminals and supervision
 
@@ -59,8 +55,6 @@ Services can be supervised: `auto_restart: on-crash | always` restarts with
 exponential backoff (500 ms doubling up to 30 s), a circuit breaker at 5
 restarts in a rolling 60 s window, and a backoff reset after 60 s of stable
 running. Starting a process by hand clears both.
-
-<!-- MEDIA: GIF — a crashing dev server being restarted with backoff, then the circuit breaker tripping -->
 
 ### Agents
 
@@ -93,8 +87,6 @@ by hand and found again in the Archive modal.
 An agent **claims** a to-do when it starts working on it, so the list doubles
 as a who-is-doing-what board.
 
-<!-- MEDIA: GIF — adding a to-do, an agent claiming it and commenting as it works -->
-
 ### Scratchpads
 
 Shared freeform markdown notes per project, again visible to you and to
@@ -102,8 +94,6 @@ agents. Rich editor with a table of contents, free-text tags, and archiving.
 Concurrent edits are handled honestly: an update carries the timestamp it was
 based on, and a stale one is rejected as a conflict with a reload/force-save
 choice rather than silently overwriting what someone else wrote.
-
-<!-- MEDIA: GIF — editing a scratchpad while an agent edits it too, conflict banner appearing -->
 
 ### Git worktrees
 
@@ -117,8 +107,6 @@ Each worktree row in the sidebar can open a terminal rooted in it, open it in
 Warp, run the Commands modal against it, or be removed. Removal is refused
 while a process is running in it or while it has uncommitted changes (unless
 forced); the branch is always kept.
-
-<!-- MEDIA: GIF — an agent creating a worktree, terminals nesting under its sidebar row -->
 
 ### The personal assistant
 
