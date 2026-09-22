@@ -13,6 +13,7 @@
 import { useMemo } from "react";
 
 import type { ProcessId, ProjectId, ScratchpadInfo } from "../ipc/types";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
@@ -59,7 +60,7 @@ export function AgentScratchpadList({
           <button
             type="button"
             className={styles.text}
-            title={`Open "${sp.title}"`}
+            title={`Open "${textPreview(sp.title)}"`}
             onClick={() => {
               setActiveProject(projectId);
               openScratchpadInWorkArea(projectId, sp.id);
