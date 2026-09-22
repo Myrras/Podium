@@ -31,12 +31,36 @@ export default defineConfig(async () => ({
   },
 
   build: {
-    // xterm is comparatively large; keep it in its own cached vendor chunk.
     chunkSizeWarningLimit: 800,
     rollupOptions: {
       output: {
-        manualChunks: {
-          xterm: ["@xterm/xterm"],
+        // The heavy vendor trees each go in their own chunk, so the app entry
+        // stays small and a dependency bump only invalidates its own chunk.
+        // Matched by path because the weight is in transitive packages
+        // (prosemirror-* under tiptap, micromark/mdast under react-markdown)
+        // that naming the direct dependency would not pull along.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("@xterm")) return "xterm";
+          if (
+            id.includes("@tiptap") ||
+            id.includes("tiptap-markdown") ||
+            id.includes("prosemirror")
+          )
+            return "editor";
+          if (
+            id.includes("react-markdown") ||
+            id.includes("remark") ||
+            id.includes("micromark") ||
+            id.includes("mdast") ||
+            id.includes("hast") ||
+            id.includes("unist") ||
+            id.includes("unified")
+          )
+            return "markdown";
+          if (id.includes("lucide-react")) return "icons";
+          if (id.includes("/react-dom/") || id.includes("/react/"))
+            return "react";
         },
       },
     },
