@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectId, TodoId, TodoInfo } from "../ipc/types";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
@@ -90,7 +91,7 @@ function TodoRow({
         <button
           type="button"
           className={styles.textToggle}
-          title={`Open "${todo.text}" — Cmd/Ctrl+click to select`}
+          title={`Open "${textPreview(todo.text)}" — Cmd/Ctrl+click to select`}
           onClick={onActivate}
         >
           <span className={styles.text}>{todo.text}</span>

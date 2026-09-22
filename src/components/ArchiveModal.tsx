@@ -10,6 +10,7 @@ import { useEffect } from "react";
 
 import type { ProjectId } from "../ipc/types";
 import { formatTime } from "../lib/dateFormat";
+import { textPreview } from "../lib/textPreview";
 import { useTodoStore } from "../state/todoStore";
 import styles from "./ArchiveModal.module.css";
 import { Modal } from "./Modal";
@@ -49,7 +50,7 @@ export function ArchiveModal({
               <span
                 className={styles.text}
                 data-done={todo.done ? "true" : undefined}
-                title={todo.text}
+                title={textPreview(todo.text)}
               >
                 {todo.text}
               </span>
