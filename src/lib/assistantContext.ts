@@ -1,11 +1,12 @@
 /**
  * What the user currently has selected in Podium, offered to the assistant
- * chat as context — so a prompt can say "this to-do" instead of pasting an id.
+ * chat as context — so a prompt can say "these to-dos" instead of pasting ids.
  *
- * Two kinds of selection feed it:
- * - The **item filling the work area** (a to-do, a scratchpad, a process),
- *   already tracked by the layout/process stores — no new selection state.
- * - **Selected text**, tracked by `lib/selection`.
+ * Two kinds of selection feed it, both from `lib/selection`:
+ * - **Sidebar items** picked with Cmd/Ctrl+click (to-dos, scratchpads,
+ *   processes) — every one of them, in pick order. Merely opening an item is
+ *   not a selection; see the note there.
+ * - **Selected text**.
  *
  * Context rides along as an ordinary `text` attachment: the backend already
  * folds those into the turn ("[Attached: <label>]\n<text>"), so nothing on
@@ -13,11 +14,10 @@
  */
 
 import type { Attachment } from "../ipc/types";
-import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
 import { useTodoStore } from "../state/todoStore";
-import { useSelectionStore } from "./selection";
+import { type SelectedItem, useSelectionStore } from "./selection";
 
 /** One piece of context: a chip in the composer, an attachment on send. */
 export interface ContextItem {
@@ -36,9 +36,7 @@ export function contextAttachment(item: ContextItem): Attachment {
 
 /** Everything the user has selected right now, in chip order. */
 export function useAssistantContext(): ContextItem[] {
-  const openTodo = useLayoutStore((s) => s.openTodo);
-  const openScratchpad = useLayoutStore((s) => s.openScratchpad);
-  const activeProcessId = useProcessStore((s) => s.activeProcessId);
+  const selectedItems = useSelectionStore((s) => s.items);
   const processes = useProcessStore((s) => s.processes);
   const todosByProject = useTodoStore((s) => s.todosByProject);
   const scratchpadsByProject = useScratchpadStore(
@@ -48,38 +46,16 @@ export function useAssistantContext(): ContextItem[] {
 
   const items: ContextItem[] = [];
 
-  if (openTodo) {
-    const todo = todosByProject[openTodo.projectId]?.find(
-      (t) => t.id === openTodo.todoId,
-    );
-    items.push({
-      key: `todo:${openTodo.todoId}`,
-      label: `To-do: ${todo?.text ?? openTodo.todoId}`,
-      text: `The user has this to-do selected in Podium: "${todo?.text ?? "(not loaded)"}" — to-do id ${openTodo.todoId}, project id ${openTodo.projectId}.`,
+  // A selection outlives the row that made it (the project closes, the to-do
+  // is deleted), so anything that no longer resolves is simply dropped rather
+  // than shown as a chip naming a bare id.
+  for (const sel of selectedItems) {
+    const item = describe(sel, {
+      processes,
+      todosByProject,
+      scratchpadsByProject,
     });
-  }
-
-  if (openScratchpad) {
-    const pad = scratchpadsByProject[openScratchpad.projectId]?.find(
-      (s) => s.id === openScratchpad.scratchpadId,
-    );
-    items.push({
-      key: `scratchpad:${openScratchpad.scratchpadId}`,
-      label: `Scratchpad: ${pad?.title ?? openScratchpad.scratchpadId}`,
-      text: `The user has this scratchpad selected in Podium: "${pad?.title ?? "(not loaded)"}" — scratchpad id ${openScratchpad.scratchpadId}, project id ${openScratchpad.projectId}.`,
-    });
-  }
-
-  const process = activeProcessId
-    ? processes.find((p) => p.id === activeProcessId)
-    : undefined;
-  if (process) {
-    const kind = process.kind.kind === "agent" ? "agent" : process.kind.kind;
-    items.push({
-      key: `process:${process.id}`,
-      label: `${kind === "agent" ? "Agent" : "Process"}: ${process.name}`,
-      text: `The user has this ${kind} selected in Podium: "${process.name}" — process id ${process.id}, project id ${process.projectId}.`,
-    });
+    if (item) items.push(item);
   }
 
   if (selectedText) {
@@ -91,4 +67,48 @@ export function useAssistantContext(): ContextItem[] {
   }
 
   return items;
+}
+
+function describe(
+  sel: SelectedItem,
+  stores: {
+    processes: ReturnType<typeof useProcessStore.getState>["processes"];
+    todosByProject: ReturnType<typeof useTodoStore.getState>["todosByProject"];
+    scratchpadsByProject: ReturnType<
+      typeof useScratchpadStore.getState
+    >["scratchpadsByProject"];
+  },
+): ContextItem | null {
+  if (sel.kind === "todo") {
+    const todo = stores.todosByProject[sel.projectId]?.find(
+      (t) => t.id === sel.id,
+    );
+    if (!todo) return null;
+    return {
+      key: `todo:${sel.id}`,
+      label: `To-do: ${todo.text}`,
+      text: `The user has this to-do selected in Podium: "${todo.text}" — to-do id ${sel.id}, project id ${sel.projectId}.`,
+    };
+  }
+
+  if (sel.kind === "scratchpad") {
+    const pad = stores.scratchpadsByProject[sel.projectId]?.find(
+      (s) => s.id === sel.id,
+    );
+    if (!pad) return null;
+    return {
+      key: `scratchpad:${sel.id}`,
+      label: `Scratchpad: ${pad.title}`,
+      text: `The user has this scratchpad selected in Podium: "${pad.title}" — scratchpad id ${sel.id}, project id ${sel.projectId}.`,
+    };
+  }
+
+  const process = stores.processes.find((p) => p.id === sel.id);
+  if (!process) return null;
+  const kind = process.kind.kind;
+  return {
+    key: `process:${sel.id}`,
+    label: `${kind === "agent" ? "Agent" : "Process"}: ${process.name}`,
+    text: `The user has this ${kind} selected in Podium: "${process.name}" — process id ${sel.id}, project id ${process.projectId}.`,
+  };
 }

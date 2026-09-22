@@ -1,6 +1,6 @@
 /**
- * Selection context in the composer: the open to-do shows as a chip, rides
- * along as a text attachment, and can be dismissed before sending.
+ * Selection context in the composer: every Cmd/Ctrl-selected item shows as a
+ * chip, rides along as a text attachment, and can be dismissed before sending.
  *
  * Unlike the main pane test this mocks Tauri's `invoke` rather than the
  * command layer, so the to-do/process stores keep their real imports.
@@ -22,6 +22,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { Attachment } from "../ipc/types";
 import { useAssistantStore } from "../state/assistantStore";
+import { useSelectionStore } from "../lib/selection";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useTodoStore } from "../state/todoStore";
@@ -29,6 +30,24 @@ import { AssistantPane } from "./AssistantPane";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111";
 const TODO = "22222222-2222-4222-8222-222222222222";
+const TODO_B = "44444444-4444-4444-8444-444444444444";
+
+function todo(id: string, text: string) {
+  return {
+    id,
+    projectId: PROJECT,
+    text,
+    description: null,
+    done: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    doneAt: null,
+    archived: false,
+    archivedAt: null,
+    links: [],
+    comments: [],
+    assignedAgent: null,
+  };
+}
 
 /** The `attachments` argument of the last `assistant_send` call. */
 function sentAttachments(): Attachment[] {
@@ -59,37 +78,36 @@ describe("AssistantPane selection context", () => {
     });
     useAssistantStore.setState({ messages: [], pending: [], hydrated: false });
     useProcessStore.setState({ processes: [], activeProcessId: null });
+    // Opening a to-do is deliberately *not* context — only the selection is.
     useLayoutStore.setState({
       openTodo: { projectId: PROJECT, todoId: TODO },
       openScratchpad: null,
     });
+    useSelectionStore.setState({
+      text: "",
+      items: [
+        { kind: "todo", projectId: PROJECT, id: TODO },
+        { kind: "todo", projectId: PROJECT, id: TODO_B },
+      ],
+    });
     useTodoStore.setState({
       todosByProject: {
         [PROJECT]: [
-          {
-            id: TODO,
-            projectId: PROJECT,
-            text: "Fix the login form",
-            description: null,
-            done: false,
-            createdAt: "2026-01-01T00:00:00Z",
-            doneAt: null,
-            archived: false,
-            archivedAt: null,
-            links: [],
-            comments: [],
-            assignedAgent: null,
-          },
+          todo(TODO, "Fix the login form"),
+          todo(TODO_B, "Ship the release notes"),
         ],
       },
     });
   });
 
-  it("shows the open to-do as a chip and sends it as context", async () => {
+  it("shows every selected to-do as a chip and sends them all as context", async () => {
     const user = userEvent.setup();
     render(<AssistantPane />);
 
     expect(screen.getByText("To-do: Fix the login form")).toBeInTheDocument();
+    expect(
+      screen.getByText("To-do: Ship the release notes"),
+    ).toBeInTheDocument();
 
     await user.type(
       screen.getByLabelText("Message the assistant"),
@@ -97,10 +115,19 @@ describe("AssistantPane selection context", () => {
     );
     await user.click(screen.getByLabelText("Send"));
 
-    await waitFor(() => expect(sentAttachments()).toHaveLength(1));
-    const [context] = sentAttachments();
-    expect(context).toMatchObject({ kind: "text" });
-    expect((context as { text: string }).text).toContain(TODO);
+    await waitFor(() => expect(sentAttachments()).toHaveLength(2));
+    const texts = sentAttachments().map((a) => (a as { text: string }).text);
+    expect(texts[0]).toContain(TODO);
+    expect(texts[1]).toContain(TODO_B);
+  });
+
+  it("ignores a to-do that is merely open", async () => {
+    useSelectionStore.setState({ text: "", items: [] });
+    render(<AssistantPane />);
+
+    expect(
+      screen.queryByText("To-do: Fix the login form"),
+    ).not.toBeInTheDocument();
   });
 
   it("drops the chip when the user dismisses it", async () => {
@@ -122,6 +149,8 @@ describe("AssistantPane selection context", () => {
         true,
       ),
     );
-    expect(sentAttachments()).toEqual([]);
+    // The other selected to-do is untouched by one chip's dismissal.
+    expect(sentAttachments()).toHaveLength(1);
+    expect((sentAttachments()[0] as { text: string }).text).toContain(TODO_B);
   });
 });

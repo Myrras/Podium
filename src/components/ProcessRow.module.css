@@ -38,6 +38,16 @@
   box-shadow: inset 2px 0 0 var(--session-color);
 }
 
+/* Picked as assistant context with Cmd/Ctrl+click — a bolder "checked" fill,
+   the same convention as a multi-selected to-do row, and deliberately
+   distinct from merely being open. It outranks the session tint on purpose:
+   which rows the next message carries has to be readable at a glance. */
+.row[data-multiselect="true"],
+.row[data-session="true"][data-multiselect="true"] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .row:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
