@@ -5,6 +5,11 @@
 //! Writes are atomic (temp file + rename); a missing or corrupt file is
 //! treated as an empty store. Until [`ScratchpadStore::set_path`] is called
 //! the store is in-memory only (tests, or a data dir that failed to resolve).
+//!
+//! A scratchpad's title is **its content's first line** unless someone names
+//! it themselves ([`ScratchpadStore::update_title`], which pins the name):
+//! sidebar rows then read as what the notes are about rather than as the
+//! minute they were created in.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,6 +23,10 @@ use crate::error::{CoreError, CoreResult};
 use crate::ids::{ProjectId, ScratchpadId};
 
 const LOCK_POISONED: &str = "scratchpad store lock poisoned";
+/// Title of an auto-titled scratchpad whose content says nothing yet.
+const UNTITLED_TITLE: &str = "Untitled scratchpad";
+/// Longest title [`derive_title`] produces, in characters.
+const MAX_DERIVED_TITLE: usize = 60;
 
 /// Read-only snapshot of one scratchpad, for listing over IPC/MCP.
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +76,11 @@ struct StoredScratchpad {
     version: u32,
     #[serde(default)]
     tags: Vec<String>,
+    /// Whether the title is still derived from the content. Cleared the
+    /// moment someone sets a title of their own, so a hand-picked name is
+    /// never overwritten by an edit to the first line.
+    #[serde(default)]
+    title_auto: bool,
 }
 
 fn default_version() -> u32 {
@@ -182,8 +196,8 @@ impl ScratchpadStore {
         archived
     }
 
-    /// Create a new scratchpad with an auto-generated timestamp title and
-    /// empty content.
+    /// Create a new scratchpad with empty content, titled after whatever its
+    /// content says once there is any (see [`auto_title`]).
     pub fn add(
         &self,
         project_id: ProjectId,
@@ -193,7 +207,7 @@ impl ScratchpadStore {
         let now = Utc::now();
         let scratchpad = StoredScratchpad {
             id: ScratchpadId::new(),
-            title: timestamp_title(now),
+            title: auto_title(""),
             content: String::new(),
             archived: false,
             archived_at: None,
@@ -202,6 +216,7 @@ impl ScratchpadStore {
             updated_by: updated_by.to_string(),
             version: 1,
             tags: Vec::new(),
+            title_auto: true,
         };
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner
@@ -229,7 +244,9 @@ impl ScratchpadStore {
     }
 
     /// Replace a scratchpad's content, bumping `version` and stamping
-    /// `updated_at`/`updated_by`.
+    /// `updated_at`/`updated_by`. An auto-titled scratchpad is renamed after
+    /// the new content, so a scratchpad is named by what is in it rather
+    /// than by when it was made.
     ///
     /// `expected_updated_at` must match the scratchpad's current
     /// `updated_at` (compared under the same lock as the mutation) or the
@@ -254,6 +271,9 @@ impl ScratchpadStore {
             return Err(CoreError::ScratchpadConflict);
         }
         scratchpad.content = content.to_string();
+        if scratchpad.title_auto {
+            scratchpad.title = auto_title(&scratchpad.content);
+        }
         scratchpad.version += 1;
         scratchpad.updated_at = Utc::now();
         scratchpad.updated_by = updated_by.to_string();
@@ -262,8 +282,9 @@ impl ScratchpadStore {
         Ok(info)
     }
 
-    /// Revise a scratchpad's title. A blank title falls back to a
-    /// timestamp title regenerated from `created_at`.
+    /// Revise a scratchpad's title, pinning it so later content edits leave
+    /// it alone. A blank title hands the name back to the content (see
+    /// [`auto_title`]).
     ///
     /// `expected_updated_at` is checked the same way as in
     /// [`Self::update_content`].
@@ -286,8 +307,9 @@ impl ScratchpadStore {
             return Err(CoreError::ScratchpadConflict);
         }
         let title = title.trim();
+        scratchpad.title_auto = title.is_empty();
         scratchpad.title = if title.is_empty() {
-            timestamp_title(scratchpad.created_at)
+            auto_title(&scratchpad.content)
         } else {
             title.to_string()
         };
@@ -387,7 +409,41 @@ impl ScratchpadStore {
     }
 }
 
-/// `MM-DD-HH-MM Scratchpad`, e.g. `07-14-09-30 Scratchpad`.
+/// The name an auto-titled scratchpad carries for the given content: what
+/// [`derive_title`] can read out of it, else a placeholder — a scratchpad
+/// nobody has written in yet has nothing to be named after.
+fn auto_title(content: &str) -> String {
+    derive_title(content).unwrap_or_else(|| UNTITLED_TITLE.to_string())
+}
+
+/// A name taken from a scratchpad's content: its first line with any
+/// heading/bullet/quote markers stripped, truncated on a word boundary.
+/// `None` when the content holds no usable text.
+fn derive_title(content: &str) -> Option<String> {
+    let line = content.lines().map(strip_markers).find(|l| !l.is_empty())?;
+    if line.chars().count() <= MAX_DERIVED_TITLE {
+        return Some(line.to_string());
+    }
+    // Truncate on a char boundary, then back off to the last word break so we
+    // don't cut mid-word; append an ellipsis (mirrors `name_from_prompt`).
+    let head: String = line.chars().take(MAX_DERIVED_TITLE).collect();
+    let trimmed = head.rsplit_once(' ').map(|(h, _)| h).unwrap_or(&head);
+    Some(format!("{}…", trimmed.trim_end()))
+}
+
+/// Strip the markdown decoration off a line so a heading or bullet reads as
+/// a plain name. A line that is nothing but markers (a `---` rule, say) comes
+/// back empty, and [`derive_title`] then moves on to the next one.
+fn strip_markers(line: &str) -> &str {
+    let mut rest = line.trim();
+    while let Some(stripped) = rest.strip_prefix(['#', '>', '-', '*', '+']) {
+        rest = stripped.trim_start();
+    }
+    rest.trim_end_matches(['#', '*', ' '])
+}
+
+/// `MM-DD-HH-MM Scratchpad`, e.g. `07-14-09-30 Scratchpad` — the title every
+/// scratchpad used to be created with. Only used to recognise those on load.
 fn timestamp_title(at: DateTime<Utc>) -> String {
     format!("{} Scratchpad", at.format("%m-%d-%H-%M"))
 }
@@ -401,10 +457,28 @@ fn load(path: &Path) -> ScratchpadMap {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return ScratchpadMap::new();
     };
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
+    let mut map: ScratchpadMap = serde_json::from_str(&raw).unwrap_or_else(|e| {
         tracing::warn!("scratchpads file is corrupt, starting fresh: {e}");
         ScratchpadMap::new()
-    })
+    });
+    adopt_auto_titles(&mut map);
+    map
+}
+
+/// Hand a name to scratchpads stored before titles were names: one still
+/// carrying the timestamp title it was created with has never been named, so
+/// it becomes auto-titled and picks up its content's name. Idempotent — a
+/// scratchpad whose title is its own doing is left alone.
+fn adopt_auto_titles(map: &mut ScratchpadMap) {
+    for items in map.values_mut() {
+        for scratchpad in items.iter_mut() {
+            if scratchpad.title_auto || scratchpad.title != timestamp_title(scratchpad.created_at) {
+                continue;
+            }
+            scratchpad.title_auto = true;
+            scratchpad.title = auto_title(&scratchpad.content);
+        }
+    }
 }
 
 /// Atomically persist the map: write a temp file, then rename it over the
@@ -469,16 +543,70 @@ mod tests {
     }
 
     #[test]
-    fn add_creates_scratchpad_with_timestamp_title() {
+    fn add_creates_untitled_scratchpad() {
         let store = ScratchpadStore::new();
         let (project, root) = ids();
 
         let added = store.add(project, &root, "User").unwrap();
-        assert!(added.title.ends_with("Scratchpad"));
+        assert_eq!(added.title, UNTITLED_TITLE);
         assert_eq!(added.content, "");
         assert_eq!(added.version, 1);
         assert!(!added.archived);
         assert_eq!(added.updated_by, "User");
+    }
+
+    #[test]
+    fn content_names_an_auto_titled_scratchpad() {
+        let store = ScratchpadStore::new();
+        let (project, root) = ids();
+        let added = store.add(project, &root, "User").unwrap();
+
+        let updated = store
+            .update_content(
+                project,
+                &root,
+                added.id,
+                "# Launch notes\n\nship the thing",
+                added.updated_at,
+                "User",
+            )
+            .unwrap();
+        assert_eq!(updated.title, "Launch notes");
+
+        // Emptying the content hands it back to the placeholder.
+        let cleared = store
+            .update_content(project, &root, added.id, "   ", updated.updated_at, "User")
+            .unwrap();
+        assert_eq!(cleared.title, UNTITLED_TITLE);
+    }
+
+    #[test]
+    fn a_named_scratchpad_keeps_its_name_when_the_content_changes() {
+        let store = ScratchpadStore::new();
+        let (project, root) = ids();
+        let added = store.add(project, &root, "User").unwrap();
+
+        let named = store
+            .update_title(
+                project,
+                &root,
+                added.id,
+                "Bug list",
+                added.updated_at,
+                "User",
+            )
+            .unwrap();
+        let edited = store
+            .update_content(
+                project,
+                &root,
+                added.id,
+                "# Something else entirely",
+                named.updated_at,
+                "User",
+            )
+            .unwrap();
+        assert_eq!(edited.title, "Bug list");
     }
 
     #[test]
@@ -563,11 +691,20 @@ mod tests {
     }
 
     #[test]
-    fn update_title_blank_falls_back_to_timestamp_title() {
+    fn update_title_blank_hands_the_name_back_to_the_content() {
         let store = ScratchpadStore::new();
         let (project, root) = ids();
         let added = store.add(project, &root, "User").unwrap();
-        let original_title = added.title.clone();
+        let written = store
+            .update_content(
+                project,
+                &root,
+                added.id,
+                "Release checklist",
+                added.updated_at,
+                "User",
+            )
+            .unwrap();
 
         let renamed = store
             .update_title(
@@ -575,7 +712,7 @@ mod tests {
                 &root,
                 added.id,
                 "  My Notes  ",
-                added.updated_at,
+                written.updated_at,
                 "User",
             )
             .unwrap();
@@ -584,7 +721,62 @@ mod tests {
         let cleared = store
             .update_title(project, &root, added.id, "   ", renamed.updated_at, "User")
             .unwrap();
-        assert_eq!(cleared.title, original_title);
+        assert_eq!(cleared.title, "Release checklist");
+    }
+
+    #[test]
+    fn derive_title_reads_the_first_usable_line() {
+        assert_eq!(derive_title("plain line").as_deref(), Some("plain line"));
+        // Markers are stripped, blank and marker-only lines skipped.
+        assert_eq!(
+            derive_title("\n---\n## Launch notes ##\nbody").as_deref(),
+            Some("Launch notes")
+        );
+        assert_eq!(derive_title("- a bullet").as_deref(), Some("a bullet"));
+        // Long lines truncate on a word break with an ellipsis.
+        let long = derive_title(
+            "investigate the terminal height clipping problem in agent windows please and more",
+        )
+        .unwrap();
+        assert!(long.ends_with('…'));
+        assert!(long.trim_end_matches('…').chars().count() <= MAX_DERIVED_TITLE);
+        assert!(!long.trim_end_matches('…').ends_with(' '));
+        // Nothing to name it after.
+        assert_eq!(derive_title("   \n\n"), None);
+    }
+
+    #[test]
+    fn legacy_timestamp_titles_adopt_their_content_on_load() {
+        let mut map = ScratchpadMap::new();
+        let created_at = Utc::now();
+        let legacy = StoredScratchpad {
+            id: ScratchpadId::new(),
+            title: timestamp_title(created_at),
+            content: "# Sprint planning\nnotes".to_string(),
+            archived: false,
+            archived_at: None,
+            created_at,
+            updated_at: created_at,
+            updated_by: "User".to_string(),
+            version: 1,
+            tags: Vec::new(),
+            title_auto: false,
+        };
+        let named = StoredScratchpad {
+            title: "Kept name".to_string(),
+            id: ScratchpadId::new(),
+            ..legacy.clone()
+        };
+        map.insert("/tmp/proj".to_string(), vec![legacy, named]);
+
+        adopt_auto_titles(&mut map);
+
+        let items = &map["/tmp/proj"];
+        assert_eq!(items[0].title, "Sprint planning");
+        assert!(items[0].title_auto);
+        // A hand-picked name is left alone.
+        assert_eq!(items[1].title, "Kept name");
+        assert!(!items[1].title_auto);
     }
 
     #[test]
