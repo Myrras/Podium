@@ -8,6 +8,31 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.0.1] - 2026-09-22
+
+### Added
+
+- **Scratchpads are named after what is in them.** A new scratchpad used to be
+  called after the minute it was created (`07-14-09-30 Scratchpad`), so the
+  sidebar read as a list of timestamps rather than a list of notes. The name is
+  now the first usable line of the content, refreshed as you write, and
+  `Untitled scratchpad` until there is something to name it after. Typing a
+  title of your own pins it — later content edits leave it alone — and clearing
+  it hands the name back to the content. Existing timestamp-named scratchpads
+  adopt their content's name the next time they load; a name you chose yourself
+  is never touched.
+- **Agents can set a to-do's description when they create it.** The `add_todo`
+  MCP tool now takes an optional `description` alongside the text, so a to-do
+  handed over by an agent arrives complete instead of with an empty description
+  nobody noticed until they opened it.
+
+### Fixed
+
+- **Tooltips no longer dump whole paragraphs next to the cursor.** To-do,
+  scratchpad and Podium-nudge tooltips showed their free-form text verbatim,
+  newlines and all, which the OS painted as an unreadable wall. They now show a
+  single-line preview, cut at a word boundary and ellipsized.
+
 ## [2.0.0] - 2026-09-09
 
 ### Added
