@@ -783,7 +783,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Create a new scratchpad in a project (auto-generated timestamp title, empty content). Returns the created scratchpad."
+        description = "Create a new scratchpad in a project (empty content; its title is taken from the first line of its content, so start the content with a short heading). Returns the created scratchpad."
     )]
     pub async fn create_scratchpad(
         &self,
@@ -800,7 +800,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Replace a scratchpad's content (bumps its version). Requires expected_updated_at (from your last read of the scratchpad) — if someone else edited it since, this fails as a conflict; re-fetch with list_scratchpads and retry. Returns the updated scratchpad."
+        description = "Replace a scratchpad's content (bumps its version; a scratchpad nobody has named itself is renamed after the new content's first line). Requires expected_updated_at (from your last read of the scratchpad) — if someone else edited it since, this fails as a conflict; re-fetch with list_scratchpads and retry. Returns the updated scratchpad."
     )]
     pub async fn update_scratchpad(
         &self,
