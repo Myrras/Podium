@@ -16,6 +16,10 @@ import { useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import type { Attachment, AutonomyMode, QueuedMessage } from "../ipc/types";
+import {
+  contextAttachment,
+  useAssistantContext,
+} from "../lib/assistantContext";
 import { textPreview } from "../lib/textPreview";
 import type { ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
@@ -214,6 +218,12 @@ export function AssistantPane() {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  // What the user has selected elsewhere in Podium, shown as chips and
+  // sent along as context. Dismissals are by key, so a chip stays gone
+  // until the selection itself changes.
+  const context = useAssistantContext();
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const activeContext = context.filter((c) => !dismissed.includes(c.key));
   const [memoryOpen, setMemoryOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -311,7 +321,12 @@ export function AssistantPane() {
     setHistoryIndex(null);
     const toSend = attachments;
     setAttachments([]);
-    await send(caption, toSend.map(toAttachment));
+    // Files the user picked come first: with both past the backend's
+    // per-message cap, the explicit attachment outranks the ambient context.
+    await send(caption, [
+      ...toSend.map(toAttachment),
+      ...activeContext.map(contextAttachment),
+    ]);
   }
 
   /**
@@ -345,6 +360,7 @@ export function AssistantPane() {
       className={styles.pane}
       style={{ width, minWidth: width }}
       aria-label="Personal assistant"
+      data-assistant-pane="true"
       data-dragover={dragOver || undefined}
       onDragOver={(e) => {
         // The webview's own drag-drop is off (`dragDropEnabled: false`), so
@@ -482,6 +498,27 @@ export function AssistantPane() {
           void submit();
         }}
       >
+        {activeContext.length > 0 && (
+          <ul className={styles.tray} aria-label="Context">
+            {activeContext.map((c) => (
+              <li key={c.key} className={styles.contextChip}>
+                <span className={styles.chipName} title={c.text}>
+                  {c.label}
+                </span>
+                <button
+                  type="button"
+                  className={styles.iconBtn}
+                  aria-label={`Remove ${c.label} from context`}
+                  title="Don't send this as context"
+                  onClick={() => setDismissed((d) => [...d, c.key])}
+                >
+                  <CloseIcon />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
         {attachments.length > 0 && (
           <ul className={styles.tray} aria-label="Attachments">
             {attachments.map((a) => (

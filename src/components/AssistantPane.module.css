@@ -443,6 +443,14 @@
   animation: messageIn var(--dur-2) var(--ease-out);
 }
 
+/* Context chips (what the user has selected elsewhere in Podium) are tinted
+   so they read as ambient, not as something the user attached by hand. */
+.contextChip {
+  composes: chip;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .chipName {
   min-width: 0;
   overflow: hidden;

@@ -833,6 +833,23 @@ Walking past the newest entry restores whatever was being typed before the
 first arrow-up; recalling never sends, and editing a recalled message before
 sending appends a new entry rather than rewriting history.
 
+**Selection context** (`src/lib/assistantContext.ts` + `src/lib/selection.ts`)
+puts whatever the user has selected into the composer as dismissible chips,
+sent along as ordinary `text` attachments — the backend already folds those
+into the turn, so nothing in Rust knows about selections. Two sources: the
+item filling the work area (the `openTodo`/`openScratchpad`/`activeProcessId`
+the stores already track — no new selection state), and selected *text*.
+Text comes from the document's own `selectionchange` plus xterm's
+`onSelectionChange` (a terminal renders to a canvas, so its selection never
+reaches the DOM). A selection whose anchor — or the focused element — sits
+inside the pane (`[data-assistant-pane]`) is ignored: that is the user
+reading or editing the conversation, and clicking into the composer collapses
+the document selection, which would otherwise discard the very text they are
+about to ask about. `selection.ts` is store-only, importing nothing from
+`src/state`, so the terminal registry can feed it without closing a cycle.
+User-picked attachments are sent before context items, so the explicit one
+wins when both would overflow the backend's five-per-message cap.
+
 ## Build, run, test
 
 Prefer `just` (run `just` to list recipes). The Tauri CLI is the local
