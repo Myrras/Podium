@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CommentId, ProjectId, TodoId, TodoInfo } from "../ipc/types";
 import { formatTime } from "../lib/dateFormat";
 import { openExternalLink } from "../lib/links";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
 import { CopyIdButton } from "./CopyIdButton";
@@ -215,7 +216,7 @@ export function TodoDetailPane({
           <span
             className={styles.name}
             data-done={todo.done ? "true" : undefined}
-            title={todo.text}
+            title={textPreview(todo.text)}
             onDoubleClick={startTitleEdit}
           >
             {todo.text}
