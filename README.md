@@ -2,12 +2,162 @@
 
 A cross-platform **desktop cockpit for AI coding agents**, built in Rust +
 Tauri. Open a project folder and Podium runs its dev servers, ad-hoc
-terminals, and AI coding agents (Claude Code today) — each in its own PTY with
+terminals, and AI coding agents (Claude Code, Auggie) — each in its own PTY with
 a real terminal view and lifecycle supervision. A built-in MCP server lets the
 agents inside Podium inspect and orchestrate the very processes Podium manages,
 including spawning more agents.
 
-<!-- TODO: add a screenshot or GIF of the app here -->
+<!-- MEDIA: overview screenshot of the app (sidebar + terminal + assistant panel) -->
+
+## The shape of it
+
+One window, three columns:
+
+- **Left — the sidebar.** Your projects, each with its own To-dos, Agents,
+  Processes, Terminals, Worktrees and Scratchpads.
+- **Middle — the work area.** A real terminal for whatever you have focused,
+  or the detail pane of a to-do or scratchpad.
+- **Right — the personal assistant.** A chat panel that can see and drive
+  everything Podium manages, across all open projects.
+
+<!-- MEDIA: GIF — opening a project folder, sidebar filling up, dev server auto-starting -->
+
+## Feature tour
+
+### Projects
+
+Open a folder and it stays. The sidebar is a **persistent workspace**: every
+open project is remembered and re-opened at launch. Projects can be
+**renamed** (double-click the name) and **reordered** (drag the grip in the
+project header) — both survive a restart. A project whose folder has moved is
+never silently dropped; its error toast offers "Remove from workspace"
+instead.
+
+Each project also gets an **Open in Warp** action and a **Commands** modal
+that lists the `just` recipes it finds in the project's `justfile` alongside
+your own saved per-project commands — one click runs any of them in a fresh
+terminal.
+
+<!-- MEDIA: GIF — dragging projects to reorder, double-click rename -->
+
+### Processes, terminals and supervision
+
+Three kinds of process, all in their own PTY with a real terminal view:
+
+| Kind         | Comes from                        |
+| ------------ | --------------------------------- |
+| **Service**  | `podium.yml` (dev servers, …)     |
+| **Terminal** | you, ad hoc                       |
+| **Agent**    | an agent adapter (Claude Code, …) |
+
+Commands run through your login shell (`$SHELL -lic`), so nvm/homebrew PATH
+edits in `.zprofile` *and* `.zshrc` are honoured. Stopping kills the whole
+**process group**, so children can't outlive their parent, and a stop you
+asked for is never counted as a crash.
+
+Services can be supervised: `auto_restart: on-crash | always` restarts with
+exponential backoff (500 ms doubling up to 30 s), a circuit breaker at 5
+restarts in a rolling 60 s window, and a backoff reset after 60 s of stable
+running. Starting a process by hand clears both.
+
+<!-- MEDIA: GIF — a crashing dev server being restarted with backoff, then the circuit breaker tripping -->
+
+### Agents
+
+Spawn a coding agent into any project. Adapters today: **Claude Code**
+(`claude-code`) and **Auggie** (`auggie`); availability is probed through the
+login shell, so version-manager installs are found. Up to **8 agents per
+project** — agents can spawn agents over MCP, so there's a recursion guard.
+
+A spawn can carry a prompt, one or more **to-dos** or **scratchpads** to work
+on, a request to work inside a **git worktree**, and per-spawn CLI args
+(`["--model", "opus"]` picks the model for that agent alone).
+
+Every agent gets a **session colour** from an 8-hue palette, avoiding colours
+live agents already hold. Its sidebar row and the to-dos it owns are tinted
+the same colour, so you can see at a glance who is on what. The row also
+shows an activity state: **working…** (output in the last 2.5 s), **idle**,
+or **needs input** — the last one is derived for *every* process, so a
+terminal stalled on a `sudo` prompt surfaces the same way.
+
+<!-- MEDIA: GIF — spawning an agent from a to-do, colour tint appearing on both rows, "working…" dot -->
+
+### To-dos
+
+A shared to-do list per project, visible to you in the sidebar and to every
+agent over MCP. A to-do carries a description, a **comment thread** agents
+append progress notes to, and pinned **issue/PR links**. Done to-dos left
+over from an earlier day are archived automatically; anything can be archived
+by hand and found again in the Archive modal.
+
+An agent **claims** a to-do when it starts working on it, so the list doubles
+as a who-is-doing-what board.
+
+<!-- MEDIA: GIF — adding a to-do, an agent claiming it and commenting as it works -->
+
+### Scratchpads
+
+Shared freeform markdown notes per project, again visible to you and to
+agents. Rich editor with a table of contents, free-text tags, and archiving.
+Concurrent edits are handled honestly: an update carries the timestamp it was
+based on, and a stale one is rejected as a conflict with a reload/force-save
+choice rather than silently overwriting what someone else wrote.
+
+<!-- MEDIA: GIF — editing a scratchpad while an agent edits it too, conflict banner appearing -->
+
+### Git worktrees
+
+Podium manages worktrees at `<project_root>/.podium/worktrees/<name>`, each on
+a fresh `podium/<name>` branch (`.podium/` is excluded via
+`.git/info/exclude`, never your `.gitignore`). Agents create them themselves
+when asked to — they always *start* in the project root, where your tooling
+and caches live.
+
+Each worktree row in the sidebar can open a terminal rooted in it, open it in
+Warp, run the Commands modal against it, or be removed. Removal is refused
+while a process is running in it or while it has uncommitted changes (unless
+forced); the branch is always kept.
+
+<!-- MEDIA: GIF — an agent creating a worktree, terminals nesting under its sidebar row -->
+
+### The personal assistant
+
+A workspace-wide chat panel backed by a long-lived headless Claude Code
+session with its own MCP endpoint into Podium. It reads and drives everything
+Podium manages, but **never edits code itself** — implementation work goes out
+to a spawned agent.
+
+- **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
+  Enforced server-side, not by prompt wording: a gated call never runs, it
+  becomes a card you confirm or reject.
+- **Memory** — a markdown file the assistant maintains itself and you can
+  edit; it is the continuity between days, since each app launch starts with
+  a blank conversation.
+- **Proactivity** — Podium speaks first when an agent exits, when an agent
+  looks stuck (silent for 5 minutes, escalating after 10 with a suggested
+  answer), and on a 6-hourly sweep for to-dos open longer than a week.
+- **External sweep** — every 10 minutes by default, it checks the sources you
+  enabled (Slack, Teams — through your *own* MCP servers) and stays silent
+  when there is nothing to report.
+- **Start my day** — one button for a prioritised summary of open work across
+  all projects.
+- **Queue** — one turn runs at a time; anything you send mid-turn waits, and
+  can be edited, removed or pushed into the running turn.
+- **Attachments** — drop, paste or pick files; images are inlined (shrunk to
+  1568 px), text is inlined, everything else travels as a path.
+
+<!-- MEDIA: GIF — assistant proposing an action, the confirm card, an agent being spawned from chat -->
+
+### Built-in MCP server
+
+Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
+and exposes **31 tools** over it: process inspection and control, agent
+spawning (and respawning a stuck agent with the answer in its prompt), the
+full to-do, scratchpad and worktree surfaces, assistant memory, and sender
+verification for cross-session messages.
+
+Agents Podium spawns get the URL + token automatically. External clients go
+through the stdio bridge (see below).
 
 ## Requirements
 
@@ -32,21 +182,87 @@ just lint     # clippy -D warnings + eslint
 ## Configuring a project
 
 Drop an optional `podium.yml` at a project root to declare dev-server
-processes and agent defaults:
+processes and agent defaults. The file is **strict** — an unknown key is a
+readable error rather than a silent no-op, and a broken config still opens the
+project.
 
 ```yaml
-name: Webshop
+name: Webshop            # display name (default: folder name)
+icon_initials: WS        # sidebar badge, max 2 chars
 processes:
-  - name: dev-server
-    command: pnpm dev
-    cwd: web
-    auto_start: true
-    auto_restart: on-crash   # never | on-crash | always
+  - name: dev-server     # required
+    command: pnpm dev    # required; run via $SHELL -lic
+    cwd: web             # relative to the project root (no absolute paths, no ..)
+    auto_start: true     # default false
+    auto_restart: on-crash   # never (default) | on-crash | always
+    env:
+      PORT: "3000"
 agents:
-  default_adapter: claude-code
+  default_adapter: claude-code   # wins over the global default
+  extra_args: []                 # combined with global args per the merge mode
 ```
 
-A folder without a `podium.yml` still opens fine.
+A folder without a `podium.yml` still opens fine. Reloading the config
+replaces the processes it owns (stopping running ones) and leaves terminals
+you added by hand alone.
+
+## Settings
+
+| Tab           | What's in it                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file) |
+| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree"             |
+| **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
+| **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
+
+## Things you'd otherwise never find
+
+Podium leans on direct manipulation, so a fair amount is not signposted.
+
+**Keyboard**
+
+| Keys                       | Where                | Does                                                             |
+| -------------------------- | -------------------- | ---------------------------------------------------------------- |
+| `⌘,` / `Ctrl+,`            | anywhere             | Open Settings (macOS goes through the native menu item)           |
+| `Enter` / `Shift+Enter`    | assistant composer   | Send / newline                                                    |
+| `↑` / `↓`                  | assistant composer   | Shell-style recall of your previous messages                      |
+| `Enter` / `Escape`         | any inline field     | Commit / cancel a rename, tag, to-do or title edit                |
+| `F5`, `⌘R` / `Ctrl+R`      | anywhere             | Deliberately swallowed — a reload would take your agents with it  |
+
+Arrow-key recall only fires when the caret is on the composer's first (or
+last) line, so a multi-line draft still navigates normally.
+
+**Mouse**
+
+- **Double-click** a project name, process name or to-do title to rename it.
+- **⌘/Ctrl+click** a to-do or scratchpad title to add it to a multi-select;
+  **Shift+click** to extend the range. The selection bar then starts one agent
+  on the whole group.
+- **⌘/Ctrl+click** a spawn button to pick the adapter instead of using the
+  default.
+- **Drag** the project header grip to reorder projects.
+- **Drag** the divider beside the sidebar or the assistant to resize it —
+  both widths persist.
+- **Collapse** a project header to fold all its subsections away; that too is
+  remembered, per project.
+- **Drop or paste** files and images straight onto the assistant panel.
+- Right-click is suppressed outside text fields — the webview's "Save as /
+  Print" menu is not something a desktop app should offer.
+
+**Behaviour worth knowing**
+
+- Quitting while agents or terminals are running is intercepted with a
+  warning, and window size and position are restored on next launch.
+- Terminal scrollback survives tab switches: xterm instances live outside
+  React in a registry keyed by process id.
+- A comment written over MCP cannot impersonate you — an author of
+  "you"/"user" falls back to `agent`.
+- Spawned agents get `PODIUM_PROJECT_ID` and `PODIUM_PROCESS_ID` in their
+  environment; that's how an agent claims a to-do or renames its own session.
+- `PODIUM_APP_DATA_DIR` overrides where the app (and the bridge) looks for its
+  data directory.
+- Podium's own sessions can message each other, and `verify_sender` is the
+  only trustworthy answer to "did this really come from Podium?".
 
 ## Pointing an external agent at Podium
 
@@ -60,7 +276,15 @@ hand for Claude Code:
 claude mcp add --scope user --transport stdio podium -- /path/to/podium mcp-bridge
 ```
 
-Agents Podium spawns itself get the URL + token automatically.
+For Auggie:
+
+```sh
+auggie mcp add podium --command /path/to/podium --args mcp-bridge --replace
+```
+
+Agents Podium spawns itself get the URL + token automatically. The token never
+crosses the Tauri IPC bridge, is never logged, and reaches agents and the
+stdio bridge only through 0600 files that are wiped on every start.
 
 ## Architecture
 
@@ -68,3 +292,10 @@ Agents Podium spawns itself get the URL + token automatically.
 `src-tauri` is a thin IPC adapter; `src/` is the React frontend. See
 [`CLAUDE.md`](./CLAUDE.md) for the full architecture, IPC contract, and
 conventions.
+
+## Keeping this file current
+
+This README is the user-facing half of the documentation; `CLAUDE.md` is the
+contributor-facing half. A change that alters what a user can *see or do* —
+a new feature, a shortcut, a setting, a `podium.yml` key, an MCP tool — belongs
+in both, in the same PR as the change itself.
