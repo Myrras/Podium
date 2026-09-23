@@ -27,7 +27,7 @@ import {
   onWindowCloseRequested,
   onWorktreesChanged,
 } from "./ipc/events";
-import { isLinux, isMac, isWindows } from "./lib/platform";
+import { isMac, isWindows } from "./lib/platform";
 import {
   applyFontSizeToTerminals,
   applyThemeToTerminals,
@@ -238,11 +238,11 @@ export default function App() {
   return (
     <div className={styles.app}>
       <header
-        className={`${styles.titlebar}${isWindows || isLinux ? ` ${styles.titlebarWindows}` : ""}`}
-        // Windows and Linux have no native title bar (decorations: false); the
-        // whole strip becomes the drag handle. macOS keeps its native title
-        // bar, so no drag region there.
-        data-tauri-drag-region={isWindows || isLinux ? true : undefined}
+        className={`${styles.titlebar}${isWindows ? ` ${styles.titlebarWindows}` : ""}`}
+        // Windows has no native title bar (decorations: false); the whole strip
+        // becomes the drag handle. macOS keeps its native title bar, so no
+        // drag region there.
+        data-tauri-drag-region={isWindows ? true : undefined}
       >
         <div className={styles.brand}>
           <LogoMark size={18} className={styles.logo} aria-hidden />
@@ -273,7 +273,7 @@ export default function App() {
               <SettingsIcon size={16} />
             </button>
           )}
-          {(isWindows || isLinux) && <WindowControls />}
+          {isWindows && <WindowControls />}
         </div>
       </header>
 

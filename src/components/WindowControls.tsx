@@ -1,8 +1,8 @@
 /**
- * Custom window controls (minimize / maximize-restore / close).
+ * Windows window controls (minimize / maximize-restore / close).
  *
- * Rendered into our custom title bar on Windows and Linux, where
- * `decorations: false` removes the native OS title bar. Drives the window through
+ * Rendered into our custom title bar only on Windows, where `decorations: false`
+ * removes the native OS title bar. Drives the window through
  * `@tauri-apps/api/window`; the maximize button reflects the live maximized
  * state (toggling its glyph) by polling `isMaximized()` on every `onResized`
  * event. The buttons opt out of the title bar's drag region via
