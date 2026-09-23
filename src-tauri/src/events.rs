@@ -10,7 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast::error::RecvError;
 
-use podium_core::{Orchestrator, PodiumEvent, ProcessId, ProcessStatus, ProjectId};
+use podium_core::{AssistantEvent, Orchestrator, PodiumEvent, ProcessId, ProcessStatus, ProjectId};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +26,12 @@ struct ProcessStatusPayload {
     process_id: ProcessId,
     status: ProcessStatus,
 }
+
+/// Newtype so the event serializes as the bare, `type`-tagged
+/// [`AssistantEvent`] the frontend union expects.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+struct AssistantPayload(AssistantEvent);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +116,11 @@ fn forward(app: &AppHandle, event: PodiumEvent) {
         }
         PodiumEvent::ScratchpadsChanged { project_id } => {
             app.emit("scratchpad:changed", ProjectRefPayload { project_id })
+        }
+        // Chat stream for the assistant panel: low-volume prose and tool
+        // names, never terminal output.
+        PodiumEvent::AssistantEvent { event } => {
+            app.emit("assistant:event", AssistantPayload(event))
         }
         PodiumEvent::WorktreesChanged { project_id } => {
             app.emit("worktree:changed", ProjectRefPayload { project_id })

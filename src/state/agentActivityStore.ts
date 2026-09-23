@@ -25,6 +25,7 @@ import { create } from "zustand";
 
 import type { ProcessId } from "../ipc/types";
 import { detectBackgroundShells, detectInputPrompt } from "../lib/agentPrompt";
+import { processReportWaiting } from "../ipc/commands";
 import { notifyAgentWaiting } from "../lib/notify";
 import { getLastOutputAt, readViewportText } from "../lib/terminalRegistry";
 import { useLayoutStore } from "./layoutStore";
@@ -121,6 +122,12 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
         notified[p.id] = true;
       } else if (activity === "waiting") {
         notifyAgentWaiting(p.name, p.kind.kind === "agent");
+        // The assistant only ever heard about a stuck agent through the
+        // watcher's five-minute silence timer, which cannot tell "waiting for
+        // you" from "done thinking". This is the same one-per-episode
+        // transition the notification uses, so it says so at once — and only
+        // for agents, since the assistant reasons about those.
+        if (p.kind.kind === "agent") void processReportWaiting(p.id);
         notified[p.id] = true;
       }
     }

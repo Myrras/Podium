@@ -8,6 +8,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
+  AssistantEvent,
   ProcessRefEvent,
   ProcessStatusEvent,
   ProjectRefEvent,
@@ -73,6 +74,13 @@ export function onScratchpadsChanged(
   return listen<ProjectRefEvent>("scratchpad:changed", (e) =>
     handler(e.payload),
   );
+}
+
+/** One item from the personal assistant's output stream (chat panel). */
+export function onAssistantEvent(
+  handler: (event: AssistantEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AssistantEvent>("assistant:event", (e) => handler(e.payload));
 }
 
 /** A project's git worktrees changed (from this UI or an agent over MCP). */

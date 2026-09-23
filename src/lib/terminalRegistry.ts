@@ -198,7 +198,10 @@ interface XtermCoreInternals {
     clear(): void;
     dimensions: { device: { cell: { width: number; height: number } } };
   };
-  viewport?: { scrollBarWidth: number; syncScrollArea(immediate?: boolean): void };
+  viewport?: {
+    scrollBarWidth: number;
+    syncScrollArea(immediate?: boolean): void;
+  };
 }
 
 /**

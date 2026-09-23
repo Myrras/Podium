@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
+  onAssistantEvent,
   onMenuOpenSettings,
   onProcessAdded,
   onProcessRemoved,
@@ -33,6 +34,7 @@ import {
 } from "./lib/terminalRegistry";
 import { readTerminalTheme } from "./lib/terminalTheme";
 import { startAgentActivityMonitor } from "./state/agentActivityStore";
+import { useAssistantStore } from "./state/assistantStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useProcessStore } from "./state/processStore";
 import { useProjectStore } from "./state/projectStore";
@@ -41,6 +43,7 @@ import { useSettingsStore } from "./state/settingsStore";
 import { useThemeStore } from "./state/themeStore";
 import { useTodoStore } from "./state/todoStore";
 import { useWorktreeStore } from "./state/worktreeStore";
+import { AssistantPane } from "./components/AssistantPane";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
 import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
@@ -51,7 +54,7 @@ import { TodoDetailPane } from "./components/TodoDetailPane";
 import { Toasts } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { WindowControls } from "./components/WindowControls";
-import { SettingsIcon } from "./components/icons";
+import { AssistantIcon, SettingsIcon } from "./components/icons";
 import styles from "./App.module.css";
 
 export default function App() {
@@ -62,6 +65,10 @@ export default function App() {
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const openTodo = useLayoutStore((s) => s.openTodo);
   const openScratchpad = useLayoutStore((s) => s.openScratchpad);
+  const assistantOpen = useLayoutStore((s) => s.assistantOpen);
+  const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
+  const assistantWidth = useLayoutStore((s) => s.assistantWidth);
+  const setAssistantWidth = useLayoutStore((s) => s.setAssistantWidth);
 
   const activeProcess = useProcessStore(
     (s) => s.processes.find((p) => p.id === s.activeProcessId) ?? null,
@@ -110,6 +117,8 @@ export default function App() {
       onWorktreesChanged(
         (e) => void useWorktreeStore.getState().refresh(e.projectId),
       ),
+      // The assistant's chat stream (its headless session's output).
+      onAssistantEvent((e) => useAssistantStore.getState().apply(e)),
       // The backend blocked a quit because agents/terminals are still
       // running — surface the warning so the user can confirm or cancel.
       onWindowCloseRequested(() => setCloseWarnOpen(true)),
@@ -157,6 +166,28 @@ export default function App() {
       window.addEventListener("mouseup", onUp);
     },
     [sidebarWidth, setSidebarWidth],
+  );
+
+  // Same drag pattern as the sidebar, but the assistant sits on the right:
+  // dragging left makes it wider.
+  const onAssistantResizerDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = assistantWidth;
+      function onMove(ev: MouseEvent) {
+        setAssistantWidth(startW - (ev.clientX - startX));
+      }
+      function onUp() {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+      }
+      document.body.style.cursor = "col-resize";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [assistantWidth, setAssistantWidth],
   );
 
   // Suppress the webview's default right-click menu (the browser-y "Save as /
@@ -218,10 +249,20 @@ export default function App() {
           <span className={styles.product}>Podium</span>
           <span className={styles.tagline}>agent console</span>
         </div>
-        {/* macOS reaches Settings via the native menu bar (⌘,); the gear
-            lives in the custom title bar on the other platforms. */}
-        {!isMac && (
-          <div className={styles.titlebarRight}>
+        <div className={styles.titlebarRight}>
+          <button
+            type="button"
+            className={styles.settingsBtn}
+            aria-label="Assistant"
+            title="Assistant"
+            aria-pressed={assistantOpen}
+            onClick={() => setAssistantOpen(!assistantOpen)}
+          >
+            <AssistantIcon size={16} />
+          </button>
+          {/* macOS reaches Settings via the native menu bar (⌘,); the gear
+              lives in the custom title bar on the other platforms. */}
+          {!isMac && (
             <button
               type="button"
               className={styles.settingsBtn}
@@ -231,9 +272,9 @@ export default function App() {
             >
               <SettingsIcon size={16} />
             </button>
-            {isWindows && <WindowControls />}
-          </div>
-        )}
+          )}
+          {isWindows && <WindowControls />}
+        </div>
       </header>
 
       <div className={styles.body}>
@@ -264,6 +305,18 @@ export default function App() {
             <WelcomeScreen />
           )}
         </main>
+        {assistantOpen && (
+          <>
+            <div
+              className={styles.sidebarResizer}
+              onMouseDown={onAssistantResizerDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize assistant"
+            />
+            <AssistantPane />
+          </>
+        )}
       </div>
 
       <Toasts />

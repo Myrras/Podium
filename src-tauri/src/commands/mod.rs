@@ -2,6 +2,7 @@
 //! [`podium_core::Orchestrator`]; no orchestration logic lives here.
 
 pub mod agent;
+pub mod assistant;
 pub mod mcp;
 pub mod process;
 pub mod project;

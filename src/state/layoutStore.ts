@@ -9,6 +9,10 @@ interface LayoutPersisted {
   sidebarWidth: number;
   /** Collapsed project groups, keyed by project root path (default expanded). */
   collapsedProjects: Record<string, boolean>;
+  /** Whether the assistant chat panel is expanded on the right. */
+  assistantOpen: boolean;
+  /** Width of the assistant chat panel in px. */
+  assistantWidth: number;
 }
 
 const STORAGE_KEY = "podium.layout";
@@ -16,6 +20,8 @@ const STORAGE_KEY = "podium.layout";
 const DEFAULTS: LayoutPersisted = {
   sidebarWidth: 280,
   collapsedProjects: {},
+  assistantOpen: false,
+  assistantWidth: 340,
 };
 
 function load(): LayoutPersisted {
@@ -33,6 +39,11 @@ function load(): LayoutPersisted {
         saved.collapsedProjects && typeof saved.collapsedProjects === "object"
           ? saved.collapsedProjects
           : {},
+      assistantOpen: saved.assistantOpen === true,
+      assistantWidth:
+        typeof saved.assistantWidth === "number"
+          ? saved.assistantWidth
+          : DEFAULTS.assistantWidth,
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -45,6 +56,16 @@ function persist(state: LayoutPersisted) {
   } catch {
     /* quota exceeded */
   }
+}
+
+/** The persisted subset of the layout state, for writing it back. */
+function persistable(state: LayoutPersisted): LayoutPersisted {
+  return {
+    sidebarWidth: state.sidebarWidth,
+    collapsedProjects: state.collapsedProjects,
+    assistantOpen: state.assistantOpen,
+    assistantWidth: state.assistantWidth,
+  };
 }
 
 /** The to-do currently filling the work area (opened from the sidebar). */
@@ -75,6 +96,10 @@ export interface LayoutState extends LayoutPersisted {
   openScratchpad: OpenScratchpad | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
+  /** Show or hide the assistant chat panel (persisted). */
+  setAssistantOpen: (open: boolean) => void;
+  /** Resize the assistant chat panel (persisted, clamped). */
+  setAssistantWidth: (w: number) => void;
   /** Fill the work area with a to-do (clears the focused process/scratchpad). */
   openTodoInWorkArea: (projectId: ProjectId, todoId: TodoId) => void;
   /** Clear the open to-do (e.g. when a process takes the work area). */
@@ -97,7 +122,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     setSidebarWidth: (w) => {
       const sidebarWidth = Math.min(600, Math.max(160, w));
       const s = get();
-      persist({ sidebarWidth, collapsedProjects: s.collapsedProjects });
+      persist({ ...persistable(s), sidebarWidth });
       set({ sidebarWidth });
     },
     toggleProjectCollapsed: (root) => {
@@ -106,8 +131,17 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         ...s.collapsedProjects,
         [root]: !s.collapsedProjects[root],
       };
-      persist({ sidebarWidth: s.sidebarWidth, collapsedProjects });
+      persist({ ...persistable(s), collapsedProjects });
       set({ collapsedProjects });
+    },
+    setAssistantOpen: (assistantOpen) => {
+      persist({ ...persistable(get()), assistantOpen });
+      set({ assistantOpen });
+    },
+    setAssistantWidth: (w) => {
+      const assistantWidth = Math.min(640, Math.max(280, w));
+      persist({ ...persistable(get()), assistantWidth });
+      set({ assistantWidth });
     },
     openTodoInWorkArea: (projectId, todoId) => {
       // A to-do, a scratchpad, and a process are mutually exclusive in the

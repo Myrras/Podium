@@ -22,6 +22,11 @@ vi.mock("../lib/notify", () => ({
     notifyAgentWaiting(name, isAgent),
 }));
 
+const processReportWaiting = vi.fn<(id: string) => Promise<void>>();
+vi.mock("../ipc/commands", () => ({
+  processReportWaiting: (id: string) => processReportWaiting(id),
+}));
+
 import type { ProcessInfo, ProcessKind, ProcessStatus } from "../ipc/types";
 import { useProcessStore } from "./processStore";
 import { useAgentActivityStore } from "./agentActivityStore";
@@ -85,9 +90,14 @@ describe("agentActivityStore", () => {
     expect(notifyAgentWaiting).toHaveBeenCalledOnce();
     expect(notifyAgentWaiting).toHaveBeenCalledWith("claude", true);
 
+    // The assistant is told too, so it can say what the agent is asking for
+    // instead of waiting out the watcher's silence timer.
+    expect(processReportWaiting).toHaveBeenCalledWith("a1");
+
     // Still on the same prompt next poll — no repeat alert.
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+    expect(processReportWaiting).toHaveBeenCalledTimes(1);
   });
 
   it("marks a quiet non-prompt screen as idle", () => {
@@ -113,6 +123,8 @@ describe("agentActivityStore", () => {
     tick();
     expect(useAgentActivityStore.getState().activity.t1).toBe("waiting");
     expect(notifyAgentWaiting).toHaveBeenCalledWith("shell", false);
+    // Only agents are reported to the assistant — it reasons about those.
+    expect(processReportWaiting).not.toHaveBeenCalled();
   });
 
   it("leaves a quiet terminal idle", () => {

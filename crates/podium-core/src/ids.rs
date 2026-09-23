@@ -66,6 +66,17 @@ uuid_newtype!(
     /// Identifies a scratchpad within a project.
     ScratchpadId
 );
+uuid_newtype!(
+    /// Identifies one pending assistant proposal (a gated tool call awaiting
+    /// the user's confirmation).
+    ProposalId
+);
+uuid_newtype!(
+    /// Identifies one message waiting in the assistant's send queue (a user
+    /// turn, a proactivity nudge, or a proposal-outcome notice) so it can be
+    /// edited or withdrawn before it is delivered.
+    PendingId
+);
 
 #[cfg(test)]
 mod tests {

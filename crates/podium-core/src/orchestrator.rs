@@ -12,11 +12,15 @@ use tokio::sync::broadcast;
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
+use crate::assistant::{
+    AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
+    ProposalInfo, TranscriptEntry,
+};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{ProcessId, ProjectId, ScratchpadId};
+use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::supervisor::{RestartState, SupervisorConfig};
@@ -101,6 +105,9 @@ struct ManagedProcess {
     restart: RestartState,
     /// When the current incarnation started, for backoff reset.
     started_at: Option<Instant>,
+    /// When the UI last saw an input prompt on this agent's screen — see
+    /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
+    waiting_since: Option<Instant>,
 }
 
 impl ManagedProcess {
@@ -142,6 +149,22 @@ struct Inner {
     scratchpad_assignments: HashMap<ScratchpadId, ProcessId>,
 }
 
+/// Who a verified cross-session message came from, as resolved by
+/// [`Orchestrator::verify_peer_sender`].
+#[derive(Debug, Clone)]
+pub enum PeerSender {
+    /// The personal assistant's own session.
+    Assistant,
+    /// A live agent session Podium spawned.
+    Agent {
+        // Boxed: `ProcessInfo` dwarfs the unit variant otherwise.
+        process: Box<ProcessInfo>,
+        /// Display name of the project it runs in; `None` if that project has
+        /// since been closed.
+        project: Option<String>,
+    },
+}
+
 /// Owns all projects and processes; every UI/adapter goes through this.
 pub struct Orchestrator {
     inner: Arc<Mutex<Inner>>,
@@ -157,6 +180,8 @@ pub struct Orchestrator {
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
+    /// The workspace-wide personal assistant session (chat panel).
+    assistant: AssistantManager,
 }
 
 impl Default for Orchestrator {
@@ -172,9 +197,11 @@ impl Orchestrator {
 
     /// Build with custom supervisor timings (tests use millisecond backoffs).
     pub fn with_supervisor_config(supervisor: SupervisorConfig) -> Self {
+        let events = EventBus::new();
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
-            events: EventBus::new(),
+            assistant: AssistantManager::new(events.clone()),
+            events,
             supervisor,
             adapters: AdapterRegistry::default(),
             mcp: Mutex::new(None),
@@ -206,6 +233,295 @@ impl Orchestrator {
     /// load it. Until this is called, scratchpads are held in memory only.
     pub fn set_scratchpads_path(&self, path: PathBuf) {
         self.scratchpads.set_path(path);
+    }
+
+    /// Point the assistant at its CLI binary, working directory and the dir
+    /// holding its transcript + memory. Until this is called it uses the
+    /// `claude` on `PATH`, Podium's own cwd, and keeps the conversation in
+    /// memory only.
+    pub fn configure_assistant(&self, config: AssistantConfig) {
+        self.assistant.configure(config);
+    }
+
+    /// Send a chat turn to the personal assistant, spawning its session on
+    /// first use. Replies arrive as [`PodiumEvent::AssistantEvent`]s.
+    ///
+    /// Returns whether it went straight into the session (`false` = it is
+    /// waiting behind a turn already running).
+    pub async fn assistant_send(&self, text: &str) -> CoreResult<bool> {
+        self.assistant_send_with_attachments(text, Vec::new()).await
+    }
+
+    /// Send a chat turn with attachments: an image always rides along inline
+    /// (read from disk first when only a path was given), anything else is
+    /// an absolute path for the assistant's own `Read` tool, or — with no
+    /// file on disk — inline text. An attachment over the limits is refused
+    /// on its own (a chat notice names it); the rest of the message still
+    /// goes.
+    pub async fn assistant_send_with_attachments(
+        &self,
+        text: &str,
+        attachments: Vec<Attachment>,
+    ) -> CoreResult<bool> {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.send(text, attachments, mcp).await
+    }
+
+    /// The persisted chat rows the panel replays after a restart.
+    pub fn assistant_transcript(&self) -> Vec<TranscriptEntry> {
+        self.assistant.store().transcript()
+    }
+
+    /// Start a fresh conversation: the session is killed and the transcript,
+    /// session id and pending proposals are dropped. Memory is kept — that is
+    /// the point of it.
+    pub async fn assistant_new_conversation(&self) {
+        self.assistant.new_conversation().await;
+    }
+
+    /// What the assistant remembers across conversations (`assistant-memory.md`).
+    pub fn assistant_memory(&self) -> String {
+        self.assistant.store().memory()
+    }
+
+    /// Replace that memory; an empty `content` clears it. The running session
+    /// keeps the prompt it started with — the new text lands on its next spawn.
+    pub fn set_assistant_memory(&self, content: &str) -> CoreResult<()> {
+        self.assistant.store().set_memory(content)
+    }
+
+    /// Tag identifying the assistant's own CLI session in an inbound
+    /// cross-session message's sender name (see [`crate::agent::peer_tag`]).
+    pub fn assistant_peer_tag(&self) -> String {
+        self.assistant.peer_tag().to_string()
+    }
+
+    /// Resolve a cross-session message's sender name to the Podium session it
+    /// belongs to, or `None` when no live session of Podium's own answers to
+    /// it.
+    ///
+    /// This is the whole of Podium's sender verification, and it deliberately
+    /// lives here rather than in a prompt: the answer comes from Podium's own
+    /// process registry plus the assistant's per-run tag, reached over the
+    /// bearer-token-authenticated MCP channel. Nothing the message asserts
+    /// about its origin is consulted, so a message cannot argue its way into
+    /// being verified.
+    pub fn verify_peer_sender(&self, sender_name: &str) -> Option<PeerSender> {
+        if crate::agent::peer_name_carries(sender_name, &self.assistant_peer_tag()) {
+            return Some(PeerSender::Assistant);
+        }
+        self.list_processes(None)
+            .into_iter()
+            // Only agents get a Podium-stamped session name, and only a live
+            // one can be talking: a tag from an exited session is stale.
+            .find(|p| {
+                matches!(p.kind, ProcessKind::Agent { .. })
+                    && matches!(p.status, ProcessStatus::Running { .. })
+                    && crate::agent::peer_name_carries(
+                        sender_name,
+                        &crate::agent::peer_tag(&p.id.to_string()),
+                    )
+            })
+            .map(|p| PeerSender::Agent {
+                project: self
+                    .list_projects()
+                    .into_iter()
+                    .find(|proj| proj.id == p.project_id)
+                    .map(|proj| proj.name),
+                process: Box::new(p),
+            })
+    }
+
+    /// How much the assistant may do without asking (Settings → Assistant).
+    pub fn assistant_autonomy(&self) -> AutonomyMode {
+        self.agent_settings.get().assistant.autonomy
+    }
+
+    /// Change the assistant's autonomy mode; returns what was stored.
+    pub fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AutonomyMode> {
+        Ok(self
+            .agent_settings
+            .set_assistant_autonomy(mode)?
+            .assistant
+            .autonomy)
+    }
+
+    /// Whether Podium may nudge the assistant unprompted (Settings →
+    /// Assistant). Off silences [`crate::proactivity`] entirely.
+    pub fn assistant_proactivity(&self) -> bool {
+        self.agent_settings.get().assistant.proactive
+    }
+
+    /// Turn proactive nudges on or off; returns what was stored.
+    pub fn set_assistant_proactivity(&self, enabled: bool) -> CoreResult<bool> {
+        Ok(self
+            .agent_settings
+            .set_assistant_proactive(enabled)?
+            .assistant
+            .proactive)
+    }
+
+    /// Hand the assistant something Podium noticed. Delivered to a live
+    /// session, or — with none — into one started for it, so the user hears
+    /// about a finished agent when it finishes rather than whenever they next
+    /// happen to type.
+    pub async fn assistant_nudge(&self, text: String) {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.nudge(text, mcp).await;
+    }
+
+    /// Ask the assistant to sweep the user's external sources. Like a nudge
+    /// it starts the session if there is none, but it stays out of the chat:
+    /// only an answer worth having is ever shown (see
+    /// [`crate::assistant::poll_prompt`]).
+    pub async fn assistant_poll(&self, text: String) {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.poll(text, mcp).await;
+    }
+
+    /// The assistant's external-sweep settings (Settings → Assistant).
+    pub fn assistant_polling(&self) -> AssistantPolling {
+        self.agent_settings.get().assistant.into()
+    }
+
+    /// Change them; returns what was stored. A new interval is picked up by
+    /// the running watcher on its next tick — no restart.
+    pub fn set_assistant_polling(&self, polling: AssistantPolling) -> CoreResult<AssistantPolling> {
+        Ok(self
+            .agent_settings
+            .set_assistant_polling(polling)?
+            .assistant
+            .into())
+    }
+
+    /// Ask the assistant for a day-start summary (the panel's button). Goes
+    /// in as a normal user turn rather than a nudge: it is something the user
+    /// asked for, so it belongs in the transcript and always wants an answer.
+    pub async fn assistant_day_start(&self) -> CoreResult<bool> {
+        self.assistant_send(crate::assistant::DAY_START_PROMPT)
+            .await
+    }
+
+    /// Running agents that have printed nothing for at least `min_idle` —
+    /// what [`crate::proactivity`] reads as "probably waiting on input".
+    pub fn idle_agents(&self, min_idle: Duration) -> Vec<ProcessInfo> {
+        let now = Instant::now();
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
+            .processes
+            .iter()
+            .filter(|(_, p)| matches!(p.spec.kind, ProcessKind::Agent { .. }))
+            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+            .filter_map(|(id, p)| {
+                // An agent that never printed anything is measured from its
+                // start, so a session stuck on its first prompt still counts.
+                let last = p
+                    .scrollback
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .last_append_at()
+                    .or(p.started_at)?;
+                (now.duration_since(last) >= min_idle).then(|| p.info(*id))
+            })
+            .collect()
+    }
+
+    /// The UI saw an input prompt on this agent's screen (a permission
+    /// question, a credential request). Recorded so [`crate::proactivity`]
+    /// can tell the user *now* instead of waiting out its silence timer —
+    /// which is a blunt proxy: it cannot tell "waiting for you" from
+    /// "finished thinking". Anything that is not a running agent is ignored.
+    ///
+    /// An agent blocked on a permission prompt cannot call
+    /// `report_to_assistant` itself — it is blocked *inside* the harness that
+    /// would make the call — so this screen reading is the only signal there
+    /// is.
+    pub fn report_agent_waiting(&self, id: ProcessId) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let Some(process) = inner.processes.get_mut(&id) else {
+            return;
+        };
+        if matches!(process.spec.kind, ProcessKind::Agent { .. })
+            && matches!(process.status, ProcessStatus::Running { .. })
+        {
+            process.waiting_since = Some(Instant::now());
+        }
+    }
+
+    /// Running agents with a reported prompt that have printed nothing
+    /// since. Output after the report means the prompt was answered (or
+    /// misread), so the flag simply stops counting — no clearing needed. An
+    /// agent that redraws its prompt would fall out the same way and land
+    /// back on the silence timer, which is the safe direction to fail.
+    pub fn agents_awaiting_input(&self) -> Vec<ProcessInfo> {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
+            .processes
+            .iter()
+            .filter(|(_, p)| matches!(p.spec.kind, ProcessKind::Agent { .. }))
+            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+            .filter_map(|(id, p)| {
+                let since = p.waiting_since?;
+                let last = p.scrollback.lock().expect(LOCK_POISONED).last_append_at();
+                match last {
+                    Some(last) if last > since => None,
+                    _ => Some(p.info(*id)),
+                }
+            })
+            .collect()
+    }
+
+    /// Park a tool call the autonomy gate held back, for the user to decide
+    /// on. Called from the MCP layer, which owns the deferred action.
+    /// `project` is the project the call acts on, if any, so closing that
+    /// project can invalidate the proposal.
+    pub fn propose_assistant_action(
+        &self,
+        tool: String,
+        summary: String,
+        project: Option<ProjectId>,
+        action: ProposalAction,
+    ) -> ProposalId {
+        self.assistant.propose(tool, summary, project, action)
+    }
+
+    /// The assistant's proposals still awaiting the user, oldest first.
+    pub fn assistant_proposals(&self) -> Vec<ProposalInfo> {
+        self.assistant.proposals()
+    }
+
+    /// Confirm or reject one assistant proposal. A confirmed proposal runs its
+    /// stored action now; the assistant is told the outcome either way.
+    pub async fn resolve_assistant_proposal(
+        &self,
+        id: ProposalId,
+        approved: bool,
+    ) -> CoreResult<()> {
+        self.assistant.resolve_proposal(id, approved).await
+    }
+
+    /// Change a waiting user message's text before it is delivered.
+    pub async fn assistant_queue_edit(&self, id: PendingId, text: &str) -> CoreResult<()> {
+        self.assistant.edit_pending(id, text).await
+    }
+
+    /// Push a waiting user message into the running turn now, instead of
+    /// letting it wait for its own.
+    pub async fn assistant_queue_send_now(&self, id: PendingId) -> CoreResult<()> {
+        self.assistant.send_pending_now(id).await
+    }
+
+    /// Withdraw a waiting user message so nothing is delivered for it.
+    pub async fn assistant_queue_remove(&self, id: PendingId) -> CoreResult<()> {
+        self.assistant.remove_pending(id).await
+    }
+
+    /// Stop the assistant's current turn, if any, and immediately hand the
+    /// next waiting message over rather than for a `TurnEnd` that would never
+    /// come. With nothing running this is a no-op.
+    pub async fn assistant_interrupt(&self) -> CoreResult<()> {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.interrupt(mcp).await
     }
 
     /// Point the global agent settings at their backing file (app data dir)
@@ -405,6 +721,9 @@ impl Orchestrator {
                 process_id: pid,
             });
         }
+        // A proposal against a project that is gone could only ever fail on
+        // confirm, so drop it now and say why.
+        self.assistant.invalidate_proposals_for_project(id).await;
         self.events
             .publish(PodiumEvent::ProjectClosed { project_id: id });
         Ok(())
@@ -1500,6 +1819,101 @@ impl Orchestrator {
         do_start(&self.inner, &self.events, self.supervisor, id, true)
     }
 
+    /// Stop a stuck agent and put a fresh one on the same work, with the
+    /// answer it was waiting for already in its prompt.
+    ///
+    /// Nothing can type into a running agent's terminal, so an agent blocked
+    /// on a question it will never get an answer to is dead weight — the only
+    /// way through is a new session that never has to ask. Doing it here
+    /// rather than leaving the caller to stop and spawn keeps the one thing
+    /// it cannot reconstruct: the to-dos the old session owned, which is what
+    /// carries the task over. `task` supplies that context for an agent
+    /// spawned without a to-do; with neither, the replacement would start
+    /// knowing only an answer to a question nobody asked it, so that is
+    /// refused rather than spawned.
+    ///
+    /// The replacement is deliberately not given the old name: both sessions
+    /// stay in the list, and a distinct name is what tells them apart.
+    pub async fn respawn_agent(
+        &self,
+        process_id: ProcessId,
+        answer: &str,
+        task: Option<&str>,
+    ) -> CoreResult<ProcessId> {
+        let answer = answer.trim();
+        if answer.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "an answer for the fresh agent is required".to_string(),
+            ));
+        }
+        let (project_id, adapter_id) = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner
+                .processes
+                .get(&process_id)
+                .ok_or(CoreError::ProcessNotFound)?;
+            match &proc.spec.kind {
+                ProcessKind::Agent { adapter } => (proc.project_id, adapter.clone()),
+                _ => {
+                    return Err(CoreError::InvalidInput(
+                        "only an agent can be respawned".to_string(),
+                    ))
+                }
+            }
+        };
+        let todo_ids: Vec<TodoId> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .todo_assignments
+                .iter()
+                .filter(|(_, pid)| **pid == process_id)
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        let task = task.map(str::trim).filter(|t| !t.is_empty());
+        if todo_ids.is_empty() && task.is_none() {
+            return Err(CoreError::InvalidInput(
+                "the agent owns no to-do, so the fresh one needs a task as well as an answer"
+                    .to_string(),
+            ));
+        }
+        // Stop first so the old session cannot keep working (or answer its
+        // own question) while its replacement starts. A stop that fails
+        // because it already exited is fine — the point is that it is not
+        // running when the new one does.
+        // ponytail: the stop is a SIGTERM, and a process still `Stopping`
+        // counts towards the 8-agents cap, so a respawn in a project already
+        // at the limit fails; waiting for the exit would need a watch on the
+        // event bus, which is not worth it for that corner.
+        match self.stop_process(process_id).await {
+            Ok(()) | Err(CoreError::ProcessNotRunning) => {}
+            Err(e) => return Err(e),
+        }
+        let mut prompt = String::new();
+        if let Some(task) = task {
+            prompt.push_str(task);
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(
+            "The previous session on this work was stopped while it sat waiting on a \
+             question. Here is the answer, so you can carry straight on without asking \
+             it again:\n\n",
+        );
+        prompt.push_str(answer);
+        self.spawn_agent(
+            project_id,
+            Some(adapter_id),
+            None,
+            Some(prompt),
+            todo_ids,
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await
+    }
+
     /// Request a graceful stop (SIGTERM, then SIGKILL after a grace period).
     /// Also cancels a pending supervised restart; if only a restart was
     /// pending (the process already exited), that cancellation is success.
@@ -1617,6 +2031,7 @@ impl Orchestrator {
     /// Stop every running process (SIGTERM its group now, SIGKILL after the
     /// grace period) and cancel all pending supervised restarts.
     pub async fn shutdown(&self) {
+        self.assistant.shutdown().await;
         let stopped: Vec<(ProjectId, ProcessId)> = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             let mut stopped = Vec::new();
@@ -1973,6 +2388,7 @@ fn insert_process(
             from_config,
             restart: RestartState::default(),
             started_at: None,
+            waiting_since: None,
         },
     );
 }

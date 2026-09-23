@@ -10,8 +10,9 @@ authors.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# `io-std` on top of the shared features: the MCP bridge proxies stdio.
-tokio = { workspace = true, features = ["io-std"] }
+# On top of the shared features: `io-std` for the MCP stdio bridge, `process`
+# for the assistant's piped headless-CLI child.
+tokio = { workspace = true, features = ["io-std", "process"] }
 tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true
@@ -32,6 +33,17 @@ tokio-util = "0.7"
 # HTTP client for the stdio MCP bridge (`mcp/bridge.rs`). Localhost plain
 # HTTP only, so no TLS backend is needed.
 reqwest = { version = "0.13.3", default-features = false }
+# Encoding an image attachment read from disk into a `stream-json` content
+# block; already a dependency of `src-tauri` for terminal bytes.
+base64 = "0.22"
+# Shrinking an oversized image attachment before it travels as base64.
+# Decode/encode only — no filters beyond the resize, hence the trimmed
+# feature set (GIFs are passed through untouched, so no gif codec).
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "webp",
+] }
 # `canonicalize` without Windows' `\\?\` verbatim prefix, which
 # `CreateProcessW`'s `lpCurrentDirectory` (portable-pty's `CommandBuilder::cwd`)
 # rejects with `ERROR_ACCESS_DENIED`. A plain passthrough on other platforms.

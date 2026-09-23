@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod assignment;
+pub mod assistant;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -16,6 +17,7 @@ pub mod justfile;
 pub mod mcp;
 pub mod orchestrator;
 pub mod platform;
+pub mod proactivity;
 pub mod process;
 pub mod project;
 pub mod scratchpad;
@@ -27,11 +29,18 @@ pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, McpConnectInfo,
 };
 pub use assignment::AssignedAgent;
+pub use assistant::{
+    AssistantConfig, AssistantEvent, AssistantSettings, Attachment, AttachmentInfo, AutonomyMode,
+    PendingKind, ProposalInfo, QueuedMessage, TranscriptEntry, TranscriptRole,
+};
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
-pub use ids::{CommentId, LinkId, ProcessId, ProjectId, ScratchpadId, TodoId};
+pub use ids::{
+    CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
+};
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
+pub use proactivity::ProactivityConfig;
 pub use process::pty::TermChunk;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
