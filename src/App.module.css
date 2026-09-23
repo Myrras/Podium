@@ -16,8 +16,9 @@
   background: var(--canvas);
 }
 
-/* Windows: the strip IS the (custom) title bar, so the controls run flush to the
-   top-right corner — drop the right padding the macOS brand strip uses. */
+/* Windows and Linux: the strip IS the (custom) title bar, so the controls run
+   flush to the top-right corner — drop the right padding the macOS brand
+   strip uses. */
 .titlebarWindows {
   padding-right: 0;
 }

@@ -19,6 +19,17 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => undefined)),
 }));
+// WindowControls renders on Windows/Linux (host-dependent in jsdom); stub the
+// window handle so the test behaves the same on every host OS.
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: vi.fn(() => ({
+    isMaximized: vi.fn(() => Promise.resolve(false)),
+    onResized: vi.fn(() => Promise.resolve(() => undefined)),
+    minimize: vi.fn(),
+    toggleMaximize: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));

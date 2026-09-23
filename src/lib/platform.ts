@@ -15,3 +15,4 @@ const haystack = navigator.platform || navigator.userAgent;
 // "Mozilla/5.0 (darwin) …" user agent and mis-detect tests as Windows.
 export const isMac = /mac/i.test(haystack);
 export const isWindows = /windows|win32|win64/i.test(haystack);
+export const isLinux = !isMac && !isWindows;
