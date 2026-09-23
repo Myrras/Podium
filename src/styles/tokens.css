@@ -5,6 +5,8 @@
  */
 
 :root {
+  color-scheme: dark;
+
   /* Surfaces (back to front) */
   --canvas: #08090c; /* the "desktop" behind the floating islands */
   --bg: #0e1116;
@@ -119,6 +121,8 @@
 }
 
 :root[data-theme="light"] {
+  color-scheme: light;
+
   --canvas: #e7ebef; /* soft grey so white islands pop */
   --bg: #f6f8fa;
   --surface: #ffffff;
@@ -172,6 +176,8 @@
 /* Retro — warm Gruvbox-inspired palette. Earthy cream backgrounds, terracotta
    accents, sepia text. A light theme for people who prefer warmth over sterility. */
 :root[data-theme="retro"] {
+  color-scheme: light;
+
   --canvas: #e8d5a8; /* deeper tan, just below the cream surfaces */
   --bg: #f2e5bc;
   --surface: #fbf1c7;
