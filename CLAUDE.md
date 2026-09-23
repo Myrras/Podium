@@ -274,7 +274,14 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `updatedAt` — a stale value (a concurrent user or agent edit landed first)
   is rejected as `CoreError::ScratchpadConflict` instead of silently
   overwriting it; the frontend surfaces this as an in-pane reload/force-save
-  choice rather than a toast.
+  choice rather than a toast. A scratchpad is **named after its content**: the
+  title is the first usable line (heading/bullet/quote markers stripped,
+  truncated to 60 chars on a word boundary), refreshed on every content
+  update, with `Untitled scratchpad` until something is written. Setting a
+  title (`update_title`) pins it, so later content edits leave it alone;
+  a blank title hands the name back to the content. Scratchpads stored with
+  the old `MM-DD-HH-MM Scratchpad` title adopt their content's name on load
+  (`adopt_auto_titles`, idempotent — a hand-picked name is left alone).
 - **Worktrees** (`worktree.rs`): Podium-managed git worktrees for agent
   isolation, at `<project_root>/.podium/worktrees/<name>` (name slugified,
   auto-de-duplicated with `-2`, `-3`, …). `create(root, name)` checks out a
@@ -919,6 +926,16 @@ per test file.
     (`just test` / `just test-core` / `pnpm vitest run`) before reporting
     done. Only skip adding a test when it is genuinely infeasible (e.g. a
     pure canvas/xterm path jsdom can't exercise) — say so explicitly.
+- **Documentation (always-on):** this file is the contributor-facing
+  documentation and [`README.md`](./README.md) the user-facing one. A change
+  that alters what a user can **see or do** — a feature, a keyboard/mouse
+  interaction, a setting, a `podium.yml` key, an MCP tool — updates the README
+  **in the same change**, not as a follow-up. Its _Feature tour_, _Settings_
+  and _Things you'd otherwise never find_ sections go stale first. Its
+  screenshots/GIFs live in `docs/media/` and are the maintainer's to record —
+  when a change makes one of them wrong, or a new feature is better shown
+  than described, say so rather than replacing the file yourself. Internal-only
+  changes (layering, test harnesses, build plumbing) stay in this file alone.
 
 ## Git workflow
 

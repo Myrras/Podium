@@ -9,6 +9,7 @@
 import { useMemo } from "react";
 
 import type { ProcessId, ProjectId, TodoInfo } from "../ipc/types";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useTodoStore } from "../state/todoStore";
@@ -45,7 +46,7 @@ export function AgentTodoList({ projectId, processId }: AgentTodoListProps) {
           <button
             type="button"
             className={styles.text}
-            title={`Open "${todo.text}"`}
+            title={`Open "${textPreview(todo.text)}"`}
             onClick={() => {
               setActiveProject(projectId);
               openTodoInWorkArea(projectId, todo.id);

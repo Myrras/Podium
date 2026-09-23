@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import type { Attachment, AutonomyMode, QueuedMessage } from "../ipc/types";
+import { textPreview } from "../lib/textPreview";
 import type { ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
@@ -432,7 +433,9 @@ export function AssistantPane() {
             ) : m.role === "nudge" ? (
               // Podium spoke to the *assistant*, not the user: a discreet
               // marker, not the internal instruction text (hover for it).
-              <span title={m.text}>Podium nudged the assistant</span>
+              <span title={textPreview(m.text)}>
+                Podium nudged the assistant
+              </span>
             ) : (
               m.text
             )}
