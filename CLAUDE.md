@@ -74,9 +74,10 @@ them in sync when you add a command or MCP tool.
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
   IPC wrappers over all 78 commands.
-- ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
+- ✅ CI (`.github/workflows/ci.yml`): a macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
-  Vitest, production build.
+  Vitest, production build — plus a Windows job (rustfmt, clippy, `cargo test
+  -p podium-core` only) so `cfg(windows)` code is compiled, linted and tested.
 
 ## Tech stack
 
@@ -965,17 +966,20 @@ Conversations that touch no code (questions, exploration) need no branch.
   `tauri.conf.json` and `package.json` (`just version-check` detects drift).
 - **`CHANGELOG.md`** follows _Keep a Changelog_ and lists **only functional
   (user-facing) changes** — the `release` skill adds an entry per release.
-- **CI** (`.github/workflows/ci.yml`): one `macos-latest` job on every PR
-  and push to `main` — rustfmt, clippy `-D warnings`, `cargo test
-  --workspace` (needs real PTYs, hence macOS), then typecheck, ESLint,
-  Vitest, and a production `pnpm build`. A stub `dist/` is created first so
-  `tauri::generate_context!` compiles.
+- **CI** (`.github/workflows/ci.yml`): on every PR and push to `main`, a
+  `macos-latest` job — rustfmt, clippy `-D warnings`, `cargo test
+  --workspace` (real PTYs), then typecheck, ESLint, Vitest, and a production
+  `pnpm build` — and a `windows-latest` job scoped to `podium-core`: rustfmt,
+  clippy `-D warnings`, `cargo test -p podium-core` (real ConPTY). Both stub
+  `dist/` first so `tauri::generate_context!` compiles. A few podium-core
+  integration tests spawn Unix-only commands/shell syntax with no ConPTY
+  equivalent and are `#[cfg_attr(windows, ignore)]`; the macOS job still runs
+  them.
 - **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
   Windows, each building natively (cross-compiling Tauri is painful). macOS
   packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
   packages the NSIS `.exe`. Runs on `workflow_dispatch` and any pushed `v*`
-  tag, uploading each OS's installer as an artifact. CI (`ci.yml`) still runs
-  tests on macOS only — they need real Unix PTYs.
+  tag, uploading each OS's installer as an artifact.
 - **Releasing** is done via the **`release` skill** (see _Git workflow_).
   Do **not** create git tags or releases without explicit user approval
   (invoking the skill + its confirmation step is that approval).

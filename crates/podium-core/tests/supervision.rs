@@ -174,6 +174,9 @@ async fn never_policy_does_not_restart() {
     assert_eq!(runs, 1, "no supervised restart under `never`");
 }
 
+// `sleep` has no `cmd.exe` builtin equivalent, so the "service" here would
+// exit almost instantly on Windows instead of staying up to be stopped.
+#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn user_stop_prevents_supervised_restart() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -239,6 +242,9 @@ async fn stop_cancels_a_pending_restart() {
     ));
 }
 
+// `sleep` has no `cmd.exe` builtin equivalent, so the auto-started process
+// would not still be `Running` by the time this asserts on it.
+#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn open_project_loads_config_and_auto_starts() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -367,6 +373,9 @@ async fn reopening_via_different_path_spelling_dedupes() {
     assert_eq!(orch.list_projects().len(), 1, "no duplicate record");
 }
 
+// `beta`'s reloaded config auto-starts a `sleep 30` process, which has no
+// `cmd.exe` builtin equivalent and would not still be `Running` on Windows.
+#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn reload_replaces_config_processes_and_keeps_manual_ones() {
     let dir = tempfile::tempdir().expect("tempdir");
