@@ -8,16 +8,20 @@ use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
     CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
     ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
-    ReportToAssistantParams, RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams,
-    SpawnAgentParams, UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
-    VerifySenderParams,
+    RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
     Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
-    TodoId, TranscriptRole,
+    TodoId,
 };
+// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
+#[cfg(unix)]
+use podium_core::mcp::tools::ReportToAssistantParams;
+#[cfg(unix)]
+use podium_core::TranscriptRole;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
