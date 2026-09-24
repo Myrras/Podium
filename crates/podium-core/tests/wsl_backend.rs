@@ -1,0 +1,185 @@
+//! Integration tests for WSL-backend mode: real ConPTY, real `wsl.exe`, a
+//! real distro. Windows-only, and opt-in: they run only when
+//! `PODIUM_TEST_WSL_DISTRO` names an installed distro (e.g. `Ubuntu`), so CI
+//! and machines without WSL skip them. Run with
+//! `PODIUM_TEST_WSL_DISTRO=Ubuntu cargo test -p podium-core --test wsl_backend`.
+//!
+//! Each test binary is its own process, so fixing the process-wide backend
+//! with `init_wsl` here cannot leak into any other test.
+#![cfg(windows)]
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use podium_core::{
+    Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
+};
+use tokio::time::{sleep, timeout};
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The distro under test, with the backend fixed to it; `None` = skip.
+fn distro() -> Option<String> {
+    let distro = std::env::var("PODIUM_TEST_WSL_DISTRO").ok()?;
+    podium_core::platform::init_wsl(Some(&distro));
+    Some(distro)
+}
+
+/// A fresh directory inside the distro, as Podium sees it from Windows.
+struct WslDir {
+    windows: PathBuf,
+}
+
+impl WslDir {
+    fn new(distro: &str, name: &str) -> Self {
+        let unique = format!("podium-test-{name}-{}", std::process::id());
+        let windows = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp\{unique}"));
+        std::fs::create_dir_all(&windows).expect("create dir inside the distro");
+        Self { windows }
+    }
+
+    fn linux(&self) -> String {
+        let name = self.windows.file_name().unwrap().to_string_lossy();
+        format!("/tmp/{name}")
+    }
+}
+
+impl Drop for WslDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.windows);
+    }
+}
+
+fn service(command: &str, dir: &WslDir, env: Vec<(String, String)>) -> ProcessSpec {
+    ProcessSpec {
+        name: "test".to_string(),
+        command: command.to_string(),
+        cwd: dir.windows.clone(),
+        env,
+        kind: ProcessKind::Service,
+        restart_policy: RestartPolicy::Never,
+        color: None,
+    }
+}
+
+async fn start(orch: &Orchestrator, dir: &WslDir, spec: ProcessSpec) -> ProcessId {
+    let project = orch
+        .open_project(dir.windows.clone())
+        .await
+        .expect("open project");
+    let id = orch.add_process(project, spec).await.expect("add process");
+    orch.start_process(id).await.expect("start");
+    id
+}
+
+async fn wait_for_output(orch: &Orchestrator, id: ProcessId, needle: &str) -> String {
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let text = orch.tail_text(id, usize::MAX).await.expect("tail_text");
+            if text.contains(needle) {
+                return text;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}"))
+}
+
+fn status_of(orch: &Orchestrator, id: ProcessId) -> ProcessStatus {
+    orch.list_processes(None)
+        .into_iter()
+        .find(|p| p.id == id)
+        .expect("process listed")
+        .status
+}
+
+/// Whether a process whose command line matches `pattern` runs in `distro`.
+fn running_in_distro(distro: &str, pattern: &str) -> bool {
+    std::process::Command::new("wsl.exe")
+        .args(["-d", distro, "-e", "pgrep", "-f", pattern])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_runs_in_the_distro_with_its_cwd_and_env() {
+    let Some(distro) = distro() else { return };
+    let dir = WslDir::new(&distro, "cwd-env");
+    let orch = Orchestrator::new();
+    let env = vec![("PODIUM_TEST_VALUE".to_string(), "hi there".to_string())];
+    let id = start(
+        &orch,
+        &dir,
+        service(
+            r#"printf 'got:%s|%s|%s:end' "$(pwd)" "$PODIUM_TEST_VALUE" "$TERM""#,
+            &dir,
+            env,
+        ),
+    )
+    .await;
+    let text = wait_for_output(&orch, id, ":end").await;
+    let expected = format!("got:{}|hi there|xterm-256color:end", dir.linux());
+    assert!(text.contains(&expected), "{text:?}");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_posix_quoted_argument_survives_portable_pty_and_wsl_exe() {
+    let Some(distro) = distro() else { return };
+    let dir = WslDir::new(&distro, "argv");
+    let orch = Orchestrator::new();
+    let prompt = "You're the \"agent\"; $HOME `id` \\ back";
+    let quoted = podium_core::platform::quote_posix(prompt).unwrap();
+    let id = start(
+        &orch,
+        &dir,
+        service(&format!("printf '<%s>' {quoted}"), &dir, Vec::new()),
+    )
+    .await;
+    let text = wait_for_output(&orch, id, ">").await;
+    assert!(text.contains(&format!("<{prompt}>")), "{text:?}");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_service_ends_its_linux_children() {
+    let Some(distro) = distro() else { return };
+    let dir = WslDir::new(&distro, "stop");
+    let orch = Orchestrator::new();
+    // Two long-lived children of the service's shell, like `pnpm dev` and
+    // the dev server it forks.
+    let marker = format!("podium-stop-{}", std::process::id());
+    let command = format!(
+        "bash -c 'exec -a {marker}-a sleep 300' & bash -c 'exec -a {marker}-b sleep 300' & wait"
+    );
+    let id = start(&orch, &dir, service(&command, &dir, Vec::new())).await;
+    timeout(TEST_TIMEOUT, async {
+        while !running_in_distro(&distro, &marker) {
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("children never started");
+
+    orch.stop_process(id).await.expect("stop");
+    timeout(TEST_TIMEOUT, async {
+        while !matches!(status_of(&orch, id), ProcessStatus::Exited { .. }) {
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("service never exited");
+    // Give WSL a moment to tear the session down.
+    let gone = timeout(Duration::from_secs(10), async {
+        while running_in_distro(&distro, &marker) {
+            sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(gone, "Linux children outlived the stopped service");
+    orch.shutdown().await;
+}
