@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod assignment;
 pub mod assistant;
+pub mod backend_settings;
 pub mod config;
 pub mod error;
 pub mod events;

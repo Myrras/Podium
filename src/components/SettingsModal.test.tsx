@@ -1,7 +1,22 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentSettingsDto, McpClientInfo } from "../ipc/types";
+import type {
+  AgentSettingsDto,
+  BackendSettingsDto,
+  McpClientInfo,
+} from "../ipc/types";
+
+// Platform flags, flippable per test: the WSL backend field is Windows-only.
+const platform = vi.hoisted(() => ({ isWindows: false }));
+vi.mock("../lib/platform", () => ({
+  get isWindows() {
+    return platform.isWindows;
+  },
+  isMac: false,
+}));
+
+let backendDto: BackendSettingsDto = { wslDistro: "", activeWslDistro: "" };
 
 // The settings modal reaches the backend only through the Tauri invoke bridge,
 // which jsdom lacks — route every command by name to a canned response.
@@ -78,6 +93,14 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
       });
     case "assistant_polling_set":
       return Promise.resolve(args);
+    case "backend_settings_get":
+      return Promise.resolve(backendDto);
+    case "backend_settings_set_wsl_distro":
+      backendDto = {
+        ...backendDto,
+        wslDistro: (args as { distro: string | null }).distro ?? "",
+      };
+      return Promise.resolve(backendDto);
     default:
       return Promise.resolve(null);
   }
@@ -282,6 +305,39 @@ describe("SettingsModal — General tab", () => {
       target: { value: "pwsh" },
     });
     expect(useSettingsStore.getState().terminal.shell).toBe("pwsh");
+  });
+});
+
+describe("SettingsModal — General tab, WSL backend", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+    backendDto = { wslDistro: "", activeWslDistro: "" };
+  });
+  afterEach(() => {
+    platform.isWindows = false;
+  });
+
+  it("is hidden off Windows", () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    expect(screen.queryByLabelText("WSL distro")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("backend_settings_get", undefined);
+  });
+
+  it("saves the distro on Windows and asks for a restart", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    fireEvent.change(input, { target: { value: " Ubuntu " } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("backend_settings_set_wsl_distro", {
+        distro: "Ubuntu",
+      }),
+    );
+    expect(
+      await screen.findByText("Restart Podium to apply this change."),
+    ).toBeInTheDocument();
   });
 });
 
