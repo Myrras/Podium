@@ -43,6 +43,7 @@ const SETTINGS: AgentSettingsDto = {
   mergeMode: "merge",
   defaultAdapter: "claude-code",
   suggestWorktree: true,
+  rememberSessions: false,
   adapters: [],
 };
 

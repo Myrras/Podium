@@ -145,6 +145,11 @@ pub fn run() {
             state
                 .orchestrator
                 .set_agent_settings_path(app.path().app_data_dir()?.join("agents.json"));
+            // Remembered agent session ids (for resuming across restarts)
+            // persist alongside the other app-data-dir stores.
+            state
+                .orchestrator
+                .set_session_memory_path(app.path().app_data_dir()?.join("session_memory.json"));
             // The personal assistant's headless CLI child runs in the app
             // data dir: a stable, writable cwd that is not one of the user's
             // projects (it is workspace-wide, not per project). Its
@@ -252,6 +257,7 @@ pub fn run() {
             commands::agent::agent_settings_set_default_adapter,
             commands::agent::agent_settings_set_merge_mode,
             commands::agent::agent_settings_set_suggest_worktree,
+            commands::agent::agent_settings_set_remember_sessions,
             commands::mcp::mcp_status,
             commands::mcp::mcp_clients_status,
             commands::mcp::mcp_client_install,

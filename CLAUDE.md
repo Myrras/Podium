@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 78 commands.
+  IPC wrappers over all 79 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -167,6 +167,17 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   honoured. Adding an agent CLI = new module + registry entry; no IPC or
   frontend change. Max **8 active agents per project** (recursion guard —
   agents can spawn agents over MCP).
+- **Agent session memory** (`agent/session_memory.rs`, setting
+  `remember_sessions` in `agents.json`, default off): `session_memory.json`,
+  keyed by project root. `Orchestrator::shutdown()` is the only place a
+  session is captured — for each still-running Claude Code agent it reads
+  `~/.claude/projects/<sanitized-cwd>/<id>.jsonl`, picking the newest file at
+  or after the agent's spawn time (falling back to the id it was resumed
+  with) and skipping the cwd entirely when more than one running agent
+  shares it, since the ambiguity can't be resolved. The next fresh
+  `open_project` on that root passes each remembered id to its adapter as
+  `--resume` when `remember_sessions` is on; the remembered list for that
+  root is always cleared on open, on or off.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
@@ -668,6 +679,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `agent_settings_set_default_adapter` | `{ adapterId? }` (blank clears) | `AgentSettingsDto` |
 | `agent_settings_set_merge_mode` | `{ mode }`                       | `AgentSettingsDto` |
 | `agent_settings_set_suggest_worktree` | `{ enabled }`             | `AgentSettingsDto` |
+| `agent_settings_set_remember_sessions` | `{ enabled }`            | `AgentSettingsDto` |
 | `mcp_status`            | –                                           | `{ running, url? }` (token-free by design) |
 | `mcp_clients_status`    | –                                           | `McpClientInfo[]` |
 | `mcp_client_install`    | `{ clientId }`                              | `McpClientInfo[]` |

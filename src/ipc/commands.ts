@@ -290,6 +290,16 @@ export function agentSettingsSetSuggestWorktree(
   return invoke("agent_settings_set_suggest_worktree", { enabled });
 }
 
+/**
+ * Toggle whether a running agent's session is remembered and resumed across
+ * app restarts. Returns the refreshed settings.
+ */
+export function agentSettingsSetRememberSessions(
+  enabled: boolean,
+): Promise<AgentSettingsDto> {
+  return invoke("agent_settings_set_remember_sessions", { enabled });
+}
+
 // ---------------------------------------------------------------------------
 // Worktrees
 // ---------------------------------------------------------------------------
