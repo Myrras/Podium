@@ -125,6 +125,27 @@ fn wsl_login_shell(wsl: &WslBackend, linux_cwd: Option<&str>) -> (String, Vec<St
     ("wsl.exe".to_string(), args)
 }
 
+/// `existing` `WSLENV` plus `KEY/u` for each of `keys` not already listed, so
+/// those variables set on the Windows side of `wsl.exe` reach the Linux side
+/// (WSL passes nothing through otherwise). `/u` = only when launching WSL
+/// from Windows; no `/p` path translation — callers translate paths
+/// themselves where a value is one.
+pub fn wslenv_with<'a>(existing: Option<&str>, keys: impl IntoIterator<Item = &'a str>) -> String {
+    let mut entries: Vec<String> = existing
+        .unwrap_or_default()
+        .split(':')
+        .filter(|e| !e.is_empty())
+        .map(str::to_string)
+        .collect();
+    for key in keys {
+        let listed = entries.iter().any(|e| e.split('/').next() == Some(key));
+        if !listed {
+            entries.push(format!("{key}/u"));
+        }
+    }
+    entries.join(":")
+}
+
 /// A shell command line that exits 0 iff `binary` resolves on `PATH`.
 /// Unix and WSL mode use `command -v`; native Windows uses `where`.
 pub fn command_exists_query(binary: &str) -> String {
@@ -462,6 +483,21 @@ mod tests {
                 "{arg:?}"
             );
         }
+    }
+
+    #[test]
+    fn wslenv_appends_each_key_once() {
+        assert_eq!(
+            wslenv_with(None, ["TERM", "PODIUM_PROCESS_ID"]),
+            "TERM/u:PODIUM_PROCESS_ID/u"
+        );
+        // Existing entries (with or without flags) are kept and not repeated.
+        assert_eq!(
+            wslenv_with(Some("USERPROFILE/p:TERM"), ["TERM", "FOO"]),
+            "USERPROFILE/p:TERM:FOO/u"
+        );
+        assert_eq!(wslenv_with(Some(""), ["A", "A"]), "A/u");
+        assert_eq!(wslenv_with(Some("X/up"), []), "X/up");
     }
 
     #[test]
