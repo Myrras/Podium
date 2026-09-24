@@ -252,6 +252,7 @@ pub fn run() {
             commands::assistant::assistant_interrupt,
             commands::backend::backend_settings_get,
             commands::backend::backend_settings_set_wsl_distro,
+            commands::backend::backend_wsl_networking_mode,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,
             commands::agent::agent_settings_get,

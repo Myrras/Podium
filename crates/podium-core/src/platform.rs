@@ -145,6 +145,18 @@ pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
     }
 }
 
+/// In WSL-backend mode, the distro's networking mode as `wslinfo
+/// --networking-mode` reports it (`mirrored`, `nat`, …); `None` natively or
+/// when `wslinfo` is unavailable (older WSL). Agents inside WSL reach
+/// Podium's MCP server on `127.0.0.1` only with mirrored networking. Shells
+/// out — call from a blocking-friendly context.
+pub fn wsl_networking_mode() -> Option<String> {
+    wsl()?;
+    run_shell_stdout("wslinfo --networking-mode")
+        .map(|out| out.trim().to_string())
+        .filter(|mode| !mode.is_empty())
+}
+
 /// The reverse of [`backend_path`]: a path printed by a backend process (e.g.
 /// git), as a Windows path in WSL-backend mode, unchanged natively.
 pub fn from_backend_path(path: &str) -> std::path::PathBuf {

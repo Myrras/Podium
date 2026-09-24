@@ -49,6 +49,17 @@ pub fn backend_settings_get(app: AppHandle) -> Result<BackendSettingsDto, IpcErr
     Ok(to_dto(backend_settings::load(&backend_path(&app)?)))
 }
 
+/// In WSL-backend mode, the distro's networking mode (`mirrored`, `nat`, …);
+/// `None` natively or when WSL can't tell. The frontend warns once at
+/// startup when it isn't `mirrored`, since agents in WSL then can't reach
+/// the MCP server on 127.0.0.1.
+#[tauri::command]
+pub async fn backend_wsl_networking_mode() -> Result<Option<String>, IpcError> {
+    tauri::async_runtime::spawn_blocking(podium_core::platform::wsl_networking_mode)
+        .await
+        .map_err(|e| IpcError::new("io", format!("networking check failed: {e}")))
+}
+
 /// Save the WSL distro to use from the next launch on. Blank or absent =
 /// the native backend.
 #[tauri::command]

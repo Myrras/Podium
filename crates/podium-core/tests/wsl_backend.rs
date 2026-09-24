@@ -303,3 +303,30 @@ async fn worktrees_are_created_listed_and_removed_with_wsl_git() {
         .is_empty());
     assert!(!created.path.exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_windows_exe_registered_for_wsl_clients_starts_through_interop() {
+    // `claude mcp add … -- <exe> mcp-bridge` inside WSL: the exe path must be
+    // its /mnt/c spelling, and WSL must be able to start that Windows binary.
+    // This test binary stands in for Podium.exe.
+    let Some(distro) = distro() else { return };
+    let exe = std::env::current_exe().expect("current exe");
+    let add = podium_core::mcp::install::claude_add_command(&exe).expect("add command");
+    let linux_exe = podium_core::platform::backend_path(&exe).expect("backend path");
+    assert!(linux_exe.starts_with("/mnt/"), "{linux_exe}");
+    assert!(add.contains(&linux_exe), "{add}");
+
+    let dir = WslDir::new(&distro, "interop");
+    let command = format!(
+        "{} --list; printf ':end'",
+        podium_core::platform::quote_posix(&linux_exe).unwrap()
+    );
+    let orch = Orchestrator::new();
+    let id = start(&orch, &dir, service(&command, &dir, Vec::new())).await;
+    let text = wait_for_output(&orch, id, ":end").await;
+    assert!(
+        text.contains("a_windows_exe_registered_for_wsl_clients_starts_through_interop"),
+        "{text:?}"
+    );
+    orch.shutdown().await;
+}
