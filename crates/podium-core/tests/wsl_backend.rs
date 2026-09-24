@@ -362,3 +362,78 @@ async fn a_windows_exe_registered_for_wsl_clients_starts_through_interop() {
     );
     orch.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_startup_burst_of_wsl_launches_all_succeed() {
+    // What Podium fires at startup: adapter probes and git calls for every
+    // project at once, plus auto-start services. Ungated, wsl.exe lets only
+    // two of a concurrent burst through and fails the rest after ~30 s.
+    let Some(distro) = distro() else { return };
+    let started = std::time::Instant::now();
+    // A git repo to point the git calls at, as the app does for open projects.
+    let repo_dir = WslDir::new(&distro, "burst-repo");
+    wsl_git(&distro, &repo_dir.linux(), &["init", "-q", "-b", "main"]);
+    wsl_git(
+        &distro,
+        &repo_dir.linux(),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    );
+    let repo = repo_dir.windows.clone();
+    // Mixed like the startup burst: exit-status probes (null stdio),
+    // stdout-reading shell calls and git calls (piped stdio).
+    let calls: Vec<std::thread::JoinHandle<bool>> = (0..9)
+        .map(|i| {
+            let repo = repo.clone();
+            std::thread::spawn(move || match i % 3 {
+                0 => podium_core::platform::run_shell_ok(
+                    &podium_core::platform::command_exists_query("bash"),
+                ),
+                1 => podium_core::platform::run_shell_stdout("printf ok").as_deref() == Some("ok"),
+                _ => podium_core::worktree::current_branch(&repo).as_deref() == Some("main"),
+            })
+        })
+        .collect();
+    let results: Vec<bool> = calls.into_iter().map(|c| c.join().unwrap()).collect();
+    assert!(results.iter().all(|ok| *ok), "calls: {results:?}");
+
+    let dir = WslDir::new(&distro, "burst");
+    let orch = std::sync::Arc::new(Orchestrator::new());
+    let project = orch
+        .open_project(dir.windows.clone())
+        .await
+        .expect("open project");
+    let mut ids = Vec::new();
+    for i in 0..6 {
+        let spec = service(&format!("printf 'svc{i}:end'"), &dir, Vec::new());
+        ids.push(orch.add_process(project, spec).await.expect("add process"));
+    }
+    let starts: Vec<_> = ids
+        .iter()
+        .map(|&id| {
+            let orch = std::sync::Arc::clone(&orch);
+            tokio::spawn(async move { orch.start_process(id).await })
+        })
+        .collect();
+    for start in starts {
+        start.await.unwrap().expect("start");
+    }
+    for (i, &id) in ids.iter().enumerate() {
+        wait_for_output(&orch, id, &format!("svc{i}:end")).await;
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "burst took {:?}: launches are timing out",
+        started.elapsed()
+    );
+    orch.shutdown().await;
+}
