@@ -7,6 +7,8 @@
 //! `cmd /C`) is written once, not re-derived at each of the PTY-spawn /
 //! adapter-probe / MCP-install call sites.
 
+pub mod wsl_path;
+
 use std::sync::OnceLock;
 
 use crate::error::{CoreError, CoreResult};
