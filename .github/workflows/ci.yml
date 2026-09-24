@@ -1,6 +1,16 @@
-# Test + lint pipeline. A single macOS job on purpose: the podium-core PTY
-# tests need a real Unix PTY, and a Linux runner would additionally need the
-# webkit system deps just to compile src-tauri.
+# Test + lint pipeline: macOS and Windows, no Linux job. The podium-core PTY
+# tests need a real OS PTY (Unix pty or Windows ConPTY), and a Linux runner
+# would additionally need the webkit system deps just to compile src-tauri —
+# not worth adding for a desktop app that only ships on macOS and Windows.
+#
+# The Windows job only runs `cargo test -p podium-core` (not the frontend
+# checks, and not `--workspace`, which the macOS job already covers): its job
+# here is to make sure the `cfg(windows)` half of podium-core actually
+# compiles, lints and passes, not to duplicate the full pipeline. A handful of
+# podium-core integration tests spawn Unix-only commands (`sleep`, `printf`,
+# POSIX shell syntax) that ConPTY has no equivalent for; those are
+# `#[cfg_attr(windows, ignore)]` with a comment explaining why, and the macOS
+# job still runs them.
 name: CI
 
 on:
@@ -50,3 +60,27 @@ jobs:
         run: pnpm test
       - name: Frontend build
         run: pnpm build
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      # `tauri::generate_context!` requires the frontendDist dir (../dist,
+      # gitignored) to exist when src-tauri compiles — same stub as the macOS
+      # job's, run via bash so it's the same command on both runners.
+      - name: Stub dist for src-tauri compilation
+        shell: bash
+        run: mkdir -p dist
+
+      - name: Rustfmt
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust tests (podium-core)
+        run: cargo test -p podium-core
