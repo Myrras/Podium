@@ -178,11 +178,6 @@ impl AgentSettingsStore {
     }
 
     /// Toggle whether agent sessions are remembered across app restarts.
-    ///
-    /// Unused outside this module until a later task wires it into an IPC
-    /// command; `#[allow(dead_code)]` keeps `clippy -D warnings` clean until
-    /// then (same pattern as `SessionMemoryStore`).
-    #[allow(dead_code)]
     pub fn set_remember_sessions(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.remember_sessions = enabled;

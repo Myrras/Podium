@@ -21,7 +21,7 @@ use crate::error::CoreResult;
 /// Claude Code's own scheme for naming a cwd's project directory: every path
 /// separator becomes `-` (empirically verified against real
 /// `~/.claude/projects/` entries).
-fn sanitize_cwd(cwd: &Path) -> String {
+pub(crate) fn sanitize_cwd(cwd: &Path) -> String {
     cwd.to_string_lossy().replace(['/', '\\'], "-")
 }
 
@@ -29,7 +29,7 @@ fn sanitize_cwd(cwd: &Path) -> String {
 /// `cwd` whose modification time is at or after `after`, if any. `after`
 /// should be the agent's own spawn time, so a session file left over from an
 /// unrelated earlier run in the same directory is never picked up.
-fn find_latest_session_id_in(
+pub(crate) fn find_latest_session_id_in(
     projects_root: &Path,
     cwd: &Path,
     after: SystemTime,
@@ -58,14 +58,6 @@ fn find_latest_session_id_in(
         }
     }
     newest.map(|(_, id)| id)
-}
-
-/// Same as [`find_latest_session_id_in`], reading Claude Code's real
-/// `~/.claude/projects` directory. `None` if the home directory can't be
-/// resolved (mirrors every other `platform::` lookup's failure mode).
-pub fn find_latest_session_id(cwd: &Path, after: SystemTime) -> Option<String> {
-    let projects_root = crate::platform::claude_projects_root()?;
-    find_latest_session_id_in(&projects_root, cwd, after)
 }
 
 #[cfg(test)]
@@ -156,16 +148,10 @@ struct Inner {
 /// data dir. Writes are atomic (temp file + rename); a missing or corrupt
 /// file is treated as empty. Until [`SessionMemoryStore::set_path`] is
 /// called the store is in-memory only (tests).
-///
-/// Unused outside this module until a later task wires it into the
-/// orchestrator; `#[allow(dead_code)]` on the still-unreferenced methods
-/// keeps `clippy -D warnings` clean until then.
-#[allow(dead_code)]
 pub(crate) struct SessionMemoryStore {
     inner: Mutex<Inner>,
 }
 
-#[allow(dead_code)]
 impl SessionMemoryStore {
     pub fn new() -> Self {
         Self {

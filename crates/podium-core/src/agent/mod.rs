@@ -95,6 +95,11 @@ pub trait AgentAdapter: Send + Sync {
     fn binary(&self) -> &'static str;
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan>;
 
+    /// Whether `build_launch` honours `AgentLaunchCtx::resume_session_id`.
+    fn supports_resume(&self) -> bool {
+        false
+    }
+
     /// Whether the binary resolves on the user's login-shell `PATH`. Probed
     /// via the login shell (`command -v <binary>` on Unix, `where` on Windows)
     /// so shell-profile PATH edits (nvm, homebrew, …) are honoured; output is
@@ -181,6 +186,10 @@ impl AgentAdapter for CliAdapter {
 
     fn binary(&self) -> &'static str {
         self.binary
+    }
+
+    fn supports_resume(&self) -> bool {
+        self.resume_flag.is_some()
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {

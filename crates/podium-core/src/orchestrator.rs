@@ -1,7 +1,7 @@
 //! The single public API surface over projects and PTY-backed processes.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::agent::session_memory::{self, RememberedSession, SessionMemoryStore};
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
 use crate::assignment::AssignedAgent;
@@ -180,6 +181,11 @@ pub struct Orchestrator {
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
+    /// Agent sessions to resume on the next open of their project, keyed by
+    /// root (`AgentSettings.remember_sessions`).
+    session_memory: SessionMemoryStore,
+    /// Where Claude Code keeps its session files (`~/.claude/projects`).
+    claude_projects_root: Mutex<Option<PathBuf>>,
     /// The workspace-wide personal assistant session (chat panel).
     assistant: AssistantManager,
 }
@@ -208,6 +214,8 @@ impl Orchestrator {
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
             agent_settings: AgentSettingsStore::new(),
+            session_memory: SessionMemoryStore::new(),
+            claude_projects_root: Mutex::new(crate::platform::claude_projects_root()),
         }
     }
 
@@ -530,6 +538,17 @@ impl Orchestrator {
         self.agent_settings.set_path(path);
     }
 
+    /// Point the remembered-sessions store at its backing file (app data
+    /// dir) and load it. Until this is called it is in-memory only.
+    pub fn set_session_memory_path(&self, path: PathBuf) {
+        self.session_memory.set_path(path);
+    }
+
+    /// Override where Claude Code session files are looked up (tests).
+    pub fn set_claude_projects_root(&self, path: PathBuf) {
+        *self.claude_projects_root.lock().expect(LOCK_POISONED) = Some(path);
+    }
+
     /// A snapshot of the global agent settings.
     pub fn agent_settings(&self) -> AgentSettings {
         self.agent_settings.get()
@@ -544,6 +563,11 @@ impl Orchestrator {
     /// their first code change.
     pub fn set_agent_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
         self.agent_settings.set_suggest_worktree(enabled)
+    }
+
+    /// Toggle whether agent sessions are remembered across app restarts.
+    pub fn set_agent_remember_sessions(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        self.agent_settings.set_remember_sessions(enabled)
     }
 
     /// Set (or clear) the global default adapter used by bare spawns. A blank
@@ -681,7 +705,48 @@ impl Orchestrator {
                 tracing::warn!(process_id = %pid, "auto-start failed: {e}");
             }
         }
+        if self.agent_settings.get().remember_sessions {
+            self.restore_remembered_sessions(id, &path).await;
+        }
         Ok(id)
+    }
+
+    /// Respawn every agent remembered for `root`, each via `--resume`.
+    /// Best-effort per entry; the list is cleared either way so a stale entry
+    /// never re-fires on a later open.
+    async fn restore_remembered_sessions(&self, project_id: ProjectId, root: &Path) {
+        for entry in self.session_memory.list(root) {
+            // Without resume support this would be a fresh agent with no context.
+            if !self.adapter_supports_resume(&entry.adapter_id) {
+                continue;
+            }
+            if let Err(e) = self
+                .spawn_agent_inner(
+                    project_id,
+                    Some(entry.adapter_id),
+                    Some(entry.name),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    None,
+                    None,
+                    Some(entry.session_id),
+                )
+                .await
+            {
+                tracing::warn!("restoring a remembered agent session failed: {e}");
+            }
+        }
+        if let Err(e) = self.session_memory.clear(root) {
+            tracing::warn!("clearing remembered agent sessions failed: {e}");
+        }
+    }
+
+    fn adapter_supports_resume(&self, adapter_id: &str) -> bool {
+        self.adapters
+            .by_id(adapter_id)
+            .is_some_and(|a| a.supports_resume())
     }
 
     /// Close a project, stopping and removing all of its processes.
@@ -1458,6 +1523,35 @@ impl Orchestrator {
         worktree_name: Option<String>,
         args_override: Option<Vec<String>>,
     ) -> CoreResult<ProcessId> {
+        self.spawn_agent_inner(
+            project_id,
+            adapter_id,
+            name,
+            prompt,
+            todo_ids,
+            scratchpad_ids,
+            worktree,
+            worktree_name,
+            args_override,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)] // `spawn_agent` plus a resume id
+    async fn spawn_agent_inner(
+        &self,
+        project_id: ProjectId,
+        adapter_id: Option<String>,
+        name: Option<String>,
+        prompt: Option<String>,
+        todo_ids: Vec<TodoId>,
+        scratchpad_ids: Vec<ScratchpadId>,
+        worktree: bool,
+        worktree_name: Option<String>,
+        args_override: Option<Vec<String>>,
+        resume_session_id: Option<String>,
+    ) -> CoreResult<ProcessId> {
         let (root, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             let handle = inner
@@ -1592,7 +1686,7 @@ impl Orchestrator {
             worktree,
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && !worktree,
-            resume_session_id: None,
+            resume_session_id: resume_session_id.as_deref(),
         })?;
         let spec = ProcessSpec {
             name,
@@ -2042,6 +2136,9 @@ impl Orchestrator {
     /// grace period) and cancel all pending supervised restarts.
     pub async fn shutdown(&self) {
         self.assistant.shutdown().await;
+        if self.agent_settings.get().remember_sessions {
+            self.capture_agent_sessions();
+        }
         let stopped: Vec<(ProjectId, ProcessId)> = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             let mut stopped = Vec::new();
@@ -2062,6 +2159,67 @@ impl Orchestrator {
                 process_id,
                 status: ProcessStatus::Stopping,
             });
+        }
+    }
+
+    /// Remember each running resumable agent's Claude Code session id for the
+    /// next open of its project. A cwd shared by several running agents is
+    /// skipped: which session file is whose would be a guess.
+    fn capture_agent_sessions(&self) {
+        // (project root, cwd, adapter id, name, running since)
+        type Candidate = (PathBuf, PathBuf, String, String, DateTime<Utc>);
+        let candidates: Vec<Candidate> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .processes
+                .values()
+                .filter_map(|p| {
+                    let ProcessKind::Agent { adapter } = &p.spec.kind else {
+                        return None;
+                    };
+                    let ProcessStatus::Running { since, .. } = p.status else {
+                        return None;
+                    };
+                    if !self.adapter_supports_resume(adapter) {
+                        return None;
+                    }
+                    let root = inner.projects.get(&p.project_id)?.root.clone();
+                    let (cwd, name) = (p.spec.cwd.clone(), p.spec.name.clone());
+                    Some((root, cwd, adapter.clone(), name, since))
+                })
+                .collect()
+        };
+        let Some(projects_root) = self
+            .claude_projects_root
+            .lock()
+            .expect(LOCK_POISONED)
+            .clone()
+        else {
+            return;
+        };
+        let mut per_cwd: HashMap<&Path, usize> = HashMap::new();
+        for (_, cwd, ..) in &candidates {
+            *per_cwd.entry(cwd.as_path()).or_default() += 1;
+        }
+        for (root, cwd, adapter_id, name, since) in &candidates {
+            if per_cwd[cwd.as_path()] > 1 {
+                continue;
+            }
+            let Some(session_id) =
+                session_memory::find_latest_session_id_in(&projects_root, cwd, (*since).into())
+            else {
+                continue;
+            };
+            let entry = RememberedSession {
+                adapter_id: adapter_id.clone(),
+                name: name.clone(),
+                cwd: cwd.clone(),
+                session_id,
+                updated_at: Utc::now(),
+            };
+            if let Err(e) = self.session_memory.remember(root, entry) {
+                tracing::warn!("remembering an agent session failed: {e}");
+            }
         }
     }
 }
@@ -3114,5 +3272,123 @@ mod tests {
         assert_eq!(listed.len(), 1);
 
         assert!(rx.try_recv().is_err(), "list must not publish an event");
+    }
+
+    /// An orchestrator persisting under `data`, with Claude Code resolved to
+    /// a script that just sleeps and the session lookup rooted in `data`.
+    #[cfg(unix)]
+    fn session_memory_orch(data: &Path) -> Orchestrator {
+        use std::os::unix::fs::PermissionsExt;
+        let script = data.join("fake-claude");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let orch = Orchestrator::new();
+        orch.set_agent_settings_path(data.join("agents.json"));
+        orch.set_session_memory_path(data.join("sessions.json"));
+        orch.set_claude_projects_root(data.join("claude-projects"));
+        orch.set_agent_override(
+            "claude-code",
+            Some(script.to_string_lossy().into_owned()),
+            Vec::new(),
+        )
+        .unwrap();
+        orch
+    }
+
+    /// Stand in for Claude Code writing its session file for `cwd`.
+    #[cfg(unix)]
+    fn write_session_file(data: &Path, cwd: &Path, id: &str) {
+        // The lookup only accepts files modified after the agent started.
+        std::thread::sleep(Duration::from_millis(20));
+        let dir = data
+            .join("claude-projects")
+            .join(crate::agent::session_memory::sanitize_cwd(cwd));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.jsonl")), "{}").unwrap();
+    }
+
+    #[cfg(unix)]
+    async fn spawn_named(orch: &Orchestrator, project: ProjectId, name: &str) {
+        orch.spawn_agent(
+            project,
+            Some("claude-code".to_string()),
+            Some(name.to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn remembered_session_resumes_with_resume_flag_on_next_open() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        spawn_named(&orch, id, "agent-1").await;
+        write_session_file(data.path(), &root, "sess-fictional-1");
+        orch.shutdown().await;
+
+        let restarted = session_memory_orch(data.path());
+        let id = restarted.open_project(root.clone()).await.unwrap();
+        let procs = restarted.list_processes(Some(id));
+        let resumed = procs
+            .iter()
+            .find(|p| p.name == "agent-1")
+            .expect("remembered agent respawned");
+        assert!(
+            resumed.command.contains("--resume sess-fictional-1"),
+            "command: {}",
+            resumed.command
+        );
+        assert!(
+            restarted.session_memory.list(&root).is_empty(),
+            "restored entries are cleared"
+        );
+        restarted.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn toggle_off_skips_restore_even_with_remembered_sessions() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        spawn_named(&orch, id, "agent-1").await;
+        write_session_file(data.path(), &root, "sess-fictional-2");
+        orch.shutdown().await;
+        assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
+
+        let restarted = session_memory_orch(data.path());
+        restarted.set_agent_remember_sessions(false).unwrap();
+        let id = restarted.open_project(root).await.unwrap();
+        assert!(
+            restarted.list_processes(Some(id)).is_empty(),
+            "no agent auto-spawns with the toggle off"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ambiguous_cwd_is_skipped_on_capture() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        spawn_named(&orch, id, "agent-1").await;
+        spawn_named(&orch, id, "agent-2").await;
+        write_session_file(data.path(), &root, "sess-fictional-3");
+        orch.shutdown().await;
+        assert!(orch.session_memory.list(&root).is_empty());
     }
 }
