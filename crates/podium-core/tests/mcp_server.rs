@@ -693,17 +693,20 @@ async fn list_scratchpads_round_trip_via_mcp() {
 ///
 /// Every test below (and the other fake adapters further down: `EchoAdapter`,
 /// `BetaAdapter`, `PromptEchoAdapter`) plans a command line for a binary that
-/// does not actually exist (`sleep`, `fake-agent`, `echo-agent`, `beta-agent`,
-/// `/opt/echo`, …). On Unix that is harmless: `ProcessKind::Agent` still runs
-/// through the login shell (`$SHELL -lic <command>`, see
-/// `PtyProcess::build_command`), so the *shell* spawns fine and only the
-/// command it tries to run inside fails — invisibly, since none of these
-/// tests waits on the process's own exit. On Windows, `build_command` bypasses
-/// the shell entirely for agent commands (see its doc comment) and hands the
-/// binary straight to `CreateProcessW`; a binary that isn't installed makes
-/// the spawn itself fail, so `spawn_agent`/`add_process` + `start_process`
-/// return `Err` before the test's own assertions ever run. Every test that
-/// spawns one of these fake adapters is therefore
+/// is not installed, or not reliably present, on Windows (`sleep`, `fake-agent`,
+/// `echo-agent`, `beta-agent`, `/opt/echo`, …) — `sleep` only resolves there via
+/// Git for Windows' `usr\bin` on `PATH`, which GitHub's `windows-latest` runner
+/// happens to have but which isn't guaranteed. On Unix that is harmless:
+/// `ProcessKind::Agent` still runs through the login shell (`$SHELL -lic
+/// <command>`, see `PtyProcess::build_command`), so the *shell* spawns fine and
+/// only the command it tries to run inside fails — invisibly, since none of
+/// these tests waits on the process's own exit. On Windows, `build_command`
+/// bypasses the shell entirely for agent commands (see its doc comment) and
+/// hands the binary straight to `CreateProcessW`; an unresolved binary makes
+/// that spawn itself fail, so `spawn_agent`/`add_process` + `start_process`
+/// return `Err` before the test's own assertions ever run — and for `sleep`
+/// specifically, whether it resolves at all is environment-dependent. Every
+/// test that spawns one of these fake adapters is therefore
 /// `#[cfg_attr(windows, ignore)]`.
 struct FakeAgentAdapter;
 
@@ -2754,8 +2757,8 @@ async fn every_tool_is_classified_for_the_autonomy_gate() {
 
 // Adds an `Agent`-kind process directly with `command: "sleep 30"`: on
 // Windows agent commands bypass the shell and exec the binary directly (see
-// FakeAgentAdapter's comment), and `sleep` isn't installed, so the spawn
-// itself fails.
+// FakeAgentAdapter's comment), and whether `sleep` resolves at all there is
+// environment-dependent, so the spawn is unreliable.
 #[cfg_attr(
     windows,
     ignore = "spawns `sleep` as an agent binary; see FakeAgentAdapter's comment"

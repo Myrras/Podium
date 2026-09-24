@@ -3,14 +3,15 @@
 # would additionally need the webkit system deps just to compile src-tauri —
 # not worth adding for a desktop app that only ships on macOS and Windows.
 #
-# The Windows job only runs `cargo test -p podium-core` (not the frontend
-# checks, and not `--workspace`, which the macOS job already covers): its job
-# here is to make sure the `cfg(windows)` half of podium-core actually
-# compiles, lints and passes, not to duplicate the full pipeline. A handful of
-# podium-core integration tests spawn Unix-only commands (`sleep`, `printf`,
-# POSIX shell syntax) that ConPTY has no equivalent for; those are
-# `#[cfg_attr(windows, ignore)]` with a comment explaining why, and the macOS
-# job still runs them.
+# The Windows job's rustfmt/clippy cover the whole workspace, same as macOS,
+# so the `cfg(windows)` code in both podium-core and src-tauri gets linted.
+# Only the test run is scoped to `-p podium-core` (not `--workspace`, and no
+# frontend checks): the macOS job already runs the full workspace, so this
+# job's purpose is just to prove podium-core's `cfg(windows)` half compiles,
+# lints and passes. About 30 podium-core integration tests spawn Unix-only
+# commands (`sleep`, `printf`, POSIX shell syntax) that ConPTY has no
+# equivalent for; those are `#[cfg_attr(windows, ignore)]` with a comment
+# explaining why, and the macOS job still runs them.
 name: CI
 
 on:
@@ -21,6 +22,7 @@ on:
 jobs:
   ci:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +65,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
