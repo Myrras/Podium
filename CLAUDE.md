@@ -12,7 +12,11 @@ lifecycle supervision, and a built-in **MCP server** so agents can inspect
 and orchestrate the very processes Podium manages (including spawning more
 agents). macOS-first, but macOS **and** Windows are built and packaged (the
 PTY layer runs on Windows via ConPTY; process-group stop is Unix-only, Windows
-terminates the ConPTY child directly). Linux is kept in mind, not yet packaged.
+terminates the ConPTY child directly; the PTY reader answers ConPTY's startup
+`ESC[6n` cursor query itself and strips it from the output, since ConPTY holds
+the child until it's answered and xterm.js only exists once a terminal is
+opened — see `CursorHandshake` in `process/pty.rs`). Linux is kept in mind,
+not yet packaged.
 
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id
 > `com.podium.app`.

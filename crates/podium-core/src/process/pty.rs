@@ -36,7 +36,9 @@ pub type ExitCallback = Box<dyn FnOnce(Option<i32>) + Send>;
 /// consistent with the scrollback contents.
 pub struct PtyProcess {
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    // Shared with the reader thread on Windows, which answers ConPTY's
+    // startup cursor-position query through it (see `CursorHandshake`).
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     // Windows stop() terminates the child through this handle (no process
     // groups); Unix stops the whole group via killpg and never touches it.
     #[cfg(windows)]
@@ -154,18 +156,33 @@ impl PtyProcess {
             .master
             .try_clone_reader()
             .map_err(|e| CoreError::Pty(e.to_string()))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| CoreError::Pty(e.to_string()))?;
+        let writer = Arc::new(Mutex::new(
+            pair.master
+                .take_writer()
+                .map_err(|e| CoreError::Pty(e.to_string()))?,
+        ));
+        #[cfg(windows)]
+        let reply_writer = Arc::clone(&writer);
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            #[cfg(windows)]
+            let mut handshake = CursorHandshake::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let bytes = buf[..n].to_vec();
+                        #[allow(unused_mut)] // only mutated on Windows
+                        let mut bytes = buf[..n].to_vec();
+                        #[cfg(windows)]
+                        if handshake.strip(&mut bytes) {
+                            let mut w = reply_writer.lock().expect(LOCK_POISONED);
+                            let _ = w.write_all(CURSOR_POSITION_REPLY);
+                            let _ = w.flush();
+                        }
+                        if bytes.is_empty() {
+                            continue;
+                        }
                         // Append + broadcast under one lock: seq order stays
                         // consistent for attach() snapshots.
                         let mut sb = scrollback.lock().expect(LOCK_POISONED);
@@ -188,7 +205,7 @@ impl PtyProcess {
 
         Ok(Self {
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            writer,
             #[cfg(windows)]
             killer: Mutex::new(killer),
             pid,
@@ -249,5 +266,105 @@ impl PtyProcess {
     #[cfg(windows)]
     pub fn stop(&self) {
         let _ = self.killer.lock().expect(LOCK_POISONED).kill();
+    }
+}
+
+/// ConPTY's startup cursor-position query (DSR 6).
+#[cfg(any(windows, test))]
+const CURSOR_POSITION_QUERY: &[u8] = b"[6n";
+/// Reply for a fresh pseudoconsole: cursor at row 1, column 1.
+#[cfg(windows)]
+const CURSOR_POSITION_REPLY: &[u8] = b"[1;1R";
+/// How far into a spawn's output the startup query may appear. Past this,
+/// a query is the program's own and is left for the terminal to answer.
+#[cfg(any(windows, test))]
+const HANDSHAKE_WINDOW: usize = 256;
+
+/// Answers ConPTY's startup handshake on the backend's behalf.
+///
+/// portable-pty opens the pseudoconsole with `PSEUDOCONSOLE_INHERIT_CURSOR`,
+/// so ConPTY emits `ESC[6n` first and holds the child until it gets a
+/// cursor-position reply. The frontend's xterm.js would answer, but only once
+/// someone opens that terminal — until then an `auto_start` service, a
+/// background agent or a supervised restart would sit blocked. So the reader
+/// thread answers the first query itself and strips it from the output (so
+/// xterm doesn't answer it a second time when it replays the scrollback).
+/// Unix PTYs never send it.
+#[cfg(any(windows, test))]
+struct CursorHandshake {
+    seen: usize,
+    done: bool,
+}
+
+#[cfg(any(windows, test))]
+impl CursorHandshake {
+    fn new() -> Self {
+        Self {
+            seen: 0,
+            done: false,
+        }
+    }
+
+    /// Removes the startup query from `bytes` if this chunk carries it;
+    /// returns whether it did (the caller then sends the reply).
+    fn strip(&mut self, bytes: &mut Vec<u8>) -> bool {
+        if self.done {
+            return false;
+        }
+        let window = HANDSHAKE_WINDOW.saturating_sub(self.seen);
+        let found = bytes
+            .windows(CURSOR_POSITION_QUERY.len())
+            .position(|w| w == CURSOR_POSITION_QUERY)
+            .filter(|&at| at < window);
+        self.seen += bytes.len();
+        match found {
+            Some(at) => {
+                bytes.drain(at..at + CURSOR_POSITION_QUERY.len());
+                self.done = true;
+                true
+            }
+            None => {
+                self.done = self.seen >= HANDSHAKE_WINDOW;
+                false
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_query_is_stripped_once() {
+        let mut hs = CursorHandshake::new();
+        let mut first = b"[?9001h[6n".to_vec();
+        assert!(hs.strip(&mut first));
+        assert_eq!(first, b"[?9001h");
+
+        // A later query is the program's own: left for the terminal.
+        let mut later = b"[6n".to_vec();
+        assert!(!hs.strip(&mut later));
+        assert_eq!(later, b"[6n");
+    }
+
+    #[test]
+    fn query_in_a_later_chunk_within_the_window_is_stripped() {
+        let mut hs = CursorHandshake::new();
+        let mut init = b"[?25l".to_vec();
+        assert!(!hs.strip(&mut init));
+        let mut chunk = b"[6n[?25h".to_vec();
+        assert!(hs.strip(&mut chunk));
+        assert_eq!(chunk, b"[?25h");
+    }
+
+    #[test]
+    fn query_past_the_window_is_left_alone() {
+        let mut hs = CursorHandshake::new();
+        let mut output = vec![b'x'; HANDSHAKE_WINDOW];
+        assert!(!hs.strip(&mut output));
+        let mut query = CURSOR_POSITION_QUERY.to_vec();
+        assert!(!hs.strip(&mut query));
+        assert_eq!(query, CURSOR_POSITION_QUERY);
     }
 }
