@@ -242,9 +242,12 @@ mod tests {
     #[test]
     fn absolute_cwd_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
+        // `/tmp` has no drive on Windows, so it isn't absolute there (it is
+        // still refused, but as escaping the project root).
+        let absolute = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
         write_config(
             dir.path(),
-            "processes:\n  - name: web\n    command: x\n    cwd: /tmp\n",
+            &format!("processes:\n  - name: web\n    command: x\n    cwd: {absolute}\n"),
         );
         let err = load_project_config(dir.path()).unwrap_err();
         assert!(err.to_string().contains("relative"));
