@@ -1592,6 +1592,7 @@ impl Orchestrator {
             worktree,
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && !worktree,
+            resume_session_id: None,
         })?;
         let spec = ProcessSpec {
             name,

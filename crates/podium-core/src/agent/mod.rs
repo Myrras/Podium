@@ -51,6 +51,10 @@ pub struct AgentLaunchCtx<'a> {
     /// Whether the system prompt should tell the agent to offer an isolated
     /// git worktree before its first code change (Settings → Agents toggle).
     pub suggest_worktree: bool,
+    /// Claude Code's own session id to resume, captured on a previous run
+    /// (Settings → Agents → "Remember agent sessions"). `None` for an
+    /// ordinary fresh spawn.
+    pub resume_session_id: Option<&'a str>,
 }
 
 /// Connection details for the built-in MCP server.
@@ -136,6 +140,9 @@ pub struct CliAdapter {
     /// Podium can resolve back to the process. `None` when the CLI has no
     /// such flag.
     pub name_flag: Option<&'static str>,
+    /// CLI flag resuming a previous session by id (Claude Code's `--resume`).
+    /// `None` when the CLI has no such flag (Auggie).
+    pub resume_flag: Option<&'static str>,
 }
 
 /// The Claude Code CLI (`claude`).
@@ -146,6 +153,7 @@ pub const CLAUDE_CODE: CliAdapter = CliAdapter {
     identity: IdentityDelivery::Flag("--append-system-prompt"),
     settings_flag: Some("--settings"),
     name_flag: Some("-n"),
+    resume_flag: Some("--resume"),
 };
 
 /// The Augment / Auggie CLI (`auggie`).
@@ -159,6 +167,7 @@ pub const AUGGIE: CliAdapter = CliAdapter {
     // No cross-session messaging in Auggie, so neither flag applies.
     settings_flag: None,
     name_flag: None,
+    resume_flag: None,
 };
 
 impl AgentAdapter for CliAdapter {
@@ -177,6 +186,10 @@ impl AgentAdapter for CliAdapter {
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
         let bin = ctx.command_override.unwrap_or(self.binary);
         let mut args: Vec<String> = vec![crate::platform::quote_arg(bin)?];
+        if let (Some(flag), Some(id)) = (self.resume_flag, ctx.resume_session_id) {
+            args.push(flag.to_string());
+            args.push(crate::platform::quote_arg(id)?);
+        }
         if let Some(prompt) = ctx.prompt {
             args.push(crate::platform::quote_arg(prompt)?);
         }
@@ -607,6 +620,7 @@ mod tests {
             worktree: false,
             worktree_name: None,
             suggest_worktree: false,
+            resume_session_id: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         (plan, project_id, process_id)
@@ -637,6 +651,62 @@ mod tests {
         let (plan, _, _) = plan(Some(prompt), &[], None);
         let tokens = split_command(&plan.command);
         assert_eq!(tokens, vec!["claude", prompt]);
+    }
+
+    #[test]
+    fn resume_session_id_prepends_resume_flag_for_claude_code() {
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp/project"),
+            prompt: Some("continue where we left off"),
+            extra_args: &[],
+            command_override: None,
+            mcp: None,
+            named: true,
+            worktree: false,
+            worktree_name: None,
+            suggest_worktree: false,
+            resume_session_id: Some("sess-123"),
+        };
+        let plan = CLAUDE_CODE.build_launch(&ctx).unwrap();
+        assert!(
+            plan.command.contains("--resume sess-123"),
+            "command: {}",
+            plan.command
+        );
+        // The resume flag comes before the positional prompt.
+        let resume_pos = plan.command.find("--resume").unwrap();
+        let prompt_pos = plan
+            .command
+            .find("'continue where we left off'")
+            .expect("prompt present");
+        assert!(resume_pos < prompt_pos);
+    }
+
+    #[test]
+    fn no_resume_session_id_omits_the_flag() {
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp/project"),
+            prompt: Some("hello"),
+            extra_args: &[],
+            command_override: None,
+            mcp: None,
+            named: true,
+            worktree: false,
+            worktree_name: None,
+            suggest_worktree: false,
+            resume_session_id: None,
+        };
+        let plan = CLAUDE_CODE.build_launch(&ctx).unwrap();
+        assert!(!plan.command.contains("--resume"));
+    }
+
+    #[test]
+    fn auggie_has_no_resume_flag() {
+        assert_eq!(AUGGIE.resume_flag, None);
     }
 
     #[test]
@@ -764,6 +834,7 @@ mod tests {
             worktree: false,
             worktree_name: None,
             suggest_worktree: false,
+            resume_session_id: None,
         };
         assert_eq!(
             AUGGIE.build_launch(&ctx).expect("build_launch").command,
@@ -808,6 +879,7 @@ mod tests {
             worktree: false,
             worktree_name: None,
             suggest_worktree: false,
+            resume_session_id: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -836,6 +908,7 @@ mod tests {
             worktree: false,
             worktree_name: None,
             suggest_worktree: true,
+            resume_session_id: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -864,6 +937,7 @@ mod tests {
             worktree: true,
             worktree_name: Some("auth-refactor"),
             suggest_worktree: true,
+            resume_session_id: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -894,6 +968,7 @@ mod tests {
             worktree: true,
             worktree_name: None,
             suggest_worktree: false,
+            resume_session_id: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -936,6 +1011,7 @@ mod tests {
             worktree: true,
             worktree_name: Some("auth-refactor"),
             suggest_worktree: false,
+            resume_session_id: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -1035,6 +1111,7 @@ mod tests {
             worktree: false,
             worktree_name: None,
             suggest_worktree: false,
+            resume_session_id: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
