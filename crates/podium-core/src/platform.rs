@@ -217,6 +217,24 @@ pub fn git_binary() -> &'static str {
         .as_str()
 }
 
+/// The directory Claude Code stores all projects' sessions under
+/// (`~/.claude/projects`), or `None` if the home directory cannot be
+/// resolved. Read via `$HOME`/`%USERPROFILE%` directly rather than a shell
+/// round-trip — no PATH/profile involvement, unlike `login_shell()`.
+pub fn claude_projects_root() -> Option<std::path::PathBuf> {
+    home_dir().map(|home| home.join(".claude").join("projects"))
+}
+
+#[cfg(unix)]
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+#[cfg(windows)]
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+}
+
 /// The `warp://` URI that opens a new Warp tab at `path` (percent-encoded).
 pub fn warp_uri(path: &std::path::Path) -> String {
     let mut encoded = String::new();
