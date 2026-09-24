@@ -236,3 +236,70 @@ async fn the_windows_host_is_reachable_on_localhost() {
     );
     orch.shutdown().await;
 }
+
+/// Run git inside the distro, in `dir` (a Linux path); panics on failure.
+fn wsl_git(distro: &str, dir: &str, args: &[&str]) -> String {
+    let out = std::process::Command::new("wsl.exe")
+        .args(["-d", distro, "-e", "git", "-C", dir])
+        .args(args)
+        .output()
+        .expect("run git in WSL");
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worktrees_are_created_listed_and_removed_with_wsl_git() {
+    let Some(distro) = distro() else { return };
+    let dir = WslDir::new(&distro, "worktree");
+    let repo = dir.linux();
+    wsl_git(&distro, &repo, &["init", "-q", "-b", "main"]);
+    wsl_git(&distro, &repo, &["config", "user.name", "Test"]);
+    wsl_git(
+        &distro,
+        &repo,
+        &["config", "user.email", "test@example.com"],
+    );
+    std::fs::write(dir.windows.join("README.md"), "sample\n").unwrap();
+    wsl_git(&distro, &repo, &["add", "."]);
+    wsl_git(&distro, &repo, &["commit", "-q", "-m", "initial"]);
+
+    let created = podium_core::worktree::create(&dir.windows, "Fix login").expect("create");
+    assert_eq!(created.branch, "podium/fix-login");
+    assert!(created.path.is_dir(), "{:?} not a directory", created.path);
+    // The branch exists in the distro's repo.
+    let branches = wsl_git(&distro, &repo, &["branch", "--list", "podium/*"]);
+    assert!(branches.contains("podium/fix-login"), "{branches:?}");
+    assert_eq!(
+        podium_core::worktree::current_branch(&created.path).as_deref(),
+        Some("podium/fix-login")
+    );
+
+    let listed = podium_core::worktree::list(&dir.windows).expect("list");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].name, "fix-login");
+    assert_eq!(listed[0].path, created.path);
+
+    // A process started in the worktree lands in its Linux directory.
+    let orch = Orchestrator::new();
+    let project = orch
+        .open_project(dir.windows.clone())
+        .await
+        .expect("open project");
+    let mut spec = service("printf 'pwd:%s:end' \"$(pwd)\"", &dir, Vec::new());
+    spec.cwd = created.path.clone();
+    let id = orch.add_process(project, spec).await.expect("add process");
+    orch.start_process(id).await.expect("start");
+    let text = wait_for_output(&orch, id, ":end").await;
+    assert!(
+        text.contains(&format!("pwd:{repo}/.podium/worktrees/fix-login:end")),
+        "{text:?}"
+    );
+    orch.shutdown().await;
+
+    podium_core::worktree::remove(&dir.windows, "fix-login", false).expect("remove");
+    assert!(podium_core::worktree::list(&dir.windows)
+        .unwrap()
+        .is_empty());
+    assert!(!created.path.exists());
+}
