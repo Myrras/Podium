@@ -9,7 +9,8 @@
 
 pub mod wsl_path;
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Duration;
 
 use crate::error::{CoreError, CoreResult};
 
@@ -72,6 +73,68 @@ pub fn init_wsl(distro: Option<&str>) {
 /// Windows, and before [`init_wsl`] runs).
 pub fn wsl() -> Option<&'static WslBackend> {
     WSL.get().and_then(Option::as_ref)
+}
+
+/// Serializes `wsl.exe` launches in WSL-backend mode. `wsl.exe` does not
+/// survive a burst of concurrent starts: measured on WSL 2 (Windows 11), with
+/// three or more launched at once all but two hang ~30 s and then fail
+/// (`Wsl/Service/E_UNEXPECTED`, or a connection timeout), while the same six
+/// started ~150 ms apart all succeed. Podium fires exactly such a burst at
+/// startup (adapter probes, git for every open project, auto-start
+/// services), and a failed adapter probe is cached for the whole run. The
+/// limit is on starting, not on running: many long-lived `wsl.exe` sessions
+/// coexist fine.
+static WSL_LAUNCH_GATE: Mutex<()> = Mutex::new(());
+/// How long a long-lived launch keeps the gate after spawning, so its
+/// `wsl.exe` handshake is done before the next one starts.
+const WSL_LAUNCH_SETTLE: Duration = Duration::from_millis(150);
+
+/// Run a short-lived backend command to completion through the WSL launch
+/// gate (see [`WSL_LAUNCH_GATE`]): `f` runs `Command::output`/`status`. In
+/// WSL-backend mode it holds the gate for the whole (sub-second) run;
+/// natively it is just `f()`.
+pub fn run_gated<T>(f: impl FnOnce() -> T) -> T {
+    if wsl().is_none() {
+        return f();
+    }
+    let _gate = WSL_LAUNCH_GATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    f()
+}
+
+/// Holds the WSL launch gate for a long-lived launch; dropping it waits
+/// [`WSL_LAUNCH_SETTLE`] and then lets the next launch through. Drop it once
+/// the process can make progress — for a PTY child that is after its reader
+/// thread runs, since ConPTY holds the child until the reader answers the
+/// startup cursor query.
+pub struct WslLaunchGuard {
+    _gate: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for WslLaunchGuard {
+    fn drop(&mut self) {
+        std::thread::sleep(WSL_LAUNCH_SETTLE);
+    }
+}
+
+/// Take the WSL launch gate for a long-lived launch (WSL-backend mode);
+/// `None` natively.
+pub fn wsl_launch_guard() -> Option<WslLaunchGuard> {
+    wsl()?;
+    Some(WslLaunchGuard {
+        _gate: WSL_LAUNCH_GATE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    })
+}
+
+/// Start a long-lived backend process through the WSL launch gate: `f`
+/// spawns it, and the gate is held for the spawn plus
+/// [`WSL_LAUNCH_SETTLE`]. Natively it is just `f()`.
+pub fn spawn_gated<T>(f: impl FnOnce() -> T) -> T {
+    let _gate = wsl_launch_guard();
+    f()
 }
 
 /// The login shell plus the args that precede a command *string*, so that
@@ -334,15 +397,17 @@ fn resolve_in_path(
 /// prints can leak into logs or errors.
 pub fn run_shell_ok(cmd: &str) -> bool {
     let (shell, prefix) = login_shell();
-    std::process::Command::new(shell)
-        .args(prefix)
-        .arg(cmd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    run_gated(|| {
+        std::process::Command::new(shell)
+            .args(prefix)
+            .arg(cmd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+    })
+    .map(|status| status.success())
+    .unwrap_or(false)
 }
 
 /// Run `cmd` through the login shell, discarding stderr; returns its stdout
@@ -351,13 +416,15 @@ pub fn run_shell_ok(cmd: &str) -> bool {
 /// JSON listing), not just its exit status.
 pub fn run_shell_stdout(cmd: &str) -> Option<String> {
     let (shell, prefix) = login_shell();
-    let output = std::process::Command::new(shell)
-        .args(prefix)
-        .arg(cmd)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let output = run_gated(|| {
+        std::process::Command::new(shell)
+            .args(prefix)
+            .arg(cmd)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+    })
+    .ok()?;
     output
         .status
         .success()

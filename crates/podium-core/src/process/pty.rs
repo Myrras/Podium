@@ -156,6 +156,10 @@ impl PtyProcess {
             cmd.cwd(&spec.cwd);
         }
 
+        // In WSL-backend mode, one `wsl.exe` start at a time (see
+        // `platform::wsl_launch_guard`), held until the reader thread below
+        // is running and can answer ConPTY's startup query.
+        let launch_gate = crate::platform::wsl_launch_guard();
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -222,6 +226,8 @@ impl PtyProcess {
             };
             on_exit(code);
         });
+        // The reader is running: this launch can finish its handshake.
+        drop(launch_gate);
 
         Ok(Self {
             master: Mutex::new(pair.master),

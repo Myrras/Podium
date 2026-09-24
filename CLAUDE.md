@@ -669,6 +669,15 @@ ignores a configured distro there).
   reach Linux **only** when listed in `WSLENV`: `pty.rs` appends `KEY/u` for
   every `spec.env` key and `TERM` (`platform::wslenv_with`). Add any new
   per-process variable to `spec.env`, not straight to the command.
+- **One `wsl.exe` start at a time.** `wsl.exe` can't take a burst of
+  concurrent starts: with three or more at once, all but two hang ~30 s and
+  fail (`Wsl/Service/E_UNEXPECTED`), which the startup burst of adapter
+  probes and per-project git calls hit (and a failed probe is cached for the
+  run). So every launch goes through a process-wide gate:
+  `platform::run_gated` for short commands (`run_shell_*`, git),
+  `wsl_launch_guard`/`spawn_gated` for long-lived ones (PTY, assistant; held
+  until the PTY reader runs, plus 150 ms). New code that starts `wsl.exe`
+  must use one of these. A no-op natively.
 - **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the
   distro's git without a shell.
 - **Stop.** Killing `wsl.exe` (the ConPTY child) takes the whole Linux session
