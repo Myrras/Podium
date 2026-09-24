@@ -62,6 +62,42 @@ async fn wait_for_exit(orch: &Orchestrator, id: ProcessId) -> ProcessStatus {
     .expect("timed out waiting for process to exit")
 }
 
+/// Like [`wait_for_exit`], but also plays the part xterm.js plays in the app:
+/// answering cursor-position queries. portable-pty opens ConPTY with
+/// `PSEUDOCONSOLE_INHERIT_CURSOR`, so on Windows ConPTY sends `ESC[6n` at
+/// startup and holds the child until it gets a reply; without one the child
+/// never runs, let alone exits. Unix PTYs never send the query.
+async fn wait_for_exit_answering_cursor_queries(
+    orch: &Orchestrator,
+    id: ProcessId,
+) -> ProcessStatus {
+    const QUERY: &[u8] = b"[6n";
+    const REPLY: &[u8] = b"[1;1R";
+    let asks = |bytes: &[u8]| bytes.windows(QUERY.len()).any(|w| w == QUERY);
+    let (snapshot, _next_seq, mut rx) = orch.attach(id).await.expect("attach");
+    if asks(&snapshot) {
+        let _ = orch.write_stdin(id, REPLY).await;
+    }
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let status = status_of(orch, id);
+            if matches!(status, ProcessStatus::Exited { .. }) {
+                return status;
+            }
+            tokio::select! {
+                Ok(chunk) = rx.recv() => {
+                    if asks(&chunk.bytes) {
+                        let _ = orch.write_stdin(id, REPLY).await;
+                    }
+                }
+                _ = sleep(Duration::from_millis(25)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for process to exit")
+}
+
 async fn wait_for_running(orch: &Orchestrator, id: ProcessId) {
     timeout(TEST_TIMEOUT, async {
         loop {
@@ -118,7 +154,7 @@ async fn printf_hello_exits_cleanly() {
 async fn nonzero_exit_is_a_crash() {
     let (orch, id, _dir) = setup("exit 3").await;
     orch.start_process(id).await.expect("start");
-    let status = wait_for_exit(&orch, id).await;
+    let status = wait_for_exit_answering_cursor_queries(&orch, id).await;
     let ProcessStatus::Exited { code, crashed, .. } = status else {
         panic!("expected Exited, got {status:?}");
     };
