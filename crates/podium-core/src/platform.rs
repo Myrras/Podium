@@ -125,6 +125,17 @@ fn wsl_login_shell(wsl: &WslBackend, linux_cwd: Option<&str>) -> (String, Vec<St
     ("wsl.exe".to_string(), args)
 }
 
+/// `path` spelled the way the backend's processes see it: its Linux path
+/// inside the distro in WSL-backend mode (`C:\Users\…` → `/mnt/c/Users/…`),
+/// the path itself natively. For paths handed to a child as an argument
+/// (config files, rules files) — a `--cd` goes through [`login_shell_in`].
+pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
+    match wsl() {
+        Some(w) => wsl_path::to_linux(w.distro(), path),
+        None => Ok(path.to_string_lossy().into_owned()),
+    }
+}
+
 /// `existing` `WSLENV` plus `KEY/u` for each of `keys` not already listed, so
 /// those variables set on the Windows side of `wsl.exe` reach the Linux side
 /// (WSL passes nothing through otherwise). `/u` = only when launching WSL
@@ -483,6 +494,15 @@ mod tests {
                 "{arg:?}"
             );
         }
+    }
+
+    #[test]
+    fn backend_path_is_the_path_itself_natively() {
+        let path = std::env::temp_dir().join("mcp").join("agent.json");
+        assert_eq!(
+            backend_path(&path).unwrap(),
+            path.to_string_lossy().into_owned()
+        );
     }
 
     #[test]

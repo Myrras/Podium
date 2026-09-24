@@ -183,3 +183,56 @@ async fn stopping_a_service_ends_its_linux_children() {
     assert!(gone, "Linux children outlived the stopped service");
     orch.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_windows_config_file_is_readable_at_its_backend_path() {
+    // Agent/assistant `--mcp-config` and `--rules` files live in the Windows
+    // app data dir; the CLI inside WSL must be able to open them.
+    let Some(distro) = distro() else { return };
+    let dir = WslDir::new(&distro, "config");
+    let config = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile_in(std::env::temp_dir())
+        .expect("temp config file");
+    std::fs::write(config.path(), "{\"podium\":\"reachable\"}").unwrap();
+    let linux = podium_core::platform::backend_path(config.path()).expect("backend path");
+    assert!(linux.starts_with("/mnt/"), "{linux}");
+    let command = format!(
+        "cat {}; printf ':end'",
+        podium_core::platform::quote_posix(&linux).unwrap()
+    );
+    let orch = Orchestrator::new();
+    let id = start(&orch, &dir, service(&command, &dir, Vec::new())).await;
+    let text = wait_for_output(&orch, id, ":end").await;
+    assert!(text.contains("\"podium\":\"reachable\""), "{text:?}");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_windows_host_is_reachable_on_localhost() {
+    // The MCP server binds 127.0.0.1 on Windows; agents in WSL reach it only
+    // with mirrored networking (`networkingMode=mirrored` in .wslconfig).
+    let Some(distro) = distro() else { return };
+    let dir = WslDir::new(&distro, "net");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nfrom-window",
+            );
+        }
+    });
+    let command = format!("curl -s --max-time 5 http://127.0.0.1:{port}/; printf ':end'");
+    let orch = Orchestrator::new();
+    let id = start(&orch, &dir, service(&command, &dir, Vec::new())).await;
+    let text = wait_for_output(&orch, id, ":end").await;
+    assert!(
+        text.contains("from-window"),
+        "Windows host not reachable from WSL on 127.0.0.1 — is networkingMode=mirrored set? {text:?}"
+    );
+    orch.shutdown().await;
+}
