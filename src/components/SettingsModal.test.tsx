@@ -323,6 +323,28 @@ describe("SettingsModal — General tab, WSL backend", () => {
     expect(invoke).not.toHaveBeenCalledWith("backend_settings_get", undefined);
   });
 
+  it("hints the distro's $SHELL as the terminal default in WSL mode", async () => {
+    platform.isWindows = true;
+    backendDto = { wslDistro: "Ubuntu", activeWslDistro: "Ubuntu" };
+    render(<SettingsModal open onClose={() => undefined} />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Shell")).toHaveAttribute(
+        "placeholder",
+        "$SHELL (default)",
+      ),
+    );
+  });
+
+  it("hints PowerShell as the terminal default on native Windows", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    await screen.findByLabelText("WSL distro");
+    expect(screen.getByLabelText("Shell")).toHaveAttribute(
+      "placeholder",
+      "powershell (default)",
+    );
+  });
+
   it("saves the distro on Windows and asks for a restart", async () => {
     platform.isWindows = true;
     render(<SettingsModal open onClose={() => undefined} />);

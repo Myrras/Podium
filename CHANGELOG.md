@@ -8,6 +8,25 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [Unreleased]
+
+### Added
+
+- **Run everything inside WSL on Windows.** Settings → General → Backend takes
+  a WSL distro name; after a restart, services, terminals, agents, the
+  personal assistant, git worktrees and the MCP install all run inside that
+  distro, with projects opened from `\\wsl.localhost\<distro>\…`. Podium
+  itself stays a native Windows app. It needs WSL's mirrored networking, and
+  warns at startup when that is off.
+
+### Fixed
+
+- **Background processes on Windows no longer wait for their terminal to be
+  opened.** An `auto_start` service, an agent started from a to-do, or a
+  supervised restart used to sit blocked until someone opened its terminal,
+  because Windows' console layer waits for a reply that only the terminal view
+  gave. Podium now answers it itself.
+
 ## [2.0.1] - 2026-09-22
 
 ### Added

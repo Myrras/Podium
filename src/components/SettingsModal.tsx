@@ -69,10 +69,11 @@ const FONT_SIZE_MIN = 10;
 const FONT_SIZE_MAX = 24;
 
 // Placeholder for the terminal-shell field: the platform default the backend
-// falls back to when the field is blank.
-const DEFAULT_SHELL_HINT = navigator.userAgent.includes("Windows")
-  ? "powershell (default)"
-  : "$SHELL (default)";
+// falls back to when the field is blank. In WSL-backend mode that is the
+// distro's `$SHELL`, as on Unix.
+function defaultShellHint(wslActive: boolean): string {
+  return isWindows && !wslActive ? "powershell (default)" : "$SHELL (default)";
+}
 
 /** Checkbox toggle row with label and optional helper text. */
 function SettingToggle({
@@ -737,6 +738,7 @@ function GeneralTab() {
   const setTheme = useThemeStore((s) => s.setTheme);
   const settings = useSettingsStore();
   const fontSize = settings.terminal.fontSize;
+  const wslActive = useActiveWslDistro() !== "";
 
   return (
     <>
@@ -818,16 +820,16 @@ function GeneralTab() {
             id="terminal-shell"
             type="text"
             value={settings.terminal.shell}
-            placeholder={DEFAULT_SHELL_HINT}
+            placeholder={defaultShellHint(wslActive)}
             onChange={(e) =>
               settings.set("terminal", { shell: e.target.value })
             }
           />
           <small className={styles.rowHelp}>
             Command new terminals launch. Leave blank for the system default
-            (your login shell on macOS/Linux, PowerShell on Windows). Examples:{" "}
-            <code>pwsh</code>, <code>cmd</code>, <code>bash</code>,{" "}
-            <code>wsl</code>.
+            (your login shell on macOS/Linux and in WSL mode, PowerShell on
+            Windows). Examples: <code>pwsh</code>, <code>cmd</code>,{" "}
+            <code>bash</code>, <code>wsl</code>.
           </small>
         </div>
       </section>
@@ -837,6 +839,24 @@ function GeneralTab() {
       <NotificationsSettings />
     </>
   );
+}
+
+/** The WSL distro this run uses (Windows WSL-backend mode), or `""`. */
+function useActiveWslDistro(): string {
+  const [active, setActive] = useState("");
+  useEffect(() => {
+    if (!isWindows) return;
+    let cancelled = false;
+    backendSettingsGet()
+      .then((d) => {
+        if (!cancelled) setActive(d.activeWslDistro);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return active;
 }
 
 /**
