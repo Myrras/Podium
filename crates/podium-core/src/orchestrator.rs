@@ -721,9 +721,25 @@ impl Orchestrator {
     /// Respawn every agent remembered for `root`, each via `--resume`.
     /// Best-effort per entry; the caller clears the list afterwards.
     async fn restore_remembered_sessions(&self, project_id: ProjectId, root: &Path) {
+        let projects_root = self
+            .claude_projects_root
+            .lock()
+            .expect(LOCK_POISONED)
+            .clone();
         for entry in self.session_memory.list(root) {
             // Without resume support this would be a fresh agent with no context.
             if !self.adapter_supports_resume(&entry.adapter_id) {
+                continue;
+            }
+            // The file is user-writable; never hand `--resume` a non-UUID.
+            if !session_memory::is_valid_session_id(&entry.session_id) {
+                tracing::warn!("skipping a remembered agent session with an invalid id");
+                continue;
+            }
+            // Pruned by Claude Code's retention: resuming would exit at once.
+            if projects_root.as_deref().is_some_and(|pr| {
+                !session_memory::session_file_exists(pr, &entry.cwd, &entry.session_id)
+            }) {
                 continue;
             }
             if let Err(e) = self
@@ -2139,7 +2155,9 @@ impl Orchestrator {
     }
 
     /// Stop every running process (SIGTERM its group now, SIGKILL after the
-    /// grace period) and cancel all pending supervised restarts.
+    /// grace period) and cancel all pending supervised restarts. With
+    /// `remember_sessions` on, running agents' session ids are captured first
+    /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
@@ -2169,24 +2187,27 @@ impl Orchestrator {
     }
 
     /// Remember each running resumable agent's Claude Code session id for the
-    /// next open of its project. A cwd shared by several running agents is
-    /// skipped: which session file is whose would be a guess.
+    /// next open of its project. The session file is found by the
+    /// `podium-<tag>` title Claude Code records for the agent's `-n` name, so
+    /// several agents sharing a cwd each get their own. Without a title match
+    /// it falls back to the id the agent was resumed with, then — only when it
+    /// is the sole running agent in that cwd — the newest file since its spawn.
     fn capture_agent_sessions(&self) {
-        // (project root, cwd, adapter id, name, running since, resumed id)
-        type Candidate = (
-            PathBuf,
-            PathBuf,
-            String,
-            String,
-            DateTime<Utc>,
-            Option<String>,
-        );
+        struct Candidate {
+            root: PathBuf,
+            cwd: PathBuf,
+            adapter_id: String,
+            name: String,
+            since: DateTime<Utc>,
+            resumed: Option<String>,
+            title: String,
+        }
         let candidates: Vec<Candidate> = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             inner
                 .processes
-                .values()
-                .filter_map(|p| {
+                .iter()
+                .filter_map(|(id, p)| {
                     let ProcessKind::Agent { adapter } = &p.spec.kind else {
                         return None;
                     };
@@ -2196,43 +2217,57 @@ impl Orchestrator {
                     if !self.adapter_supports_resume(adapter) {
                         return None;
                     }
-                    let root = inner.projects.get(&p.project_id)?.root.clone();
-                    let (cwd, name) = (p.spec.cwd.clone(), p.spec.name.clone());
-                    let resumed = p.resumed_session_id.clone();
-                    Some((root, cwd, adapter.clone(), name, since, resumed))
+                    Some(Candidate {
+                        root: inner.projects.get(&p.project_id)?.root.clone(),
+                        cwd: p.spec.cwd.clone(),
+                        adapter_id: adapter.clone(),
+                        name: p.spec.name.clone(),
+                        since,
+                        resumed: p.resumed_session_id.clone(),
+                        title: crate::agent::peer_session_name(&crate::agent::peer_tag(
+                            &id.to_string(),
+                        )),
+                    })
                 })
                 .collect()
         };
-        let Some(projects_root) = self
+        let projects_root = self
             .claude_projects_root
             .lock()
             .expect(LOCK_POISONED)
-            .clone()
-        else {
-            return;
-        };
+            .clone();
         let mut per_cwd: HashMap<&Path, usize> = HashMap::new();
-        for (_, cwd, ..) in &candidates {
-            *per_cwd.entry(cwd.as_path()).or_default() += 1;
+        for c in &candidates {
+            *per_cwd.entry(c.cwd.as_path()).or_default() += 1;
         }
-        for (root, cwd, adapter_id, name, since, resumed) in &candidates {
-            if per_cwd[cwd.as_path()] > 1 {
-                continue;
-            }
-            let Some(session_id) =
-                session_memory::find_latest_session_id_in(&projects_root, cwd, (*since).into())
-                    .or_else(|| resumed.clone())
+        for c in &candidates {
+            let pr = projects_root.as_deref();
+            let Some(session_id) = pr
+                .and_then(|pr| session_memory::find_titled_session_id_in(pr, &c.cwd, &c.title))
+                .or_else(|| {
+                    c.resumed
+                        .clone()
+                        .filter(|id| session_memory::is_valid_session_id(id))
+                })
+                .or_else(|| {
+                    (per_cwd[c.cwd.as_path()] == 1)
+                        .then_some(pr)
+                        .flatten()
+                        .and_then(|pr| {
+                            session_memory::find_latest_session_id_in(pr, &c.cwd, c.since.into())
+                        })
+                })
             else {
                 continue;
             };
             let entry = RememberedSession {
-                adapter_id: adapter_id.clone(),
-                name: name.clone(),
-                cwd: cwd.clone(),
+                adapter_id: c.adapter_id.clone(),
+                name: c.name.clone(),
+                cwd: c.cwd.clone(),
                 session_id,
                 updated_at: Utc::now(),
             };
-            if let Err(e) = self.session_memory.remember(root, entry) {
+            if let Err(e) = self.session_memory.remember(&c.root, entry) {
                 tracing::warn!("remembering an agent session failed: {e}");
             }
         }
@@ -3311,20 +3346,37 @@ mod tests {
         orch
     }
 
-    /// Stand in for Claude Code writing its session file for `cwd`.
+    /// Stand in for Claude Code writing its session file for `cwd`; `body`
+    /// is the file content (e.g. a custom-title line).
     #[cfg(unix)]
-    fn write_session_file(data: &Path, cwd: &Path, id: &str) {
-        // The lookup only accepts files modified after the agent started.
+    fn write_session_file_with(data: &Path, cwd: &Path, id: &str, body: &str) {
+        // The mtime fallback only accepts files modified after the agent started.
         std::thread::sleep(Duration::from_millis(20));
         let dir = data
             .join("claude-projects")
             .join(crate::agent::session_memory::sanitize_cwd(cwd));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{id}.jsonl")), "{}").unwrap();
+        std::fs::write(dir.join(format!("{id}.jsonl")), body).unwrap();
     }
 
     #[cfg(unix)]
-    async fn spawn_named(orch: &Orchestrator, project: ProjectId, name: &str) {
+    fn write_session_file(data: &Path, cwd: &Path, id: &str) {
+        write_session_file_with(data, cwd, id, "{}");
+    }
+
+    /// A session file carrying the custom-title line Claude Code writes for
+    /// the agent `process`'s `-n podium-<tag>` name.
+    #[cfg(unix)]
+    fn write_titled_session_file(data: &Path, cwd: &Path, id: &str, process: ProcessId) {
+        let title = crate::agent::peer_session_name(&crate::agent::peer_tag(&process.to_string()));
+        let body = format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\",\"sessionId\":\"{id}\"}}\n"
+        );
+        write_session_file_with(data, cwd, id, &body);
+    }
+
+    #[cfg(unix)]
+    async fn spawn_named(orch: &Orchestrator, project: ProjectId, name: &str) -> ProcessId {
         orch.spawn_agent(
             project,
             Some("claude-code".to_string()),
@@ -3337,8 +3389,13 @@ mod tests {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
     }
+
+    const SESS_1: &str = "00000000-0000-4000-8000-000000000001";
+    const SESS_2: &str = "00000000-0000-4000-8000-000000000002";
+    const SESS_3: &str = "00000000-0000-4000-8000-000000000003";
+    const SESS_4: &str = "00000000-0000-4000-8000-000000000004";
 
     #[tokio::test]
     #[cfg(unix)]
@@ -3349,7 +3406,7 @@ mod tests {
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
         spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, "sess-fictional-1");
+        write_session_file(data.path(), &root, SESS_1);
         orch.shutdown().await;
 
         let restarted = session_memory_orch(data.path());
@@ -3360,7 +3417,7 @@ mod tests {
             .find(|p| p.name == "agent-1")
             .expect("remembered agent respawned");
         assert!(
-            resumed.command.contains("--resume sess-fictional-1"),
+            resumed.command.contains(&format!("--resume {SESS_1}")),
             "command: {}",
             resumed.command
         );
@@ -3380,7 +3437,7 @@ mod tests {
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
         spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, "sess-fictional-2");
+        write_session_file(data.path(), &root, SESS_2);
         orch.shutdown().await;
         assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
 
@@ -3406,7 +3463,7 @@ mod tests {
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
         spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, "sess-fictional-4");
+        write_session_file(data.path(), &root, SESS_4);
         orch.shutdown().await;
 
         // Restored, then quit without the session file being touched again.
@@ -3415,12 +3472,37 @@ mod tests {
         restarted.shutdown().await;
         let listed = restarted.session_memory.list(&root);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, "sess-fictional-4");
+        assert_eq!(listed[0].session_id, SESS_4);
     }
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn ambiguous_cwd_is_skipped_on_capture() {
+    async fn agents_sharing_a_cwd_each_get_their_own_session_by_title() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        let first = spawn_named(&orch, id, "agent-1").await;
+        let second = spawn_named(&orch, id, "agent-2").await;
+        write_titled_session_file(data.path(), &root, SESS_1, first);
+        write_titled_session_file(data.path(), &root, SESS_2, second);
+        orch.shutdown().await;
+
+        let listed = orch.session_memory.list(&root);
+        let id_of = |name: &str| {
+            listed
+                .iter()
+                .find(|e| e.name == name)
+                .map(|e| e.session_id.clone())
+        };
+        assert_eq!(id_of("agent-1").as_deref(), Some(SESS_1));
+        assert_eq!(id_of("agent-2").as_deref(), Some(SESS_2));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn shared_cwd_without_title_or_resumed_id_is_not_remembered() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
         let orch = session_memory_orch(data.path());
@@ -3428,8 +3510,57 @@ mod tests {
         let id = orch.open_project(root.clone()).await.unwrap();
         spawn_named(&orch, id, "agent-1").await;
         spawn_named(&orch, id, "agent-2").await;
-        write_session_file(data.path(), &root, "sess-fictional-3");
+        write_session_file(data.path(), &root, SESS_3);
         orch.shutdown().await;
         assert!(orch.session_memory.list(&root).is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pruned_session_is_not_restored() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        spawn_named(&orch, id, "agent-1").await;
+        write_session_file(data.path(), &root, SESS_1);
+        orch.shutdown().await;
+        assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
+        // Claude Code's retention removes the session file in between.
+        std::fs::remove_dir_all(data.path().join("claude-projects")).unwrap();
+
+        let restarted = session_memory_orch(data.path());
+        let id = restarted.open_project(root.clone()).await.unwrap();
+        assert!(restarted.list_processes(Some(id)).is_empty());
+        assert!(restarted.session_memory.list(&root).is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn invalid_remembered_session_id_is_not_restored() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        // A tampered file: an id that would read as a flag, with a matching
+        // session file so only the id check can reject it.
+        write_session_file(data.path(), &root, "-x");
+        orch.session_memory
+            .remember(
+                &root,
+                RememberedSession {
+                    adapter_id: "claude-code".to_string(),
+                    name: "agent-1".to_string(),
+                    cwd: root.clone(),
+                    session_id: "-x".to_string(),
+                    updated_at: Utc::now(),
+                },
+            )
+            .unwrap();
+
+        let restarted = session_memory_orch(data.path());
+        restarted.set_agent_remember_sessions(true).unwrap();
+        let id = restarted.open_project(root.clone()).await.unwrap();
+        assert!(restarted.list_processes(Some(id)).is_empty());
     }
 }

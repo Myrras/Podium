@@ -170,14 +170,22 @@ one lock acquisition, atomically, before the async `podium.yml` load.
 - **Agent session memory** (`agent/session_memory.rs`, setting
   `remember_sessions` in `agents.json`, default off): `session_memory.json`,
   keyed by project root. `Orchestrator::shutdown()` is the only place a
-  session is captured — for each still-running Claude Code agent it reads
-  `~/.claude/projects/<sanitized-cwd>/<id>.jsonl`, picking the newest file at
-  or after the agent's spawn time (falling back to the id it was resumed
-  with) and skipping the cwd entirely when more than one running agent
-  shares it, since the ambiguity can't be resolved. The next fresh
-  `open_project` on that root passes each remembered id to its adapter as
-  `--resume` when `remember_sessions` is on; the remembered list for that
-  root is always cleared on open, on or off.
+  session is captured — for each still-running Claude Code agent it looks in
+  `~/.claude/projects/<sanitized-cwd>/` (every non-ASCII-alphanumeric char of
+  the cwd becomes `-`, Claude Code's own scheme) for the `<id>.jsonl` carrying
+  the `{"type":"custom-title","customTitle":"podium-<tag>"}` line Claude Code
+  writes for the agent's `-n` name, so agents sharing a cwd each get their own
+  session. Without a title match it falls back to the id the agent was
+  resumed with, then — only when it is the sole running agent in that cwd —
+  the newest file at or after its spawn time; otherwise nothing is
+  remembered. Only UUID-shaped ids are accepted, at capture and again at
+  restore (the file is user-writable, and `--resume -x` would read as a
+  flag). The next fresh `open_project` on that root passes each remembered id
+  to its adapter as `--resume` when `remember_sessions` is on, skipping ids
+  whose jsonl Claude Code has since pruned; the remembered list for that root
+  is always cleared on open, on or off. The MCP server is started
+  synchronously in `setup` so a restored agent never spawns before the MCP
+  connect info (and with it `-n`) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,

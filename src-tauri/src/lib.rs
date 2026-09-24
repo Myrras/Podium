@@ -194,18 +194,21 @@ pub fn run() {
             // bearer token). Agents get the URL + token via 0600 config files
             // under `{app_data_dir}/mcp`, which is wiped on every start. A
             // failure is logged but not fatal: Podium works without MCP.
+            // `block_on`, not a spawned task: the frontend's startup
+            // `project_open` can restore remembered agents, and one spawned
+            // before the MCP connect info is set would run its whole life
+            // without Podium's MCP config, session name or identity. Binding
+            // a localhost port is quick; the server's own serve loop is a
+            // task on the runtime, so it keeps running after this returns.
             let orchestrator = Arc::clone(&state.orchestrator);
-            let handle = app.handle().clone();
             let config_dir = app.path().app_data_dir()?.join("mcp");
-            tauri::async_runtime::spawn(async move {
-                match podium_core::mcp::start(orchestrator, config_dir).await {
-                    Ok(server) => {
-                        let state = handle.state::<AppState>();
-                        *state.mcp.lock().expect("mcp state lock poisoned") = Some(server);
-                    }
-                    Err(e) => tracing::error!("failed to start mcp server: {e}"),
+            match tauri::async_runtime::block_on(podium_core::mcp::start(orchestrator, config_dir))
+            {
+                Ok(server) => {
+                    *state.mcp.lock().expect("mcp state lock poisoned") = Some(server);
                 }
-            });
+                Err(e) => tracing::error!("failed to start mcp server: {e}"),
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
