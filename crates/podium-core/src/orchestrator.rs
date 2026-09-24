@@ -109,6 +109,9 @@ struct ManagedProcess {
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
+    /// The session id this agent was resumed with, kept so an idle restored
+    /// session (no newer session file) is still remembered on shutdown.
+    resumed_session_id: Option<String>,
 }
 
 impl ManagedProcess {
@@ -708,12 +711,15 @@ impl Orchestrator {
         if self.agent_settings.get().remember_sessions {
             self.restore_remembered_sessions(id, &path).await;
         }
+        // Dropped even with the toggle off, so old sessions never resurface later.
+        if let Err(e) = self.session_memory.clear(&path) {
+            tracing::warn!("clearing remembered agent sessions failed: {e}");
+        }
         Ok(id)
     }
 
     /// Respawn every agent remembered for `root`, each via `--resume`.
-    /// Best-effort per entry; the list is cleared either way so a stale entry
-    /// never re-fires on a later open.
+    /// Best-effort per entry; the caller clears the list afterwards.
     async fn restore_remembered_sessions(&self, project_id: ProjectId, root: &Path) {
         for entry in self.session_memory.list(root) {
             // Without resume support this would be a fresh agent with no context.
@@ -737,9 +743,6 @@ impl Orchestrator {
             {
                 tracing::warn!("restoring a remembered agent session failed: {e}");
             }
-        }
-        if let Err(e) = self.session_memory.clear(root) {
-            tracing::warn!("clearing remembered agent sessions failed: {e}");
         }
     }
 
@@ -1714,6 +1717,9 @@ impl Orchestrator {
                 return Err(err);
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
+            if let Some(p) = inner.processes.get_mut(&process_id) {
+                p.resumed_session_id = resume_session_id;
+            }
         }
         self.events.publish(PodiumEvent::ProcessAdded {
             project_id,
@@ -2166,8 +2172,15 @@ impl Orchestrator {
     /// next open of its project. A cwd shared by several running agents is
     /// skipped: which session file is whose would be a guess.
     fn capture_agent_sessions(&self) {
-        // (project root, cwd, adapter id, name, running since)
-        type Candidate = (PathBuf, PathBuf, String, String, DateTime<Utc>);
+        // (project root, cwd, adapter id, name, running since, resumed id)
+        type Candidate = (
+            PathBuf,
+            PathBuf,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<String>,
+        );
         let candidates: Vec<Candidate> = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             inner
@@ -2185,7 +2198,8 @@ impl Orchestrator {
                     }
                     let root = inner.projects.get(&p.project_id)?.root.clone();
                     let (cwd, name) = (p.spec.cwd.clone(), p.spec.name.clone());
-                    Some((root, cwd, adapter.clone(), name, since))
+                    let resumed = p.resumed_session_id.clone();
+                    Some((root, cwd, adapter.clone(), name, since, resumed))
                 })
                 .collect()
         };
@@ -2201,12 +2215,13 @@ impl Orchestrator {
         for (_, cwd, ..) in &candidates {
             *per_cwd.entry(cwd.as_path()).or_default() += 1;
         }
-        for (root, cwd, adapter_id, name, since) in &candidates {
+        for (root, cwd, adapter_id, name, since, resumed) in &candidates {
             if per_cwd[cwd.as_path()] > 1 {
                 continue;
             }
             let Some(session_id) =
                 session_memory::find_latest_session_id_in(&projects_root, cwd, (*since).into())
+                    .or_else(|| resumed.clone())
             else {
                 continue;
             };
@@ -2557,6 +2572,7 @@ fn insert_process(
             restart: RestartState::default(),
             started_at: None,
             waiting_since: None,
+            resumed_session_id: None,
         },
     );
 }
@@ -3370,11 +3386,36 @@ mod tests {
 
         let restarted = session_memory_orch(data.path());
         restarted.set_agent_remember_sessions(false).unwrap();
-        let id = restarted.open_project(root).await.unwrap();
+        let id = restarted.open_project(root.clone()).await.unwrap();
         assert!(
             restarted.list_processes(Some(id)).is_empty(),
             "no agent auto-spawns with the toggle off"
         );
+        assert!(
+            restarted.session_memory.list(&root).is_empty(),
+            "entries are dropped on open even with the toggle off"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn idle_restored_session_is_remembered_again_on_shutdown() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = session_memory_orch(data.path());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        spawn_named(&orch, id, "agent-1").await;
+        write_session_file(data.path(), &root, "sess-fictional-4");
+        orch.shutdown().await;
+
+        // Restored, then quit without the session file being touched again.
+        let restarted = session_memory_orch(data.path());
+        restarted.open_project(root.clone()).await.unwrap();
+        restarted.shutdown().await;
+        let listed = restarted.session_memory.list(&root);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, "sess-fictional-4");
     }
 
     #[tokio::test]
