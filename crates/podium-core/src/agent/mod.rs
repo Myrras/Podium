@@ -517,9 +517,12 @@ mod tests {
 
     /// Round-trips a built [`LaunchPlan::command`] back into argv, using
     /// whichever tokenizer matches the shell `login_shell()` actually runs it
-    /// through on this OS — `shlex` for `$SHELL -lc`, the Windows argv parser
-    /// for `cmd.exe /C`.
+    /// through in this mode — `shlex` for `$SHELL -lc` and for bash in
+    /// WSL-backend mode, the Windows argv parser for native `cmd.exe /C`.
     fn split_command(cmd: &str) -> Vec<String> {
+        if crate::platform::wsl().is_some() {
+            return shlex::split(cmd).expect("valid shell line");
+        }
         #[cfg(unix)]
         {
             shlex::split(cmd).expect("valid shell line")
