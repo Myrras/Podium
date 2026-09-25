@@ -79,6 +79,38 @@ them in sync when you add a command or MCP tool.
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
   IPC wrappers over all 78 commands.
+- ✅ **Window chrome**: both Windows and macOS get Tauri's native decorations
+  turned off and draw a fully custom header in `App.tsx`'s `<header>`
+  (`data-tauri-drag-region` makes the strip draggable) with `WindowControls.tsx`
+  (minimize/maximize/close via `@tauri-apps/api/window`, polling
+  `isMaximized()` on `onResized` to track Aero Snap/macOS-fullscreen too).
+  Windows puts the buttons at the top-right (brand left); macOS puts them at
+  the top-left with the brand centered, matching each platform's convention.
+  macOS still keeps its native *menu bar* (⌘, opens Settings — see the
+  `setup` hook's `#[cfg(target_os = "macos")]` block) — that's the screen-top
+  system menu, unrelated to the per-window decorations. Linux keeps its
+  native title bar for now.
+  `src-tauri/tauri.windows.conf.json` / `tauri.macos.conf.json` are
+  platform-config overrides auto-merged over `tauri.conf.json` (**the merge
+  is RFC 7396 JSON Merge Patch, so a JSON *array* replaces wholesale rather
+  than merging element-wise** — each file must repeat the whole `windows[0]`
+  object, not just `decorations`).
+  **Gotcha:** `"decorations": false` alone did nothing on Windows — not a
+  Tauri/tao bug, but `tauri_plugin_window_state`'s `on_window_ready` hook
+  restoring `decorated` from its own persisted `.window-state.json`
+  (default `StateFlags::all()` includes `DECORATIONS`, and it runs *after*
+  `setup()`, so it always won even with no saved file, since its own
+  `WindowState` default is `decorated: true`). Fixed by excluding
+  `StateFlags::DECORATIONS` when registering the plugin in `lib.rs` — do
+  the same for any other window property this plugin manages that a
+  platform config tries to override. Confirmed by screenshot on Windows
+  (`PrintWindow`, not `GetWindowLong`'s `WS_CAPTION` bit — Windows 11 can
+  keep that style bit set for DWM's rounded-corner/shadow rendering even
+  with no visible caption, so it isn't a reliable signal here). Not
+  verified on macOS — this repo's toolchain can't build or run macOS —
+  but the same plugin default applies there identically, so the same fix
+  should hold; macOS CI (compiles/lints/tests, no GUI) can't confirm the
+  visual result either.
 - ✅ CI (`.github/workflows/ci.yml`): a macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build — plus a Windows job (rustfmt, clippy, `cargo test

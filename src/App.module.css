@@ -14,6 +14,8 @@
   padding: 0 var(--sp-3);
   /* A slim brand strip that blends into the canvas — no dividing line. */
   background: var(--canvas);
+  /* Anchors .brandCentered (macOS) — see below. */
+  position: relative;
 }
 
 /* Windows: the strip IS the (custom) title bar, so the controls run flush to the
@@ -22,10 +24,27 @@
   padding-right: 0;
 }
 
+/* macOS: the (custom) window controls run flush to the top-left corner instead —
+   drop the left padding; the right side keeps it for the assistant/settings icons. */
+.titlebarMac {
+  padding-left: 0;
+}
+
 .brand {
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
+}
+
+/* macOS: the window controls occupy the leading edge, so centering the brand
+   the normal flex way (space-between's midpoint) would skew it off-center —
+   anchor it to the header's own true center instead, independent of how wide
+   the control clusters on either side are. */
+.brandCentered {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 /* Right-hand cluster: settings gear (+ window controls on Windows). Opt out of

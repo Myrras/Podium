@@ -262,13 +262,16 @@ export default function App() {
   return (
     <div className={styles.app}>
       <header
-        className={`${styles.titlebar}${isWindows ? ` ${styles.titlebarWindows}` : ""}`}
-        // Windows has no native title bar (decorations: false); the whole strip
-        // becomes the drag handle. macOS keeps its native title bar, so no
-        // drag region there.
-        data-tauri-drag-region={isWindows ? true : undefined}
+        className={`${styles.titlebar}${isWindows ? ` ${styles.titlebarWindows}` : ""}${isMac ? ` ${styles.titlebarMac}` : ""}`}
+        // Windows and macOS both have no native title bar (decorations: false
+        // — see CLAUDE.md's "Window chrome"), so the whole strip becomes the
+        // drag handle on either. Linux keeps its native title bar for now.
+        data-tauri-drag-region={isWindows || isMac ? true : undefined}
       >
-        <div className={styles.brand}>
+        {/* macOS: window controls sit top-left (its convention), so the brand
+            is centered instead of leading — see .brandCentered. */}
+        {isMac && <WindowControls />}
+        <div className={`${styles.brand}${isMac ? ` ${styles.brandCentered}` : ""}`}>
           <LogoMark size={18} className={styles.logo} aria-hidden />
           <span className={styles.product}>Podium</span>
           <span className={styles.tagline}>agent console</span>

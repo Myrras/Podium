@@ -1,5 +1,6 @@
-/* Windows window controls: square, flush to the top-right corner, sitting on
-   the canvas-coloured title bar. Out of the drag region so they stay clickable. */
+/* Custom window controls: square, flush to the title bar's leading edge
+   (top-right on Windows, top-left on macOS — see App.tsx), sitting on the
+   canvas-coloured title bar. Out of the drag region so they stay clickable. */
 
 .controls {
   display: flex;

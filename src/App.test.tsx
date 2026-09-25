@@ -22,6 +22,17 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
+// jsdom's user agent reads as macOS ("darwin"), so the app renders its
+// macOS window controls; WindowControls talks to the window API on mount.
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isMaximized: () => Promise.resolve(false),
+    onResized: () => Promise.resolve(() => undefined),
+    minimize: () => Promise.resolve(),
+    toggleMaximize: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  }),
+}));
 
 import userEvent from "@testing-library/user-event";
 
