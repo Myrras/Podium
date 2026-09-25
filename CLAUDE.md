@@ -678,6 +678,16 @@ ignores a configured distro there).
   `wsl_launch_guard`/`spawn_gated` for long-lived ones (PTY, assistant; held
   until the PTY reader runs, plus 150 ms). New code that starts `wsl.exe`
   must use one of these. A no-op natively.
+- **No console flash.** A console-subsystem child (git, `wsl.exe`, `cmd.exe`,
+  bash) spawned via a plain `Command`/`tokio::process::Command` from
+  release-mode Podium (a GUI-subsystem app, no console of its own) gets its
+  own new console window on Windows unless told otherwise — visible for the
+  call's lifetime. `platform::hide_console_window` sets `CREATE_NO_WINDOW`;
+  every non-ConPTY Windows spawn in this crate uses it (`run_shell_ok`,
+  `run_shell_stdout`, `git_command`, the assistant's CLI child, Warp's `cmd
+  /C start`). ConPTY-attached spawns (`process::pty`) are already windowless
+  and need nothing. New code that spawns a plain `Command` on Windows must
+  use it too.
 - **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the
   distro's git without a shell.
 - **Stop.** Killing `wsl.exe` (the ConPTY child) takes the whole Linux session
