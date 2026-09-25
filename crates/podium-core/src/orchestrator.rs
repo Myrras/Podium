@@ -3385,9 +3385,14 @@ mod tests {
         .unwrap()
     }
 
+    // Only the #[cfg(unix)] session-memory tests below use these.
+    #[cfg(unix)]
     const SESS_1: &str = "00000000-0000-4000-8000-000000000001";
+    #[cfg(unix)]
     const SESS_2: &str = "00000000-0000-4000-8000-000000000002";
+    #[cfg(unix)]
     const SESS_3: &str = "00000000-0000-4000-8000-000000000003";
+    #[cfg(unix)]
     const SESS_4: &str = "00000000-0000-4000-8000-000000000004";
 
     #[tokio::test]
