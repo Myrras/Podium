@@ -49,6 +49,7 @@ import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
 import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
 import { SettingsModal } from "./components/SettingsModal";
+import { useSettingsRequestStore } from "./state/settingsRequestStore";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPane } from "./components/TerminalPane";
 import { TodoDetailPane } from "./components/TodoDetailPane";
@@ -60,6 +61,10 @@ import styles from "./App.module.css";
 
 export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRequest = useSettingsRequestStore((s) => s.request);
+  useEffect(() => {
+    if (settingsRequest) setSettingsOpen(true);
+  }, [settingsRequest]);
   const [closeWarnOpen, setCloseWarnOpen] = useState(false);
 
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
@@ -324,7 +329,10 @@ export default function App() {
       <Toasts />
       <SettingsModal
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          setSettingsOpen(false);
+          useSettingsRequestStore.getState().clear();
+        }}
       />
       <CloseWarningModal
         open={closeWarnOpen}

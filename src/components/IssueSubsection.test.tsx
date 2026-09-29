@@ -10,6 +10,7 @@ vi.mock("../lib/links", () => ({ openExternalLink: vi.fn() }));
 import { issuesList } from "../ipc/commands";
 import type { IssueInfo } from "../ipc/types";
 import { openExternalLink } from "../lib/links";
+import { useSettingsRequestStore } from "../state/settingsRequestStore";
 import { useIssueStore, type ProjectIssues } from "../state/issueStore";
 import { IssueSubsection } from "./IssueSubsection";
 
@@ -69,13 +70,26 @@ describe("IssueSubsection", () => {
   it.each([
     ["issuesNoRemote", "No GitHub or GitLab remote found."],
     ["issuesGhUnavailable", "gh auth login"],
-    ["issuesUnsupportedHost", "only supported for GitHub"],
+    ["issuesUnsupportedHost", "supported for GitHub"],
   ])("shows the %s state without rows or retry", (kind, text) => {
     seed({ issues: [issue(1)], error: { kind, message: "x" } });
     render(<IssueSubsection projectId={P} />);
     expect(screen.getByRole("status").textContent).toContain(text);
     expect(screen.queryByText("#1 Issue 1")).toBeNull();
     expect(screen.queryByText("Retry")).toBeNull();
+  });
+
+  it.each([
+    ["issuesGitlabNotConfigured", "GitLab needs a token."],
+    ["issuesGitlabAuth", "GitLab rejected the token."],
+  ])("%s links to Settings → Issues", (kind, text) => {
+    seed({ error: { kind, message: "x" } });
+    useSettingsRequestStore.setState({ request: null });
+    render(<IssueSubsection projectId={P} />);
+    expect(screen.getByRole("status").textContent).toContain(text);
+    expect(screen.queryByText("Retry")).toBeNull();
+    fireEvent.click(screen.getByText("Check Settings"));
+    expect(useSettingsRequestStore.getState().request).toBe("issues");
   });
 
   it("keeps stale rows under a fetch error and offers retry", () => {

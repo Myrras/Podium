@@ -11,6 +11,7 @@ import { useEffect } from "react";
 
 import type { IpcError, IssueInfo, ProjectId } from "../ipc/types";
 import { openExternalLink } from "../lib/links";
+import { useSettingsRequestStore } from "../state/settingsRequestStore";
 import { useIssueStore, type ProjectIssues } from "../state/issueStore";
 import { IssueIcon, RestartIcon } from "./icons";
 import sidebarStyles from "./Sidebar.module.css";
@@ -34,7 +35,11 @@ function errorText(error: IpcError): string {
     case "issuesGhUnavailable":
       return "GitHub CLI missing or not logged in. Run `gh auth login`.";
     case "issuesUnsupportedHost":
-      return "Issues are only supported for GitHub remotes.";
+      return "Issues are supported for GitHub, and the GitLab host set in Settings.";
+    case "issuesGitlabNotConfigured":
+      return "GitLab needs a token.";
+    case "issuesGitlabAuth":
+      return "GitLab rejected the token.";
     default:
       return error.message;
   }
@@ -45,6 +50,14 @@ const SETUP_ERRORS = new Set([
   "issuesNoRemote",
   "issuesGhUnavailable",
   "issuesUnsupportedHost",
+  "issuesGitlabNotConfigured",
+  "issuesGitlabAuth",
+]);
+
+/** GitLab failures the user fixes in Settings → Issues. */
+const GITLAB_SETTINGS_ERRORS = new Set([
+  "issuesGitlabNotConfigured",
+  "issuesGitlabAuth",
 ]);
 
 export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
@@ -84,6 +97,14 @@ export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
       {error && (
         <div className={sidebarStyles.placeholder} role="status">
           <span>{errorText(error)}</span>
+          {GITLAB_SETTINGS_ERRORS.has(error.kind) && (
+            <button
+              type="button"
+              onClick={() => useSettingsRequestStore.getState().open("issues")}
+            >
+              Check Settings
+            </button>
+          )}
           {!setupError && (
             <button type="button" onClick={() => void refresh(projectId)}>
               Retry

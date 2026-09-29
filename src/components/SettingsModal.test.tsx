@@ -62,6 +62,12 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
     case "agent_settings_set_merge_mode":
     case "agent_settings_set_suggest_worktree":
       return Promise.resolve(sampleDto);
+    case "issues_settings_get":
+    case "issues_settings_set":
+      return Promise.resolve({
+        gitlabHost: "git.example.test",
+        gitlabTokenSet: true,
+      });
     case "assistant_autonomy_get":
       return Promise.resolve("confirm-destructive");
     case "assistant_autonomy_set":
@@ -271,6 +277,60 @@ describe("SettingsModal — Assistant tab", () => {
         "assistant_new_conversation",
         undefined,
       ),
+    );
+  });
+});
+
+describe("SettingsModal — Issues tab", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+  });
+
+  async function openIssuesTab() {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Issues" }));
+    return screen.findByText("Token saved");
+  }
+
+  it("shows the host but never renders the token", async () => {
+    await openIssuesTab();
+    expect(screen.getByLabelText("Host")).toHaveValue("git.example.test");
+    expect(screen.queryByLabelText("Access token")).toBeNull();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it("replaces the token with the typed value", async () => {
+    await openIssuesTab();
+    fireEvent.click(screen.getByText("Replace"));
+    const field = screen.getByLabelText("Access token");
+    expect(field).toHaveAttribute("type", "password");
+    expect(field).toHaveValue("");
+    fireEvent.change(field, { target: { value: "fake-token" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_settings_set", {
+        gitlabHost: "git.example.test",
+        gitlabToken: "fake-token",
+      }),
+    );
+  });
+
+  it("removes the token with a blank one, and saves the host alone otherwise", async () => {
+    await openIssuesTab();
+    fireEvent.click(screen.getByText("Remove"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_settings_set", {
+        gitlabHost: "git.example.test",
+        gitlabToken: "",
+      }),
+    );
+    invoke.mockClear();
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_settings_set", {
+        gitlabHost: "git.example.test",
+        gitlabToken: undefined,
+      }),
     );
   });
 });

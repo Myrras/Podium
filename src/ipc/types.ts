@@ -36,6 +36,12 @@ export interface IssueInfo {
   updatedAt: string;
 }
 
+/** Settings → Issues (`IssuesSettingsDto`); the token itself never crosses IPC. */
+export interface IssuesSettingsDto {
+  gitlabHost: string | null;
+  gitlabTokenSet: boolean;
+}
+
 /** Open project snapshot (`podium_core::ProjectInfo`). */
 export interface ProjectInfo {
   id: ProjectId;

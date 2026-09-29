@@ -2,7 +2,11 @@
 //! section. The repo is auto-detected from the git `origin` remote; GitHub
 //! issues come from the user's own `gh` login (Podium stores no token).
 //!
-//! Everything here shells out, so call it from a blocking-friendly context.
+//! Self-hosted GitLab (temporary, see [`fetch_gitlab`]) uses a personal access
+//! token kept only in the OS keychain: it is never returned, logged or put in
+//! an error message.
+//!
+//! Everything here shells out or does blocking I/O, so call it from a blocking-friendly context.
 //! Error messages are Podium-owned text — `gh`/`git` output is never captured
 //! into them.
 
@@ -134,15 +138,138 @@ pub fn fetch_github(gh: &str, owner_repo: &str) -> CoreResult<Vec<IssueInfo>> {
     parse_gh_issues(&String::from_utf8_lossy(&output.stdout))
 }
 
+// ponytail: temporary, remove once Connect is on GitHub — the GitLab parts
+// of this module (this block, `Route::GitLab`, the dispatch arm in `list`,
+// `IssueSettings`, the two errors, the Settings tab) go in one sweep.
+
+const KEYCHAIN_SERVICE: &str = "com.podium.app.gitlab";
+
+/// Reduce user input (`https://Git.Example.test/`) to a bare hostname; `None`
+/// when nothing usable is left.
+pub fn normalize_host(input: &str) -> Option<String> {
+    let s = input.trim();
+    let s = s.split_once("://").map_or(s, |(_, rest)| rest);
+    let host = s.split('/').next().unwrap_or("").trim();
+    (!host.is_empty() && !host.contains(char::is_whitespace)).then(|| host.to_ascii_lowercase())
+}
+
+fn keychain_entry(host: &str) -> CoreResult<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, host)
+        .map_err(|_| CoreError::IssuesFetch("could not open the keychain".to_string()))
+}
+
+/// Store the token for `host` in the OS keychain; a blank token deletes it.
+pub fn gitlab_token_set(host: &str, token: &str) -> CoreResult<()> {
+    let entry = keychain_entry(host)?;
+    let result = if token.trim().is_empty() {
+        match entry.delete_credential() {
+            Err(keyring::Error::NoEntry) => Ok(()),
+            other => other,
+        }
+    } else {
+        entry.set_password(token.trim())
+    };
+    result.map_err(|_| CoreError::IssuesFetch("could not update the keychain".to_string()))
+}
+
+fn gitlab_token_get(host: &str) -> Option<String> {
+    keychain_entry(host).ok()?.get_password().ok()
+}
+
+/// Whether a token is stored for `host` (the token itself never leaves here).
+pub fn gitlab_token_present(host: &str) -> bool {
+    gitlab_token_get(host).is_some()
+}
+
+#[derive(Deserialize)]
+struct GitlabIssue {
+    iid: u64,
+    title: String,
+    web_url: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    updated_at: String,
+}
+
+/// Map GitLab's `/issues` JSON to [`IssueInfo`]s.
+pub fn parse_gitlab_issues(json: &str) -> CoreResult<Vec<IssueInfo>> {
+    let raw: Vec<GitlabIssue> = serde_json::from_str(json)
+        .map_err(|_| CoreError::IssuesFetch("unexpected response from GitLab".to_string()))?;
+    Ok(raw
+        .into_iter()
+        .map(|i| IssueInfo {
+            number: i.iid,
+            title: i.title,
+            url: i.web_url,
+            body: i.description.unwrap_or_default(),
+            labels: i.labels,
+            updated_at: i.updated_at,
+        })
+        .collect())
+}
+
+/// Open issues assigned to the token's owner in `project_path`, from the
+/// instance at `base` (`https://host`; injectable so tests can use plain HTTP).
+pub fn fetch_gitlab(base: &str, project_path: &str, token: &str) -> CoreResult<Vec<IssueInfo>> {
+    let url = format!(
+        "{base}/api/v4/projects/{}/issues?scope=assigned_to_me&state=opened&per_page=100",
+        project_path.replace('/', "%2F")
+    );
+    let response = reqwest::blocking::Client::new()
+        .get(url)
+        .header("PRIVATE-TOKEN", token)
+        .send()
+        .map_err(|_| CoreError::IssuesFetch("could not reach GitLab".to_string()))?;
+    match response.status().as_u16() {
+        200 => {
+            let body = response
+                .text()
+                .map_err(|_| CoreError::IssuesFetch("could not read GitLab's response".into()))?;
+            parse_gitlab_issues(&body)
+        }
+        401 | 403 => Err(CoreError::IssuesGitlabAuth),
+        _ => Err(CoreError::IssuesFetch(
+            "GitLab could not fetch the issues".to_string(),
+        )),
+    }
+}
+
+/// Where a remote's issues come from.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    GitHub,
+    GitLab,
+    Unsupported,
+}
+
+fn route(remote_host: &str, gitlab_host: Option<&str>) -> Route {
+    if remote_host == "github.com" {
+        Route::GitHub
+    } else if gitlab_host == Some(remote_host) {
+        // ponytail: temporary, remove once Connect is on GitHub
+        Route::GitLab
+    } else {
+        Route::Unsupported
+    }
+}
+
 /// Detect the repo behind `root` and list the user's open issues there.
-pub fn list(root: &Path) -> CoreResult<Vec<IssueInfo>> {
+/// `gitlab_host` is the configured self-hosted GitLab, if any.
+pub fn list(root: &Path, gitlab_host: Option<&str>) -> CoreResult<Vec<IssueInfo>> {
     let (host, path) = detect(root)?;
-    match host.as_str() {
-        "github.com" => {
+    match route(&host, gitlab_host) {
+        Route::GitHub => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
             fetch_github(gh, &path)
         }
-        _ => Err(CoreError::IssuesUnsupportedHost),
+        Route::GitLab => {
+            let token = gitlab_token_get(&host).ok_or(CoreError::IssuesGitlabNotConfigured)?;
+            fetch_gitlab(&format!("https://{host}"), &path, &token)
+        }
+        Route::Unsupported => Err(CoreError::IssuesUnsupportedHost),
     }
 }
 
@@ -199,6 +326,111 @@ mod tests {
             parse_gh_issues("not json"),
             Err(CoreError::IssuesFetch(_))
         ));
+    }
+
+    #[test]
+    fn normalizes_host() {
+        for (input, want) in [
+            ("git.example.test", Some("git.example.test")),
+            ("https://Git.Example.test/", Some("git.example.test")),
+            (
+                "  http://git.example.test/group/proj ",
+                Some("git.example.test"),
+            ),
+            ("git.example.test:8443", Some("git.example.test:8443")),
+            ("", None),
+            ("   ", None),
+            ("https://", None),
+            ("two words", None),
+        ] {
+            assert_eq!(normalize_host(input).as_deref(), want, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn maps_gitlab_json() {
+        let json = r#"[
+          {"id":501,"iid":12,"title":"Fix invoice","web_url":"https://git.example.test/grp/proj/-/issues/12",
+           "description":"Broken.","labels":["bug","p1"],"updated_at":"2026-09-01T10:00:00Z"},
+          {"id":502,"iid":13,"title":"No body","web_url":"https://git.example.test/grp/proj/-/issues/13",
+           "description":null,"labels":[],"updated_at":"2026-09-02T10:00:00Z"}
+        ]"#;
+        let issues = parse_gitlab_issues(json).unwrap();
+        assert_eq!(issues[0].number, 12);
+        assert_eq!(
+            issues[0].url,
+            "https://git.example.test/grp/proj/-/issues/12"
+        );
+        assert_eq!(issues[0].body, "Broken.");
+        assert_eq!(issues[0].labels, vec!["bug", "p1"]);
+        assert_eq!(issues[1].body, "");
+        assert!(matches!(
+            parse_gitlab_issues("{}"),
+            Err(CoreError::IssuesFetch(_))
+        ));
+    }
+
+    #[test]
+    fn dispatches_by_host() {
+        assert_eq!(route("github.com", None), Route::GitHub);
+        assert_eq!(route("github.com", Some("git.example.test")), Route::GitHub);
+        assert_eq!(
+            route("git.example.test", Some("git.example.test")),
+            Route::GitLab
+        );
+        assert_eq!(route("git.example.test", None), Route::Unsupported);
+        assert_eq!(
+            route("other.test", Some("git.example.test")),
+            Route::Unsupported
+        );
+    }
+
+    /// One-shot local HTTP server answering with `status` + `body`; returns
+    /// the base URL and the request text it saw.
+    fn serve_once(status: &str, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let status = status.to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).unwrap();
+            let reply = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            sock.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        (base, handle)
+    }
+
+    #[test]
+    fn gitlab_fetch_sends_token_and_maps_status() {
+        let (base, seen) = serve_once(
+            "200 OK",
+            r#"[{"iid":4,"title":"t","web_url":"u","labels":[],"updated_at":"x"}]"#,
+        );
+        let issues = fetch_gitlab(&base, "grp/sub/proj", "fake-token").unwrap();
+        assert_eq!(issues[0].number, 4);
+        let req = seen.join().unwrap();
+        assert!(req.starts_with(
+            "GET /api/v4/projects/grp%2Fsub%2Fproj/issues?scope=assigned_to_me&state=opened"
+        ));
+        assert!(req.to_lowercase().contains("private-token: fake-token"));
+
+        for code in ["401 Unauthorized", "403 Forbidden"] {
+            let (base, _h) = serve_once(code, "{}");
+            assert!(matches!(
+                fetch_gitlab(&base, "a/b", "wrong"),
+                Err(CoreError::IssuesGitlabAuth)
+            ));
+        }
+        let (base, _h) = serve_once("500 Internal Server Error", "secret-ish body");
+        let err = fetch_gitlab(&base, "a/b", "t").unwrap_err();
+        assert!(matches!(err, CoreError::IssuesFetch(_)));
+        assert!(!err.to_string().contains("secret-ish"));
     }
 
     #[test]
