@@ -2236,26 +2236,19 @@ impl Orchestrator {
             .lock()
             .expect(LOCK_POISONED)
             .clone();
-        let mut per_cwd: HashMap<&Path, usize> = HashMap::new();
+        // Only the agent's own title or the id it was resumed with count. A
+        // bare "newest file in this cwd" guess would also pick up a `claude`
+        // session the user runs themselves in the same repo.
         for c in &candidates {
-            *per_cwd.entry(c.cwd.as_path()).or_default() += 1;
-        }
-        for c in &candidates {
-            let pr = projects_root.as_deref();
-            let Some(session_id) = pr
-                .and_then(|pr| session_memory::find_titled_session_id_in(pr, &c.cwd, &c.title))
+            let Some(session_id) = projects_root
+                .as_deref()
+                .and_then(|pr| {
+                    session_memory::find_titled_session_id_in(pr, &c.cwd, &c.title, c.since.into())
+                })
                 .or_else(|| {
                     c.resumed
                         .clone()
                         .filter(|id| session_memory::is_valid_session_id(id))
-                })
-                .or_else(|| {
-                    (per_cwd[c.cwd.as_path()] == 1)
-                        .then_some(pr)
-                        .flatten()
-                        .and_then(|pr| {
-                            session_memory::find_latest_session_id_in(pr, &c.cwd, c.since.into())
-                        })
                 })
             else {
                 continue;
@@ -3350,7 +3343,7 @@ mod tests {
     /// is the file content (e.g. a custom-title line).
     #[cfg(unix)]
     fn write_session_file_with(data: &Path, cwd: &Path, id: &str, body: &str) {
-        // The mtime fallback only accepts files modified after the agent started.
+        // Written after the agent started, like a live session.
         std::thread::sleep(Duration::from_millis(20));
         let dir = data
             .join("claude-projects")
@@ -3405,8 +3398,8 @@ mod tests {
         let orch = session_memory_orch(data.path());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, SESS_1);
+        let agent = spawn_named(&orch, id, "agent-1").await;
+        write_titled_session_file(data.path(), &root, SESS_1, agent);
         orch.shutdown().await;
 
         let restarted = session_memory_orch(data.path());
@@ -3436,8 +3429,8 @@ mod tests {
         let orch = session_memory_orch(data.path());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, SESS_2);
+        let agent = spawn_named(&orch, id, "agent-1").await;
+        write_titled_session_file(data.path(), &root, SESS_2, agent);
         orch.shutdown().await;
         assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
 
@@ -3462,8 +3455,8 @@ mod tests {
         let orch = session_memory_orch(data.path());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, SESS_4);
+        let agent = spawn_named(&orch, id, "agent-1").await;
+        write_titled_session_file(data.path(), &root, SESS_4, agent);
         orch.shutdown().await;
 
         // Restored, then quit without the session file being touched again.
@@ -3502,14 +3495,15 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn shared_cwd_without_title_or_resumed_id_is_not_remembered() {
+    async fn a_session_without_the_agents_title_is_not_remembered() {
+        // The user's own `claude` in the same repo, newer than the agent's
+        // spawn: a lone agent there must not adopt it.
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
         let orch = session_memory_orch(data.path());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
         spawn_named(&orch, id, "agent-1").await;
-        spawn_named(&orch, id, "agent-2").await;
         write_session_file(data.path(), &root, SESS_3);
         orch.shutdown().await;
         assert!(orch.session_memory.list(&root).is_empty());
@@ -3523,8 +3517,8 @@ mod tests {
         let orch = session_memory_orch(data.path());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, SESS_1);
+        let agent = spawn_named(&orch, id, "agent-1").await;
+        write_titled_session_file(data.path(), &root, SESS_1, agent);
         orch.shutdown().await;
         assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
         // Claude Code's retention removes the session file in between.

@@ -217,12 +217,24 @@ pub fn git_binary() -> &'static str {
         .as_str()
 }
 
-/// The directory Claude Code stores all projects' sessions under
-/// (`~/.claude/projects`), or `None` if the home directory cannot be
-/// resolved. Read via `$HOME`/`%USERPROFILE%` directly rather than a shell
-/// round-trip — no PATH/profile involvement, unlike `login_shell()`.
+/// The directory Claude Code stores all projects' sessions under:
+/// `$CLAUDE_CONFIG_DIR/projects` when that is set (Claude Code honours it),
+/// else `~/.claude/projects`; `None` if neither can be resolved. Read from
+/// the environment directly rather than a shell round-trip — no
+/// PATH/profile involvement, unlike `login_shell()`.
 pub fn claude_projects_root() -> Option<std::path::PathBuf> {
-    home_dir().map(|home| home.join(".claude").join("projects"))
+    claude_projects_root_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir())
+}
+
+fn claude_projects_root_from(
+    config_dir: Option<std::ffi::OsString>,
+    home: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let config = match config_dir.filter(|d| !d.is_empty()) {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => home?.join(".claude"),
+    };
+    Some(config.join("projects"))
 }
 
 #[cfg(unix)]
@@ -322,6 +334,25 @@ pub(crate) fn parse_windows_argv(cmd: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_projects_root_prefers_claude_config_dir() {
+        use std::path::PathBuf;
+        let home = Some(PathBuf::from("home"));
+        assert_eq!(
+            claude_projects_root_from(Some("cfg".into()), home.clone()),
+            Some(PathBuf::from("cfg").join("projects"))
+        );
+        assert_eq!(
+            claude_projects_root_from(Some("".into()), home.clone()),
+            Some(PathBuf::from("home").join(".claude").join("projects"))
+        );
+        assert_eq!(
+            claude_projects_root_from(None, home),
+            Some(PathBuf::from("home").join(".claude").join("projects"))
+        );
+        assert_eq!(claude_projects_root_from(None, None), None);
+    }
 
     #[test]
     fn shell_wraps_a_command_string() {

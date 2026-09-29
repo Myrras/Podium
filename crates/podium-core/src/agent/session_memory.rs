@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,12 +31,20 @@ pub(crate) fn sanitize_cwd(cwd: &Path) -> String {
         .collect()
 }
 
-/// Whether `id` looks like a Claude Code session id (a UUID). Anything else —
-/// a tampered `session_memory.json`, a stray file — must never reach
-/// `--resume`, where a value like `-x` would be read as a flag.
+/// Whether `id` is a Claude Code session id: a hyphenated UUID. Anything
+/// else — a tampered `session_memory.json`, a stray file — must never reach
+/// `--resume`, where a value like `-x` would be read as a flag. The length
+/// check pins the hyphenated form (`try_parse` also takes simple, braced and
+/// URN spellings).
 pub(crate) fn is_valid_session_id(id: &str) -> bool {
-    id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    id.len() == 36 && uuid::Uuid::try_parse(id).is_ok()
 }
+
+/// Slack on the "modified since spawn" filter, for filesystems whose mtime
+/// is coarser than the gap between spawn and the first write (HFS+ keeps
+/// whole seconds). It only has to be generous: the title match, not the
+/// timestamp, decides which session is the agent's.
+const MTIME_SLACK: Duration = Duration::from_secs(5);
 
 /// Every session file in `projects_root`'s directory for `cwd` whose stem is
 /// a valid session id, as (modified, id, path).
@@ -60,44 +68,33 @@ fn session_files(projects_root: &Path, cwd: &Path) -> Vec<(SystemTime, String, P
         .collect()
 }
 
-fn newest(files: impl Iterator<Item = (SystemTime, String, PathBuf)>) -> Option<String> {
-    files.max_by_key(|(t, ..)| *t).map(|(_, id, _)| id)
-}
-
-/// The newest session file for `cwd` modified at or after `after`, if any.
-/// `after` should be the agent's own spawn time, so a session file left over
-/// from an unrelated earlier run in the same directory is never picked up.
-/// Only unambiguous when a single agent runs in `cwd`.
-pub(crate) fn find_latest_session_id_in(
-    projects_root: &Path,
-    cwd: &Path,
-    after: SystemTime,
-) -> Option<String> {
-    newest(
-        session_files(projects_root, cwd)
-            .into_iter()
-            .filter(|(t, ..)| *t >= after),
-    )
-}
-
 /// The newest session file for `cwd` that Claude Code tagged with session
 /// name `title` (`-n`): it writes a `{"type":"custom-title","customTitle":…}`
 /// line into the session's jsonl. This tells apart several agents sharing one
-/// cwd. The closing quote is left off so a variant suffix Claude Code appends
-/// on a name clash still matches.
+/// cwd — and a session the user runs themselves in the same repo, which has
+/// no Podium title. The closing quote is left off so a variant suffix Claude
+/// Code appends on a name clash still matches.
+///
+/// Only files modified since `after` (the agent's spawn time, less
+/// [`MTIME_SLACK`]) are read: a running agent's session has been written to
+/// since it started, and session files can be tens of MB each, read
+/// synchronously at app exit.
 pub(crate) fn find_titled_session_id_in(
     projects_root: &Path,
     cwd: &Path,
     title: &str,
+    after: SystemTime,
 ) -> Option<String> {
     let needle = format!("\"customTitle\":\"{title}");
-    newest(
-        session_files(projects_root, cwd)
-            .into_iter()
-            .filter(|(_, _, path)| {
-                std::fs::read_to_string(path).is_ok_and(|raw| raw.contains(&needle))
-            }),
-    )
+    let cutoff = after
+        .checked_sub(MTIME_SLACK)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    session_files(projects_root, cwd)
+        .into_iter()
+        .filter(|(modified, ..)| *modified >= cutoff)
+        .filter(|(_, _, path)| std::fs::read_to_string(path).is_ok_and(|raw| raw.contains(&needle)))
+        .max_by_key(|(t, ..)| *t)
+        .map(|(_, id, _)| id)
 }
 
 /// Whether Claude Code still has session `id` for `cwd` (it prunes old
@@ -113,7 +110,6 @@ pub(crate) fn session_file_exists(projects_root: &Path, cwd: &Path, id: &str) ->
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::Duration;
 
     const ID_A: &str = "00000000-0000-4000-8000-00000000000a";
     const ID_B: &str = "00000000-0000-4000-8000-00000000000b";
@@ -148,6 +144,18 @@ mod tests {
         assert!(!is_valid_session_id(
             "00000000-0000-4000-8000-00000000000a0"
         ));
+        // Right length and alphabet, but no UUID.
+        assert!(!is_valid_session_id(&"-".repeat(36)));
+        assert!(!is_valid_session_id("-0000000-0000-4000-8000-00000000000a"));
+        // A UUID, but not in the hyphenated form Claude Code names files by.
+        assert!(!is_valid_session_id(
+            "{00000000-0000-4000-8000-00000000000a}"
+        ));
+        assert!(!is_valid_session_id("00000000000040008000000000000000"));
+    }
+
+    fn titled(title: &str, id: &str) -> String {
+        format!("{{}}\n{{\"type\":\"custom-title\",\"customTitle\":\"{title}\",\"sessionId\":\"{id}\"}}\n")
     }
 
     #[test]
@@ -155,25 +163,13 @@ mod tests {
         let projects_root = tempfile::tempdir().unwrap();
         let cwd = Path::new("/nonexistent/project/cwd");
         assert_eq!(
-            find_latest_session_id_in(projects_root.path(), cwd, SystemTime::UNIX_EPOCH),
+            find_titled_session_id_in(
+                projects_root.path(),
+                cwd,
+                "podium-aaaaaaaa",
+                SystemTime::UNIX_EPOCH
+            ),
             None
-        );
-    }
-
-    #[test]
-    fn picks_the_newest_jsonl_at_or_after_the_cutoff() {
-        let projects_root = tempfile::tempdir().unwrap();
-        let cwd = Path::new("/some/project/root");
-        let dir = sessions_dir(projects_root.path(), cwd);
-
-        touch(&dir.join(format!("{ID_A}.jsonl")));
-        let cutoff = SystemTime::now();
-        std::thread::sleep(Duration::from_millis(20));
-        touch(&dir.join(format!("{ID_B}.jsonl")));
-
-        assert_eq!(
-            find_latest_session_id_in(projects_root.path(), cwd, cutoff),
-            Some(ID_B.to_string())
         );
     }
 
@@ -182,12 +178,45 @@ mod tests {
         let projects_root = tempfile::tempdir().unwrap();
         let cwd = Path::new("/another/project");
         let dir = sessions_dir(projects_root.path(), cwd);
-        touch(&dir.join("notes.txt"));
-        touch(&dir.join("-x.jsonl"));
+        let body = titled("podium-aaaaaaaa", ID_A);
+        fs::write(dir.join("notes.txt"), &body).unwrap();
+        fs::write(dir.join("-x.jsonl"), &body).unwrap();
+        touch(&dir.join(format!("{ID_B}.jsonl")));
 
         assert_eq!(
-            find_latest_session_id_in(projects_root.path(), cwd, SystemTime::UNIX_EPOCH),
+            find_titled_session_id_in(
+                projects_root.path(),
+                cwd,
+                "podium-aaaaaaaa",
+                SystemTime::UNIX_EPOCH
+            ),
             None
+        );
+    }
+
+    #[test]
+    fn titled_lookup_skips_files_untouched_since_the_spawn() {
+        let projects_root = tempfile::tempdir().unwrap();
+        let cwd = Path::new("/stale/project");
+        let dir = sessions_dir(projects_root.path(), cwd);
+        let path = dir.join(format!("{ID_A}.jsonl"));
+        fs::write(&path, titled("podium-aaaaaaaa", ID_A)).unwrap();
+        let spawn = SystemTime::now();
+        // Last written well before this agent started.
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(spawn - Duration::from_secs(3600))
+            .unwrap();
+
+        let find =
+            |after| find_titled_session_id_in(projects_root.path(), cwd, "podium-aaaaaaaa", after);
+        assert_eq!(find(spawn), None);
+        // Within the slack for coarse mtimes it still counts.
+        assert_eq!(
+            find(spawn - Duration::from_secs(3600) + MTIME_SLACK / 2),
+            Some(ID_A.to_string())
         );
     }
 
@@ -196,23 +225,19 @@ mod tests {
         let projects_root = tempfile::tempdir().unwrap();
         let cwd = Path::new("/shared/project");
         let dir = sessions_dir(projects_root.path(), cwd);
-        let line = |title: &str, id: &str| {
-            format!(
-                "{{}}\n{{\"type\":\"custom-title\",\"customTitle\":\"{title}\",\"sessionId\":\"{id}\"}}\n"
-            )
-        };
         fs::write(
             dir.join(format!("{ID_A}.jsonl")),
-            line("podium-aaaaaaaa", ID_A),
+            titled("podium-aaaaaaaa", ID_A),
         )
         .unwrap();
         fs::write(
             dir.join(format!("{ID_B}.jsonl")),
-            line("podium-bbbbbbbb", ID_B),
+            titled("podium-bbbbbbbb", ID_B),
         )
         .unwrap();
 
-        let find = |t| find_titled_session_id_in(projects_root.path(), cwd, t);
+        let find =
+            |t| find_titled_session_id_in(projects_root.path(), cwd, t, SystemTime::UNIX_EPOCH);
         assert_eq!(find("podium-aaaaaaaa"), Some(ID_A.to_string()));
         assert_eq!(find("podium-bbbbbbbb"), Some(ID_B.to_string()));
         assert_eq!(find("podium-cccccccc"), None);

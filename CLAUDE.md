@@ -171,14 +171,18 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `remember_sessions` in `agents.json`, default off): `session_memory.json`,
   keyed by project root. `Orchestrator::shutdown()` is the only place a
   session is captured — for each still-running Claude Code agent it looks in
-  `~/.claude/projects/<sanitized-cwd>/` (every non-ASCII-alphanumeric char of
+  `<config>/projects/<sanitized-cwd>/`, where `<config>` is
+  `$CLAUDE_CONFIG_DIR` or else `~/.claude` (every non-ASCII-alphanumeric char of
   the cwd becomes `-`, Claude Code's own scheme) for the `<id>.jsonl` carrying
   the `{"type":"custom-title","customTitle":"podium-<tag>"}` line Claude Code
   writes for the agent's `-n` name, so agents sharing a cwd each get their own
-  session. Without a title match it falls back to the id the agent was
-  resumed with, then — only when it is the sole running agent in that cwd —
-  the newest file at or after its spawn time; otherwise nothing is
-  remembered. Only UUID-shaped ids are accepted, at capture and again at
+  session. Only files written since the agent's spawn (minus a few seconds
+  of slack for coarse mtimes) are read, since session files can be large
+  and this runs at exit. Without a title match it falls back to the id the
+  agent was resumed with; otherwise nothing is remembered — deliberately no
+  "newest file in the cwd" guess, which would adopt a `claude` session the
+  user runs themselves in the same repo. Only hyphenated UUIDs
+  (`Uuid::try_parse`) are accepted, at capture and again at
   restore (the file is user-writable, and `--resume -x` would read as a
   flag). The next fresh `open_project` on that root passes each remembered id
   to its adapter as `--resume` when `remember_sessions` is on, skipping ids
