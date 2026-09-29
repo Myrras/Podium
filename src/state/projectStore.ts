@@ -10,13 +10,19 @@ import {
   projectOpen,
   projectRename,
   projectReorder,
+  projectSetSections,
   recentsList,
   recentsRemove,
   toIpcError,
   workspaceList,
   workspaceRemove,
 } from "../ipc/commands";
-import type { ProjectId, ProjectInfo, RecentProject } from "../ipc/types";
+import type {
+  ProjectId,
+  ProjectInfo,
+  ProjectSections,
+  RecentProject,
+} from "../ipc/types";
 import { toastError, useToastStore } from "./toastStore";
 
 /**
@@ -64,6 +70,11 @@ interface ProjectState {
   reloadProjectConfig: (id: ProjectId) => Promise<void>;
   /** Rename a project; a blank/null name reverts to the folder/config name. */
   renameProject: (id: ProjectId, name: string | null) => Promise<void>;
+  /** Show/hide the project's optional sidebar sections (data is untouched). */
+  setProjectSections: (
+    id: ProjectId,
+    sections: ProjectSections,
+  ) => Promise<void>;
   /**
    * Move project `id` before `beforeId` (or to the end when null),
    * optimistically updating the list and persisting the new order.
@@ -217,6 +228,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }));
     } catch (e) {
       toastError("Could not rename project", toIpcError(e).message);
+    }
+  },
+
+  setProjectSections: async (id, sections) => {
+    try {
+      const project = await projectSetSections(id, sections);
+      set((s) => ({
+        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
+      }));
+    } catch (e) {
+      toastError("Could not update sections", toIpcError(e).message);
     }
   },
 

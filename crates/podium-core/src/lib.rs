@@ -44,6 +44,7 @@ pub use proactivity::ProactivityConfig;
 pub use process::pty::TermChunk;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
+pub use project::ProjectSections;
 pub use scratchpad::ScratchpadInfo;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
 pub use worktree::WorktreeInfo;

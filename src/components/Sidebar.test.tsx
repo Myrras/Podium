@@ -31,6 +31,13 @@ function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
     iconInitials: "WS",
     configError: null,
     renamed: false,
+    sections: {
+      todos: true,
+      terminals: true,
+      worktrees: true,
+      scratchpads: true,
+      issues: false,
+    },
     ...overrides,
   };
 }
@@ -71,6 +78,47 @@ describe("Sidebar project header", () => {
     vi.mocked(invoke)
       .mockReset()
       .mockImplementation(() => Promise.resolve([]));
+  });
+
+  it("hides a section whose toggle is off and keeps the others", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: false,
+            issues: false,
+          },
+        }),
+      ],
+    });
+    render(<Sidebar />);
+
+    expect(screen.queryByText("Scratchpads")).not.toBeInTheDocument();
+    expect(screen.getByText("Terminals")).toBeInTheDocument();
+    // Agents are not toggleable.
+    expect(screen.getByText("Agents")).toBeInTheDocument();
+  });
+
+  it("toggling a Sections checkbox calls setProjectSections with the merged sections", () => {
+    const setProjectSections = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({ projects: [project()], setProjectSections });
+    render(<Sidebar />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sections for Webshop" }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Scratchpads" }));
+
+    expect(setProjectSections).toHaveBeenCalledWith("proj-1", {
+      todos: true,
+      terminals: true,
+      worktrees: true,
+      scratchpads: false,
+      issues: false,
+    });
   });
 
   it("keeps the drag handle draggable in the DOM regardless of hover state", () => {

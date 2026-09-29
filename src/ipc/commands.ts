@@ -26,6 +26,7 @@ import type {
   ProcessInfo,
   ProjectId,
   ProjectInfo,
+  ProjectSections,
   RecentProject,
   ScratchpadId,
   ScratchpadInfo,
@@ -88,6 +89,14 @@ export function projectRename(
   name: string | null,
 ): Promise<ProjectInfo> {
   return invoke("project_rename", { projectId, name });
+}
+
+/** Set which optional sidebar sections a project shows. Returns the updated snapshot. */
+export function projectSetSections(
+  projectId: ProjectId,
+  sections: ProjectSections,
+): Promise<ProjectInfo> {
+  return invoke("project_set_sections", { projectId, sections });
 }
 
 /**

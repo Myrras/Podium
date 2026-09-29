@@ -25,7 +25,7 @@ use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
-use crate::project::{self, ConfiguredProcess};
+use crate::project::{self, ConfiguredProcess, ProjectSections};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
@@ -58,6 +58,8 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// Which optional sidebar sections the project shows.
+    pub sections: ProjectSections,
 }
 
 struct ProjectHandle {
@@ -72,6 +74,8 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// Which optional sidebar sections are shown (persisted in `workspace.json`).
+    sections: ProjectSections,
 }
 
 impl ProjectHandle {
@@ -87,6 +91,7 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            sections: self.sections,
         }
     }
 }
@@ -626,6 +631,7 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        sections: ProjectSections::default(),
                     },
                 );
                 inner.order.push(id);
@@ -749,6 +755,27 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
             handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set which optional sidebar sections a project shows. Presentation only:
+    /// nothing is stopped or deleted. Returns the updated snapshot.
+    pub fn set_project_sections(
+        &self,
+        id: ProjectId,
+        sections: ProjectSections,
+    ) -> CoreResult<ProjectInfo> {
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.sections = sections;
             handle.info(id)
         };
         self.events
@@ -2851,6 +2878,42 @@ mod tests {
         let cleared = orch.rename_project(id, Some("   ".to_string())).unwrap();
         assert_eq!(cleared.name, original.name);
         assert_eq!(cleared.icon_initials, original.icon_initials);
+    }
+
+    #[tokio::test]
+    async fn set_project_sections_updates_info_and_emits() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let opened = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(opened.sections, ProjectSections::default());
+
+        let mut rx = orch.subscribe_events();
+        let sections = ProjectSections {
+            scratchpads: false,
+            ..ProjectSections::default()
+        };
+        let info = orch.set_project_sections(id, sections).unwrap();
+        assert!(!info.sections.scratchpads);
+        assert!(info.sections.todos);
+        let listed = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(listed.sections, sections);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PodiumEvent::ProjectUpdated { project_id }) if project_id == id
+        ));
+        assert!(matches!(
+            orch.set_project_sections(ProjectId::new(), sections),
+            Err(CoreError::ProjectNotFound)
+        ));
     }
 
     #[tokio::test]

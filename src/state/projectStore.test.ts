@@ -54,6 +54,13 @@ function project(id: string, name = id): ProjectInfo {
     iconInitials: "",
     configError: null,
     renamed: false,
+    sections: {
+      todos: true,
+      terminals: true,
+      worktrees: true,
+      scratchpads: true,
+      issues: false,
+    },
   };
 }
 
@@ -109,6 +116,13 @@ describe("projectStore.restoreWorkspace", () => {
         iconInitials: "",
         configError: null,
         renamed: false,
+        sections: {
+          todos: true,
+          terminals: true,
+          worktrees: true,
+          scratchpads: true,
+          issues: false,
+        },
       }),
     );
     projectListMock.mockResolvedValue([]);
@@ -151,6 +165,13 @@ describe("projectStore.renameProject", () => {
       ...project("a"),
       name: "Alpha",
       renamed: true,
+      sections: {
+        todos: true,
+        terminals: true,
+        worktrees: true,
+        scratchpads: true,
+        issues: false,
+      },
     });
 
     await useProjectStore.getState().renameProject("a", "Alpha");
