@@ -9,7 +9,7 @@
 
 pub mod wsl_path;
 
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::error::{CoreError, CoreResult};
@@ -85,48 +85,83 @@ pub fn wsl() -> Option<&'static WslBackend> {
 /// limit is on starting, not on running: many long-lived `wsl.exe` sessions
 /// coexist fine.
 static WSL_LAUNCH_GATE: Mutex<()> = Mutex::new(());
-/// How long a long-lived launch keeps the gate after spawning, so its
-/// `wsl.exe` handshake is done before the next one starts.
+/// How long a launch keeps the gate after spawning, so its `wsl.exe`
+/// handshake is done before the next one starts.
 const WSL_LAUNCH_SETTLE: Duration = Duration::from_millis(150);
+/// How long a launch waits for the gate before going ahead without it. A
+/// holder is bounded (spawn + [`WSL_LAUNCH_SETTLE`]), but one `wsl.exe` that
+/// hangs in its spawn must not hold up every launch behind it for good —
+/// risking the burst failure beats a frozen app.
+const WSL_LAUNCH_GATE_TIMEOUT: Duration = Duration::from_secs(10);
+const WSL_LAUNCH_GATE_POLL: Duration = Duration::from_millis(25);
 
-/// Run a short-lived backend command to completion through the WSL launch
-/// gate (see [`WSL_LAUNCH_GATE`]): `f` runs `Command::output`/`status`. In
-/// WSL-backend mode it holds the gate for the whole (sub-second) run;
-/// natively it is just `f()`.
-pub fn run_gated<T>(f: impl FnOnce() -> T) -> T {
-    if wsl().is_none() {
-        return f();
-    }
-    let _gate = WSL_LAUNCH_GATE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    f()
+/// Run a short-lived backend command to completion, capturing its output
+/// like [`std::process::Command::output`] — except that stdio the caller
+/// did not set is inherited, so set `stdout`/`stderr` to `piped()` for
+/// whatever should be read back. In WSL-backend mode only the *start* goes
+/// through the launch gate (see [`WSL_LAUNCH_GATE`]): the limit is on
+/// starting, and a slow login shell (nvm, `claude mcp get`) must not make
+/// every launch behind it wait for it to finish.
+pub fn run_gated(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    let gate = wsl_launch_guard();
+    let child = cmd.spawn();
+    drop(gate);
+    child?.wait_with_output()
 }
 
 /// Holds the WSL launch gate for a long-lived launch; dropping it waits
 /// [`WSL_LAUNCH_SETTLE`] and then lets the next launch through. Drop it once
 /// the process can make progress — for a PTY child that is after its reader
 /// thread runs, since ConPTY holds the child until the reader answers the
-/// startup cursor query.
+/// startup cursor query. Never hold it across a lock other code takes on a
+/// UI-facing path: the settle sleep runs in its `Drop`.
 pub struct WslLaunchGuard {
-    _gate: std::sync::MutexGuard<'static, ()>,
+    /// `None` when the gate timed out and this launch went ahead anyway.
+    gate: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 impl Drop for WslLaunchGuard {
     fn drop(&mut self) {
-        std::thread::sleep(WSL_LAUNCH_SETTLE);
+        if self.gate.is_some() {
+            std::thread::sleep(WSL_LAUNCH_SETTLE);
+        }
     }
 }
 
-/// Take the WSL launch gate for a long-lived launch (WSL-backend mode);
-/// `None` natively.
+/// Take the WSL launch gate for a launch (WSL-backend mode); `None`
+/// natively. Waits at most [`WSL_LAUNCH_GATE_TIMEOUT`].
 pub fn wsl_launch_guard() -> Option<WslLaunchGuard> {
     wsl()?;
-    Some(WslLaunchGuard {
-        _gate: WSL_LAUNCH_GATE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    })
+    let gate = lock_with_deadline(&WSL_LAUNCH_GATE, WSL_LAUNCH_GATE_TIMEOUT);
+    if gate.is_none() {
+        tracing::warn!(
+            "wsl.exe launch gate still held after {:?}; launching without it",
+            WSL_LAUNCH_GATE_TIMEOUT
+        );
+    }
+    Some(WslLaunchGuard { gate })
+}
+
+/// `mutex.lock()`, giving up after `timeout` (`std`'s `Mutex` has no timed
+/// lock, so this polls `try_lock`). A poisoned lock is still taken: the gate
+/// guards no data.
+fn lock_with_deadline<T>(
+    mutex: &Mutex<T>,
+    timeout: Duration,
+) -> Option<std::sync::MutexGuard<'_, T>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        std::thread::sleep(WSL_LAUNCH_GATE_POLL.min(deadline - now));
+    }
 }
 
 /// Start a long-lived backend process through the WSL launch gate: `f`
@@ -397,16 +432,15 @@ fn resolve_in_path(
 /// prints can leak into logs or errors.
 pub fn run_shell_ok(cmd: &str) -> bool {
     let (shell, prefix) = login_shell();
-    run_gated(|| {
+    run_gated(
         std::process::Command::new(shell)
             .args(prefix)
             .arg(cmd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-    })
-    .map(|status| status.success())
+            .stderr(std::process::Stdio::null()),
+    )
+    .map(|output| output.status.success())
     .unwrap_or(false)
 }
 
@@ -416,14 +450,14 @@ pub fn run_shell_ok(cmd: &str) -> bool {
 /// JSON listing), not just its exit status.
 pub fn run_shell_stdout(cmd: &str) -> Option<String> {
     let (shell, prefix) = login_shell();
-    let output = run_gated(|| {
+    let output = run_gated(
         std::process::Command::new(shell)
             .args(prefix)
             .arg(cmd)
             .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-    })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    )
     .ok()?;
     output
         .status
@@ -565,6 +599,68 @@ mod tests {
         WslBackend {
             distro: "Ubuntu".to_string(),
         }
+    }
+
+    #[test]
+    fn lock_with_deadline_takes_a_free_lock() {
+        let mutex = Mutex::new(());
+        assert!(lock_with_deadline(&mutex, Duration::ZERO).is_some());
+    }
+
+    #[test]
+    fn lock_with_deadline_gives_up_on_a_held_lock() {
+        let mutex = Mutex::new(());
+        let _held = mutex.lock().unwrap();
+        let start = std::time::Instant::now();
+        assert!(lock_with_deadline(&mutex, Duration::from_millis(60)).is_none());
+        assert!(start.elapsed() >= Duration::from_millis(60));
+    }
+
+    #[test]
+    fn lock_with_deadline_waits_for_a_lock_released_in_time() {
+        let mutex = std::sync::Arc::new(Mutex::new(()));
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder = {
+            let mutex = std::sync::Arc::clone(&mutex);
+            std::thread::spawn(move || {
+                let _held = mutex.lock().unwrap();
+                locked_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+            })
+        };
+        locked_rx.recv().unwrap();
+        assert!(lock_with_deadline(&mutex, Duration::from_secs(5)).is_some());
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn lock_with_deadline_takes_a_poisoned_lock() {
+        let mutex = std::sync::Arc::new(Mutex::new(()));
+        let poisoner = std::sync::Arc::clone(&mutex);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("poison the gate");
+        })
+        .join();
+        assert!(mutex.is_poisoned());
+        assert!(lock_with_deadline(&mutex, Duration::ZERO).is_some());
+    }
+
+    #[test]
+    fn run_gated_captures_piped_output() {
+        let mut cmd = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "echo hi"]);
+            c
+        } else {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "echo hi"]);
+            c
+        };
+        cmd.stdout(std::process::Stdio::piped());
+        let output = run_gated(&mut cmd).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hi");
     }
 
     #[test]
