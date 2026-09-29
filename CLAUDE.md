@@ -344,6 +344,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   kept on error, and `startAutoRefresh` (mounted with the section) fetches
   immediately, every 5 min, and on window focus when the last attempt is over
   60 s old; the section shows each error inline, never as a toast.
+  A row click opens a read-only `IssueDetailPane` in the work area
+  (`layoutStore.openIssue`, exclusive with the process/to-do/scratchpad);
+  browser, "start agent" (`NewAgentModal` prefilled via `initialPrompt`) and
+  "turn into to-do" (`todoAdd` → `todoUpdate` → `todoAddLink`, hidden while an
+  active to-do already links the URL) are row actions. No backend involved.
 
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process

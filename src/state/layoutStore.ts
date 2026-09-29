@@ -80,6 +80,12 @@ export interface OpenScratchpad {
   scratchpadId: ScratchpadId;
 }
 
+/** The issue currently filling the work area (opened from the Issues section). */
+export interface OpenIssue {
+  projectId: ProjectId;
+  number: number;
+}
+
 export interface LayoutState extends LayoutPersisted {
   /**
    * To-do shown in the work area, or `null` when a process/scratchpad/welcome
@@ -94,6 +100,11 @@ export interface LayoutState extends LayoutPersisted {
    * with the focused process and the open to-do.
    */
   openScratchpad: OpenScratchpad | null;
+  /**
+   * Issue shown (read-only) in the work area, or `null`. In-memory. Mutually
+   * exclusive with the focused process, to-do and scratchpad.
+   */
+  openIssue: OpenIssue | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
   /** Show or hide the assistant chat panel (persisted). */
@@ -111,6 +122,10 @@ export interface LayoutState extends LayoutPersisted {
   ) => void;
   /** Clear the open scratchpad (e.g. when a process takes the work area). */
   clearOpenScratchpad: () => void;
+  /** Fill the work area with an issue (clears the focused process/to-do/scratchpad). */
+  openIssueInWorkArea: (projectId: ProjectId, number: number) => void;
+  /** Clear the open issue (e.g. when a process takes the work area). */
+  clearOpenIssue: () => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => {
@@ -119,6 +134,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     ...initial,
     openTodo: null,
     openScratchpad: null,
+    openIssue: null,
     setSidebarWidth: (w) => {
       const sidebarWidth = Math.min(600, Math.max(160, w));
       const s = get();
@@ -147,13 +163,30 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       // A to-do, a scratchpad, and a process are mutually exclusive in the
       // work area.
       useProcessStore.getState().setActiveProcess(null);
-      set({ openTodo: { projectId, todoId }, openScratchpad: null });
+      set({
+        openTodo: { projectId, todoId },
+        openScratchpad: null,
+        openIssue: null,
+      });
     },
     clearOpenTodo: () => set({ openTodo: null }),
     openScratchpadInWorkArea: (projectId, scratchpadId) => {
       useProcessStore.getState().setActiveProcess(null);
-      set({ openScratchpad: { projectId, scratchpadId }, openTodo: null });
+      set({
+        openScratchpad: { projectId, scratchpadId },
+        openTodo: null,
+        openIssue: null,
+      });
     },
     clearOpenScratchpad: () => set({ openScratchpad: null }),
+    openIssueInWorkArea: (projectId, number) => {
+      useProcessStore.getState().setActiveProcess(null);
+      set({
+        openIssue: { projectId, number },
+        openTodo: null,
+        openScratchpad: null,
+      });
+    },
+    clearOpenIssue: () => set({ openIssue: null }),
   };
 });

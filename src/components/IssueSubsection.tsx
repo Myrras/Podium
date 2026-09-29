@@ -1,7 +1,7 @@
 /**
  * "Issues" subsection for one sidebar project group: the user's open assigned
  * issues in the repo behind the project's `origin` remote. Clicking a row
- * opens the issue in the browser. A refresh in flight never hides the list
+ * opens the read-only detail pane; browser, agent and to-do are row actions. A refresh in flight never hides the list
  * (stale rows stay, the header icon spins); each failure kind gets its own
  * inline message — no toasts. The store owns the refresh cadence; this only
  * mounts it.
@@ -10,9 +10,10 @@
 import { useEffect } from "react";
 
 import type { IpcError, IssueInfo, ProjectId } from "../ipc/types";
-import { openExternalLink } from "../lib/links";
+import { useLayoutStore } from "../state/layoutStore";
 import { useIssueStore, type ProjectIssues } from "../state/issueStore";
 import { IssueIcon, RestartIcon } from "./icons";
+import { IssueActions } from "./IssueActions";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 
@@ -52,6 +53,8 @@ export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
     (s) => s.byProject[projectId] ?? NONE,
   );
   const refresh = useIssueStore((s) => s.refresh);
+  const openIssue = useLayoutStore((s) => s.openIssue);
+  const openIssueInWorkArea = useLayoutStore((s) => s.openIssueInWorkArea);
   const startAutoRefresh = useIssueStore((s) => s.startAutoRefresh);
 
   useEffect(() => startAutoRefresh(projectId), [projectId, startAutoRefresh]);
@@ -94,18 +97,32 @@ export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
       {rows.length > 0 ? (
         <div className={styles.rows}>
           {rows.map((issue) => (
-            <div key={issue.number} className={styles.row}>
+            <div
+              key={issue.number}
+              className={styles.row}
+              data-open={
+                openIssue?.projectId === projectId &&
+                openIssue.number === issue.number
+                  ? "true"
+                  : undefined
+              }
+            >
               <div className={styles.rowMain}>
                 <button
                   type="button"
                   className={styles.textToggle}
                   title={(issue.labels ?? NO_LABELS).join(", ") || issue.title}
-                  onClick={() => openExternalLink(issue.url)}
+                  onClick={() => openIssueInWorkArea(projectId, issue.number)}
                 >
                   <span className={styles.text}>
                     #{issue.number} {issue.title}
                   </span>
                 </button>
+                <IssueActions
+                  projectId={projectId}
+                  issue={issue}
+                  className={styles.action}
+                />
               </div>
             </div>
           ))}

@@ -11,6 +11,7 @@ import { issuesList } from "../ipc/commands";
 import type { IssueInfo } from "../ipc/types";
 import { openExternalLink } from "../lib/links";
 import { useIssueStore, type ProjectIssues } from "../state/issueStore";
+import { useLayoutStore } from "../state/layoutStore";
 import { IssueSubsection } from "./IssueSubsection";
 
 const P = "proj-1";
@@ -41,13 +42,20 @@ beforeEach(() => {
   vi.mocked(issuesList).mockClear();
   vi.mocked(openExternalLink).mockClear();
   useIssueStore.setState({ byProject: {} }, false);
+  useLayoutStore.setState({ openIssue: null });
 });
 
 describe("IssueSubsection", () => {
-  it("renders rows and opens the browser on click", () => {
+  it("renders rows; a click opens the detail pane, the action opens the browser", () => {
     seed({ issues: [issue(7), issue(9)] });
     render(<IssueSubsection projectId={P} />);
     fireEvent.click(screen.getByText("#7 Issue 7"));
+    expect(useLayoutStore.getState().openIssue).toEqual({
+      projectId: P,
+      number: 7,
+    });
+    expect(openExternalLink).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("Open #7 in browser"));
     expect(openExternalLink).toHaveBeenCalledWith(
       "https://github.com/acme/widgets/issues/7",
     );
