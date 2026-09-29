@@ -8,6 +8,15 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.0.3] - 2026-09-29
+
+### Fixed
+
+- **No "check what it did" nudge for an agent you stopped.** Stopping an agent
+  (the stop button, or the assistant stopping or respawning it) still made the
+  assistant report it as finished. That report is now kept for agents that exit
+  on their own or crash.
+
 ## [2.0.2] - 2026-09-29
 
 ### Fixed
