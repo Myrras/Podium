@@ -674,11 +674,16 @@ ignores a configured distro there).
   concurrent starts: with three or more at once, all but two hang ~30 s and
   fail (`Wsl/Service/E_UNEXPECTED`), which the startup burst of adapter
   probes and per-project git calls hit (and a failed probe is cached for the
-  run). So every launch goes through a process-wide gate:
-  `platform::run_gated` for short commands (`run_shell_*`, git),
-  `wsl_launch_guard`/`spawn_gated` for long-lived ones (PTY, assistant; held
-  until the PTY reader runs, plus 150 ms). New code that starts `wsl.exe`
-  must use one of these. A no-op natively.
+  run). So every launch goes through a process-wide gate, held only for the
+  *start* (spawn plus a 150 ms settle), never while a command runs:
+  `platform::run_gated` for short commands (`run_shell_*`, git — the wait for
+  output happens outside the gate), `wsl_launch_guard`/`spawn_gated` for
+  long-lived ones (PTY, assistant; held until the PTY reader runs). Waiting
+  for the gate gives up after 10 s with a warning and launches anyway, so one
+  hung `wsl.exe` cannot stall everything behind it. **Never take the gate
+  under the orchestrator's `inner` lock**: `do_start` takes it first and
+  hands it to `PtyProcess::spawn` by reference, so it drops after `inner`.
+  New code that starts `wsl.exe` must use one of these. A no-op natively.
 - **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the
   distro's git without a shell.
 - **Stop.** Killing `wsl.exe` (the ConPTY child) takes the whole Linux session
