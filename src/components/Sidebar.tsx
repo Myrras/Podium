@@ -35,7 +35,7 @@ import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
-import { GitTab } from "./GitTab";
+import { GitButton } from "./GitButton";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
@@ -376,6 +376,7 @@ function ProjectGroup({
             <EditIcon size={12} />
           </button>
         )}
+        {project.sections.issues && <GitButton projectId={project.id} />}
         <div
           ref={sectionsRef}
           className={styles.sectionsWrap}
@@ -525,7 +526,6 @@ function ProjectGroup({
               onPickAgent={onPickScratchpadAgent}
             />
           )}
-          {project.sections.issues && <GitTab projectId={project.id} />}
         </div>
       </div>
     </div>
@@ -538,7 +538,7 @@ const SECTION_TOGGLES: { key: keyof ProjectSections; label: string }[] = [
   { key: "terminals", label: "Terminals" },
   { key: "worktrees", label: "Worktrees" },
   { key: "scratchpads", label: "Scratchpads" },
-  { key: "issues", label: "Git" },
+  { key: "issues", label: "Git board" },
 ];
 
 /** What the New agent modal is opened for: a plain new agent, or a to-do. */

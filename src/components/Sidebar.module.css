@@ -411,45 +411,24 @@
   color: var(--text);
 }
 
-/* Refresh glyph while a background fetch runs — opacity-only, like the
- * activity dot, so the reduced-motion guard covers it. */
-.refreshing {
-  animation: refreshPulse 0.9s var(--ease-in-out) infinite;
+/* Git board button: the one header action visible at rest (see GitButton). */
+.gitButton {
+  position: relative;
+  opacity: 1;
+  pointer-events: auto;
 }
 
-@keyframes refreshPulse {
-  50% {
-    opacity: 0.35;
-  }
+.gitButton[data-open="true"] {
+  color: var(--accent);
 }
 
-/* Git tab: a whole-row button opening the project's Git board. */
-.gitTab {
-  width: 100%;
-  background: none;
-  border: none;
-  border-radius: 0;
-  text-align: left;
-  cursor: pointer;
-}
-
-.gitTab:hover {
-  color: var(--text-muted);
-  background: var(--surface-hover);
-}
-
-.gitTab[data-open="true"] {
-  color: var(--text);
-  background: var(--surface-2);
-}
-
-.gitSummary {
-  font-weight: 400;
-  letter-spacing: normal;
-  text-transform: none;
-  color: var(--text-faint);
-}
-
-.gitError {
-  color: var(--warning);
+.gitButton[data-error="true"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--warning);
 }

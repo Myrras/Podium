@@ -11,7 +11,8 @@ import { issuesBoard } from "../ipc/commands";
 import type { BoardItem } from "../ipc/types";
 import { useIssueStore } from "../state/issueStore";
 import { useLayoutStore } from "../state/layoutStore";
-import { GitTab } from "./GitTab";
+import { useProjectStore } from "../state/projectStore";
+import { GitButton } from "./GitButton";
 
 const P = "proj-1";
 
@@ -32,14 +33,16 @@ beforeEach(() => {
   vi.mocked(issuesBoard).mockClear();
   useIssueStore.setState({ byProject: {}, overview: null }, false);
   useLayoutStore.setState({ openBoard: null });
+  useProjectStore.setState({ activeProjectId: null });
 });
 
-describe("GitTab", () => {
+describe("GitButton", () => {
   it("fetches on mount and opens the board on click", () => {
-    render(<GitTab projectId={P} />);
+    render(<GitButton projectId={P} />);
     expect(issuesBoard).toHaveBeenCalledWith(P, true);
-    fireEvent.click(screen.getByText("Git"));
+    fireEvent.click(screen.getByRole("button", { name: "Git board" }));
     expect(useLayoutStore.getState().openBoard).toEqual({ projectId: P });
+    expect(useProjectStore.getState().activeProjectId).toBe(P);
     expect(screen.getByRole("button").getAttribute("data-open")).toBe("true");
   });
 
@@ -59,8 +62,10 @@ describe("GitTab", () => {
         },
       },
     });
-    const { rerender } = render(<GitTab projectId={P} />);
-    expect(screen.getByText("2 open · 1 review")).toBeTruthy();
+    const { rerender } = render(<GitButton projectId={P} />);
+    expect(
+      screen.getByRole("button", { name: "Git board — 2 open · 1 review" }),
+    ).toBeTruthy();
     useIssueStore.setState({
       byProject: {
         [P]: {
@@ -72,9 +77,11 @@ describe("GitTab", () => {
         },
       },
     });
-    rerender(<GitTab projectId={P} />);
-    expect(
-      screen.getByLabelText("No GitHub or GitLab remote found."),
-    ).toBeTruthy();
+    rerender(<GitButton projectId={P} />);
+    const btn = screen.getByRole("button");
+    expect(btn.getAttribute("aria-label")).toBe(
+      "Git board — No GitHub or GitLab remote found.",
+    );
+    expect(btn.getAttribute("data-error")).toBe("true");
   });
 });

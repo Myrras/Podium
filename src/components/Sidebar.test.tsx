@@ -102,6 +102,32 @@ describe("Sidebar project header", () => {
     expect(screen.getByText("Agents")).toBeInTheDocument();
   });
 
+  it("shows the Git board as a header button, not a section, when enabled", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: true,
+            issues: true,
+          },
+        }),
+      ],
+    });
+    const { rerender } = render(<Sidebar />);
+    expect(
+      screen.getByRole("button", { name: /^Git board/ }),
+    ).toBeInTheDocument();
+
+    useProjectStore.setState({ projects: [project()] });
+    rerender(<Sidebar />);
+    expect(
+      screen.queryByRole("button", { name: /^Git board/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("toggling a Sections checkbox calls setProjectSections with the merged sections", () => {
     const setProjectSections = vi.fn(() => Promise.resolve());
     useProjectStore.setState({ projects: [project()], setProjectSections });
