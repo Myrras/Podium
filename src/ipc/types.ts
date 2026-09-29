@@ -158,7 +158,13 @@ export type ProcessStatus =
   | { state: "notStarted" }
   | { state: "running"; pid: number; since: string }
   | { state: "stopping" }
-  | { state: "exited"; code: number | null; crashed: boolean; at: string };
+  | {
+      state: "exited";
+      code: number | null;
+      crashed: boolean;
+      stopped: boolean;
+      at: string;
+    };
 
 /** Restart behaviour (`podium_core::RestartPolicy`, kebab-case values). */
 export type RestartPolicy = "never" | "on-crash" | "always";

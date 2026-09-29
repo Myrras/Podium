@@ -2726,6 +2726,7 @@ fn make_exit_handler(
             let status = ProcessStatus::Exited {
                 code,
                 crashed,
+                stopped: p.user_stopped,
                 at: Utc::now(),
             };
             p.status = status.clone();
