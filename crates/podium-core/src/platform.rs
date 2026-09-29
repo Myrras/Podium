@@ -217,6 +217,26 @@ pub fn git_binary() -> &'static str {
         .as_str()
 }
 
+/// The `gh` binary, resolved once like [`git_binary`]; `None` when it is not
+/// installed (so callers can report that instead of a spawn failure).
+pub fn gh_binary() -> Option<&'static str> {
+    static GH_PATH: OnceLock<Option<String>> = OnceLock::new();
+    GH_PATH
+        .get_or_init(|| {
+            #[cfg(windows)]
+            {
+                run_shell_ok(&command_exists_query("gh")).then(|| "gh".to_string())
+            }
+            #[cfg(unix)]
+            {
+                run_shell_stdout(&command_exists_query("gh"))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            }
+        })
+        .as_deref()
+}
+
 /// The `warp://` URI that opens a new Warp tab at `path` (percent-encoded).
 pub fn warp_uri(path: &std::path::Path) -> String {
     let mut encoded = String::new();

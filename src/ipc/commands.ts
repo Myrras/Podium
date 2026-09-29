@@ -15,6 +15,9 @@ import type {
   Attachment,
   AutonomyMode,
   CommentId,
+  IssueInfo,
+  IssueProvider,
+  IssuesOverview,
   IpcError,
   LinkId,
   McpClientInfo,
@@ -26,6 +29,7 @@ import type {
   ProcessInfo,
   ProjectId,
   ProjectInfo,
+  ProjectSections,
   RecentProject,
   ScratchpadId,
   ScratchpadInfo,
@@ -88,6 +92,14 @@ export function projectRename(
   name: string | null,
 ): Promise<ProjectInfo> {
   return invoke("project_rename", { projectId, name });
+}
+
+/** Set which optional sidebar sections a project shows. Returns the updated snapshot. */
+export function projectSetSections(
+  projectId: ProjectId,
+  sections: ProjectSections,
+): Promise<ProjectInfo> {
+  return invoke("project_set_sections", { projectId, sections });
 }
 
 /**
@@ -750,4 +762,50 @@ export async function processAttach(
   channel.onmessage = onEvent;
   await invoke("process_attach", { processId, channel });
   return channel;
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+/**
+ * The user's open assigned issues in the project's `origin` repo. Rejects
+ * with kind `issuesNoRemote` / `issuesGhUnavailable` / `issuesUnsupportedHost`
+ * / `issuesGitlabNotConfigured` / `issuesGitlabAuth` / `issuesFetch`.
+ */
+export function issuesList(projectId: ProjectId): Promise<IssueInfo[]> {
+  return invoke("issues_list", { projectId });
+}
+
+/** Every issue setup (never a token) plus each project's pick. */
+export function issuesSettingsGet(): Promise<IssuesOverview> {
+  return invoke("issues_settings_get");
+}
+
+/**
+ * Add (`id` omitted) or update an issue setup. `token` (GitLab): omit to keep
+ * the stored one, blank to delete it, otherwise it replaces it.
+ */
+export function issuesSetupSave(setup: {
+  id?: string;
+  name: string;
+  provider: IssueProvider;
+  url: string;
+  account?: string;
+  token?: string;
+}): Promise<IssuesOverview> {
+  return invoke("issues_setup_save", setup);
+}
+
+/** Remove an issue setup and its stored token. */
+export function issuesSetupRemove(id: string): Promise<IssuesOverview> {
+  return invoke("issues_setup_remove", { id });
+}
+
+/** Pick the setup a project's Issues section uses; omit to match by host. */
+export function issuesProjectSetupSet(
+  projectId: ProjectId,
+  setupId?: string,
+): Promise<IssuesOverview> {
+  return invoke("issues_project_setup_set", { projectId, setupId });
 }

@@ -30,9 +30,12 @@ schemars = "1"
 strip-ansi-escapes = "0.2"
 # CancellationToken for MCP server shutdown (already in-tree via rmcp).
 tokio-util = "0.7"
-# HTTP client for the stdio MCP bridge (`mcp/bridge.rs`). Localhost plain
-# HTTP only, so no TLS backend is needed.
-reqwest = { version = "0.13.3", default-features = false }
+# HTTP client: the stdio MCP bridge (`mcp/bridge.rs`, localhost plain HTTP) and
+# the self-hosted GitLab issues fetch (`issues.rs`, blocking, HTTPS). `rustls`
+# verifies against the platform trust store, so an internal CA works.
+reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }
+# OS keychain for the GitLab token (never in a Podium file).
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 # Encoding an image attachment read from disk into a `stream-json` content
 # block; already a dependency of `src-tauri` for terminal bytes.
 base64 = "0.22"

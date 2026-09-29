@@ -13,6 +13,7 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod ids;
+pub mod issues;
 pub mod justfile;
 pub mod mcp;
 pub mod orchestrator;
@@ -38,12 +39,14 @@ pub use events::{EventBus, PodiumEvent};
 pub use ids::{
     CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
 };
+pub use issues::{IssueInfo, IssueProvider, IssuesOverview};
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;
 pub use process::pty::TermChunk;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
+pub use project::ProjectSections;
 pub use scratchpad::ScratchpadInfo;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
 pub use worktree::WorktreeInfo;

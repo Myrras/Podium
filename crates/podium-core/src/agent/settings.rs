@@ -73,6 +73,23 @@ pub struct AgentSettings {
     /// shares this document rather than adding a second one-field file.
     #[serde(default)]
     pub assistant: AssistantSettings,
+    /// Issues-section preferences (shared document, like `assistant`).
+    #[serde(default)]
+    pub issues: IssueSettings,
+}
+
+/// Settings for the sidebar's Issues section.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSettings {
+    /// The GitHub/GitLab setups the user configured. Tokens live in the OS
+    /// keychain (keyed by setup id), never here.
+    #[serde(default)]
+    pub setups: Vec<crate::issues::IssueSetup>,
+    /// Per-project pick (project root → setup id). Absent = match the
+    /// remote's host automatically.
+    #[serde(default)]
+    pub projects: BTreeMap<PathBuf, String>,
 }
 
 fn default_true() -> bool {
@@ -87,6 +104,7 @@ impl Default for AgentSettings {
             overrides: BTreeMap::new(),
             suggest_worktree: true,
             assistant: AssistantSettings::default(),
+            issues: IssueSettings::default(),
         }
     }
 }
@@ -166,6 +184,14 @@ impl AgentSettingsStore {
     pub fn set_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.suggest_worktree = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Replace the Issues settings; returns the updated settings.
+    pub fn set_issues(&self, issues: IssueSettings) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.issues = issues;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -401,6 +427,29 @@ mod tests {
             settings.override_for("claude-code").unwrap().default_args,
             args(&["--permission-mode", "plan"])
         );
+    }
+
+    #[test]
+    fn issue_settings_default_empty_and_persist() {
+        let legacy: AgentSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.issues, IssueSettings::default());
+        let store = AgentSettingsStore::new();
+        let mut issues = IssueSettings::default();
+        issues.setups.push(crate::issues::IssueSetup {
+            id: "s1".into(),
+            name: "Work GitLab".into(),
+            provider: crate::issues::IssueProvider::Gitlab,
+            url: "http://git.example.test".into(),
+            account: None,
+        });
+        issues
+            .projects
+            .insert(PathBuf::from("/work/widgets"), "s1".into());
+        let updated = store.set_issues(issues.clone()).unwrap();
+        assert_eq!(updated.issues, issues);
+        let v = serde_json::to_value(&updated).unwrap();
+        assert_eq!(v["issues"]["setups"][0]["provider"], "gitlab");
+        assert_eq!(v["issues"]["projects"]["/work/widgets"], "s1");
     }
 
     #[test]

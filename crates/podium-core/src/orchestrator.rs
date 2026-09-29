@@ -25,7 +25,7 @@ use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::ScrollbackBuffer;
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
-use crate::project::{self, ConfiguredProcess};
+use crate::project::{self, ConfiguredProcess, ProjectSections};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
@@ -58,6 +58,8 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// Which optional sidebar sections the project shows.
+    pub sections: ProjectSections,
 }
 
 struct ProjectHandle {
@@ -72,6 +74,8 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// Which optional sidebar sections are shown (persisted in `workspace.json`).
+    sections: ProjectSections,
 }
 
 impl ProjectHandle {
@@ -87,6 +91,7 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            sections: self.sections,
         }
     }
 }
@@ -626,6 +631,7 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        sections: ProjectSections::default(),
                     },
                 );
                 inner.order.push(id);
@@ -749,6 +755,27 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
             handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set which optional sidebar sections a project shows. Presentation only:
+    /// nothing is stopped or deleted. Returns the updated snapshot.
+    pub fn set_project_sections(
+        &self,
+        id: ProjectId,
+        sections: ProjectSections,
+    ) -> CoreResult<ProjectInfo> {
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.sections = sections;
             handle.info(id)
         };
         self.events
@@ -1678,6 +1705,111 @@ impl Orchestrator {
             .filter(|(_, p)| project_id.is_none_or(|pid| p.project_id == pid))
             .map(|(id, p)| p.info(*id))
             .collect()
+    }
+
+    /// Open issues assigned to the user in the repo behind the project's
+    /// `origin` remote, via the project's chosen setup (or the one matching
+    /// the remote's host). Shells out — call from a blocking-friendly context.
+    pub fn list_issues(&self, project_id: ProjectId) -> CoreResult<Vec<crate::IssueInfo>> {
+        let root = self.project_root(project_id)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        crate::issues::list(&root, &issues.setups, selected)
+    }
+
+    /// Settings → Issues: every setup (with whether a GitLab token is stored —
+    /// never the token) plus each project's pick. Touches the keychain.
+    pub fn issues_overview(&self) -> crate::issues::IssuesOverview {
+        let issues = self.agent_settings().issues;
+        crate::issues::IssuesOverview {
+            setups: issues
+                .setups
+                .into_iter()
+                .map(|setup| crate::issues::IssueSetupInfo {
+                    token_set: setup.provider == crate::issues::IssueProvider::Gitlab
+                        && crate::issues::gitlab_token_present(&setup.id),
+                    setup,
+                })
+                .collect(),
+            projects: issues.projects,
+        }
+    }
+
+    /// Add a setup (`id: None`) or replace the one with that id. The URL is
+    /// normalized (scheme kept, `https` by default); a blank name falls back to
+    /// the host. `token` (GitLab only): `None` keeps the stored one, blank
+    /// deletes it, anything else replaces it.
+    pub fn save_issue_setup(
+        &self,
+        id: Option<String>,
+        name: String,
+        provider: crate::issues::IssueProvider,
+        url: String,
+        account: Option<String>,
+        token: Option<String>,
+    ) -> CoreResult<crate::issues::IssuesOverview> {
+        let url = crate::issues::normalize_url(&url)
+            .ok_or_else(|| CoreError::InvalidInput("enter a valid http(s) URL".to_string()))?;
+        let name = match name.trim() {
+            "" => crate::issues::url_host(&url).to_string(),
+            n => n.to_string(),
+        };
+        let github = provider == crate::issues::IssueProvider::Github;
+        let setup = crate::issues::IssueSetup {
+            id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            name,
+            provider,
+            url,
+            account: account
+                .map(|a| a.trim().to_string())
+                .filter(|a| github && !a.is_empty()),
+        };
+        if let Some(token) = token.filter(|_| !github) {
+            crate::issues::gitlab_token_set(&setup.id, &token)?;
+        }
+        let mut issues = self.agent_settings().issues;
+        match issues.setups.iter_mut().find(|s| s.id == setup.id) {
+            Some(existing) => *existing = setup,
+            None => issues.setups.push(setup),
+        }
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
+    }
+
+    /// Remove a setup, its keychain token, and any project's pick of it.
+    pub fn remove_issue_setup(&self, id: &str) -> CoreResult<crate::issues::IssuesOverview> {
+        crate::issues::gitlab_token_set(id, "")?;
+        let mut issues = self.agent_settings().issues;
+        issues.setups.retain(|s| s.id != id);
+        issues.projects.retain(|_, pick| pick != id);
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
+    }
+
+    /// Pin a project to one setup; `None` goes back to matching by host.
+    pub fn set_project_issue_setup(
+        &self,
+        project_id: ProjectId,
+        setup_id: Option<String>,
+    ) -> CoreResult<crate::issues::IssuesOverview> {
+        let root = self.project_root(project_id)?;
+        let mut issues = self.agent_settings().issues;
+        match setup_id {
+            Some(id) => {
+                if !issues.setups.iter().any(|s| s.id == id) {
+                    return Err(CoreError::InvalidInput("unknown issue setup".to_string()));
+                }
+                issues.projects.insert(root, id);
+            }
+            None => {
+                issues.projects.remove(&root);
+            }
+        }
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
     }
 
     /// The project's Podium-managed git worktrees, with `in_use` marking the
@@ -2775,6 +2907,66 @@ mod tests {
         assert_eq!(ids, vec![idc, ida, idb], "list reflects the new order");
     }
 
+    #[tokio::test]
+    async fn issue_setups_save_normalize_and_pin_per_project() {
+        use crate::issues::IssueProvider;
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        // GitHub needs no keychain: account kept, URL normalized, name defaults to host.
+        let o = orch
+            .save_issue_setup(
+                None,
+                " ".into(),
+                IssueProvider::Github,
+                "GitHub.com/".into(),
+                Some(" octo-fictional ".into()),
+                Some("ignored for GitHub".into()),
+            )
+            .unwrap();
+        let setup = &o.setups[0];
+        assert_eq!(setup.setup.url, "https://github.com");
+        assert_eq!(setup.setup.name, "github.com");
+        assert_eq!(setup.setup.account.as_deref(), Some("octo-fictional"));
+        assert!(!setup.token_set);
+        assert!(matches!(
+            orch.save_issue_setup(
+                None,
+                "x".into(),
+                IssueProvider::Github,
+                "ftp://nope".into(),
+                None,
+                None
+            ),
+            Err(CoreError::InvalidInput(_))
+        ));
+
+        // Editing by id replaces in place.
+        let sid = setup.setup.id.clone();
+        let o = orch
+            .save_issue_setup(
+                Some(sid.clone()),
+                "Personal".into(),
+                IssueProvider::Github,
+                "https://github.com".into(),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(o.setups.len(), 1);
+        assert_eq!(o.setups[0].setup.name, "Personal");
+
+        let root = orch.project_root(id).unwrap();
+        let o = orch.set_project_issue_setup(id, Some(sid.clone())).unwrap();
+        assert_eq!(o.projects.get(&root), Some(&sid));
+        assert!(orch
+            .set_project_issue_setup(id, Some("missing".into()))
+            .is_err());
+        let o = orch.set_project_issue_setup(id, None).unwrap();
+        assert!(o.projects.is_empty());
+    }
+
     // A `\\?\`-prefixed root breaks agent spawn on Windows: it becomes the
     // agent's `cwd` (`process::pty::PtyProcess::spawn` → portable-pty's
     // `CommandBuilder::cwd`), and `CreateProcessW`'s `lpCurrentDirectory`
@@ -2860,6 +3052,42 @@ mod tests {
         let cleared = orch.rename_project(id, Some("   ".to_string())).unwrap();
         assert_eq!(cleared.name, original.name);
         assert_eq!(cleared.icon_initials, original.icon_initials);
+    }
+
+    #[tokio::test]
+    async fn set_project_sections_updates_info_and_emits() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let opened = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(opened.sections, ProjectSections::default());
+
+        let mut rx = orch.subscribe_events();
+        let sections = ProjectSections {
+            scratchpads: false,
+            ..ProjectSections::default()
+        };
+        let info = orch.set_project_sections(id, sections).unwrap();
+        assert!(!info.sections.scratchpads);
+        assert!(info.sections.todos);
+        let listed = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(listed.sections, sections);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PodiumEvent::ProjectUpdated { project_id }) if project_id == id
+        ));
+        assert!(matches!(
+            orch.set_project_sections(ProjectId::new(), sections),
+            Err(CoreError::ProjectNotFound)
+        ));
     }
 
     #[tokio::test]

@@ -35,6 +35,7 @@ import {
 import { readTerminalTheme } from "./lib/terminalTheme";
 import { startAgentActivityMonitor } from "./state/agentActivityStore";
 import { useAssistantStore } from "./state/assistantStore";
+import { useIssueStore } from "./state/issueStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useProcessStore } from "./state/processStore";
 import { useProjectStore } from "./state/projectStore";
@@ -46,8 +47,10 @@ import { useWorktreeStore } from "./state/worktreeStore";
 import { AssistantPane } from "./components/AssistantPane";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
+import { IssueDetailPane } from "./components/IssueDetailPane";
 import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
 import { SettingsModal } from "./components/SettingsModal";
+import { useSettingsRequestStore } from "./state/settingsRequestStore";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPane } from "./components/TerminalPane";
 import { TodoDetailPane } from "./components/TodoDetailPane";
@@ -59,12 +62,17 @@ import styles from "./App.module.css";
 
 export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRequest = useSettingsRequestStore((s) => s.request);
+  useEffect(() => {
+    if (settingsRequest) setSettingsOpen(true);
+  }, [settingsRequest]);
   const [closeWarnOpen, setCloseWarnOpen] = useState(false);
 
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const openTodo = useLayoutStore((s) => s.openTodo);
   const openScratchpad = useLayoutStore((s) => s.openScratchpad);
+  const openIssue = useLayoutStore((s) => s.openIssue);
   const assistantOpen = useLayoutStore((s) => s.assistantOpen);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const assistantWidth = useLayoutStore((s) => s.assistantWidth);
@@ -109,6 +117,7 @@ export default function App() {
         useTodoStore.getState().dropProject(e.projectId);
         useScratchpadStore.getState().dropProject(e.projectId);
         useWorktreeStore.getState().dropProject(e.projectId);
+        useIssueStore.getState().dropProject(e.projectId);
       }),
       onTodosChanged((e) => void useTodoStore.getState().refresh(e.projectId)),
       onScratchpadsChanged(
@@ -287,7 +296,13 @@ export default function App() {
           aria-label="Resize sidebar"
         />
         <main className={styles.work}>
-          {openScratchpad ? (
+          {openIssue ? (
+            <IssueDetailPane
+              key={`${openIssue.projectId}#${openIssue.number}`}
+              projectId={openIssue.projectId}
+              number={openIssue.number}
+            />
+          ) : openScratchpad ? (
             <ScratchpadDetailPane
               key={openScratchpad.scratchpadId}
               projectId={openScratchpad.projectId}
@@ -322,7 +337,10 @@ export default function App() {
       <Toasts />
       <SettingsModal
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          setSettingsOpen(false);
+          useSettingsRequestStore.getState().clear();
+        }}
       />
       <CloseWarningModal
         open={closeWarnOpen}

@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **84 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 78 commands.
+  IPC wrappers over all 84 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -109,6 +109,7 @@ podium/
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
+│  ├─ issues.rs                # the user's open assigned issues for a project's origin repo (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -133,6 +134,14 @@ podium/
 entry point**: projects, processes, agents, attach/stdin/resize, events,
 shutdown. `src-tauri` holds one `Arc<Orchestrator>` in `AppState` and never
 reaches around it.
+
+Each project's sidebar shows or hides its To-do's / Terminals / Worktrees /
+Scratchpads (and, later, Issues) sections via `ProjectInfo.sections`
+(`ProjectSections`, all on by default; partial JSON loads).
+Presentation only: hiding never stops processes, deletes data or affects MCP.
+Agents and Processes are never hidden. Persisted per project in
+`workspace.json` (`WorkspaceEntry.sections`, `None` = defaults) and
+re-applied in `project_open`.
 
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
@@ -328,6 +337,47 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   can go stale between backend refreshes while the sidebar stays live; the
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
+
+- **Issues** (`issues.rs`): the Issues sidebar section (per-project toggle,
+  on by default) lists the user's **open issues assigned to them** in the repo
+  behind the project's `origin` remote (`detect` → `parse_remote`,
+  ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
+  (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
+  { id, name, provider: github|gitlab, url, account? }`, `url` normalized to
+  `scheme://host[:port]` with the scheme **kept** (`http://` for an instance
+  without TLS; `https` when omitted). A project can pin one setup from the
+  section's picker (`issues.projects`, project root → setup id, app-side);
+  otherwise `pick` takes the first setup whose host matches the remote, and a
+  pinned setup for another host is `IssuesHostMismatch`. github.com with no
+  setup still works zero-config. GitHub goes through the user's own `gh` login
+  (`gh issue list --repo host/owner/repo --assignee @me …`, binary resolved
+  once by `platform::gh_binary()`); a setup's `account` picks a logged-in `gh`
+  account via `gh auth token --user`, handed to that one `gh` call as
+  `GH_TOKEN` — Podium stores no GitHub token. Self-hosted GitLab is fetched
+  from the setup's URL (`/api/v4/projects/:path/issues?scope=assigned_to_me`,
+  `PRIVATE-TOKEN`, blocking reqwest + rustls). **Temporary** — Connect still
+  runs on GitLab; removing it is `IssueProvider::Gitlab`, its arm in
+  `issues::list` and the `// ponytail: temporary` blocks. **Token handling:**
+  a GitLab token lives only in the OS keychain (`keyring`, service
+  `com.podium.app.gitlab`, account = setup id); `issues_settings_get` reports
+  just `tokenSet`, the token is never returned over IPC, logged, or put in an
+  error, and the Settings field is never prefilled. Failures are typed
+  (`IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
+  `IssuesHostMismatch` / `IssuesGitlabNotConfigured` / `IssuesGitlabAuth` /
+  `IssuesFetch`) and never carry `gh`/`git` stderr or a GitLab response body;
+  the setup kinds link the section to Settings → Issues
+  (`settingsRequestStore`), as does the section header's gear. Refresh is a
+  frontend concern (`issueStore`, which also caches the setups overview and
+  refetches every shown project when it changes): one in-flight fetch per
+  project, the stale list is kept on error, and `startAutoRefresh` (mounted
+  with the section) fetches immediately, every 5 min, and on window focus when
+  the last attempt is over 60 s old; the section shows each error inline,
+  never as a toast.
+  A row click opens a read-only `IssueDetailPane` in the work area
+  (`layoutStore.openIssue`, exclusive with the process/to-do/scratchpad);
+  browser, "start agent" (`NewAgentModal` prefilled via `initialPrompt`) and
+  "turn into to-do" (`todoAdd` → `todoUpdate` → `todoAddLink`, hidden while an
+  active to-do already links the URL) are row actions. No backend involved.
 
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
@@ -643,6 +693,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `project_config_reload` | `{ projectId }`                             | `ProjectInfo`     |
 | `project_rename`        | `{ projectId, name? }` (blank clears)       | `ProjectInfo`     |
 | `project_reorder`       | `{ ordered: string[] }` (project ids)       | `ProjectInfo[]`   |
+| `project_set_sections`  | `{ projectId, sections: ProjectSections }`  | `ProjectInfo`     |
 | `project_just_recipes`  | `{ projectId }`                             | `string[]`        |
 | `project_open_in_warp`  | `{ projectId }`                             | –                 |
 | `recents_list`          | –                                           | `RecentProject[]` |
@@ -694,6 +745,11 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_set_archived` | `{ projectId, id, archived }`             | `ScratchpadInfo`  |
 | `scratchpad_remove`     | `{ projectId, id }`                         | –                 |
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
+| `issues_list`           | `{ projectId }`                             | `IssueInfo[]`     |
+| `issues_settings_get`   | –                                           | `IssuesOverview` (`{ setups, projects }`, never a token) |
+| `issues_setup_save`     | `{ id?, name, provider, url, account?, token? }` (token omitted = keep, blank = delete) | `IssuesOverview` |
+| `issues_setup_remove`   | `{ id }`                                    | `IssuesOverview`  |
+| `issues_project_setup_set` | `{ projectId, setupId? }` (omitted = match by host) | `IssuesOverview` |
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |

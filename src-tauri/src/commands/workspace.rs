@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use podium_core::ProjectSections;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -36,6 +37,10 @@ struct WorkspaceEntry {
     path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// Which sidebar sections are shown; `None` means the defaults, so files
+    /// written before this field existed load untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sections: Option<ProjectSections>,
 }
 
 /// Accepts both the current object form and the legacy bare-path-string form,
@@ -51,7 +56,11 @@ enum RawEntry {
 impl From<RawEntry> for WorkspaceEntry {
     fn from(raw: RawEntry) -> Self {
         match raw {
-            RawEntry::Path(path) => WorkspaceEntry { path, name: None },
+            RawEntry::Path(path) => WorkspaceEntry {
+                path,
+                name: None,
+                sections: None,
+            },
             RawEntry::Full(entry) => entry,
         }
     }
@@ -93,6 +102,7 @@ fn add_entry(entries: &mut Vec<WorkspaceEntry>, path: &Path) {
         entries.push(WorkspaceEntry {
             path: path.to_path_buf(),
             name: None,
+            sections: None,
         });
     }
 }
@@ -134,6 +144,20 @@ fn set_entry_name(entries: &mut Vec<WorkspaceEntry>, path: &Path, name: Option<S
         entries.push(WorkspaceEntry {
             path: path.to_path_buf(),
             name,
+            sections: None,
+        });
+    }
+}
+
+/// Set the section toggles for `path`. Creates the entry if it is absent.
+fn set_entry_sections(entries: &mut Vec<WorkspaceEntry>, path: &Path, sections: ProjectSections) {
+    if let Some(entry) = entries.iter_mut().find(|e| e.path == path) {
+        entry.sections = Some(sections);
+    } else {
+        entries.push(WorkspaceEntry {
+            path: path.to_path_buf(),
+            name: None,
+            sections: Some(sections),
         });
     }
 }
@@ -202,6 +226,29 @@ pub fn name_for(app: &AppHandle, path: &Path) -> Result<Option<String>, IpcError
         .and_then(|e| e.name))
 }
 
+/// Persist a project's section toggles.
+pub fn set_sections(
+    app: &AppHandle,
+    path: &Path,
+    sections: ProjectSections,
+) -> Result<(), IpcError> {
+    let file = workspace_path(app)?;
+    let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
+    let mut entries = load(&file);
+    set_entry_sections(&mut entries, path, sections);
+    save(&file, &entries)
+}
+
+/// The persisted section toggles for `path`, if any were ever set.
+pub fn sections_for(app: &AppHandle, path: &Path) -> Result<Option<ProjectSections>, IpcError> {
+    let file = workspace_path(app)?;
+    let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
+    Ok(load(&file)
+        .into_iter()
+        .find(|e| e.path == path)
+        .and_then(|e| e.sections))
+}
+
 /// Reorder the persisted workspace to match `ordered` (the new sidebar order).
 pub fn reorder(app: &AppHandle, ordered: &[PathBuf]) -> Result<(), IpcError> {
     let file = workspace_path(app)?;
@@ -263,10 +310,12 @@ mod tests {
             WorkspaceEntry {
                 path: PathBuf::from("/a"),
                 name: Some("Alpha".into()),
+                sections: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/b"),
                 name: None,
+                sections: None,
             },
         ];
         add_entry(&mut entries, Path::new("/a"));
@@ -282,6 +331,7 @@ mod tests {
         let mut entries = vec![WorkspaceEntry {
             path: PathBuf::from(r"\\?\C:\Meridian"),
             name: Some("Meridian".into()),
+            sections: None,
         }];
         migrate_legacy_entry(
             &mut entries,
@@ -302,10 +352,12 @@ mod tests {
             WorkspaceEntry {
                 path: PathBuf::from(r"\\?\C:\Meridian"),
                 name: None,
+                sections: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from(r"C:\Meridian"),
                 name: Some("Meridian".into()),
+                sections: None,
             },
         ];
         migrate_legacy_entry(
@@ -322,6 +374,7 @@ mod tests {
         let mut entries = vec![WorkspaceEntry {
             path: PathBuf::from(r"C:\Other"),
             name: None,
+            sections: None,
         }];
         migrate_legacy_entry(
             &mut entries,
@@ -337,10 +390,12 @@ mod tests {
             WorkspaceEntry {
                 path: PathBuf::from("/a"),
                 name: None,
+                sections: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/b"),
                 name: None,
+                sections: None,
             },
         ];
         remove_entry(&mut entries, Path::new("/a"));
@@ -354,6 +409,7 @@ mod tests {
         let mut entries = vec![WorkspaceEntry {
             path: PathBuf::from("/a"),
             name: None,
+            sections: None,
         }];
         set_entry_name(&mut entries, Path::new("/a"), Some("  Cool  ".into()));
         assert_eq!(entries[0].name.as_deref(), Some("Cool"), "trimmed");
@@ -366,19 +422,44 @@ mod tests {
     }
 
     #[test]
+    fn sections_missing_field_is_none_and_round_trips() {
+        let legacy: Vec<RawEntry> =
+            serde_json::from_str(r#"[{"path":"/a","name":"A"},"/b"]"#).unwrap();
+        let mut entries: Vec<WorkspaceEntry> = legacy.into_iter().map(Into::into).collect();
+        assert!(entries.iter().all(|e| e.sections.is_none()));
+
+        let sections = ProjectSections {
+            scratchpads: false,
+            ..ProjectSections::default()
+        };
+        set_entry_sections(&mut entries, Path::new("/a"), sections);
+        let json = serde_json::to_string(&entries).unwrap();
+        let back: Vec<WorkspaceEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back[0].sections, Some(sections));
+        assert_eq!(back[1].sections, None);
+        assert!(
+            !json.contains("\"path\":\"/b\",\"sections\""),
+            "None is skipped"
+        );
+    }
+
+    #[test]
     fn reorder_matches_order_and_appends_missing() {
         let mut entries = vec![
             WorkspaceEntry {
                 path: PathBuf::from("/a"),
                 name: None,
+                sections: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/b"),
                 name: Some("Bee".into()),
+                sections: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/c"),
                 name: None,
+                sections: None,
             },
         ];
         // Mention c, a plus an unknown; b is appended at the end.

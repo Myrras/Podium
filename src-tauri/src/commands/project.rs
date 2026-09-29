@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, State};
 
-use podium_core::{ProjectId, ProjectInfo};
+use podium_core::{ProjectId, ProjectInfo, ProjectSections};
 
 use crate::commands::{recents, workspace};
 use crate::error::IpcError;
@@ -48,6 +48,12 @@ pub async fn project_open(
             tracing::warn!("failed to apply persisted project name: {e}");
         }
     }
+    // Same for the section toggles.
+    if let Ok(Some(sections)) = workspace::sections_for(&app, &root) {
+        if let Err(e) = state.orchestrator.set_project_sections(id, sections) {
+            tracing::warn!("failed to apply persisted project sections: {e}");
+        }
+    }
     let info = state
         .orchestrator
         .list_projects()
@@ -84,6 +90,24 @@ pub fn project_rename(
     };
     if let Err(e) = workspace::set_name(&app, &info.root, stored) {
         tracing::warn!("failed to persist project name: {e}");
+    }
+    Ok(info)
+}
+
+/// Set which optional sidebar sections a project shows. Persisted in
+/// `workspace.json`; a persist failure only means it won't survive a restart.
+#[tauri::command]
+pub fn project_set_sections(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    sections: ProjectSections,
+) -> Result<ProjectInfo, IpcError> {
+    let info = state
+        .orchestrator
+        .set_project_sections(project_id, sections)?;
+    if let Err(e) = workspace::set_sections(&app, &info.root, sections) {
+        tracing::warn!("failed to persist project sections: {e}");
     }
     Ok(info)
 }

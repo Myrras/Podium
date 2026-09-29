@@ -17,6 +17,47 @@ export type CommentId = string;
 export type LinkId = string;
 export type ScratchpadId = string;
 
+/** Which optional sidebar sections a project shows (`podium_core::ProjectSections`). */
+export interface ProjectSections {
+  todos: boolean;
+  terminals: boolean;
+  worktrees: boolean;
+  scratchpads: boolean;
+  issues: boolean;
+}
+
+/** One open issue assigned to the user (`podium_core::IssueInfo`). */
+export interface IssueInfo {
+  number: number;
+  title: string;
+  url: string;
+  body: string;
+  labels: string[];
+  updatedAt: string;
+}
+
+/** Platform an issue setup talks to (`podium_core::IssueProvider`). */
+export type IssueProvider = "github" | "gitlab";
+
+/** One Settings → Issues setup (`IssueSetupInfo`); a token never crosses IPC. */
+export interface IssueSetup {
+  id: string;
+  name: string;
+  provider: IssueProvider;
+  /** Base URL, scheme kept (`http://` for an instance without TLS). */
+  url: string;
+  /** GitHub: the `gh` account to use; absent = gh's active account. */
+  account?: string;
+  /** GitLab: whether a token is stored in the keychain. */
+  tokenSet: boolean;
+}
+
+/** Every setup plus each project's pick, keyed by project root (`IssuesOverview`). */
+export interface IssuesOverview {
+  setups: IssueSetup[];
+  projects: Record<string, string>;
+}
+
 /** Open project snapshot (`podium_core::ProjectInfo`). */
 export interface ProjectInfo {
   id: ProjectId;
@@ -29,6 +70,8 @@ export interface ProjectInfo {
   configError: string | null;
   /** True when a user-set display-name override is in effect. */
   renamed: boolean;
+  /** Which optional sidebar sections are shown. */
+  sections: ProjectSections;
 }
 
 /** One remembered project (`RecentProject` in `commands/recents.rs`). */

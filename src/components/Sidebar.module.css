@@ -209,6 +209,55 @@
   color: var(--text);
 }
 
+/* Sections popover: keeps its trigger visible while open. */
+.sectionsWrap {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+
+.sectionsWrap[data-open] .projectAction {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sectionsPopover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 140px;
+  padding: var(--sp-2);
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.sectionsItem {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The global input rule (width: 100%, padding) would stretch the checkbox
+   and push its label out of the popover. */
+.sectionsItem input {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+
 /* ── Group body ────────────────────────────────────────────────────────────── */
 /*
  * Grid trick for smooth height animation from auto → 0 without JS.
@@ -360,4 +409,25 @@
 .addProjectBtn:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/* Refresh glyph while a background fetch runs — opacity-only, like the
+ * activity dot, so the reduced-motion guard covers it. */
+.refreshing {
+  animation: refreshPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes refreshPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Issues: which Settings → Issues setup the project uses. */
+.issueSetupPicker {
+  width: auto;
+  max-width: calc(100% - 2 * var(--sp-3));
+  margin: 0 var(--sp-3) var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
 }

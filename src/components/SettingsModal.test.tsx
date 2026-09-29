@@ -5,6 +5,19 @@ import type { AgentSettingsDto, McpClientInfo } from "../ipc/types";
 
 // The settings modal reaches the backend only through the Tauri invoke bridge,
 // which jsdom lacks — route every command by name to a canned response.
+const sampleIssues = {
+  setups: [
+    {
+      id: "s1",
+      name: "Work GitLab",
+      provider: "gitlab",
+      url: "http://git.example.test",
+      tokenSet: true,
+    },
+  ],
+  projects: {},
+};
+
 const sampleDto: AgentSettingsDto = {
   mergeMode: "merge",
   defaultAdapter: "",
@@ -62,6 +75,10 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
     case "agent_settings_set_merge_mode":
     case "agent_settings_set_suggest_worktree":
       return Promise.resolve(sampleDto);
+    case "issues_settings_get":
+    case "issues_setup_save":
+    case "issues_setup_remove":
+      return Promise.resolve(sampleIssues);
     case "assistant_autonomy_get":
       return Promise.resolve("confirm-destructive");
     case "assistant_autonomy_set":
@@ -102,6 +119,7 @@ vi.mock("@tauri-apps/plugin-log", () => ({
   warn: () => Promise.resolve(),
 }));
 
+import { useIssueStore } from "../state/issueStore";
 import { SettingsModal } from "./SettingsModal";
 import { useSettingsStore } from "../state/settingsStore";
 
@@ -271,6 +289,78 @@ describe("SettingsModal — Assistant tab", () => {
         "assistant_new_conversation",
         undefined,
       ),
+    );
+  });
+});
+
+describe("SettingsModal — Issues tab", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+    useIssueStore.setState({ overview: null, byProject: {} });
+  });
+
+  async function openIssuesTab() {
+    render(<SettingsModal open onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Issues" }));
+    return screen.findByText("Work GitLab");
+  }
+
+  it("lists setups without ever rendering a token", async () => {
+    await openIssuesTab();
+    expect(
+      screen.getByText(/http:\/\/git\.example\.test · token saved/),
+    ).toBeTruthy();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it("edits a setup, keeping the token when left blank", async () => {
+    await openIssuesTab();
+    fireEvent.click(screen.getByText("Edit"));
+    const token = screen.getByLabelText("Access token");
+    expect(token).toHaveAttribute("type", "password");
+    expect(token).toHaveValue("");
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_setup_save", {
+        id: "s1",
+        name: "Work GitLab",
+        provider: "gitlab",
+        url: "http://git.example.test",
+        account: undefined,
+        token: undefined,
+      }),
+    );
+  });
+
+  it("adds a GitHub setup with a gh account", async () => {
+    await openIssuesTab();
+    fireEvent.click(screen.getByText("Add GitHub setup"));
+    expect(screen.getByLabelText("URL")).toHaveValue("https://github.com");
+    expect(screen.queryByLabelText("Access token")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Personal" },
+    });
+    fireEvent.change(screen.getByLabelText("gh account"), {
+      target: { value: "octo-fictional" },
+    });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_setup_save", {
+        id: undefined,
+        name: "Personal",
+        provider: "github",
+        url: "https://github.com",
+        account: "octo-fictional",
+        token: undefined,
+      }),
+    );
+  });
+
+  it("removes a setup", async () => {
+    await openIssuesTab();
+    fireEvent.click(screen.getByLabelText("Remove Work GitLab"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_setup_remove", { id: "s1" }),
     );
   });
 });
