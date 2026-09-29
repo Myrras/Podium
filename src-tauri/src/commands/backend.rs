@@ -61,13 +61,15 @@ pub async fn backend_wsl_networking_mode() -> Result<Option<String>, IpcError> {
 }
 
 /// Save the WSL distro to use from the next launch on. Blank or absent =
-/// the native backend.
+/// the native backend; a distro that is not installed is refused.
 #[tauri::command]
 pub fn backend_settings_set_wsl_distro(
     app: AppHandle,
     distro: Option<String>,
 ) -> Result<BackendSettingsDto, IpcError> {
-    let saved =
-        backend_settings::save(&backend_path(&app)?, BackendSettings { wsl_distro: distro })?;
+    let saved = backend_settings::save_checked(
+        &backend_path(&app)?,
+        BackendSettings { wsl_distro: distro },
+    )?;
     Ok(to_dto(saved))
 }

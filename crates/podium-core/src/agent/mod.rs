@@ -520,13 +520,11 @@ mod tests {
     use std::fs;
 
     /// Round-trips a built [`LaunchPlan::command`] back into argv, using
-    /// whichever tokenizer matches the shell `login_shell()` actually runs it
-    /// through in this mode — `shlex` for `$SHELL -lc` and for bash in
-    /// WSL-backend mode, the Windows argv parser for native `cmd.exe /C`.
+    /// whichever tokenizer matches the shell `login_shell()` runs it through
+    /// natively — `shlex` for `$SHELL -lc`, the Windows argv parser for
+    /// `cmd.exe /C`. Unit tests never enter WSL-backend mode (`init_wsl` is
+    /// process-global); its POSIX quoting is covered in `platform.rs`.
     fn split_command(cmd: &str) -> Vec<String> {
-        if crate::platform::wsl().is_some() {
-            return shlex::split(cmd).expect("valid shell line");
-        }
         #[cfg(unix)]
         {
             shlex::split(cmd).expect("valid shell line")

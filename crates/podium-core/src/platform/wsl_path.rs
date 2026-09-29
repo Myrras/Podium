@@ -10,6 +10,12 @@
 //! Pure string work — no IO and no `cfg` — so it behaves (and is tested) the
 //! same on every platform, which is why it parses the Windows syntax itself
 //! instead of relying on `std::path` (which only understands it on Windows).
+//!
+//! Assumes WSL's default automount root, `/mnt` (`C:\` is `/mnt/c`). A
+//! distro that sets another `[automount] root` in `/etc/wsl.conf` gets
+//! wrong Linux paths for every Windows drive path (UNC paths into the
+//! distro itself are unaffected); reading the root from the distro once at
+//! startup would lift that, and has not been needed so far.
 
 use std::path::{Path, PathBuf};
 

@@ -738,7 +738,9 @@ function GeneralTab() {
   const setTheme = useThemeStore((s) => s.setTheme);
   const settings = useSettingsStore();
   const fontSize = settings.terminal.fontSize;
-  const wslActive = useActiveWslDistro() !== "";
+  // Fetched once here for both the shell hint and the Backend section.
+  const backend = useBackendSettings();
+  const wslActive = (backend.saved?.activeWslDistro ?? "") !== "";
 
   return (
     <>
@@ -834,65 +836,70 @@ function GeneralTab() {
         </div>
       </section>
 
-      {isWindows && <BackendSettings />}
+      {isWindows && (
+        <BackendSettings
+          saved={backend.saved}
+          loadError={backend.loadError}
+          onSaved={backend.setSaved}
+        />
+      )}
 
       <NotificationsSettings />
     </>
   );
 }
 
-/** The WSL distro this run uses (Windows WSL-backend mode), or `""`. */
-function useActiveWslDistro(): string {
-  const [active, setActive] = useState("");
+/** The backend settings (Windows only — `null` elsewhere and until loaded). */
+function useBackendSettings() {
+  const [saved, setSaved] = useState<BackendSettingsDto | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (!isWindows) return;
     let cancelled = false;
     backendSettingsGet()
       .then((d) => {
-        if (!cancelled) setActive(d.activeWslDistro);
+        if (!cancelled) setSaved(d);
       })
-      .catch(() => undefined);
+      .catch((e) => {
+        if (!cancelled) setLoadError(toIpcError(e).message);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
-  return active;
+  return { saved, setSaved, loadError };
 }
 
 /**
  * Windows only: run everything Podium executes inside a WSL distro. Read once
  * at startup, so a saved change shows a restart hint until the next launch.
  */
-function BackendSettings() {
+function BackendSettings({
+  saved,
+  loadError,
+  onSaved,
+}: {
+  saved: BackendSettingsDto | null;
+  loadError: string | null;
+  onSaved: (d: BackendSettingsDto) => void;
+}) {
   const [draft, setDraft] = useState("");
-  const [saved, setSaved] = useState<BackendSettingsDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const error = saveError ?? loadError;
 
+  // Follow the stored value: once loaded, and normalized after a save.
   useEffect(() => {
-    let cancelled = false;
-    backendSettingsGet()
-      .then((d) => {
-        if (cancelled) return;
-        setSaved(d);
-        setDraft(d.wslDistro);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(toIpcError(e).message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (saved) setDraft(saved.wslDistro);
+  }, [saved]);
 
   const save = () => {
     if (!saved || draft.trim() === saved.wslDistro) return;
     backendSettingsSetWslDistro(draft)
       .then((d) => {
-        setSaved(d);
-        setDraft(d.wslDistro);
-        setError(null);
+        onSaved(d);
+        setSaveError(null);
       })
-      .catch((e) => setError(toIpcError(e).message));
+      .catch((e) => setSaveError(toIpcError(e).message));
   };
 
   const restartNeeded =
