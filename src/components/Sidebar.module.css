@@ -411,24 +411,54 @@
   color: var(--text);
 }
 
-/* Git board button: the one header action visible at rest (see GitButton). */
+/*
+ * Git board button: the one header action visible at rest, so it gets a pill
+ * of its own at the row's far end — the hover-only actions reveal to its
+ * left, never shifting it. Icon + open-card count; accent while open.
+ */
 .gitButton {
   position: relative;
-  opacity: 1;
-  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  margin-left: var(--sp-1);
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.gitButton:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .gitButton[data-open="true"] {
-  color: var(--accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .gitButton[data-error="true"]::after {
   content: "";
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 5px;
-  height: 5px;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--warning);
+  box-shadow: 0 0 0 2px var(--surface);
 }

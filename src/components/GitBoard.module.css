@@ -345,3 +345,52 @@
 .card:focus-within .cardActions {
   opacity: 1;
 }
+
+/* Drag & drop: valid targets light up, the rest dim. */
+.column {
+  transition:
+    opacity var(--dur-1) var(--ease-out),
+    outline-color var(--dur-1) var(--ease-out);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+.column[data-drop="true"] {
+  outline-color: var(--accent);
+}
+
+.column[data-drop="false"] {
+  opacity: 0.5;
+}
+
+.card[draggable="true"] {
+  cursor: grab;
+}
+
+/* PRs/MRs folded into an issue card. */
+.linked {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+
+.linkedPr {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.linkedPr:hover {
+  color: var(--accent);
+  border-color: var(--border-strong);
+}

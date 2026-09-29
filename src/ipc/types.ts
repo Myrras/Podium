@@ -34,6 +34,8 @@ export interface BoardColumn {
   id: string;
   title: string;
   color: string | null;
+  /** Item kinds that may be dropped here (`issues_board_move`). */
+  accepts: ("issue" | "pr")[];
 }
 
 /** One card on the Git board: an issue or a PR/MR (`podium_core::issues::BoardItem`). */
@@ -49,6 +51,19 @@ export interface BoardItem {
   column: string;
   draft: boolean;
   author: string;
+  /** Whether it can be moved to another column. */
+  movable: boolean;
+  /** PRs/MRs folded into this issue (empty for PRs and unlinked issues). */
+  linked: LinkedPr[];
+}
+
+/** A PR/MR linked to an issue, shown inside its card instead of as its own. */
+export interface LinkedPr {
+  number: number;
+  title: string;
+  url: string;
+  draft: boolean;
+  merged: boolean;
 }
 
 /** A project's Git board (`podium_core::Board`); counts are all-time, `null` = unknown. */
@@ -62,6 +77,13 @@ export interface Board {
   /** Podium-owned text: how to unlock the project's columns. */
   hint: string | null;
   prCounts: { open: number | null; merged: number | null };
+}
+
+/** The last fetched board of a scope, from the backend cache. */
+export interface CachedBoard {
+  board: Board;
+  /** RFC3339 time of the fetch. */
+  fetchedAt: string;
 }
 
 /** Platform an issue setup talks to (`podium_core::IssueProvider`). */

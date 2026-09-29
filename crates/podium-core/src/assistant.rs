@@ -176,6 +176,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "list_todos",
     "list_scratchpads",
     "list_worktrees",
+    "get_board",
     // A sender check that could be parked as a proposal would be no check at
     // all: the assistant would have to act on the message before hearing
     // back. Read-only in every mode.

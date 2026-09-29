@@ -376,7 +376,6 @@ function ProjectGroup({
             <EditIcon size={12} />
           </button>
         )}
-        {project.sections.issues && <GitButton projectId={project.id} />}
         <div
           ref={sectionsRef}
           className={styles.sectionsWrap}
@@ -449,6 +448,8 @@ function ProjectGroup({
         >
           <CloseIcon size={12} />
         </button>
+        {/* Last, so the hover-only actions reveal to its left and it never moves. */}
+        {project.sections.issues && <GitButton projectId={project.id} />}
       </div>
       <div
         className={`${styles.groupBody}${isCollapsed ? ` ${styles.groupBodyCollapsed}` : ""}`}

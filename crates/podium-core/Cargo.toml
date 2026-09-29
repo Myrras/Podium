@@ -33,7 +33,7 @@ tokio-util = "0.7"
 # HTTP client: the stdio MCP bridge (`mcp/bridge.rs`, localhost plain HTTP) and
 # the self-hosted GitLab issues fetch (`issues.rs`, blocking, HTTPS). `rustls`
 # verifies against the platform trust store, so an internal CA works.
-reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls", "query"] }
 # OS keychain for the GitLab token (never in a Podium file).
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 # Encoding an image attachment read from disk into a `stream-json` content

@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
-    CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
-    ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
-    ReportToAssistantParams, RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams,
-    SpawnAgentParams, UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
-    VerifySenderParams,
+    CreateWorktreeParams, GetBoardParams, GetProcessOutputParams, ListScratchpadsParams,
+    ListTodosParams, ListWorktreesParams, MoveBoardItemParams, PodiumTools, ProcessParams,
+    RemoveWorktreeParams, RenameSessionParams, ReportToAssistantParams, RespawnAgentParams,
+    ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
@@ -285,6 +285,8 @@ async fn tools_list_includes_scratchpad_tools() {
         "list_worktrees",
         "remove_worktree",
         "verify_sender",
+        "get_board",
+        "move_board_item",
     ] {
         assert!(
             tools.contains(&name),
@@ -2557,6 +2559,8 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("list_todos", true, false),
     ("list_scratchpads", true, false),
     ("list_worktrees", true, false),
+    ("get_board", true, false),
+    ("move_board_item", false, false),
     ("verify_sender", true, false),
     ("spawn_agent", false, false),
     ("start_process", false, false),
@@ -2710,4 +2714,112 @@ async fn verify_sender_answers_from_podiums_own_registry() {
     );
 
     orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_tools_read_the_cache_and_refuse_bad_moves() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let get = |refresh: bool| GetBoardParams {
+        project_id: project_id.to_string(),
+        mine: None,
+        refresh: Some(refresh),
+    };
+    let mv = |kind: &str, number: u64, column: &str| MoveBoardItemParams {
+        project_id: project_id.to_string(),
+        kind: kind.to_string(),
+        number,
+        column: column.to_string(),
+    };
+
+    // Nothing cached: a move is refused, and a non-git project has no board.
+    let err = tools
+        .move_board_item(Parameters(mv("issue", 1, "done")))
+        .await
+        .expect_err("no cached board");
+    assert!(err.message.contains("Refresh the board first"), "{err:?}");
+    let err = tools
+        .get_board(Parameters(get(false)))
+        .await
+        .expect_err("no remote");
+    assert!(err.message.contains("remote"), "{err:?}");
+
+    // Seed the on-disk cache for this project (fictitious board).
+    let root = orch.list_projects()[0].root.clone();
+    let item = |kind: &str, number: u64, column: &str| {
+        serde_json::json!({
+            "kind": kind, "number": number, "title": format!("card {number}"),
+            "url": format!("https://git.example.test/grp/proj/-/{number}"),
+            "body": "long description", "labels": ["bug"], "updatedAt": "2026-09-01T10:00:00Z",
+            "column": column, "draft": false, "author": "sam",
+            "movable": !(kind == "pr" && column == "done")
+        })
+    };
+    let col = |id: &str, accepts: &[&str]| serde_json::json!({"id": id, "title": id, "color": null, "accepts": accepts});
+    let board = serde_json::json!({
+        "provider": "gitlab",
+        "items": [item("issue", 1, "open"), item("pr", 2, "done")],
+        "columns": [col("open", &["issue"]), col("label:doing", &["issue", "pr"]),
+                    col("review", &["pr"]), col("done", &["issue"])],
+        "source": "Development", "hint": null, "prCounts": {"open": null, "merged": null}
+    });
+    let cached = serde_json::json!({
+        root.to_string_lossy(): {"all": {"board": board, "fetchedAt": chrono::Utc::now().to_rfc3339()}}
+    });
+    let path = data.path().join("boards.json");
+    std::fs::write(&path, cached.to_string()).expect("write boards.json");
+    orch.set_boards_path(path);
+
+    // Fresh cache: served without a fetch, no bodies, drop rules included.
+    let got = tools
+        .get_board(Parameters(get(false)))
+        .await
+        .expect("get_board from cache");
+    let json: serde_json::Value = serde_json::from_str(&first_text(&got)).expect("board json");
+    assert_eq!(json["provider"], "gitlab");
+    assert_eq!(json["source"], "Development");
+    assert_eq!(
+        json["columns"][1]["accepts"],
+        serde_json::json!(["issue", "pr"])
+    );
+    assert_eq!(json["items"][0]["movable"], true);
+    assert_eq!(json["items"][1]["movable"], false);
+    assert!(json["items"][0].get("body").is_none());
+    assert_eq!(json["items"][1]["column"], "done");
+    // `mine` is a separate scope: nothing cached there, so it fetches (and fails).
+    let err = tools
+        .get_board(Parameters(GetBoardParams {
+            project_id: project_id.to_string(),
+            mine: Some(true),
+            refresh: None,
+        }))
+        .await
+        .expect_err("mine scope not cached");
+    assert!(err.message.contains("remote"), "{err:?}");
+
+    // Refusals happen before anything remote is touched.
+    for (kind, number, column, want) in [
+        ("pr", 2, "label:doing", "merged"),
+        ("issue", 1, "review", "does not accept"),
+        ("issue", 1, "open", "already"),
+        ("issue", 1, "nowhere", "Unknown column"),
+        ("issue", 9, "done", "not on the board"),
+    ] {
+        let err = tools
+            .move_board_item(Parameters(mv(kind, number, column)))
+            .await
+            .expect_err("refused");
+        assert!(err.message.contains(want), "{want}: {err:?}");
+    }
+    let err = tools
+        .move_board_item(Parameters(mv("epic", 1, "done")))
+        .await
+        .expect_err("bad kind");
+    assert!(err.message.contains("invalid kind"), "{err:?}");
 }

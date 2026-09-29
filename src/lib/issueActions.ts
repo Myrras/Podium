@@ -14,6 +14,10 @@ import { useTodoStore } from "../state/todoStore";
 export const itemRef = (i: BoardItem, provider: IssueProvider) =>
   i.kind === "pr" && provider === "gitlab" ? `!${i.number}` : `#${i.number}`;
 
+/** Ref of a linked PR/MR: `!n` on GitLab, `#n` on GitHub. */
+export const prRef = (number: number, provider: IssueProvider) =>
+  provider === "gitlab" ? `!${number}` : `#${number}`;
+
 export const issueAgentName = (i: BoardItem, ref: string) =>
   `${ref} ${i.title}`;
 

@@ -16,6 +16,7 @@ import type {
   AutonomyMode,
   CommentId,
   Board,
+  CachedBoard,
   IssueProvider,
   IssuesOverview,
   IpcError,
@@ -779,6 +780,27 @@ export function issuesBoard(
   mine: boolean,
 ): Promise<Board> {
   return invoke("issues_board", { projectId, mine });
+}
+
+/** The cached board for a scope, no network; `null` when never fetched. */
+export function issuesBoardCached(
+  projectId: ProjectId,
+  mine: boolean,
+): Promise<CachedBoard | null> {
+  return invoke("issues_board_cached", { projectId, mine });
+}
+
+/**
+ * Move a card to another column. Rejects with kind `issuesMove` (message is
+ * user-facing text). Success emits `board:changed`.
+ */
+export function issuesBoardMove(
+  projectId: ProjectId,
+  kind: "issue" | "pr",
+  number: number,
+  column: string,
+): Promise<void> {
+  return invoke("issues_board_move", { projectId, kind, number, column });
 }
 
 /** Every issue setup (never a token) plus each project's pick. */

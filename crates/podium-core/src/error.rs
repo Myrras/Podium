@@ -86,6 +86,10 @@ pub enum CoreError {
     #[error("Could not fetch issues: {0}")]
     IssuesFetch(String),
 
+    /// A refused or failed board move; Podium-owned text only.
+    #[error("{0}")]
+    IssuesMove(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

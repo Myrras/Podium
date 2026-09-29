@@ -14,6 +14,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   onAssistantEvent,
+  onBoardChanged,
   onMenuOpenSettings,
   onProcessAdded,
   onProcessRemoved,
@@ -126,6 +127,7 @@ export default function App() {
       onWorktreesChanged(
         (e) => void useWorktreeStore.getState().refresh(e.projectId),
       ),
+      onBoardChanged((e) => void useIssueStore.getState().hydrate(e.projectId)),
       // The assistant's chat stream (its headless session's output).
       onAssistantEvent((e) => useAssistantStore.getState().apply(e)),
       // The backend blocked a quit because agents/terminals are still

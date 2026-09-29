@@ -5,14 +5,30 @@
  * toasts).
  *
  * Refresh strategy lives here, not in the backend: `startAutoRefresh` (called
- * while the project's Git tab is mounted) fetches immediately, every 5
- * minutes, and on window focus when the last attempt is older than a minute.
+ * while the project's Git tab is mounted) first shows the backend's cached
+ * board, fetches at once only when that is missing or older than the poll
+ * interval, then every 5 minutes, and on window focus when the last attempt
+ * is older than a minute.
  */
 
 import { create } from "zustand";
 
-import { issuesBoard, issuesSettingsGet, toIpcError } from "../ipc/commands";
-import type { Board, IpcError, IssuesOverview, ProjectId } from "../ipc/types";
+import {
+  issuesBoard,
+  issuesBoardCached,
+  issuesBoardMove,
+  issuesSettingsGet,
+  toIpcError,
+} from "../ipc/commands";
+import type {
+  Board,
+  BoardColumn,
+  BoardItem,
+  IpcError,
+  IssuesOverview,
+  ProjectId,
+} from "../ipc/types";
+import { toastError } from "./toastStore";
 
 export const ISSUE_POLL_MS = 5 * 60_000;
 export const ISSUE_FOCUS_STALE_MS = 60_000;
@@ -36,6 +52,17 @@ const EMPTY: ProjectBoard = {
   mine: true,
 };
 
+/** Columns the item may be dropped on: they accept its kind and it is not there yet. */
+export const moveTargets = (
+  item: BoardItem,
+  columns: BoardColumn[],
+): BoardColumn[] =>
+  item.movable
+    ? columns.filter(
+        (c) => c.accepts.includes(item.kind) && c.id !== item.column,
+      )
+    : [];
+
 interface IssueState {
   byProject: Record<ProjectId, ProjectBoard>;
   /** Settings → Issues setups + per-project picks; `null` until loaded. */
@@ -46,6 +73,17 @@ interface IssueState {
   setOverview: (overview: IssuesOverview) => void;
   /** Fetch now; a no-op while this project already has one in flight. */
   refresh: (projectId: ProjectId) => Promise<void>;
+  /**
+   * Show the backend's cached board for the current scope (no network).
+   * Resolves to its fetch time in ms, or null when there is none.
+   */
+  hydrate: (projectId: ProjectId) => Promise<number | null>;
+  /** Move a card: optimistic, reverted with a toast when the backend refuses. */
+  move: (
+    projectId: ProjectId,
+    item: BoardItem,
+    columnId: string,
+  ) => Promise<void>;
   /** Switch between the user's own items and the whole repo, then refetch. */
   setMine: (projectId: ProjectId, mine: boolean) => void;
   /** Fetch + poll + focus-refresh for as long as the returned stop fn is not called. */
@@ -110,14 +148,60 @@ export const useIssueStore = create<IssueState>((set, get) => {
       }
     },
 
+    hydrate: async (projectId) => {
+      const mine = (get().byProject[projectId] ?? EMPTY).mine;
+      try {
+        const cached = await issuesBoardCached(projectId, mine);
+        // The scope changed while reading: that answer is for the old one.
+        if (!cached || (get().byProject[projectId]?.mine ?? true) !== mine) {
+          return null;
+        }
+        const fetchedAt = Date.parse(cached.fetchedAt) || 0;
+        patch(projectId, { board: cached.board, fetchedAt });
+        return fetchedAt;
+      } catch {
+        return null; // The cache is only a head start.
+      }
+    },
+
+    move: async (projectId, item, columnId) => {
+      const prev = get().byProject[projectId]?.board;
+      if (!prev) return;
+      patch(projectId, {
+        board: {
+          ...prev,
+          items: prev.items.map((i) =>
+            i.kind === item.kind && i.number === item.number
+              ? { ...i, column: columnId }
+              : i,
+          ),
+        },
+      });
+      try {
+        await issuesBoardMove(projectId, item.kind, item.number, columnId);
+      } catch (e: unknown) {
+        patch(projectId, { board: prev });
+        void get().hydrate(projectId);
+        toastError(toIpcError(e).message);
+      }
+    },
+
     setMine: (projectId, mine) => {
       patch(projectId, { mine });
-      void get().refresh(projectId);
+      void get()
+        .hydrate(projectId)
+        .then(() => get().refresh(projectId));
     },
 
     startAutoRefresh: (projectId) => {
       const { refresh } = get();
-      void refresh(projectId);
+      void get()
+        .hydrate(projectId)
+        .then((at) => {
+          if (at === null || Date.now() - at > ISSUE_POLL_MS) {
+            void refresh(projectId);
+          }
+        });
       const timer = setInterval(() => void refresh(projectId), ISSUE_POLL_MS);
       const onFocus = () => {
         const at = get().byProject[projectId]?.fetchedAt ?? 0;

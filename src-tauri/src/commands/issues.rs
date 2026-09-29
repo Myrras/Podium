@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use podium_core::{Board, CoreResult, IssueProvider, IssuesOverview, Orchestrator, ProjectId};
+use podium_core::{
+    Board, CachedBoard, CoreResult, IssueProvider, IssuesOverview, ItemKind, Orchestrator,
+    ProjectId,
+};
 
 use crate::error::IpcError;
 use crate::state::AppState;
@@ -23,6 +26,38 @@ pub async fn issues_board(
         .await
         .map_err(|e| IpcError::new("io", format!("issues task failed: {e}")))?
         .map_err(IpcError::from)
+}
+
+/// The last fetched board of this scope, without touching the network.
+#[tauri::command]
+pub fn issues_board_cached(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    mine: bool,
+) -> Result<Option<CachedBoard>, IpcError> {
+    state
+        .orchestrator
+        .cached_issue_board(project_id, mine)
+        .map_err(IpcError::from)
+}
+
+/// Move a card to another column on the platform (validated against the
+/// cached board); the UI follows the `board:changed` event.
+#[tauri::command]
+pub async fn issues_board_move(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    kind: ItemKind,
+    number: u64,
+    column: String,
+) -> Result<(), IpcError> {
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || {
+        orchestrator.move_board_item(project_id, kind, number, &column)
+    })
+    .await
+    .map_err(|e| IpcError::new("io", format!("issues task failed: {e}")))?
+    .map_err(IpcError::from)
 }
 
 /// Run an issues-settings call on a blocking thread (it touches the keychain).

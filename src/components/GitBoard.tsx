@@ -1,23 +1,35 @@
 /**
- * The Git board: a read-only Kanban of the project's repo in the work area,
+ * The Git board: a Kanban of the project's repo in the work area,
  * opened from the project header's Git button. The project's own columns
  * (GitLab board, GitHub Project) or four defaults (open / in progress / in
  * review / done in the last 14 days), a Mine/All scope toggle, and all-time
  * PR/MR counts. A refresh never blanks it (the last board stays, the refresh
  * icon spins); each failure kind gets its own inline message, no toasts. A
- * card click opens the detail drawer beside the columns.
+ * card click opens the detail drawer beside the columns. Movable cards drag
+ * onto columns that accept their kind (the drawer has a "Move to" select for
+ * the keyboard). PRs/MRs linked to an issue show inside its card.
  */
 
-import { useState, type CSSProperties } from "react";
+import { useState, type CSSProperties, type DragEvent } from "react";
 
 import { issuesProjectSetupSet, toIpcError } from "../ipc/commands";
-import type { BoardColumn, BoardItem, ProjectId } from "../ipc/types";
-import { boardErrorText, itemRef } from "../lib/issueActions";
+import type {
+  BoardColumn,
+  BoardItem,
+  IssueProvider,
+  ProjectId,
+} from "../ipc/types";
+import { boardErrorText, itemRef, prRef } from "../lib/issueActions";
 import { scrollEdges } from "../lib/scrollEdges";
-import { useIssueStore, type ProjectBoard } from "../state/issueStore";
+import {
+  moveTargets,
+  useIssueStore,
+  type ProjectBoard,
+} from "../state/issueStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSettingsRequestStore } from "../state/settingsRequestStore";
+import { openExternalLink } from "../lib/links";
 import { toastError } from "../state/toastStore";
 import styles from "./GitBoard.module.css";
 import {
@@ -42,10 +54,10 @@ const NONE: ProjectBoard = {
 
 /** Shown until the first board arrives; mirrors the backend's defaults. */
 const DEFAULT_COLUMNS: BoardColumn[] = [
-  { id: "open", title: "Open", color: null },
-  { id: "inProgress", title: "In progress", color: null },
-  { id: "review", title: "In review", color: null },
-  { id: "done", title: "Done (14d)", color: null },
+  { id: "open", title: "Open", color: null, accepts: [] },
+  { id: "inProgress", title: "In progress", color: null, accepts: [] },
+  { id: "review", title: "In review", color: null, accepts: [] },
+  { id: "done", title: "Done (14d)", color: null, accepts: [] },
 ];
 
 /** A hex colour as is; a GitHub colour name maps to the `--board-<name>` token. */
@@ -88,7 +100,9 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
     (s) => s.projects.find((p) => p.id === projectId)?.root ?? "",
   );
   const clearOpenBoard = useLayoutStore((s) => s.clearOpenBoard);
+  const move = useIssueStore((s) => s.move);
   const [selected, setSelected] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<BoardItem | null>(null);
 
   const setups = overview?.setups ?? [];
   const picked = overview?.projects[root] ?? "";
@@ -220,12 +234,23 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
           <div ref={scrollEdges} className={styles.columns}>
             {(board?.columns ?? DEFAULT_COLUMNS).map((col) => {
               const cards = items.filter((i) => i.column === col.id);
+              const valid =
+                dragging !== null && moveTargets(dragging, [col]).length > 0;
+              const drop = (e: DragEvent) => {
+                e.preventDefault();
+                const item = dragging;
+                setDragging(null);
+                if (item && valid) void move(projectId, item, col.id);
+              };
               return (
                 <section
                   key={col.id}
                   className={styles.column}
                   aria-label={col.title}
                   data-column={col.id}
+                  data-drop={dragging ? String(valid) : undefined}
+                  onDragOver={(e) => valid && e.preventDefault()}
+                  onDrop={drop}
                   style={
                     col.color
                       ? ({
@@ -249,6 +274,8 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
                         projectId={projectId}
                         item={item}
                         itemRef={ref(item)}
+                        provider={provider}
+                        onDragState={setDragging}
                         showAuthor={!mine}
                         selected={selected === itemKey(item)}
                         onOpen={() => setSelected(itemKey(item))}
@@ -277,6 +304,8 @@ function Card({
   projectId,
   item,
   itemRef,
+  provider,
+  onDragState,
   showAuthor,
   selected,
   onOpen,
@@ -284,13 +313,25 @@ function Card({
   projectId: ProjectId;
   item: BoardItem;
   itemRef: string;
+  provider: IssueProvider;
+  onDragState: (item: BoardItem | null) => void;
   showAuthor: boolean;
   selected: boolean;
   onOpen: () => void;
 }) {
   const Icon = item.kind === "pr" ? PrIcon : IssueIcon;
   return (
-    <div className={styles.card} data-selected={selected ? "true" : undefined}>
+    <div
+      className={styles.card}
+      data-selected={selected ? "true" : undefined}
+      draggable={item.movable}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", itemRef);
+        onDragState(item);
+      }}
+      onDragEnd={() => onDragState(null)}
+    >
       <button
         type="button"
         className={styles.cardMain}
@@ -316,6 +357,30 @@ function Card({
           </span>
         )}
       </button>
+      {item.linked.length > 0 && (
+        <ul className={styles.linked} aria-label="Linked">
+          {item.linked.map((pr) => (
+            <li key={pr.number}>
+              <button
+                type="button"
+                className={styles.linkedPr}
+                title={pr.title}
+                aria-label={`Open ${prRef(pr.number, provider)} in browser`}
+                draggable={false}
+                onClick={() => openExternalLink(pr.url)}
+              >
+                <PrIcon size={11} />
+                {prRef(pr.number, provider)}
+                {pr.merged ? (
+                  <span className={styles.draft}>merged</span>
+                ) : (
+                  pr.draft && <span className={styles.draft}>draft</span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className={styles.cardActions}>
         <IssueActions
           projectId={projectId}

@@ -16,6 +16,7 @@ use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
     ProposalInfo, TranscriptEntry,
 };
+use crate::boards::{BoardStore, CachedBoard};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
@@ -182,6 +183,8 @@ pub struct Orchestrator {
     todos: TodoStore,
     /// Per-project scratchpads, keyed by project root (survives restarts).
     scratchpads: ScratchpadStore,
+    /// The last Git board per project and scope (survives restarts).
+    boards: BoardStore,
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
@@ -212,6 +215,7 @@ impl Orchestrator {
             mcp: Mutex::new(None),
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
+            boards: BoardStore::new(),
             agent_settings: AgentSettingsStore::new(),
         }
     }
@@ -232,6 +236,12 @@ impl Orchestrator {
     /// Until this is called, to-dos are held in memory only.
     pub fn set_todos_path(&self, path: PathBuf) {
         self.todos.set_path(path);
+    }
+
+    /// Point the Git board cache at its backing file (app data dir) and load
+    /// it. Until this is called, boards are cached in memory only.
+    pub fn set_boards_path(&self, path: PathBuf) {
+        self.boards.set_path(path);
     }
 
     /// Point the scratchpad store at its backing file (app data dir) and
@@ -1718,7 +1728,70 @@ impl Orchestrator {
             .projects
             .get(&root)
             .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
-        crate::issues::board(&root, &issues.setups, selected, mine)
+        // Either scope's last board tells GitLab where the columns were.
+        let cached = self
+            .boards
+            .get(&root, mine)
+            .or_else(|| self.boards.get(&root, !mine));
+        let board = crate::issues::board(
+            &root,
+            &issues.setups,
+            selected,
+            mine,
+            cached.as_ref().map(|c| &c.board),
+        )?;
+        self.boards.put(&root, mine, board.clone());
+        Ok(board)
+    }
+
+    /// The last successfully fetched board of this scope, if any. No network.
+    pub fn cached_issue_board(
+        &self,
+        project_id: ProjectId,
+        mine: bool,
+    ) -> CoreResult<Option<CachedBoard>> {
+        Ok(self.boards.get(&self.project_root(project_id)?, mine))
+    }
+
+    /// Move a card to another column of the project's Git board, on the
+    /// platform itself (GitLab labels/state, GitHub close/reopen/Project
+    /// Status). Validated against the cached board, so it needs one. On
+    /// success both cached scopes are updated and `BoardChanged` published.
+    /// Shells out / blocks — call from a blocking-friendly context.
+    pub fn move_board_item(
+        &self,
+        project_id: ProjectId,
+        kind: crate::ItemKind,
+        number: u64,
+        column: &str,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let cached = [true, false]
+            .into_iter()
+            .filter_map(|mine| self.boards.get(&root, mine))
+            .find(|c| {
+                c.board
+                    .items
+                    .iter()
+                    .any(|i| i.kind == kind && i.number == number)
+            })
+            .or_else(|| self.boards.get(&root, true))
+            .or_else(|| self.boards.get(&root, false))
+            .ok_or_else(|| CoreError::IssuesMove("Refresh the board first.".to_string()))?;
+        let board = &cached.board;
+        let item = crate::issues::validate_move(board, kind, number, column)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        let labels =
+            crate::issues::move_item(&root, &issues.setups, selected, board, item, column)?;
+        self.boards
+            .apply_move(&root, kind, number, column, labels.as_deref());
+        self.events
+            .publish(PodiumEvent::BoardChanged { project_id });
+        Ok(())
     }
 
     /// Settings → Issues: every setup (with whether a GitLab token is stored —

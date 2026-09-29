@@ -103,3 +103,45 @@
   background: var(--surface-2);
   color: var(--accent);
 }
+
+.move {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.move select {
+  width: auto;
+}
+
+.linkedTitle {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.linkedList {
+  list-style: none;
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+}
+
+.linkedList button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.linkedList button:hover {
+  color: var(--accent);
+}

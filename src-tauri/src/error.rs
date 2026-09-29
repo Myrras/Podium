@@ -84,6 +84,7 @@ impl From<CoreError> for IpcError {
             CoreError::IssuesGitlabNotConfigured => "issuesGitlabNotConfigured",
             CoreError::IssuesGitlabAuth => "issuesGitlabAuth",
             CoreError::IssuesFetch(_) => "issuesFetch",
+            CoreError::IssuesMove(_) => "issuesMove",
             CoreError::Io(_) => "io",
             CoreError::Pty(_) => "pty",
             CoreError::Config(_) => "config",

@@ -115,7 +115,8 @@ forced); the branch is always kept.
 
 ### Git board
 
-The **Git** button on a project's header opens a Kanban board of the repo
+The **Git** pill at the right end of a project's header (it shows how many
+cards are open) opens a Kanban board of the repo
 behind its `origin` remote. If the repo has its own board (a GitLab issue
 board with label lists, or a GitHub Project with a Status field), its columns
 are used; otherwise there are four:
@@ -134,7 +135,15 @@ board says so and shows the default columns until you run
 **All** shows the whole repo. The header counts all-time open and merged
 PRs (GitHub) or MRs (GitLab) in the same scope. Clicking a card opens its
 description beside the board; each card can open in the browser, start an
-agent on it, or become a to-do with the link pinned. Read-only otherwise.
+agent on it, or become a to-do with the link pinned.
+
+Drag a card to another column to move it on GitHub/GitLab itself: GitLab
+labels (or close/reopen), GitHub close/reopen or your Project's Status (which
+needs the `project` scope: `gh auth refresh -s project`). Columns only take
+what makes sense — merged PRs/MRs stay put. A PR/MR that closes an issue on
+the board is shown on that issue's card instead of as a card of its own. The
+last board is kept on disk, so it appears at once, and agents can read and
+move cards through the MCP tools.
 
 GitHub works through your own `gh` login, zero-config for github.com.
 Self-hosted GitLab (and GitHub Enterprise, or a second `gh` account) needs a
@@ -173,9 +182,10 @@ to a spawned agent.
 ### Built-in MCP server
 
 Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
-and exposes **31 tools** over it: process inspection and control, agent
+and exposes **33 tools** over it: process inspection and control, agent
 spawning (and respawning a stuck agent with the answer in its prompt), the
-full to-do, scratchpad and worktree surfaces, assistant memory, and sender
+full to-do, scratchpad and worktree surfaces, the Git board (`get_board`,
+`move_board_item`), assistant memory, and sender
 verification for cross-session messages.
 
 Agents Podium spawns get the URL + token automatically. External clients go

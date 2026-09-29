@@ -14,7 +14,7 @@
 //! Error messages are Podium-owned text — `gh`/`git` output is never captured
 //! into them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread::ScopedJoinHandle;
@@ -34,54 +34,59 @@ const LIMIT: &str = "100";
 /// PR/MR not placed) and `done` (closed/merged in [`DONE_DAYS`]) are Podium's
 /// own; project columns are `label:<name>` (GitLab) / `status:<optionId>`
 /// (GitHub).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Column {
     pub id: String,
     pub title: String,
     /// A hex string (GitLab) or a lowercase GitHub option colour name.
     pub color: Option<String>,
+    /// The kinds a card may be dropped here as (see [`col`]).
+    #[serde(default)]
+    pub accepts: Vec<ItemKind>,
 }
 
+/// A column with the drop rules of its id: `open`/`done` take issues,
+/// `review` PRs/MRs, project columns (`label:*`/`status:*`) both, and
+/// `inProgress` nothing (placement there is derived, not dropped).
 fn col(id: &str, title: &str, color: Option<String>) -> Column {
+    let accepts = match id {
+        "open" | "done" => vec![ItemKind::Issue],
+        "review" => vec![ItemKind::Pr],
+        "inProgress" => vec![],
+        _ => vec![ItemKind::Issue, ItemKind::Pr],
+    };
     Column {
         id: id.to_string(),
         title: title.to_string(),
         color,
+        accepts,
     }
 }
 
 fn default_columns() -> Vec<Column> {
+    let mut review = col("review", "In review", None);
+    // Without a project board an open PR is placed by its state alone.
+    review.accepts.clear();
     vec![
         col("open", "Open", None),
         col("inProgress", "In progress", None),
-        col("review", "In review", None),
+        review,
         col("done", "Done (14d)", None),
     ]
 }
 
-/// Lead column, the project's own columns, then `review` (only when a card
-/// landed there) and `done` (`always_done`, or when non-empty).
-fn project_columns(
-    open_title: &str,
-    mid: Vec<Column>,
-    done_title: &str,
-    always_done: bool,
-    items: &[BoardItem],
-) -> Vec<Column> {
-    let has = |id: &str| items.iter().any(|i| i.column == id);
+/// Lead column, the project's own columns, then `review` and `done` — always
+/// both, so columns do not come and go between refreshes.
+fn project_columns(open_title: &str, mid: Vec<Column>, done_title: &str) -> Vec<Column> {
     let mut cols = vec![col("open", open_title, None)];
     cols.extend(mid);
-    if has("review") {
-        cols.push(col("review", "In review", None));
-    }
-    if always_done || has("done") {
-        cols.push(col("done", done_title, None));
-    }
+    cols.push(col("review", "In review", None));
+    cols.push(col("done", done_title, None));
     cols
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ItemKind {
     Issue,
@@ -89,8 +94,29 @@ pub enum ItemKind {
     Pr,
 }
 
+/// A PR/MR that closes an issue on the board, shown on the issue's card
+/// instead of as a card of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedPr {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub draft: bool,
+    pub merged: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A merged PR/MR is history; everything else can be dragged.
+pub(crate) fn movable(kind: ItemKind, column: &str) -> bool {
+    !(kind == ItemKind::Pr && column == "done")
+}
+
 /// One card on the board.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardItem {
     pub kind: ItemKind,
@@ -104,17 +130,23 @@ pub struct BoardItem {
     pub column: String,
     pub draft: bool,
     pub author: String,
+    /// False for a merged PR/MR.
+    #[serde(default = "yes")]
+    pub movable: bool,
+    /// PRs/MRs folded into this issue (always empty on PRs).
+    #[serde(default)]
+    pub linked: Vec<LinkedPr>,
 }
 
 /// All-time PR/MR totals in the board's scope; `None` when the platform
 /// would not say (GitLab omits the total past 10k).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrCounts {
     pub open: Option<u64>,
     pub merged: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
     /// Which platform answered, so the UI can say PR vs MR (`#n` vs `!n`).
@@ -159,6 +191,61 @@ fn pr_column(draft: bool) -> &'static str {
 fn sorted(mut items: Vec<BoardItem>) -> Vec<BoardItem> {
     items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     items
+}
+
+/// What one PR/MR closes, for [`fold_linked`].
+struct Closing {
+    pr: u64,
+    merged: bool,
+    issues: Vec<u64>,
+}
+
+/// Fold every PR/MR that closes an issue on the board into that issue's
+/// `linked` and drop its own card; a PR whose issues are not on the board
+/// stays a card.
+fn fold_linked(items: Vec<BoardItem>, closing: &[Closing]) -> Vec<BoardItem> {
+    let issues: HashSet<u64> = items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Issue)
+        .map(|i| i.number)
+        .collect();
+    let folded: Vec<&Closing> = closing
+        .iter()
+        .filter(|c| c.issues.iter().any(|n| issues.contains(n)))
+        .collect();
+    let links: HashMap<u64, LinkedPr> = items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Pr)
+        .filter_map(|i| {
+            let c = folded.iter().find(|c| c.pr == i.number)?;
+            Some((
+                i.number,
+                LinkedPr {
+                    number: i.number,
+                    title: i.title.clone(),
+                    url: i.url.clone(),
+                    draft: i.draft,
+                    merged: c.merged,
+                },
+            ))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for mut item in items {
+        match item.kind {
+            ItemKind::Pr if links.contains_key(&item.number) => continue,
+            ItemKind::Issue => {
+                item.linked = folded
+                    .iter()
+                    .filter(|c| c.issues.contains(&item.number))
+                    .filter_map(|c| links.get(&c.pr).cloned())
+                    .collect();
+            }
+            _ => {}
+        }
+        out.push(item);
+    }
+    out
 }
 
 /// A panicked fetch thread becomes a plain fetch error.
@@ -265,7 +352,21 @@ impl GhItem {
             column: column.to_string(),
             draft: self.is_draft,
             author: self.author.map(|a| a.login).unwrap_or_default(),
+            movable: movable(kind, column),
+            linked: Vec::new(),
         }
+    }
+}
+
+fn gh_closing(p: &GhItem, merged: bool) -> Closing {
+    Closing {
+        pr: p.number,
+        merged,
+        issues: p
+            .closing_issues_references
+            .iter()
+            .map(|r| r.number)
+            .collect(),
     }
 }
 
@@ -348,6 +449,7 @@ fn assemble_github(
             .to_string()
     };
     let mut items = Vec::new();
+    let mut closing = Vec::new();
     for i in parse_gh(open_issues)? {
         let default = match project {
             Some(_) => "open",
@@ -370,13 +472,15 @@ fn assemble_github(
             pr_column(p.is_draft)
         };
         let column = place(p.number, default);
+        closing.push(gh_closing(&p, false));
         items.push(p.into_item(ItemKind::Pr, &column));
     }
     for p in parse_gh(merged_prs)? {
         let column = place(p.number, "done");
+        closing.push(gh_closing(&p, true));
         items.push(p.into_item(ItemKind::Pr, &column));
     }
-    Ok(sorted(items))
+    Ok(sorted(fold_linked(items, &closing)))
 }
 
 /// `data.o.issueCount` / `data.m.issueCount` from the counts GraphQL query.
@@ -440,7 +544,9 @@ fn run_gh_scoped(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
         // stderr is only inspected, never forwarded.
-        let scope = stderr.contains("read:project") || stderr.contains("insufficient_scopes");
+        let scope = stderr.contains("read:project")
+            || stderr.contains("insufficient_scopes")
+            || stderr.contains("required scope");
         return Err((
             if stderr.contains("auth login") || stderr.contains("not logged") {
                 CoreError::IssuesGhUnavailable
@@ -599,7 +705,7 @@ pub fn fetch_github(
     )?;
     let (columns, source) = match project {
         Some(p) => (
-            project_columns("No status", p.options, "Done (14d)", false, &items),
+            project_columns("No status", p.options, "Done (14d)"),
             Some(p.title),
         ),
         None => (default_columns(), None),
@@ -737,6 +843,9 @@ struct GlItem {
     closed_at: Option<String>,
     #[serde(default)]
     merged_at: Option<String>,
+    /// MRs only.
+    #[serde(default)]
+    source_branch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -757,6 +866,8 @@ impl GlItem {
             column: column.to_string(),
             draft: self.draft,
             author: self.author.map(|a| a.username).unwrap_or_default(),
+            movable: movable(kind, column),
+            linked: Vec::new(),
         }
     }
 }
@@ -800,6 +911,75 @@ fn parse_gl_board(json: &str) -> Option<(String, Vec<Column>)> {
     })
 }
 
+/// Issue numbers a MR closes: GitLab's default closing pattern in the
+/// description (`closes #N`, `fixes group/project#N`, `resolves: #N, #M` …,
+/// case-insensitive) plus the `N-…` source branch GitLab's "create MR from
+/// issue" makes.
+// ponytail: heuristic, misses custom closing patterns and cross-project
+// links; upgrade path = `/merge_requests/:iid/closes_issues` per MR.
+fn gl_closing(m: &GlItem, project: &str) -> Vec<u64> {
+    const KEYWORDS: &[&str] = &[
+        "closes",
+        "closed",
+        "close",
+        "fixes",
+        "fixed",
+        "fix",
+        "resolves",
+        "resolved",
+        "resolve",
+        "implements",
+        "implemented",
+        "implement",
+    ];
+    /// `#N` or `<project>#N`, then the rest.
+    fn take_ref<'a>(s: &'a str, project: &str) -> Option<(u64, &'a str)> {
+        let s = s.strip_prefix(project).unwrap_or(s).strip_prefix('#')?;
+        let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+        Some((s[..digits].parse().ok()?, &s[digits..]))
+    }
+    let text = m.description.as_deref().unwrap_or_default().to_lowercase();
+    let project = project.to_lowercase();
+    let mut out = Vec::new();
+    for (i, _) in text.char_indices() {
+        if text[..i]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+        {
+            continue;
+        }
+        let Some(kw) = KEYWORDS.iter().find(|k| text[i..].starts_with(**k)) else {
+            continue;
+        };
+        let mut rest = &text[i + kw.len()..];
+        if !rest.starts_with(|c: char| c == ':' || c.is_whitespace()) {
+            continue;
+        }
+        rest = rest.strip_prefix(':').unwrap_or(rest);
+        while let Some((n, after)) = take_ref(rest.trim_start(), &project) {
+            out.push(n);
+            let after = after.trim_start();
+            match after
+                .strip_prefix(',')
+                .or_else(|| after.strip_prefix("and "))
+            {
+                Some(next) => rest = next,
+                None => break,
+            }
+        }
+    }
+    let branch = m.source_branch.as_deref().unwrap_or_default();
+    if let Some(n) = branch
+        .split_once('-')
+        .filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(n, _)| n.parse().ok())
+    {
+        out.push(n);
+    }
+    out
+}
+
 /// Build the items from the four GitLab list responses. The closed/merged
 /// lists are filtered by `updated_after`, so the real closed/merged time is
 /// checked here. With board `lists`, an open card sits in the first list whose
@@ -810,6 +990,7 @@ fn assemble_gitlab(
     open_mrs: &str,
     merged_mrs: &str,
     lists: &[Column],
+    project: &str,
     since: DateTime<Utc>,
 ) -> CoreResult<Vec<BoardItem>> {
     let listed = |labels: &[String], default: &str| {
@@ -823,6 +1004,7 @@ fn assemble_gitlab(
             .to_string()
     };
     let mut items = Vec::new();
+    let mut closing = Vec::new();
     for i in parse_gl(open_issues)? {
         let column = if lists.is_empty() {
             issue_column(&i.labels, i.merge_requests_count > 0).to_string()
@@ -837,6 +1019,11 @@ fn assemble_gitlab(
         }
     }
     for m in parse_gl(open_mrs)? {
+        closing.push(Closing {
+            pr: m.iid,
+            merged: false,
+            issues: gl_closing(&m, project),
+        });
         let column = if lists.is_empty() {
             pr_column(m.draft).to_string()
         } else {
@@ -846,10 +1033,15 @@ fn assemble_gitlab(
     }
     for m in parse_gl(merged_mrs)? {
         if at_or_after(m.merged_at.as_deref(), since) {
+            closing.push(Closing {
+                pr: m.iid,
+                merged: true,
+                issues: gl_closing(&m, project),
+            });
             items.push(m.into_item(ItemKind::Pr, "done"));
         }
     }
-    Ok(sorted(items))
+    Ok(sorted(fold_linked(items, &closing)))
 }
 
 /// One GitLab API GET: the body plus the `X-Total` header.
@@ -885,13 +1077,16 @@ fn gitlab_get(base: &str, token: &str, path: &str) -> CoreResult<(String, Option
 /// injectable so tests can use plain HTTP). `mine` narrows it to issues
 /// assigned to and MRs created by the token's owner. The six requests run in
 /// parallel; the sixth (`/boards`, for the project's columns) never fails the
-/// board.
+/// board. When `/boards` *fails* (rather than answering without a label-list
+/// board) the `fallback` columns — the last known board's — place the cards,
+/// so a hiccup does not drop them into the default columns.
 pub fn fetch_gitlab(
     base: &str,
     project_path: &str,
     token: &str,
     mine: bool,
     since: DateTime<Utc>,
+    fallback: Option<(String, Vec<Column>)>,
 ) -> CoreResult<Board> {
     let p = format!("/api/v4/projects/{}", project_path.replace('/', "%2F"));
     let (issue_scope, mr_scope) = if mine {
@@ -932,10 +1127,9 @@ pub fn fetch_gitlab(
             (join(a), join(b), join(c), join(d), join(e), join(f))
         });
     let (open_mrs, open_total) = open_mrs?;
-    // Any boards failure (403/404 included) just means the default columns.
-    let (source, lists) = match boards.ok().and_then(|(json, _)| parse_gl_board(&json)) {
-        Some((name, lists)) => (Some(name), lists),
-        None => (None, Vec::new()),
+    let (source, lists) = match boards {
+        Ok((json, _)) => parse_gl_board(&json).map_or((None, Vec::new()), |(n, l)| (Some(n), l)),
+        Err(_) => fallback.map_or((None, Vec::new()), |(n, l)| (Some(n), l)),
     };
     let items = assemble_gitlab(
         &open_issues?.0,
@@ -943,10 +1137,11 @@ pub fn fetch_gitlab(
         &open_mrs,
         &merged_mrs?.0,
         &lists,
+        project_path,
         since,
     )?;
     let columns = if source.is_some() {
-        project_columns("Open", lists, "Closed (14d)", true, &items)
+        project_columns("Open", lists, "Closed (14d)")
     } else {
         default_columns()
     };
@@ -988,13 +1183,31 @@ fn pick<'a>(
     }
 }
 
+/// The `label:` columns of a GitLab board plus its name: what
+/// [`fetch_gitlab`] reuses when `/boards` fails.
+pub fn gitlab_fallback(board: &Board) -> Option<(String, Vec<Column>)> {
+    let name = board
+        .source
+        .clone()
+        .filter(|_| board.provider == IssueProvider::Gitlab)?;
+    let lists = board
+        .columns
+        .iter()
+        .filter(|c| c.id.starts_with("label:"))
+        .cloned()
+        .collect();
+    Some((name, lists))
+}
+
 /// Detect the repo behind `root` and build its board, using the project's
-/// `selected` setup or the first matching one.
+/// `selected` setup or the first matching one. `cached` is the last known
+/// board of this repo (GitLab column fallback).
 pub fn board(
     root: &Path,
     setups: &[IssueSetup],
     selected: Option<&IssueSetup>,
     mine: bool,
+    cached: Option<&Board>,
 ) -> CoreResult<Board> {
     let (host, path) = detect(root)?;
     let setup = pick(&host, setups, selected)?;
@@ -1008,12 +1221,330 @@ pub fn board(
         }) => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
-            fetch_gitlab(url, &path, &token, mine, since)
+            fetch_gitlab(
+                url,
+                &path,
+                &token,
+                mine,
+                since,
+                cached.and_then(gitlab_fallback),
+            )
         }
         _ => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
             let account = setup.and_then(|s| s.account.as_deref());
             fetch_github(gh, &host, &path, account, mine, since)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Moving a card
+// ---------------------------------------------------------------------------
+
+fn refused<T>(msg: &str) -> CoreResult<T> {
+    Err(CoreError::IssuesMove(msg.to_string()))
+}
+
+/// Check a move of `kind` #`number` to column `to` against the board the user
+/// sees; returns the item. The board's own drop rules are the authority.
+pub fn validate_move<'a>(
+    board: &'a Board,
+    kind: ItemKind,
+    number: u64,
+    to: &str,
+) -> CoreResult<&'a BoardItem> {
+    let Some(item) = board
+        .items
+        .iter()
+        .find(|i| i.kind == kind && i.number == number)
+    else {
+        return refused("That card is not on the board. Refresh the board first.");
+    };
+    let Some(column) = board.columns.iter().find(|c| c.id == to) else {
+        return refused("Unknown column.");
+    };
+    if !column.accepts.contains(&kind) {
+        return refused("That column does not accept this kind of card.");
+    }
+    if !item.movable {
+        return refused("A merged PR/MR cannot be moved.");
+    }
+    if item.column == to {
+        return refused("The card is already in that column.");
+    }
+    if board.source.is_none() && to == "open" && item.column != "done" {
+        return refused("Without a project board, cards only return to Open from Done.");
+    }
+    Ok(item)
+}
+
+/// The list labels of a GitLab board (its `label:` columns).
+fn list_labels(board: &Board) -> Vec<&str> {
+    board
+        .columns
+        .iter()
+        .filter_map(|c| c.id.strip_prefix("label:"))
+        .collect()
+}
+
+/// Query params of the GitLab `PUT` that moves a card `from` → `to`.
+fn gitlab_move_params(board: &Board, from: &str, to: &str) -> Vec<(&'static str, String)> {
+    let lists = list_labels(board);
+    let mut params = Vec::new();
+    if let Some(label) = to.strip_prefix("label:") {
+        params.push(("add_labels", label.to_string()));
+        let others: Vec<_> = lists.iter().copied().filter(|l| *l != label).collect();
+        if !others.is_empty() {
+            params.push(("remove_labels", others.join(",")));
+        }
+    } else if to == "done" {
+        params.push(("state_event", "close".to_string()));
+    } else if !lists.is_empty() {
+        params.push(("remove_labels", lists.join(",")));
+    }
+    if from == "done" {
+        params.push(("state_event", "reopen".to_string()));
+    }
+    params
+}
+
+/// The item's labels once the GitLab move went through.
+fn gitlab_labels_after(board: &Board, item: &BoardItem, to: &str) -> Vec<String> {
+    if to == "done" {
+        return item.labels.clone();
+    }
+    let lists = list_labels(board);
+    let mut labels: Vec<String> = item
+        .labels
+        .iter()
+        .filter(|l| !lists.contains(&l.as_str()))
+        .cloned()
+        .collect();
+    if let Some(label) = to.strip_prefix("label:") {
+        labels.push(label.to_string());
+    }
+    labels
+}
+
+/// One GitLab API PUT with query params (an issue/MR edit).
+fn gitlab_put(base: &str, token: &str, path: &str, params: &[(&str, String)]) -> CoreResult<()> {
+    let response = reqwest::blocking::Client::new()
+        .put(format!("{base}{path}"))
+        .header("PRIVATE-TOKEN", token)
+        .query(params)
+        .send()
+        .map_err(|_| CoreError::IssuesMove("Could not reach GitLab.".to_string()))?;
+    match response.status().as_u16() {
+        200 => Ok(()),
+        401 | 403 => Err(CoreError::IssuesGitlabAuth),
+        429 => refused("GitLab rate limit reached, try again later."),
+        _ => refused("GitLab could not move the card."),
+    }
+}
+
+/// Move a validated card on GitLab; returns the item's labels afterwards.
+pub fn move_gitlab(
+    base: &str,
+    project_path: &str,
+    token: &str,
+    board: &Board,
+    item: &BoardItem,
+    to: &str,
+) -> CoreResult<Vec<String>> {
+    let kind = match item.kind {
+        ItemKind::Issue => "issues",
+        ItemKind::Pr => "merge_requests",
+    };
+    let path = format!(
+        "/api/v4/projects/{}/{kind}/{}",
+        project_path.replace('/', "%2F"),
+        item.number
+    );
+    gitlab_put(
+        base,
+        token,
+        &path,
+        &gitlab_move_params(board, &item.column, to),
+    )?;
+    Ok(gitlab_labels_after(board, item, to))
+}
+
+const GH_MOVE_SCOPE_HINT: &str =
+    "To move cards on your GitHub Project, run: gh auth refresh -s project";
+
+const GH_MOVE_LOOKUP: &str = "query($owner:String!,$name:String!,$number:Int!){\
+repository(owner:$owner,name:$name){projectsV2(first:1){nodes{id \
+field(name:\"Status\"){... on ProjectV2SingleSelectField{id}}}} \
+issueOrPullRequest(number:$number){\
+... on Issue{id projectItems(first:20){nodes{id project{id}}}} \
+... on PullRequest{id projectItems(first:20){nodes{id project{id}}}}}}}";
+const GH_ADD_ITEM: &str = "mutation($project:ID!,$content:ID!){\
+addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}";
+const GH_SET_STATUS: &str = "mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){\
+updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,\
+value:{singleSelectOptionId:$option}}){projectV2Item{id}}}";
+const GH_CLEAR_STATUS: &str = "mutation($project:ID!,$item:ID!,$field:ID!){\
+clearProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field}){projectV2Item{id}}}";
+
+/// What the move lookup found: the repo's first project, its Status field, the
+/// card's own node id and its item in that project (when it is on it).
+#[derive(Debug, PartialEq, Eq)]
+struct GhMoveIds {
+    project: String,
+    field: String,
+    content: String,
+    item: Option<String>,
+}
+
+fn parse_gh_move_lookup(json: &str) -> Option<GhMoveIds> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let repo = &v["data"]["repository"];
+    let node = repo["projectsV2"]["nodes"].get(0)?;
+    let project = node["id"].as_str()?.to_string();
+    let content = &repo["issueOrPullRequest"];
+    let item = content["projectItems"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|i| i["project"]["id"].as_str() == Some(&project))
+        .and_then(|i| i["id"].as_str())
+        .map(str::to_string);
+    Some(GhMoveIds {
+        field: node["field"]["id"].as_str()?.to_string(),
+        content: content["id"].as_str()?.to_string(),
+        project,
+        item,
+    })
+}
+
+/// Move a validated card on GitHub: issues close/reopen, and on a project
+/// board the Status field is set (or cleared for `open`/`review`). `gh` output
+/// is only inspected, never forwarded.
+pub fn move_github(
+    gh: &str,
+    host: &str,
+    owner_repo: &str,
+    account: Option<&str>,
+    board: &Board,
+    item: &BoardItem,
+    to: &str,
+) -> CoreResult<()> {
+    let token = account.map(|a| gh_account_token(gh, host, a)).transpose()?;
+    let token = token.as_deref();
+    let repo = format!("{host}/{owner_repo}");
+    let number = item.number.to_string();
+    let run = |args: &[&str]| {
+        run_gh_scoped(gh, host, token, args).map_err(|(e, scope)| match e {
+            _ if scope => CoreError::IssuesMove(GH_MOVE_SCOPE_HINT.to_string()),
+            CoreError::IssuesGhUnavailable => e,
+            _ => CoreError::IssuesMove("gh could not move the card.".to_string()),
+        })
+    };
+    let graphql = |query: &str, vars: &[(&str, &str)]| {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "--hostname".to_string(),
+            host.to_string(),
+            "-f".to_string(),
+            format!("query={query}"),
+        ];
+        for (k, v) in vars {
+            // `number` must go as an Int, the rest as strings.
+            args.push(if *k == "number" { "-F" } else { "-f" }.to_string());
+            args.push(format!("{k}={v}"));
+        }
+        run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    if item.kind == ItemKind::Issue && item.column == "done" {
+        run(&["issue", "reopen", &number, "--repo", &repo])?;
+    }
+    if to == "done" {
+        run(&["issue", "close", &number, "--repo", &repo])?;
+        return Ok(());
+    }
+    if board.source.is_none() {
+        return Ok(());
+    }
+    let (owner, name) = owner_repo.split_once('/').unwrap_or((owner_repo, ""));
+    let found = graphql(
+        GH_MOVE_LOOKUP,
+        &[("owner", owner), ("name", name), ("number", &number)],
+    )?;
+    let Some(ids) = parse_gh_move_lookup(&found) else {
+        return refused("Could not find this card in your GitHub Project.");
+    };
+    match to.strip_prefix("status:") {
+        Some(option) => {
+            let item_id = match ids.item {
+                Some(id) => id,
+                None => {
+                    let added = graphql(
+                        GH_ADD_ITEM,
+                        &[("project", &ids.project), ("content", &ids.content)],
+                    )?;
+                    let v: serde_json::Value = serde_json::from_str(&added).unwrap_or_default();
+                    match v["data"]["addProjectV2ItemById"]["item"]["id"].as_str() {
+                        Some(id) => id.to_string(),
+                        None => return refused("Could not add the card to your GitHub Project."),
+                    }
+                }
+            };
+            graphql(
+                GH_SET_STATUS,
+                &[
+                    ("project", &ids.project),
+                    ("item", &item_id),
+                    ("field", &ids.field),
+                    ("option", option),
+                ],
+            )?;
+        }
+        None => {
+            if let Some(item_id) = ids.item {
+                graphql(
+                    GH_CLEAR_STATUS,
+                    &[
+                        ("project", &ids.project),
+                        ("item", &item_id),
+                        ("field", &ids.field),
+                    ],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Move a validated card on the platform behind `root`; GitLab returns the
+/// item's labels afterwards.
+pub fn move_item(
+    root: &Path,
+    setups: &[IssueSetup],
+    selected: Option<&IssueSetup>,
+    board: &Board,
+    item: &BoardItem,
+    to: &str,
+) -> CoreResult<Option<Vec<String>>> {
+    let (host, path) = detect(root)?;
+    let setup = pick(&host, setups, selected)?;
+    match setup {
+        Some(IssueSetup {
+            provider: IssueProvider::Gitlab,
+            id,
+            url,
+            ..
+        }) => {
+            // ponytail: temporary, remove once Connect is on GitHub
+            let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
+            move_gitlab(url, &path, &token, board, item, to).map(Some)
+        }
+        _ => {
+            let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
+            let account = setup.and_then(|s| s.account.as_deref());
+            move_github(gh, &host, &path, account, board, item, to)?;
+            Ok(None)
         }
     }
 }
@@ -1107,7 +1638,12 @@ mod tests {
         assert_eq!(col(8, ItemKind::Issue), "inProgress");
         assert_eq!(col(9, ItemKind::Issue), "inProgress");
         assert_eq!(col(3, ItemKind::Issue), "done");
-        assert_eq!(col(20, ItemKind::Pr), "review");
+        // #20 closes #8, which is on the board: folded into it, no card of its own.
+        assert!(!items
+            .iter()
+            .any(|i| i.kind == ItemKind::Pr && i.number == 20));
+        let eight = items.iter().find(|i| i.number == 8).unwrap();
+        assert_eq!(eight.linked.len(), 1);
         assert_eq!(col(21, ItemKind::Pr), "inProgress");
         assert_eq!(col(19, ItemKind::Pr), "done");
         // Newest first.
@@ -1185,7 +1721,16 @@ mod tests {
         ]"#;
         let merged = r#"[{"iid":38,"title":"Merged","web_url":"u38",
           "updated_at":"2026-09-21T10:00:00Z","merged_at":"2026-09-21T10:00:00+02:00"}]"#;
-        let items = assemble_gitlab(open_issues, closed, open_mrs, merged, &[], since()).unwrap();
+        let items = assemble_gitlab(
+            open_issues,
+            closed,
+            open_mrs,
+            merged,
+            &[],
+            "grp/proj",
+            since(),
+        )
+        .unwrap();
         let col = |n: u64| {
             items
                 .iter()
@@ -1204,7 +1749,7 @@ mod tests {
         assert_eq!(twelve.author, "sam");
         assert_eq!(twelve.kind, ItemKind::Issue);
         assert!(matches!(
-            assemble_gitlab("{}", "[]", "[]", "[]", &[], since()),
+            assemble_gitlab("{}", "[]", "[]", "[]", &[], "grp/proj", since()),
             Err(CoreError::IssuesFetch(_))
         ));
     }
@@ -1286,7 +1831,7 @@ mod tests {
     #[test]
     fn gitlab_fetch_sends_token_scope_and_reads_totals() {
         let (base, seen) = serve_board("200 OK", 6);
-        let board = fetch_gitlab(&base, "grp/sub/proj", "fake-token", true, since()).unwrap();
+        let board = fetch_gitlab(&base, "grp/sub/proj", "fake-token", true, since(), None).unwrap();
         assert_eq!(board.provider, IssueProvider::Gitlab);
         // The empty /boards answer means the default columns, no error.
         assert_eq!(board.columns, default_columns());
@@ -1316,7 +1861,7 @@ mod tests {
             .any(|r| r.starts_with("GET /api/v4/projects/grp%2Fsub%2Fproj/boards ")));
 
         let (base, seen) = serve_board("200 OK", 6);
-        fetch_gitlab(&base, "a/b", "t", false, since()).unwrap();
+        fetch_gitlab(&base, "a/b", "t", false, since(), None).unwrap();
         assert!(seen
             .join()
             .unwrap()
@@ -1330,12 +1875,12 @@ mod tests {
         for code in ["401 Unauthorized", "403 Forbidden"] {
             let (base, _h) = serve_board(code, 6);
             assert!(matches!(
-                fetch_gitlab(&base, "a/b", "wrong", true, since()),
+                fetch_gitlab(&base, "a/b", "wrong", true, since(), None),
                 Err(CoreError::IssuesGitlabAuth)
             ));
         }
         let (base, _h) = serve_board("500 Internal Server Error", 6);
-        let err = fetch_gitlab(&base, "a/b", "t", true, since()).unwrap_err();
+        let err = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap_err();
         assert!(matches!(err, CoreError::IssuesFetch(_)));
         assert!(!err.to_string().contains("secret-ish"));
     }
@@ -1406,8 +1951,16 @@ mod tests {
         ]"#;
         let merged = r#"[{"iid":12,"title":"o","web_url":"u","labels":["doing"],
           "merged_at":"2026-09-20T10:00:00Z"}]"#;
-        let items =
-            assemble_gitlab(open_issues, closed, open_mrs, merged, &lists, since()).unwrap();
+        let items = assemble_gitlab(
+            open_issues,
+            closed,
+            open_mrs,
+            merged,
+            &lists,
+            "grp/proj",
+            since(),
+        )
+        .unwrap();
         let col = |n: u64, k: ItemKind| {
             items
                 .iter()
@@ -1423,25 +1976,14 @@ mod tests {
         assert_eq!(col(10, ItemKind::Pr), "label:review-me");
         assert_eq!(col(11, ItemKind::Pr), "review");
         assert_eq!(col(12, ItemKind::Pr), "done");
-        let ids = |items: &[BoardItem]| -> Vec<String> {
-            project_columns("Open", lists.clone(), "Closed (14d)", true, items)
-                .into_iter()
-                .map(|c| c.id)
-                .collect()
-        };
-        assert_eq!(
-            ids(&items),
-            ["open", "label:doing", "label:review-me", "review", "done"]
-        );
-        // Review column only when an MR landed there; done always.
-        let no_review: Vec<_> = items
-            .iter()
-            .filter(|i| i.column != "review")
-            .cloned()
+        // Project boards always carry review and done, cards or not.
+        let ids: Vec<_> = project_columns("Open", lists.clone(), "Closed (14d)")
+            .into_iter()
+            .map(|c| c.id)
             .collect();
         assert_eq!(
-            ids(&no_review),
-            ["open", "label:doing", "label:review-me", "done"]
+            ids,
+            ["open", "label:doing", "label:review-me", "review", "done"]
         );
     }
 
@@ -1493,11 +2035,10 @@ mod tests {
         assert_eq!(col(20), "status:o1");
         // The default draft/linked placement does not apply with a project.
         assert_eq!(col(21), "review");
-        let ids: Vec<_> =
-            project_columns("No status", p.options.clone(), "Done (14d)", false, &items)
-                .into_iter()
-                .map(|c| c.id)
-                .collect();
+        let ids: Vec<_> = project_columns("No status", p.options.clone(), "Done (14d)")
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
         assert_eq!(ids, ["open", "status:o1", "status:o2", "review", "done"]);
         // No project, no Status field or no options: none.
         assert_eq!(parse_gh_project("{}", "acme/widgets"), None);
@@ -1515,6 +2056,367 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn item(kind: ItemKind, number: u64, column: &str) -> BoardItem {
+        BoardItem {
+            kind,
+            number,
+            title: format!("card {number}"),
+            url: format!("u{number}"),
+            body: String::new(),
+            labels: vec!["bug".into(), "doing".into()],
+            updated_at: String::new(),
+            column: column.into(),
+            draft: false,
+            author: String::new(),
+            movable: movable(kind, column),
+            linked: Vec::new(),
+        }
+    }
+
+    fn gl_board() -> Board {
+        let (_, lists) = parse_gl_board(GL_BOARDS).unwrap();
+        Board {
+            provider: IssueProvider::Gitlab,
+            items: vec![
+                item(ItemKind::Issue, 1, "label:doing"),
+                item(ItemKind::Issue, 2, "open"),
+                item(ItemKind::Issue, 3, "done"),
+                item(ItemKind::Pr, 10, "review"),
+                item(ItemKind::Pr, 11, "done"),
+            ],
+            columns: project_columns("Open", lists, "Closed (14d)"),
+            source: Some("Development".into()),
+            hint: None,
+            pr_counts: PrCounts::default(),
+        }
+    }
+
+    fn accepts(cols: &[Column], id: &str) -> Vec<ItemKind> {
+        cols.iter().find(|c| c.id == id).unwrap().accepts.clone()
+    }
+
+    #[test]
+    fn drop_rules_and_movable() {
+        use ItemKind::{Issue, Pr};
+        let d = default_columns();
+        assert_eq!(accepts(&d, "open"), [Issue]);
+        assert_eq!(accepts(&d, "inProgress"), []);
+        assert_eq!(accepts(&d, "review"), []);
+        assert_eq!(accepts(&d, "done"), [Issue]);
+        let b = gl_board();
+        assert_eq!(accepts(&b.columns, "open"), [Issue]);
+        assert_eq!(accepts(&b.columns, "label:doing"), [Issue, Pr]);
+        assert_eq!(accepts(&b.columns, "review"), [Pr]);
+        assert_eq!(accepts(&b.columns, "done"), [Issue]);
+        let gh = project_columns(
+            "No status",
+            vec![col("status:o1", "Todo", None)],
+            "Done (14d)",
+        );
+        assert_eq!(accepts(&gh, "status:o1"), [Issue, Pr]);
+        // Only a merged PR/MR is fixed in place.
+        let v = serde_json::to_value(&b).unwrap();
+        assert_eq!(
+            v["columns"][1]["accepts"],
+            serde_json::json!(["issue", "pr"])
+        );
+        let movable: Vec<_> = b.items.iter().map(|i| i.movable).collect();
+        assert_eq!(movable, [true, true, true, true, false]);
+        assert_eq!(v["items"][4]["movable"], false);
+        // The wire round-trips.
+        assert_eq!(serde_json::from_value::<Board>(v).unwrap(), b);
+    }
+
+    #[test]
+    fn move_validation() {
+        use ItemKind::{Issue, Pr};
+        let b = gl_board();
+        let refusal = |kind, n, to: &str| match validate_move(&b, kind, n, to) {
+            Err(CoreError::IssuesMove(m)) => m,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(validate_move(&b, Issue, 2, "label:doing").is_ok());
+        assert!(validate_move(&b, Pr, 10, "label:review-me").is_ok());
+        assert!(validate_move(&b, Issue, 3, "open").is_ok());
+        assert!(refusal(Issue, 99, "open").contains("Refresh"));
+        assert!(refusal(Issue, 2, "nowhere").contains("Unknown"));
+        assert!(refusal(Issue, 2, "review").contains("does not accept"));
+        assert!(refusal(Pr, 10, "done").contains("does not accept"));
+        assert!(refusal(Pr, 11, "label:doing").contains("merged"));
+        assert!(refusal(Issue, 1, "label:doing").contains("already"));
+        // Kind and number are one key: PR #2 is not issue #2.
+        assert!(refusal(Pr, 2, "review").contains("Refresh"));
+        // Default board: Open is only reachable from Done.
+        let mut d = b.clone();
+        d.source = None;
+        d.columns = default_columns();
+        d.items[0].column = "inProgress".into();
+        assert!(validate_move(&d, Issue, 3, "open").is_ok());
+        assert!(matches!(
+            validate_move(&d, Issue, 1, "open"),
+            Err(CoreError::IssuesMove(_))
+        ));
+        assert!(matches!(
+            validate_move(&d, Issue, 2, "inProgress"),
+            Err(CoreError::IssuesMove(_))
+        ));
+    }
+
+    #[test]
+    fn gitlab_move_params_table() {
+        let b = gl_board();
+        let p = |from, to| gitlab_move_params(&b, from, to);
+        let s = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let got = |v: Vec<(&str, String)>| -> Vec<(String, String)> {
+            v.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+        };
+        assert_eq!(
+            got(p("open", "label:doing")),
+            s(&[("add_labels", "doing"), ("remove_labels", "review-me")])
+        );
+        assert_eq!(
+            got(p("label:doing", "label:review-me")),
+            s(&[("add_labels", "review-me"), ("remove_labels", "doing")])
+        );
+        assert_eq!(
+            got(p("label:doing", "open")),
+            s(&[("remove_labels", "doing,review-me")])
+        );
+        assert_eq!(
+            got(p("label:doing", "review")),
+            s(&[("remove_labels", "doing,review-me")])
+        );
+        assert_eq!(got(p("open", "done")), s(&[("state_event", "close")]));
+        assert_eq!(
+            got(p("done", "label:doing")),
+            s(&[
+                ("add_labels", "doing"),
+                ("remove_labels", "review-me"),
+                ("state_event", "reopen")
+            ])
+        );
+        // No label lists (default board): reopen only.
+        let mut d = b.clone();
+        d.columns = default_columns();
+        assert_eq!(
+            got(gitlab_move_params(&d, "done", "open")),
+            s(&[("state_event", "reopen")])
+        );
+        // Labels afterwards: list labels swapped, the rest kept.
+        let issue = &b.items[0];
+        assert_eq!(
+            gitlab_labels_after(&b, issue, "label:review-me"),
+            ["bug", "review-me"]
+        );
+        assert_eq!(gitlab_labels_after(&b, issue, "open"), ["bug"]);
+        assert_eq!(gitlab_labels_after(&b, issue, "done"), ["bug", "doing"]);
+    }
+
+    #[test]
+    fn gitlab_move_sends_put_with_params() {
+        let b = gl_board();
+        let (base, seen) = serve_board("200 OK", 1);
+        let labels = move_gitlab(
+            &base,
+            "grp/sub/proj",
+            "fake-token",
+            &b,
+            &b.items[1],
+            "label:doing",
+        )
+        .unwrap();
+        assert_eq!(labels, ["bug", "doing"]);
+        let req = seen.join().unwrap().remove(0);
+        let line = req.lines().next().unwrap();
+        assert!(
+            line.starts_with("PUT /api/v4/projects/grp%2Fsub%2Fproj/issues/2?add_labels=doing&remove_labels=review-me "),
+            "{line}"
+        );
+        assert!(req.to_lowercase().contains("private-token: fake-token"));
+
+        // An MR goes to /merge_requests, a close to state_event.
+        let (base, seen) = serve_board("200 OK", 1);
+        move_gitlab(&base, "a/b", "t", &b, &b.items[1], "done").unwrap();
+        assert!(seen.join().unwrap()[0]
+            .starts_with("PUT /api/v4/projects/a%2Fb/issues/2?state_event=close "));
+        let (base, seen) = serve_board("200 OK", 1);
+        move_gitlab(&base, "a/b", "t", &b, &b.items[3], "label:doing").unwrap();
+        assert!(
+            seen.join().unwrap()[0].starts_with("PUT /api/v4/projects/a%2Fb/merge_requests/10?")
+        );
+
+        let (base, _h) = serve_board("403 Forbidden", 1);
+        assert!(matches!(
+            move_gitlab(&base, "a/b", "t", &b, &b.items[1], "done"),
+            Err(CoreError::IssuesGitlabAuth)
+        ));
+        let (base, _h) = serve_board("500 Internal Server Error", 1);
+        let err = move_gitlab(&base, "a/b", "t", &b, &b.items[1], "done").unwrap_err();
+        assert!(matches!(err, CoreError::IssuesMove(_)));
+        assert!(!err.to_string().contains("secret-ish"));
+    }
+
+    /// Answers `/boards` with a 500 and everything else with `[]` (the MR
+    /// list gets an `X-Total`).
+    fn serve_boards_down(n: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for _ in 0..n {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let got = sock.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..got]);
+                let (status, body) = if req.contains("/boards ") {
+                    ("500 Internal Server Error", "boom")
+                } else {
+                    ("200 OK", "[]")
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nX-Total: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn gitlab_reuses_cached_columns_when_boards_fails() {
+        let known = gl_board();
+        let fallback = gitlab_fallback(&known);
+        assert_eq!(
+            fallback.as_ref().map(|(n, l)| (n.as_str(), l.len())),
+            Some(("Development", 2))
+        );
+        let base = serve_boards_down(6);
+        let b = fetch_gitlab(&base, "a/b", "t", true, since(), fallback).unwrap();
+        assert_eq!(b.source.as_deref(), Some("Development"));
+        assert_eq!(b.columns, known.columns);
+        // /boards succeeding without a label-list board is not a failure.
+        let (base, _seen) = serve_board("200 OK", 6);
+        let b = fetch_gitlab(&base, "a/b", "t", true, since(), gitlab_fallback(&known)).unwrap();
+        assert_eq!((b.source, b.columns), (None, default_columns()));
+        // No cache, no fallback: defaults, as before.
+        let base = serve_boards_down(6);
+        let b = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap();
+        assert_eq!(b.columns, default_columns());
+        // A GitHub board never seeds GitLab columns.
+        let mut gh = known;
+        gh.provider = IssueProvider::Github;
+        assert_eq!(gitlab_fallback(&gh), None);
+    }
+
+    #[test]
+    fn closing_references() {
+        let mr = |description: &str, branch: &str| GlItem {
+            iid: 1,
+            title: String::new(),
+            web_url: String::new(),
+            description: Some(description.into()),
+            labels: vec![],
+            updated_at: String::new(),
+            author: None,
+            draft: false,
+            merge_requests_count: 0,
+            closed_at: None,
+            merged_at: None,
+            source_branch: Some(branch.into()),
+        };
+        let n = |d: &str, b: &str| gl_closing(&mr(d, b), "grp/proj");
+        assert_eq!(n("Closes #12", "x"), [12]);
+        assert_eq!(n("fixes: #3, #4 and #5.", "x"), [3, 4, 5]);
+        assert_eq!(n("RESOLVED Grp/Proj#7", "x"), [7]);
+        assert_eq!(n("Implements #8\n\nFixed #9", "x"), [8, 9]);
+        assert_eq!(n("", "42-fix-invoice"), [42]);
+        assert_eq!(n("closes #1", "2-b"), [1, 2]);
+        // Other projects, plain mentions, lookalike words and branches.
+        assert!(n("closes other/proj#7", "feature/7-x").is_empty());
+        assert!(n("see #7, prefix #8, fixture #9", "x").is_empty());
+        assert!(n("closes #", "7up-drink").is_empty());
+    }
+
+    #[test]
+    fn github_folds_linked_prs_into_their_issue() {
+        let items = assemble_github(
+            r#"[{"number":7,"title":"a","url":"u7"},{"number":8,"title":"b","url":"u8"}]"#,
+            "[]",
+            r#"[{"number":20,"title":"fix 7 and 8","url":"u20","isDraft":true,
+                 "closingIssuesReferences":[{"number":7},{"number":8}]},
+                {"number":21,"title":"off board","url":"u21",
+                 "closingIssuesReferences":[{"number":99}]}]"#,
+            r#"[{"number":19,"title":"merged","url":"u19","closingIssuesReferences":[{"number":7}]}]"#,
+            None,
+        )
+        .unwrap();
+        let numbers: Vec<_> = items.iter().map(|i| (i.kind, i.number)).collect();
+        // #20 and #19 are folded away; #21 links an issue not on the board.
+        assert_eq!(items.len(), 3, "{numbers:?}");
+        assert!(items
+            .iter()
+            .any(|i| i.kind == ItemKind::Pr && i.number == 21));
+        let issue = |n| {
+            items
+                .iter()
+                .find(|i| i.kind == ItemKind::Issue && i.number == n)
+                .unwrap()
+        };
+        let linked: Vec<_> = issue(7)
+            .linked
+            .iter()
+            .map(|l| (l.number, l.draft, l.merged))
+            .collect();
+        assert_eq!(linked, [(20, true, false), (19, false, true)]);
+        assert_eq!(issue(8).linked.len(), 1);
+        assert_eq!(issue(8).linked[0].url, "u20");
+        // The default placement still counts the open PR.
+        assert_eq!(issue(7).column, "inProgress");
+        let v = serde_json::to_value(issue(8)).unwrap();
+        assert_eq!(v["linked"][0]["title"], "fix 7 and 8");
+        assert_eq!(v["linked"][0]["merged"], false);
+    }
+
+    #[test]
+    fn gitlab_folds_linked_mrs_into_their_issue() {
+        let items = assemble_gitlab(
+            r#"[{"iid":12,"title":"a","web_url":"u12"},{"iid":13,"title":"b","web_url":"u13"}]"#,
+            "[]",
+            r#"[{"iid":40,"title":"by text","web_url":"u40","description":"Closes #12"},
+                {"iid":41,"title":"by branch","web_url":"u41","source_branch":"13-fix-it"},
+                {"iid":42,"title":"other issue","web_url":"u42","description":"closes #99"}]"#,
+            r#"[{"iid":38,"title":"merged","web_url":"u38","description":"fixes grp/proj#12",
+                 "merged_at":"2026-09-21T10:00:00Z"}]"#,
+            &[],
+            "grp/proj",
+            since(),
+        )
+        .unwrap();
+        assert_eq!(items.len(), 3);
+        let mr = items.iter().find(|i| i.kind == ItemKind::Pr).unwrap();
+        assert_eq!(mr.number, 42);
+        let issue = |n| {
+            items
+                .iter()
+                .find(|i| i.kind == ItemKind::Issue && i.number == n)
+                .unwrap()
+        };
+        let linked: Vec<_> = issue(12)
+            .linked
+            .iter()
+            .map(|l| (l.number, l.merged))
+            .collect();
+        assert_eq!(linked, [(40, false), (38, true)]);
+        assert_eq!(issue(13).linked[0].number, 41);
+        // The linked open MR keeps the default board's issue in progress
+        // (via merge_requests_count, which the real API reports).
     }
 
     #[cfg(unix)]
@@ -1609,6 +2511,162 @@ echo "[{\"number\":1,\"title\":\"$1 $6 ${GH_TOKEN:-none} $4\",\"url\":\"u\",\"bo
             let gh = script(dir.path(), &with_project("echo 'boom' >&2; exit 1"));
             let b = fetch_github(&gh, "github.com", "acme/widgets", None, true, since()).unwrap();
             assert_eq!((b.columns, b.hint), (default_columns(), None));
+        }
+
+        const LOOKUP_ON: &str = r#"{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT1","field":{"id":"FLD1"}}]},"issueOrPullRequest":{"id":"ISS7","projectItems":{"nodes":[{"id":"OTHER","project":{"id":"PVT9"}},{"id":"ITEM7","project":{"id":"PVT1"}}]}}}}}"#;
+        const LOOKUP_OFF: &str = r#"{"data":{"repository":{"projectsV2":{"nodes":[{"id":"PVT1","field":{"id":"FLD1"}}]},"issueOrPullRequest":{"id":"ISS7","projectItems":{"nodes":[]}}}}}"#;
+
+        /// A fake `gh` that logs its args and answers the move queries.
+        fn mover(dir: &Path, lookup: &str, fail: &str) -> (String, std::path::PathBuf) {
+            let log = dir.join("calls.log");
+            let body = format!(
+                "echo \"$*\" >> {log}\n{fail}\n\
+                 case \"$*\" in\n\
+                 *addProjectV2ItemById*) echo '{{\"data\":{{\"addProjectV2ItemById\":{{\"item\":{{\"id\":\"NEWITEM\"}}}}}}}}';;\n\
+                 *projectsV2*) echo '{lookup}';;\n\
+                 esac",
+                log = log.display()
+            );
+            (script(dir, &body), log)
+        }
+
+        fn gh_board() -> Board {
+            Board {
+                provider: IssueProvider::Github,
+                items: vec![
+                    item(ItemKind::Issue, 7, "open"),
+                    item(ItemKind::Issue, 8, "done"),
+                    item(ItemKind::Issue, 9, "status:o1"),
+                ],
+                columns: project_columns(
+                    "No status",
+                    vec![
+                        col("status:o1", "Todo", None),
+                        col("status:o2", "Doing", None),
+                    ],
+                    "Done (14d)",
+                ),
+                source: Some("Widgets roadmap".into()),
+                hint: None,
+                pr_counts: PrCounts::default(),
+            }
+        }
+
+        fn calls(log: &Path) -> Vec<String> {
+            std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn go(gh: &str, board: &Board, n: usize, to: &str) -> CoreResult<()> {
+            move_github(
+                gh,
+                "github.com",
+                "acme/widgets",
+                None,
+                board,
+                &board.items[n],
+                to,
+            )
+        }
+
+        #[test]
+        fn github_move_sets_status_on_the_project() {
+            let dir = tempfile::tempdir().unwrap();
+            let b = gh_board();
+            // Card already on the project: lookup, then set — no add.
+            let (gh, log) = mover(dir.path(), LOOKUP_ON, "");
+            go(&gh, &b, 0, "status:o2").unwrap();
+            let c = calls(&log);
+            assert_eq!(c.len(), 2, "{c:?}");
+            assert!(c[0].contains("issueOrPullRequest") && c[0].contains("number=7"));
+            assert!(c[0].contains("-F number=7") && c[0].contains("owner=acme"));
+            assert!(c[1].contains("updateProjectV2ItemFieldValue"));
+            for want in ["project=PVT1", "item=ITEM7", "field=FLD1", "option=o2"] {
+                assert!(c[1].contains(want), "{want} in {}", c[1]);
+            }
+
+            // Not on the project yet: it is added first (by node id).
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(dir.path(), LOOKUP_OFF, "");
+            go(&gh, &b, 0, "status:o1").unwrap();
+            let c = calls(&log);
+            assert_eq!(c.len(), 3, "{c:?}");
+            assert!(c[1].contains("addProjectV2ItemById") && c[1].contains("content=ISS7"));
+            assert!(c[2].contains("item=NEWITEM") && c[2].contains("option=o1"));
+
+            // To Open/Review the status is cleared, when there is one.
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(dir.path(), LOOKUP_ON, "");
+            go(&gh, &b, 2, "open").unwrap();
+            let c = calls(&log);
+            assert!(c[1].contains("clearProjectV2ItemFieldValue") && c[1].contains("item=ITEM7"));
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(dir.path(), LOOKUP_OFF, "");
+            go(&gh, &b, 2, "open").unwrap();
+            assert_eq!(calls(&log).len(), 1);
+        }
+
+        #[test]
+        fn github_move_closes_and_reopens() {
+            let dir = tempfile::tempdir().unwrap();
+            let b = gh_board();
+            let (gh, log) = mover(dir.path(), LOOKUP_ON, "");
+            go(&gh, &b, 0, "done").unwrap();
+            assert_eq!(
+                calls(&log),
+                ["issue close 7 --repo github.com/acme/widgets"]
+            );
+
+            // Out of Done: reopen first, then the Status.
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(dir.path(), LOOKUP_ON, "");
+            go(&gh, &b, 1, "status:o2").unwrap();
+            let c = calls(&log);
+            assert_eq!(c[0], "issue reopen 8 --repo github.com/acme/widgets");
+            assert!(c[2].contains("updateProjectV2ItemFieldValue"));
+
+            // Default board: reopen is the whole move.
+            let mut d = b.clone();
+            d.source = None;
+            d.columns = default_columns();
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(dir.path(), LOOKUP_ON, "");
+            go(&gh, &d, 1, "open").unwrap();
+            assert_eq!(
+                calls(&log),
+                ["issue reopen 8 --repo github.com/acme/widgets"]
+            );
+        }
+
+        #[test]
+        fn github_move_errors_are_podium_text() {
+            let dir = tempfile::tempdir().unwrap();
+            let b = gh_board();
+            let (gh, _) = mover(
+                dir.path(),
+                LOOKUP_ON,
+                "case \"$*\" in *Field*) echo 'INSUFFICIENT_SCOPES secret-ish' >&2; exit 1;; esac",
+            );
+            match go(&gh, &b, 0, "status:o2") {
+                Err(CoreError::IssuesMove(m)) => {
+                    assert!(m.contains("gh auth refresh -s project"));
+                    assert!(!m.contains("secret-ish"));
+                }
+                other => panic!("{other:?}"),
+            }
+            let (gh, _) = mover(dir.path(), LOOKUP_ON, "echo 'secret-ish' >&2; exit 1");
+            let err = go(&gh, &b, 0, "done").unwrap_err();
+            assert!(matches!(err, CoreError::IssuesMove(_)));
+            assert!(!err.to_string().contains("secret-ish"));
+            // A lookup without a project is a refusal, not a panic.
+            let (gh, _) = mover(dir.path(), "{}", "");
+            assert!(matches!(
+                go(&gh, &b, 0, "status:o1"),
+                Err(CoreError::IssuesMove(_))
+            ));
         }
 
         #[test]

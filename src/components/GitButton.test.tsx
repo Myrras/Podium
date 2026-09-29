@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ipc/commands", () => ({
   issuesBoard: vi.fn(() => new Promise(() => {})),
+  issuesBoardCached: vi.fn(() => Promise.resolve(null)),
   issuesSettingsGet: vi.fn(() => new Promise(() => {})),
   toIpcError: (e: unknown) => e,
 }));
@@ -27,6 +28,8 @@ const card = (column: string, number: number): BoardItem => ({
   column,
   draft: false,
   author: "",
+  movable: false,
+  linked: [],
 });
 
 beforeEach(() => {
@@ -37,9 +40,9 @@ beforeEach(() => {
 });
 
 describe("GitButton", () => {
-  it("fetches on mount and opens the board on click", () => {
+  it("fetches on mount and opens the board on click", async () => {
     render(<GitButton projectId={P} />);
-    expect(issuesBoard).toHaveBeenCalledWith(P, true);
+    await waitFor(() => expect(issuesBoard).toHaveBeenCalledWith(P, true));
     fireEvent.click(screen.getByRole("button", { name: "Git board" }));
     expect(useLayoutStore.getState().openBoard).toEqual({ projectId: P });
     expect(useProjectStore.getState().activeProjectId).toBe(P);
@@ -71,9 +74,10 @@ describe("GitButton", () => {
       },
     });
     const { rerender } = render(<GitButton projectId={P} />);
+    // The pill shows the open-card count at rest.
     expect(
-      screen.getByRole("button", { name: "Git board — 3 open" }),
-    ).toBeTruthy();
+      screen.getByRole("button", { name: "Git board — 3 open" }).textContent,
+    ).toBe("3");
     useIssueStore.setState({
       byProject: {
         [P]: {
@@ -91,5 +95,6 @@ describe("GitButton", () => {
       "Git board — No GitHub or GitLab remote found.",
     );
     expect(btn.getAttribute("data-error")).toBe("true");
+    expect(btn.textContent).toBe("");
   });
 });

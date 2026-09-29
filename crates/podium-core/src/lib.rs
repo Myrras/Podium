@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod assignment;
 pub mod assistant;
+pub mod boards;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -34,12 +35,13 @@ pub use assistant::{
     AssistantConfig, AssistantEvent, AssistantSettings, Attachment, AttachmentInfo, AutonomyMode,
     PendingKind, ProposalInfo, QueuedMessage, TranscriptEntry, TranscriptRole,
 };
+pub use boards::CachedBoard;
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
 pub use ids::{
     CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
 };
-pub use issues::{Board, IssueProvider, IssuesOverview};
+pub use issues::{Board, IssueProvider, IssuesOverview, ItemKind};
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;

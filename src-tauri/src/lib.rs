@@ -140,6 +140,10 @@ pub fn run() {
             state
                 .orchestrator
                 .set_scratchpads_path(app.path().app_data_dir()?.join("scratchpads.json"));
+            // The last Git board per project and scope, so it paints at once.
+            state
+                .orchestrator
+                .set_boards_path(app.path().app_data_dir()?.join("boards.json"));
             // Global agent settings (command override + default args per
             // adapter, merge mode) persist in the app data dir too.
             state
@@ -281,6 +285,8 @@ pub fn run() {
             commands::scratchpad::scratchpad_unassign,
             commands::window::window_confirm_close,
             commands::issues::issues_board,
+            commands::issues::issues_board_cached,
+            commands::issues::issues_board_move,
             commands::issues::issues_settings_get,
             commands::issues::issues_setup_save,
             commands::issues::issues_setup_remove,

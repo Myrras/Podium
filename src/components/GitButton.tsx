@@ -1,8 +1,9 @@
 /**
  * The project header's Git button: opens the project's Git board in the work
- * area. Unlike the other header actions it stays visible at rest, so the board
- * is one click away, and it carries the board's state — a tooltip summary, an
- * accent while the board is open, a warning dot when the last fetch failed.
+ * area. Unlike the other header actions it stays visible at rest, as a pill at
+ * the row's far end, and it carries the board's state — the open-card count,
+ * an accent fill while the board is open, a warning dot when the last fetch
+ * failed.
  * Mounting it keeps the board fresh (`startAutoRefresh`), so the board is
  * already loaded when opened.
  */
@@ -39,7 +40,7 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
   return (
     <button
       type="button"
-      className={`${styles.projectAction} ${styles.gitButton}`}
+      className={styles.gitButton}
       data-open={isOpen ? "true" : undefined}
       data-error={entry?.error ? "true" : undefined}
       aria-label={title}
@@ -51,6 +52,9 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
       }}
     >
       <BoardIcon size={12} />
+      {entry?.board && !entry.error && open > 0 && (
+        <span aria-hidden>{open}</span>
+      )}
     </button>
   );
 }

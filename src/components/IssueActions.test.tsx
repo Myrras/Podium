@@ -31,6 +31,8 @@ const issue: BoardItem = {
   column: "open",
   draft: false,
   author: "",
+  movable: false,
+  linked: [],
 };
 
 function todo(over: Partial<TodoInfo> = {}): TodoInfo {

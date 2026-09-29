@@ -9,13 +9,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ipc/commands", () => ({
   issuesBoard: vi.fn(() => new Promise(() => {})),
+  issuesBoardCached: vi.fn(() => Promise.resolve(null)),
+  issuesBoardMove: vi.fn(() => Promise.resolve()),
   issuesSettingsGet: vi.fn(() => new Promise(() => {})),
   issuesProjectSetupSet: vi.fn(),
   toIpcError: (e: unknown) => e,
 }));
 vi.mock("../lib/links", () => ({ openExternalLink: vi.fn() }));
 
-import { issuesBoard, issuesProjectSetupSet } from "../ipc/commands";
+import {
+  issuesBoard,
+  issuesBoardMove,
+  issuesProjectSetupSet,
+} from "../ipc/commands";
 import type { Board, BoardItem, ProjectInfo } from "../ipc/types";
 import { openExternalLink } from "../lib/links";
 import { useIssueStore, type ProjectBoard } from "../state/issueStore";
@@ -38,6 +44,8 @@ function item(over: Partial<BoardItem>): BoardItem {
     column: "open",
     draft: false,
     author: "sam",
+    movable: false,
+    linked: [],
     ...over,
   };
 }
@@ -46,10 +54,10 @@ const githubBoard: Board = {
   provider: "github",
   prCounts: { open: 5, merged: 1200 },
   columns: [
-    { id: "open", title: "Open", color: null },
-    { id: "inProgress", title: "In progress", color: null },
-    { id: "review", title: "In review", color: null },
-    { id: "done", title: "Done (14d)", color: null },
+    { id: "open", title: "Open", color: null, accepts: [] },
+    { id: "inProgress", title: "In progress", color: null, accepts: [] },
+    { id: "review", title: "In review", color: null, accepts: [] },
+    { id: "done", title: "Done (14d)", color: null, accepts: [] },
   ],
   source: null,
   hint: null,
@@ -113,9 +121,9 @@ describe("GitBoard", () => {
       board: {
         ...githubBoard,
         columns: [
-          { id: "open", title: "Open", color: null },
-          { id: "label:doing", title: "doing", color: "#428BCA" },
-          { id: "status:o2", title: "Rework", color: "red" },
+          { id: "open", title: "Open", color: null, accepts: [] },
+          { id: "label:doing", title: "doing", color: "#428BCA", accepts: [] },
+          { id: "status:o2", title: "Rework", color: "red", accepts: [] },
         ],
         source: "Development",
         hint: "To use your GitHub Project's columns, run: gh auth refresh -s read:project",
@@ -180,12 +188,12 @@ describe("GitBoard", () => {
     expect(screen.queryByLabelText("#7 details")).toBeNull();
   });
 
-  it("the scope toggle refetches everything in the repo", () => {
+  it("the scope toggle refetches everything in the repo", async () => {
     seed({});
     render(<GitBoard projectId={P} />);
     expect(screen.getByText("Mine").getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByText("All"));
-    expect(issuesBoard).toHaveBeenCalledWith(P, false);
+    await waitFor(() => expect(issuesBoard).toHaveBeenCalledWith(P, false));
     expect(useIssueStore.getState().byProject[P].mine).toBe(false);
   });
 
@@ -285,5 +293,90 @@ describe("GitBoard", () => {
     expect(issuesProjectSetupSet).toHaveBeenCalledWith(P, "s1");
     await waitFor(() => expect(picker).toHaveProperty("value", "s1"));
     expect(issuesBoard).toHaveBeenCalledWith(P, true);
+  });
+
+  describe("drag & drop", () => {
+    const acceptAll = githubBoard.columns.map((c) => ({
+      ...c,
+      accepts:
+        c.id === "review" ? (["pr"] as const) : (["issue", "pr"] as const),
+    }));
+    const dnd = () =>
+      seed({
+        board: {
+          ...githubBoard,
+          columns: acceptAll.map((c) => ({ ...c, accepts: [...c.accepts] })),
+          items: [
+            item({ number: 7, title: "Fix widget", movable: true }),
+            item({ number: 9, title: "Pinned", movable: false }),
+          ],
+        },
+      });
+    const card = (t: string) => screen.getByText(t).closest("[draggable]")!;
+    const dt = { setData: vi.fn(), effectAllowed: "" };
+
+    it("only movable cards are draggable", () => {
+      dnd();
+      render(<GitBoard projectId={P} />);
+      expect(card("Fix widget").getAttribute("draggable")).toBe("true");
+      expect(card("Pinned").getAttribute("draggable")).toBe("false");
+    });
+
+    it("marks accepting columns and moves on drop there only", () => {
+      dnd();
+      vi.mocked(issuesBoardMove).mockClear();
+      render(<GitBoard projectId={P} />);
+      fireEvent.dragStart(card("Fix widget"), { dataTransfer: dt });
+      const region = (n: string) => screen.getByRole("region", { name: n });
+      expect(region("In progress").getAttribute("data-drop")).toBe("true");
+      // Not the current column, nor one that refuses issues.
+      expect(region("Open").getAttribute("data-drop")).toBe("false");
+      expect(region("In review").getAttribute("data-drop")).toBe("false");
+
+      expect(
+        fireEvent.dragOver(region("In review"), { dataTransfer: dt }),
+      ).toBe(true); // not prevented: no drop allowed
+      fireEvent.drop(region("In review"), { dataTransfer: dt });
+      expect(issuesBoardMove).not.toHaveBeenCalled();
+
+      fireEvent.dragStart(card("Fix widget"), { dataTransfer: dt });
+      expect(
+        fireEvent.dragOver(region("In progress"), { dataTransfer: dt }),
+      ).toBe(false); // prevented: drop allowed
+      fireEvent.drop(region("In progress"), { dataTransfer: dt });
+      expect(issuesBoardMove).toHaveBeenCalledWith(P, "issue", 7, "inProgress");
+      expect(region("In progress").getAttribute("data-drop")).toBeNull();
+    });
+  });
+
+  it("folds linked PRs into the card and opens them in the browser", () => {
+    seed({
+      board: {
+        ...githubBoard,
+        items: [
+          item({
+            number: 7,
+            title: "Fix widget",
+            linked: [
+              {
+                number: 20,
+                title: "Fix it",
+                url: "https://github.com/acme/widgets/pull/20",
+                draft: true,
+                merged: false,
+              },
+            ],
+          }),
+        ],
+      },
+    });
+    render(<GitBoard projectId={P} />);
+    expect(column("Open").getByText("1")).toBeTruthy(); // one card
+    expect(column("Open").getByText("draft")).toBeTruthy();
+    fireEvent.click(column("Open").getByLabelText("Open #20 in browser"));
+    expect(openExternalLink).toHaveBeenCalledWith(
+      "https://github.com/acme/widgets/pull/20",
+    );
+    expect(screen.queryByLabelText("#7 details")).toBeNull();
   });
 });
