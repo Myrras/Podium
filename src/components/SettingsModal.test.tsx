@@ -323,6 +323,16 @@ describe("SettingsModal — General tab, WSL backend", () => {
     platform.isWindows = false;
   });
 
+  it("fetches the backend settings once for the whole tab", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "backend_settings_get"),
+    ).toHaveLength(1);
+  });
+
   it("is hidden off Windows", () => {
     render(<SettingsModal open onClose={() => undefined} />);
     expect(screen.queryByLabelText("WSL distro")).toBeNull();
