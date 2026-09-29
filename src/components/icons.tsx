@@ -19,6 +19,7 @@ import {
   ArrowUp,
   Bold,
   Bot,
+  CircleDot,
   Brain,
   Code,
   Code2,
@@ -126,6 +127,7 @@ export const EditIcon = icon(Pencil, { size: 13 });
 export const SectionsIcon = icon(SlidersHorizontal, { size: 13 });
 export const TagIcon = icon(Tag, { size: 12 });
 export const DeleteIcon = icon(Trash2, { size: 13 });
+export const IssueIcon = icon(CircleDot);
 export const BranchIcon = icon(GitBranch, { size: 13 });
 export const ExternalLinkIcon = icon(ExternalLink, { size: 13 });
 export const GripIcon = icon(GripVertical, { size: 14 });

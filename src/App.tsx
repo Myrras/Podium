@@ -35,6 +35,7 @@ import {
 import { readTerminalTheme } from "./lib/terminalTheme";
 import { startAgentActivityMonitor } from "./state/agentActivityStore";
 import { useAssistantStore } from "./state/assistantStore";
+import { useIssueStore } from "./state/issueStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useProcessStore } from "./state/processStore";
 import { useProjectStore } from "./state/projectStore";
@@ -109,6 +110,7 @@ export default function App() {
         useTodoStore.getState().dropProject(e.projectId);
         useScratchpadStore.getState().dropProject(e.projectId);
         useWorktreeStore.getState().dropProject(e.projectId);
+        useIssueStore.getState().dropProject(e.projectId);
       }),
       onTodosChanged((e) => void useTodoStore.getState().refresh(e.projectId)),
       onScratchpadsChanged(

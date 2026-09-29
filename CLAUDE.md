@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **80 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 79 commands.
+  IPC wrappers over all 80 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -109,6 +109,7 @@ podium/
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
+│  ├─ issues.rs                # the user's open assigned issues for a project's origin repo (GitHub via `gh`)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -329,6 +330,20 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   can go stale between backend refreshes while the sidebar stays live; the
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
+
+- **Issues** (`issues.rs`): the optional Issues sidebar section (per-project
+  toggle, off by default) lists the user's **open issues assigned to them** in
+  the repo behind the project's `origin` remote (`detect` → `parse_remote`,
+  ssh/`ssh://`/https, `.git` stripped). GitHub (`github.com`) goes through the
+  user's own `gh` login (`gh issue list --assignee @me --state open --json …`,
+  binary resolved once by `platform::gh_binary()`); Podium stores no token.
+  Any other host is `IssuesUnsupportedHost` for now. Failures are typed
+  (`IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
+  `IssuesFetch`) and never carry `gh`/`git` stderr. Refresh is a frontend
+  concern (`issueStore`): one in-flight fetch per project, the stale list is
+  kept on error, and `startAutoRefresh` (mounted with the section) fetches
+  immediately, every 5 min, and on window focus when the last attempt is over
+  60 s old; the section shows each error inline, never as a toast.
 
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
@@ -696,6 +711,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_set_archived` | `{ projectId, id, archived }`             | `ScratchpadInfo`  |
 | `scratchpad_remove`     | `{ projectId, id }`                         | –                 |
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
+| `issues_list`           | `{ projectId }`                             | `IssueInfo[]`     |
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |

@@ -26,6 +26,16 @@ export interface ProjectSections {
   issues: boolean;
 }
 
+/** One open issue assigned to the user (`podium_core::IssueInfo`). */
+export interface IssueInfo {
+  number: number;
+  title: string;
+  url: string;
+  body: string;
+  labels: string[];
+  updatedAt: string;
+}
+
 /** Open project snapshot (`podium_core::ProjectInfo`). */
 export interface ProjectInfo {
   id: ProjectId;
