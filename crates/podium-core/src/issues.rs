@@ -220,20 +220,37 @@ struct Closing {
     pr: u64,
     merged: bool,
     issues: Vec<u64>,
+    /// Issues it only mentions (`Onderdeel van #N`): the fallback when none
+    /// of `issues` is on the board, so an MR closing a sub-issue that is not
+    /// yours lands on the parent issue that is.
+    mentions: Vec<u64>,
 }
 
 /// Fold every PR/MR that closes an issue on the board into that issue's
-/// `linked` and drop its own card; a PR whose issues are not on the board
-/// stays a card.
+/// `linked` and drop its own card; failing that, into the issues on the board
+/// it mentions. A PR with neither on the board stays a card.
 fn fold_linked(items: Vec<BoardItem>, closing: &[Closing]) -> Vec<BoardItem> {
     let issues: HashSet<u64> = items
         .iter()
         .filter(|i| i.kind == ItemKind::Issue)
         .map(|i| i.number)
         .collect();
-    let folded: Vec<&Closing> = closing
+    let on_board =
+        |ns: &[u64]| -> Vec<u64> { ns.iter().copied().filter(|n| issues.contains(n)).collect() };
+    let folded: Vec<Closing> = closing
         .iter()
-        .filter(|c| c.issues.iter().any(|n| issues.contains(n)))
+        .filter_map(|c| {
+            let mut targets = on_board(&c.issues);
+            if targets.is_empty() {
+                targets = on_board(&c.mentions);
+            }
+            (!targets.is_empty()).then(|| Closing {
+                pr: c.pr,
+                merged: c.merged,
+                issues: targets,
+                mentions: Vec::new(),
+            })
+        })
         .collect();
     let links: HashMap<u64, LinkedPr> = items
         .iter()
@@ -419,6 +436,8 @@ fn gh_closing(p: &GhItem, merged: bool) -> Closing {
             .iter()
             .map(|r| r.number)
             .collect(),
+        // ponytail: GitHub has real sub-issues; mention fallback is GitLab-only.
+        mentions: Vec::new(),
     }
 }
 
@@ -1051,6 +1070,32 @@ fn gl_closing(m: &GlItem, project: &str) -> Vec<u64> {
     out
 }
 
+/// Every issue a MR's description refers to as `#N` or `<project>#N`; a
+/// ref into another project (`other/proj#N`) or an HTML entity (`&#N`) is not
+/// one.
+fn gl_mentions(m: &GlItem, project: &str) -> Vec<u64> {
+    let text = m.description.as_deref().unwrap_or_default().to_lowercase();
+    let project = project.to_lowercase();
+    let mut out = Vec::new();
+    for (i, _) in text.match_indices('#') {
+        let before = &text[..i];
+        let ours = before.ends_with(&project)
+            && !before[..before.len() - project.len()]
+                .ends_with(|c: char| c.is_alphanumeric() || "/-_.".contains(c));
+        if !ours && before.ends_with(|c: char| c.is_alphanumeric() || "/-_.&".contains(c)) {
+            continue;
+        }
+        let rest = &text[i + 1..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if let Ok(n) = rest[..digits].parse::<u64>() {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out
+}
+
 /// Build the items from the four GitLab list responses. The closed/merged
 /// lists are filtered by `updated_after`, so the real closed/merged time is
 /// checked here. With board `lists`, an open card sits in the first list whose
@@ -1096,6 +1141,7 @@ fn assemble_gitlab(
             pr: m.iid,
             merged: false,
             issues: gl_closing(&m, project),
+            mentions: gl_mentions(&m, project),
         });
         let column = if lists.is_empty() {
             pr_column(m.draft).to_string()
@@ -1113,6 +1159,7 @@ fn assemble_gitlab(
                 pr: m.iid,
                 merged: true,
                 issues: gl_closing(&m, project),
+                mentions: gl_mentions(&m, project),
             });
             items.push(m.into_item(ItemKind::Pr, "done"));
         }
@@ -2906,6 +2953,49 @@ mod tests {
         assert!(n("closes other/proj#7", "feature/x").is_empty());
         assert!(n("see #7, prefix #8, fixture #9", "x").is_empty());
         assert!(n("closes #", "drink-7up").is_empty());
+
+        let m = |d: &str| gl_mentions(&mr(d, "x"), "grp/proj");
+        assert_eq!(m("Closes #16234\nOnderdeel van #16225"), [16234, 16225]);
+        assert_eq!(m("(#3) grp/proj#4, #3"), [3, 4]);
+        assert!(m("other/proj#7 &#39; issue#8 #").is_empty());
+    }
+
+    #[test]
+    fn gitlab_folds_a_sub_issue_mr_into_the_parent_it_mentions() {
+        // #20 closes sub-issue #5 (not on the board) and mentions parent #4
+        // (on it); #21 closes #4 and only mentions #6; #22 mentions nothing
+        // on the board.
+        let issues = r#"[{"iid":4,"title":"parent","web_url":"u4"},
+                         {"iid":6,"title":"other","web_url":"u6"}]"#;
+        let mrs = r#"[{"iid":20,"title":"a","web_url":"u20","source_branch":"issue/5",
+                       "description":"Closes #5\nOnderdeel van #4"},
+                      {"iid":21,"title":"b","web_url":"u21","description":"Closes #4, see #6"},
+                      {"iid":22,"title":"c","web_url":"u22","description":"see #99"}]"#;
+        let items = assemble_gitlab(
+            issues,
+            "[]",
+            mrs,
+            "[]",
+            &[],
+            "a/b",
+            since(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let linked = |n: u64| -> Vec<u64> {
+            let i = items
+                .iter()
+                .find(|i| i.kind == ItemKind::Issue && i.number == n);
+            i.unwrap().linked.iter().map(|l| l.number).collect()
+        };
+        assert_eq!(linked(4), [20, 21]);
+        assert!(linked(6).is_empty(), "a mention never beats a close");
+        let prs: Vec<u64> = items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Pr)
+            .map(|i| i.number)
+            .collect();
+        assert_eq!(prs, [22]);
     }
 
     #[test]

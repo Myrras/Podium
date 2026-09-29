@@ -141,7 +141,9 @@ Drag a card to another column to move it on GitHub/GitLab itself: GitLab
 labels (or close/reopen), GitHub close/reopen or your Project's Status (which
 needs the `project` scope: `gh auth refresh -s project`). Columns only take
 what makes sense — merged PRs/MRs stay put. A PR/MR that closes an issue on
-the board is shown on that issue's card instead of as a card of its own. The
+the board is shown on that issue's card instead of as a card of its own; on
+GitLab, an MR whose closed issue is not on the board lands on an issue it
+mentions (`Onderdeel van #N`), so sub-issue MRs show on the parent. The
 last board is kept on disk, so it appears at once, and agents can read and
 move cards through the MCP tools.
 
