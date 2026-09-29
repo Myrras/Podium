@@ -252,12 +252,14 @@ pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
 /// call from a blocking-friendly context.
 pub fn wsl_networking_mode() -> Option<String> {
     let w = wsl()?;
-    let output = std::process::Command::new("wsl.exe")
-        .args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let output = run_gated(
+        std::process::Command::new("wsl.exe")
+            .args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }

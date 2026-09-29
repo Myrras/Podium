@@ -364,11 +364,12 @@ async fn a_windows_exe_registered_for_wsl_clients_starts_through_interop() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_startup_burst_of_wsl_launches_all_succeed() {
     // What Podium fires at startup: adapter probes and git calls for every
     // project at once, plus auto-start services. Ungated, wsl.exe lets only
     // two of a concurrent burst through and fails the rest after ~30 s.
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let started = std::time::Instant::now();
     // A git repo to point the git calls at, as the app does for open projects.
     let repo_dir = WslDir::new(&distro, "burst-repo");
