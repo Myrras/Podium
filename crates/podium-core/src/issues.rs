@@ -1238,16 +1238,31 @@ pub fn fetch_gitlab(
             (join(a), join(b), join(c), join(d), join(e), join(f), me(g))
         });
     let (open_mrs, open_total) = open_mrs?;
+    let (open_issues, closed_issues, merged_mrs) =
+        (open_issues?.0, closed_issues?.0, merged_mrs?.0);
+    let (open_mrs, merged_mrs) = if mine {
+        with_related_mrs(
+            base,
+            token,
+            &p,
+            project_path,
+            &[&open_issues, &closed_issues],
+            open_mrs,
+            merged_mrs,
+        )?
+    } else {
+        (open_mrs, merged_mrs)
+    };
     let (source, lists) = match boards {
         Ok((json, _)) => parse_gl_board(&json).map_or((None, Vec::new()), |(n, l)| (Some(n), l)),
         Err(_) => fallback.map_or((None, Vec::new()), |(n, l)| (Some(n), l)),
     };
     let approvals = gitlab_approvals(base, token, project_path, &open_mrs);
     let items = assemble_gitlab(
-        &open_issues?.0,
-        &closed_issues?.0,
+        &open_issues,
+        &closed_issues,
         &open_mrs,
-        &merged_mrs?.0,
+        &merged_mrs,
         &lists,
         project_path,
         since,
@@ -1270,6 +1285,81 @@ pub fn fetch_gitlab(
         },
         me,
     })
+}
+
+/// Mine only: add someone else's MRs that belong to one of my issues (a
+/// colleague's MR on an issue I'm co-assigned to), which `created_by_me`
+/// never returns. One `related_merge_requests` call per issue on the board no
+/// fetched MR links to yet; an MR is kept when [`gl_closing`] links it to that
+/// issue, so a passing mention does not become a stray card. A failed lookup
+/// just leaves that issue unlinked.
+// ponytail: one request per unlinked issue (≤ 2×LIMIT, all in parallel); a
+// GraphQL batch is the upgrade path if that gets slow.
+fn with_related_mrs(
+    base: &str,
+    token: &str,
+    p: &str,
+    project_path: &str,
+    issues: &[&str],
+    open_mrs: String,
+    merged_mrs: String,
+) -> CoreResult<(String, String)> {
+    let values = |json: &str| {
+        serde_json::from_str::<Vec<serde_json::Value>>(json)
+            .map_err(|_| CoreError::IssuesFetch("unexpected response from GitLab".to_string()))
+    };
+    let item = |v: &serde_json::Value| serde_json::from_value::<GlItem>(v.clone()).ok();
+    let (mut open, mut merged) = (values(&open_mrs)?, values(&merged_mrs)?);
+    let mut known: HashSet<u64> = HashSet::new();
+    let mut linked: HashSet<u64> = HashSet::new();
+    for m in open.iter().chain(&merged).filter_map(item) {
+        known.insert(m.iid);
+        linked.extend(gl_closing(&m, project_path));
+    }
+    let mut unlinked = Vec::new();
+    for json in issues {
+        unlinked.extend(
+            parse_gl(json)?
+                .into_iter()
+                .map(|i| i.iid)
+                .filter(|n| !linked.contains(n)),
+        );
+    }
+    if unlinked.is_empty() {
+        return Ok((open_mrs, merged_mrs));
+    }
+    let related: Vec<(u64, Vec<serde_json::Value>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = unlinked
+            .iter()
+            .map(|&n| {
+                s.spawn(move || {
+                    let path = format!("{p}/issues/{n}/related_merge_requests?per_page={LIMIT}");
+                    let found = gitlab_get(base, token, &path)
+                        .ok()
+                        .and_then(|(json, _)| values(&json).ok())
+                        .unwrap_or_default();
+                    (n, found)
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    for (n, mrs) in related {
+        for v in mrs {
+            let Some(m) = item(&v) else { continue };
+            if known.contains(&m.iid) || !gl_closing(&m, project_path).contains(&n) {
+                continue;
+            }
+            known.insert(m.iid);
+            match v["state"].as_str() {
+                Some("opened") => open.push(v),
+                Some("merged") => merged.push(v),
+                _ => {}
+            }
+        }
+    }
+    let json = |v: Vec<serde_json::Value>| serde_json::Value::Array(v).to_string();
+    Ok((json(open), json(merged)))
 }
 
 const GL_APPROVALS_QUERY: &str = "query($p:ID!,$i:[String!]){project(fullPath:$p){\
@@ -2209,6 +2299,59 @@ mod tests {
             .iter()
             .filter(|r| !r.contains("/boards ") && !r.contains("/user "))
             .all(|r| r.contains("scope=all")));
+    }
+
+    #[test]
+    fn gitlab_mine_links_a_colleagues_mr_via_related_merge_requests() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        // Detached: answers until the test process ends.
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                let mut sock = sock.unwrap();
+                let mut buf = [0u8; 4096];
+                let got = sock.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..got]).into_owned();
+                let body = if req.starts_with("GET /api/v4/user ") {
+                    r#"{"id":5,"username":"fixture-me"}"#
+                } else if req.contains("/issues?state=opened") {
+                    r#"[{"iid":12,"title":"mine","web_url":"u12"}]"#
+                } else if req.contains("/issues/12/related_merge_requests") {
+                    // A colleague's merged MR on the `issue/12` branch, and one
+                    // that only mentions the issue.
+                    r#"[{"iid":40,"title":"fix - #12","web_url":"u40","state":"merged",
+                        "source_branch":"issue/12","merged_at":"2026-09-29T11:00:00Z",
+                        "author":{"username":"kim"}},
+                       {"iid":41,"title":"see #12","web_url":"u41","state":"opened",
+                        "source_branch":"other"}]"#
+                } else {
+                    "[]"
+                };
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(reply.as_bytes()).unwrap();
+                log.lock().unwrap().push(req);
+            }
+        });
+        let board = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap();
+        assert_eq!(board.items.len(), 1, "no stray card for the mention");
+        let linked = &board.items[0].linked;
+        assert_eq!(linked.len(), 1);
+        assert_eq!((linked[0].number, linked[0].merged), (40, true));
+
+        // The All board lists every MR already, so it looks nothing up.
+        seen.lock().unwrap().clear();
+        fetch_gitlab(&base, "a/b", "t", false, since(), None).unwrap();
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.contains("related_merge_requests")));
     }
 
     #[test]
