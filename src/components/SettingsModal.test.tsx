@@ -96,6 +96,12 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
     case "backend_settings_get":
       return Promise.resolve(backendDto);
     case "backend_settings_set_wsl_distro":
+      if ((args as { distro: string | null }).distro === "Ubunto") {
+        return Promise.reject({
+          kind: "invalidInput",
+          message: 'WSL distro "Ubunto" is not installed (installed: Ubuntu)',
+        });
+      }
       backendDto = {
         ...backendDto,
         wslDistro: (args as { distro: string | null }).distro ?? "",
@@ -317,6 +323,16 @@ describe("SettingsModal — General tab, WSL backend", () => {
     platform.isWindows = false;
   });
 
+  it("fetches the backend settings once for the whole tab", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "backend_settings_get"),
+    ).toHaveLength(1);
+  });
+
   it("is hidden off Windows", () => {
     render(<SettingsModal open onClose={() => undefined} />);
     expect(screen.queryByLabelText("WSL distro")).toBeNull();
@@ -360,6 +376,21 @@ describe("SettingsModal — General tab, WSL backend", () => {
     expect(
       await screen.findByText("Restart Podium to apply this change."),
     ).toBeInTheDocument();
+  });
+
+  it("shows why a distro that is not installed was refused", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    fireEvent.change(input, { target: { value: "Ubunto" } });
+    fireEvent.blur(input);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'WSL distro "Ubunto" is not installed (installed: Ubuntu)',
+    );
+    expect(
+      screen.queryByText("Restart Podium to apply this change."),
+    ).toBeNull();
   });
 });
 

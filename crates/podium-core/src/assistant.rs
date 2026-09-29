@@ -1352,8 +1352,7 @@ impl AssistantManager {
         // Not a PTY (ConPTY is already windowless): a plain console-subsystem
         // child (bash, wsl.exe, cmd.exe) spawned from a GUI-subsystem Podium
         // would otherwise flash a console window on Windows.
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        crate::platform::hide_console_window(cmd.as_std_mut());
         let mut child = crate::platform::spawn_gated(|| cmd.spawn())?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");

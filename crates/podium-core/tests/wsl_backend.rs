@@ -1,8 +1,9 @@
 //! Integration tests for WSL-backend mode: real ConPTY, real `wsl.exe`, a
-//! real distro. Windows-only, and opt-in: they run only when
-//! `PODIUM_TEST_WSL_DISTRO` names an installed distro (e.g. `Ubuntu`), so CI
-//! and machines without WSL skip them. Run with
-//! `PODIUM_TEST_WSL_DISTRO=Ubuntu cargo test -p podium-core --test wsl_backend`.
+//! real distro. Windows-only, and opt-in: every test is `#[ignore]`d, so CI
+//! and machines without WSL report them as *ignored* (not as passing). Run
+//! them one at a time (a burst of `wsl.exe` starts fails) with an installed
+//! distro named in `PODIUM_TEST_WSL_DISTRO`:
+//! `PODIUM_TEST_WSL_DISTRO=Ubuntu cargo test -p podium-core --test wsl_backend -- --ignored --test-threads=1`.
 //!
 //! Each test binary is its own process, so fixing the process-wide backend
 //! with `init_wsl` here cannot leak into any other test.
@@ -18,11 +19,14 @@ use tokio::time::{sleep, timeout};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The distro under test, with the backend fixed to it; `None` = skip.
-fn distro() -> Option<String> {
-    let distro = std::env::var("PODIUM_TEST_WSL_DISTRO").ok()?;
+/// The distro under test, with the backend fixed to it. A run that asked for
+/// these tests (`--ignored`) without naming a distro fails rather than
+/// passing vacuously.
+fn distro() -> String {
+    let distro = std::env::var("PODIUM_TEST_WSL_DISTRO")
+        .expect("set PODIUM_TEST_WSL_DISTRO to an installed distro (e.g. Ubuntu)");
     podium_core::platform::init_wsl(Some(&distro));
-    Some(distro)
+    distro
 }
 
 /// A fresh directory inside the distro, as Podium sees it from Windows.
@@ -104,9 +108,20 @@ fn running_in_distro(distro: &str, pattern: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `wslinfo --networking-mode` inside `distro`, run without a shell.
+fn networking_mode(distro: &str) -> Option<String> {
+    let output = std::process::Command::new("wsl.exe")
+        .args(["-d", distro, "-e", "wslinfo", "--networking-mode"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_service_runs_in_the_distro_with_its_cwd_and_env() {
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let dir = WslDir::new(&distro, "cwd-env");
     let orch = Orchestrator::new();
     let env = vec![("PODIUM_TEST_VALUE".to_string(), "hi there".to_string())];
@@ -127,8 +142,9 @@ async fn a_service_runs_in_the_distro_with_its_cwd_and_env() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_posix_quoted_argument_survives_portable_pty_and_wsl_exe() {
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let dir = WslDir::new(&distro, "argv");
     let orch = Orchestrator::new();
     let prompt = "You're the \"agent\"; $HOME `id` \\ back";
@@ -145,8 +161,9 @@ async fn a_posix_quoted_argument_survives_portable_pty_and_wsl_exe() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn stopping_a_service_ends_its_linux_children() {
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let dir = WslDir::new(&distro, "stop");
     let orch = Orchestrator::new();
     // Two long-lived children of the service's shell, like `pnpm dev` and
@@ -156,8 +173,12 @@ async fn stopping_a_service_ends_its_linux_children() {
         "bash -c 'exec -a {marker}-a sleep 300' & bash -c 'exec -a {marker}-b sleep 300' & wait"
     );
     let id = start(&orch, &dir, service(&command, &dir, Vec::new())).await;
+    // Anchored on argv0 (`exec -a`): the marker also appears in the wrapper
+    // `bash -lic` command line, which a bare `pgrep -f marker` would match
+    // before the `sleep` children exist.
+    let children = format!("^{marker}-");
     timeout(TEST_TIMEOUT, async {
-        while !running_in_distro(&distro, &marker) {
+        while !running_in_distro(&distro, &children) {
             sleep(Duration::from_millis(100)).await;
         }
     })
@@ -174,7 +195,7 @@ async fn stopping_a_service_ends_its_linux_children() {
     .expect("service never exited");
     // Give WSL a moment to tear the session down.
     let gone = timeout(Duration::from_secs(10), async {
-        while running_in_distro(&distro, &marker) {
+        while running_in_distro(&distro, &children) {
             sleep(Duration::from_millis(200)).await;
         }
     })
@@ -185,10 +206,11 @@ async fn stopping_a_service_ends_its_linux_children() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_windows_config_file_is_readable_at_its_backend_path() {
     // Agent/assistant `--mcp-config` and `--rules` files live in the Windows
     // app data dir; the CLI inside WSL must be able to open them.
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let dir = WslDir::new(&distro, "config");
     let config = tempfile::Builder::new()
         .suffix(".json")
@@ -209,10 +231,18 @@ async fn a_windows_config_file_is_readable_at_its_backend_path() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn the_windows_host_is_reachable_on_localhost() {
     // The MCP server binds 127.0.0.1 on Windows; agents in WSL reach it only
     // with mirrored networking (`networkingMode=mirrored` in .wslconfig).
-    let Some(distro) = distro() else { return };
+    let distro = distro();
+    // This checks the machine's .wslconfig, not Podium: without mirrored
+    // networking skip loudly rather than fail a correct build.
+    let mode = networking_mode(&distro);
+    if mode.as_deref() != Some("mirrored") {
+        eprintln!("skipped: WSL networking mode is {mode:?}, not \"mirrored\"");
+        return;
+    }
     let dir = WslDir::new(&distro, "net");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
@@ -249,8 +279,9 @@ fn wsl_git(distro: &str, dir: &str, args: &[&str]) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn worktrees_are_created_listed_and_removed_with_wsl_git() {
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let dir = WslDir::new(&distro, "worktree");
     let repo = dir.linux();
     wsl_git(&distro, &repo, &["init", "-q", "-b", "main"]);
@@ -305,11 +336,12 @@ async fn worktrees_are_created_listed_and_removed_with_wsl_git() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_windows_exe_registered_for_wsl_clients_starts_through_interop() {
     // `claude mcp add … -- <exe> mcp-bridge` inside WSL: the exe path must be
     // its /mnt/c spelling, and WSL must be able to start that Windows binary.
     // This test binary stands in for Podium.exe.
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let exe = std::env::current_exe().expect("current exe");
     let add = podium_core::mcp::install::claude_add_command(&exe).expect("add command");
     let linux_exe = podium_core::platform::backend_path(&exe).expect("backend path");
@@ -332,11 +364,12 @@ async fn a_windows_exe_registered_for_wsl_clients_starts_through_interop() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_startup_burst_of_wsl_launches_all_succeed() {
     // What Podium fires at startup: adapter probes and git calls for every
     // project at once, plus auto-start services. Ungated, wsl.exe lets only
     // two of a concurrent burst through and fails the rest after ~30 s.
-    let Some(distro) = distro() else { return };
+    let distro = distro();
     let started = std::time::Instant::now();
     // A git repo to point the git calls at, as the app does for open projects.
     let repo_dir = WslDir::new(&distro, "burst-repo");
