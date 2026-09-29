@@ -35,6 +35,7 @@ import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
+import { IssueSubsection } from "./IssueSubsection";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
@@ -523,6 +524,9 @@ function ProjectGroup({
               onOpenScratchpad={onOpenScratchpad}
               onPickAgent={onPickScratchpadAgent}
             />
+          )}
+          {project.sections.issues && (
+            <IssueSubsection projectId={project.id} />
           )}
         </div>
       </div>

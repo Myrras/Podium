@@ -398,3 +398,15 @@
   border-color: var(--accent);
   color: var(--text);
 }
+
+/* Refresh glyph while a background fetch runs — opacity-only, like the
+ * activity dot, so the reduced-motion guard covers it. */
+.refreshing {
+  animation: refreshPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes refreshPulse {
+  50% {
+    opacity: 0.35;
+  }
+}

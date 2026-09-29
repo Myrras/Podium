@@ -15,6 +15,7 @@ import type {
   Attachment,
   AutonomyMode,
   CommentId,
+  IssueInfo,
   IpcError,
   LinkId,
   McpClientInfo,
@@ -759,4 +760,17 @@ export async function processAttach(
   channel.onmessage = onEvent;
   await invoke("process_attach", { processId, channel });
   return channel;
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+/**
+ * The user's open assigned issues in the project's `origin` repo. Rejects
+ * with kind `issuesNoRemote` / `issuesGhUnavailable` / `issuesUnsupportedHost`
+ * / `issuesFetch`.
+ */
+export function issuesList(projectId: ProjectId): Promise<IssueInfo[]> {
+  return invoke("issues_list", { projectId });
 }

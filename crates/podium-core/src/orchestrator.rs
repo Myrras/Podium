@@ -1698,6 +1698,12 @@ impl Orchestrator {
             .collect()
     }
 
+    /// Open issues assigned to the user in the repo behind the project's
+    /// `origin` remote. Shells out — call from a blocking-friendly context.
+    pub fn list_issues(&self, project_id: ProjectId) -> CoreResult<Vec<crate::IssueInfo>> {
+        crate::issues::list(&self.project_root(project_id)?)
+    }
+
     /// The project's Podium-managed git worktrees, with `in_use` marking the
     /// ones an active process runs in. Shells out to git — call from a
     /// blocking-friendly context.

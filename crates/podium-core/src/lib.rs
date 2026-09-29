@@ -13,6 +13,7 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod ids;
+pub mod issues;
 pub mod justfile;
 pub mod mcp;
 pub mod orchestrator;
@@ -38,6 +39,7 @@ pub use events::{EventBus, PodiumEvent};
 pub use ids::{
     CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
 };
+pub use issues::IssueInfo;
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;

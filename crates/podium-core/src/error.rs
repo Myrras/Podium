@@ -64,6 +64,19 @@ pub enum CoreError {
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
 
+    #[error("No GitHub or GitLab remote found.")]
+    IssuesNoRemote,
+
+    #[error("The GitHub CLI (gh) is missing or not logged in.")]
+    IssuesGhUnavailable,
+
+    #[error("Issues are only supported for GitHub remotes.")]
+    IssuesUnsupportedHost,
+
+    /// Podium-owned text only; the tool's own output is never included.
+    #[error("Could not fetch issues: {0}")]
+    IssuesFetch(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
