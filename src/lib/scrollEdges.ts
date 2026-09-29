@@ -41,3 +41,40 @@ export function scrollEdges(el: HTMLElement | null) {
     mutate.disconnect();
   };
 }
+
+const DRAG_ZONE = 64;
+const DRAG_MAX_STEP = 24;
+
+/**
+ * Scroll step for a drag pointer at `pos` inside a scroller spanning
+ * `start`..`end` on one axis: negative near the start, positive near the end,
+ * faster the closer to the edge, 0 in the middle.
+ */
+export function dragScrollStep(pos: number, start: number, end: number) {
+  const zone = Math.min(DRAG_ZONE, (end - start) / 3);
+  const depth =
+    pos < start + zone
+      ? -(start + zone - pos)
+      : pos > end - zone
+        ? pos - (end - zone)
+        : 0;
+  const step = Math.min(Math.abs(depth) / zone, 1) * DRAG_MAX_STEP;
+  return Math.sign(depth) * Math.ceil(step);
+}
+
+/**
+ * `onDragOver` handler scrolling `el` while a drag hovers near its edges.
+ * WebKit (Tauri's macOS webview) does not auto-scroll overflow containers
+ * during a native drag, and wheel scrolling is swallowed by the drag session.
+ * dragover keeps firing while the pointer rests, so resting at an edge keeps
+ * scrolling.
+ */
+export function dragAutoScroll(
+  e: { clientX: number; clientY: number; currentTarget: HTMLElement },
+  axis: "x" | "y",
+) {
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  if (axis === "x") el.scrollLeft += dragScrollStep(e.clientX, r.left, r.right);
+  else el.scrollTop += dragScrollStep(e.clientY, r.top, r.bottom);
+}

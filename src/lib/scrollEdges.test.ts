@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { markScrollEdges } from "./scrollEdges";
+import { dragScrollStep, markScrollEdges } from "./scrollEdges";
 
 function scroller(box: Partial<Record<string, number>>) {
   const el = document.createElement("div");
@@ -35,5 +35,22 @@ describe("markScrollEdges", () => {
     markScrollEdges(el);
     expect(el.hasAttribute("data-more-bottom")).toBe(false);
     expect(el.hasAttribute("data-more-top")).toBe(true);
+  });
+});
+
+describe("dragScrollStep", () => {
+  it("is 0 in the middle and grows towards each edge", () => {
+    expect(dragScrollStep(500, 0, 1000)).toBe(0);
+    expect(dragScrollStep(60, 0, 1000)).toBeLessThan(0);
+    expect(dragScrollStep(0, 0, 1000)).toBe(-24);
+    expect(dragScrollStep(1000, 0, 1000)).toBe(24);
+    expect(dragScrollStep(990, 0, 1000)).toBeGreaterThan(
+      dragScrollStep(950, 0, 1000),
+    );
+  });
+
+  it("caps the step past the edge and shrinks the zone for small scrollers", () => {
+    expect(dragScrollStep(-50, 0, 1000)).toBe(-24);
+    expect(dragScrollStep(50, 0, 90)).toBe(0);
   });
 });

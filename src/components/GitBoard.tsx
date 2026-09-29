@@ -20,7 +20,7 @@ import type {
   ProjectId,
 } from "../ipc/types";
 import { boardErrorText, itemRef, prRef } from "../lib/issueActions";
-import { scrollEdges } from "../lib/scrollEdges";
+import { dragAutoScroll, scrollEdges } from "../lib/scrollEdges";
 import {
   moveTargets,
   useIssueStore,
@@ -231,7 +231,11 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
       )}
       <div className={styles.body}>
         {!setupError && (
-          <div ref={scrollEdges} className={styles.columns}>
+          <div
+            ref={scrollEdges}
+            className={styles.columns}
+            onDragOver={(e) => dragging && dragAutoScroll(e, "x")}
+          >
             {(board?.columns ?? DEFAULT_COLUMNS).map((col) => {
               const cards = items.filter((i) => i.column === col.id);
               const valid =
@@ -264,7 +268,11 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
                     {col.title}
                     <span className={styles.columnCount}>{cards.length}</span>
                   </h3>
-                  <div ref={scrollEdges} className={styles.cards}>
+                  <div
+                    ref={scrollEdges}
+                    className={styles.cards}
+                    onDragOver={(e) => dragging && dragAutoScroll(e, "y")}
+                  >
                     {firstLoad && (
                       <div className={styles.placeholder}>Loading…</div>
                     )}
