@@ -136,7 +136,7 @@ reaches around it.
 
 Each project's sidebar shows or hides its To-do's / Terminals / Worktrees /
 Scratchpads (and, later, Issues) sections via `ProjectInfo.sections`
-(`ProjectSections`, all on except `issues` by default; partial JSON loads).
+(`ProjectSections`, all on by default; partial JSON loads).
 Presentation only: hiding never stops processes, deletes data or affects MCP.
 Agents and Processes are never hidden. Persisted per project in
 `workspace.json` (`WorkspaceEntry.sections`, `None` = defaults) and
