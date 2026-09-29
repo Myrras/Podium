@@ -60,6 +60,13 @@ describe("CloseWarningModal", () => {
           iconInitials: "WS",
           configError: null,
           renamed: false,
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: true,
+            issues: false,
+          },
         },
       ],
     });

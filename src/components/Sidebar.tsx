@@ -21,6 +21,7 @@ import type {
   ProcessInfo,
   ProjectId,
   ProjectInfo,
+  ProjectSections,
   ScratchpadId,
   TodoId,
   WorktreeInfo,
@@ -50,6 +51,7 @@ import {
   GripIcon,
   RestartIcon,
   RunIcon,
+  SectionsIcon,
   TerminalIcon,
 } from "./icons";
 import styles from "./Sidebar.module.css";
@@ -167,6 +169,7 @@ function ProjectGroup({
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const setProjectSections = useProjectStore((s) => s.setProjectSections);
 
   const addProcess = useProcessStore((s) => s.addProcess);
   const startProcess = useProcessStore((s) => s.startProcess);
@@ -178,12 +181,26 @@ function ProjectGroup({
   const [commandsTarget, setCommandsTarget] = useState<
     WorktreeInfo | null | undefined
   >(undefined);
+  const [sectionsOpen, setSectionsOpen] = useState(false);
+  const sectionsRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
+
+  // Close the Sections popover on any outside click.
+  useEffect(() => {
+    if (!sectionsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!sectionsRef.current?.contains(e.target as Node)) {
+        setSectionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [sectionsOpen]);
 
   const startEditing = () => {
     setActiveProject(project.id);
@@ -358,6 +375,54 @@ function ProjectGroup({
             <EditIcon size={12} />
           </button>
         )}
+        <div
+          ref={sectionsRef}
+          className={styles.sectionsWrap}
+          data-open={sectionsOpen ? "true" : undefined}
+        >
+          <button
+            type="button"
+            className={styles.projectAction}
+            aria-label={`Sections for ${project.name}`}
+            aria-haspopup="true"
+            aria-expanded={sectionsOpen}
+            title="Sections"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSectionsOpen((o) => !o);
+            }}
+          >
+            <SectionsIcon size={12} />
+          </button>
+          {sectionsOpen && (
+            <div
+              className={styles.sectionsPopover}
+              role="group"
+              aria-label={`Sections for ${project.name}`}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Escape") setSectionsOpen(false);
+              }}
+            >
+              {SECTION_TOGGLES.map(({ key, label }) => (
+                <label key={key} className={styles.sectionsItem}>
+                  <input
+                    type="checkbox"
+                    checked={project.sections[key]}
+                    onChange={(e) =>
+                      void setProjectSections(project.id, {
+                        ...project.sections,
+                        [key]: e.target.checked,
+                      })
+                    }
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           type="button"
           className={styles.projectAction}
@@ -387,11 +452,13 @@ function ProjectGroup({
         className={`${styles.groupBody}${isCollapsed ? ` ${styles.groupBodyCollapsed}` : ""}`}
       >
         <div className={styles.groupBodyInner}>
-          <TodoSubsection
-            projectId={project.id}
-            onOpenTodo={onOpenTodo}
-            onPickAgent={onPickAgent}
-          />
+          {project.sections.todos && (
+            <TodoSubsection
+              projectId={project.id}
+              onOpenTodo={onOpenTodo}
+              onPickAgent={onPickAgent}
+            />
+          )}
           <Subsection
             title="Agents"
             Icon={AgentIcon}
@@ -408,36 +475,40 @@ function ProjectGroup({
           {services.length > 0 && (
             <Subsection title="Processes" Icon={RunIcon} rows={services} />
           )}
-          <Subsection
-            title="Terminals"
-            Icon={TerminalIcon}
-            rows={terminals.filter((p) => p.worktree == null)}
-            empty="No terminals yet."
-            add={{ label: "New terminal", onClick: () => void addTerminal() }}
-            extra={[
-              {
-                label: "Open in Warp",
-                Icon: ExternalLinkIcon,
-                onClick: openInWarp,
-              },
-              {
-                label: "Commands",
-                Icon: RunIcon,
-                onClick: () => {
-                  setActiveProject(project.id);
-                  setCommandsTarget(null);
+          {project.sections.terminals && (
+            <Subsection
+              title="Terminals"
+              Icon={TerminalIcon}
+              rows={terminals.filter((p) => p.worktree == null)}
+              empty="No terminals yet."
+              add={{ label: "New terminal", onClick: () => void addTerminal() }}
+              extra={[
+                {
+                  label: "Open in Warp",
+                  Icon: ExternalLinkIcon,
+                  onClick: openInWarp,
                 },
-              },
-            ]}
-          />
-          <WorktreeSubsection
-            projectId={project.id}
-            terminals={terminals}
-            onOpenCommands={(wt) => {
-              setActiveProject(project.id);
-              setCommandsTarget(wt);
-            }}
-          />
+                {
+                  label: "Commands",
+                  Icon: RunIcon,
+                  onClick: () => {
+                    setActiveProject(project.id);
+                    setCommandsTarget(null);
+                  },
+                },
+              ]}
+            />
+          )}
+          {project.sections.worktrees && (
+            <WorktreeSubsection
+              projectId={project.id}
+              terminals={terminals}
+              onOpenCommands={(wt) => {
+                setActiveProject(project.id);
+                setCommandsTarget(wt);
+              }}
+            />
+          )}
           <TerminalCommandsModal
             open={commandsTarget !== undefined}
             projectId={project.id}
@@ -446,16 +517,27 @@ function ProjectGroup({
             onClose={() => setCommandsTarget(undefined)}
             onRun={(command, name, cwd) => void runCommand(command, name, cwd)}
           />
-          <ScratchpadSubsection
-            projectId={project.id}
-            onOpenScratchpad={onOpenScratchpad}
-            onPickAgent={onPickScratchpadAgent}
-          />
+          {project.sections.scratchpads && (
+            <ScratchpadSubsection
+              projectId={project.id}
+              onOpenScratchpad={onOpenScratchpad}
+              onPickAgent={onPickScratchpadAgent}
+            />
+          )}
         </div>
       </div>
     </div>
   );
 }
+
+/** The toggleable sidebar sections. Agents and Processes are always shown. */
+const SECTION_TOGGLES: { key: keyof ProjectSections; label: string }[] = [
+  { key: "todos", label: "To-do's" },
+  { key: "terminals", label: "Terminals" },
+  { key: "worktrees", label: "Worktrees" },
+  { key: "scratchpads", label: "Scratchpads" },
+  { key: "issues", label: "Issues" },
+];
 
 /** What the New agent modal is opened for: a plain new agent, or a to-do. */
 interface AgentModalTarget {

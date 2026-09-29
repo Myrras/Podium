@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **78 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 78 commands.
+  IPC wrappers over all 79 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -133,6 +133,14 @@ podium/
 entry point**: projects, processes, agents, attach/stdin/resize, events,
 shutdown. `src-tauri` holds one `Arc<Orchestrator>` in `AppState` and never
 reaches around it.
+
+Each project's sidebar shows or hides its To-do's / Terminals / Worktrees /
+Scratchpads (and, later, Issues) sections via `ProjectInfo.sections`
+(`ProjectSections`, all on except `issues` by default; partial JSON loads).
+Presentation only: hiding never stops processes, deletes data or affects MCP.
+Agents and Processes are never hidden. Persisted per project in
+`workspace.json` (`WorkspaceEntry.sections`, `None` = defaults) and
+re-applied in `project_open`.
 
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
@@ -636,6 +644,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `project_config_reload` | `{ projectId }`                             | `ProjectInfo`     |
 | `project_rename`        | `{ projectId, name? }` (blank clears)       | `ProjectInfo`     |
 | `project_reorder`       | `{ ordered: string[] }` (project ids)       | `ProjectInfo[]`   |
+| `project_set_sections`  | `{ projectId, sections: ProjectSections }`  | `ProjectInfo`     |
 | `project_just_recipes`  | `{ projectId }`                             | `string[]`        |
 | `project_open_in_warp`  | `{ projectId }`                             | –                 |
 | `recents_list`          | –                                           | `RecentProject[]` |
