@@ -246,13 +246,32 @@ pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
 /// In WSL-backend mode, the distro's networking mode as `wslinfo
 /// --networking-mode` reports it (`mirrored`, `nat`, …); `None` natively or
 /// when `wslinfo` is unavailable (older WSL). Agents inside WSL reach
-/// Podium's MCP server on `127.0.0.1` only with mirrored networking. Shells
-/// out — call from a blocking-friendly context.
+/// Podium's MCP server on `127.0.0.1` only with mirrored networking. Runs
+/// `wslinfo` directly (`wsl.exe -e`, like [`git_command`]), not through the
+/// login shell, so a chatty `.bashrc` cannot end up in the answer. Blocks —
+/// call from a blocking-friendly context.
 pub fn wsl_networking_mode() -> Option<String> {
-    wsl()?;
-    run_shell_stdout("wslinfo --networking-mode")
-        .map(|out| out.trim().to_string())
-        .filter(|mode| !mode.is_empty())
+    let w = wsl()?;
+    let output = std::process::Command::new("wsl.exe")
+        .args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_networking_mode(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The mode out of `wslinfo --networking-mode` output: its last non-empty
+/// line, trimmed — should anything still print ahead of it.
+fn parse_networking_mode(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 /// The reverse of [`backend_path`]: a path printed by a backend process (e.g.
@@ -594,6 +613,19 @@ pub(crate) fn parse_windows_argv(cmd: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn networking_mode_is_the_last_non_empty_line() {
+        assert_eq!(
+            parse_networking_mode("mirrored\n").as_deref(),
+            Some("mirrored")
+        );
+        assert_eq!(
+            parse_networking_mode("Welcome to Ubuntu\r\nnat\r\n\r\n").as_deref(),
+            Some("nat")
+        );
+        assert_eq!(parse_networking_mode(" \n"), None);
+    }
 
     fn ubuntu() -> WslBackend {
         WslBackend {
