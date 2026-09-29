@@ -1,11 +1,11 @@
-//! Issues command — a thin forwarder over the orchestrator's issue listing.
+//! Issues commands — thin forwarders over the orchestrator's issue listing
+//! and Settings → Issues setups. Keychain/git/gh work runs on a blocking thread.
 
 use std::sync::Arc;
 
-use serde::Serialize;
 use tauri::State;
 
-use podium_core::{IssueInfo, ProjectId};
+use podium_core::{CoreResult, IssueInfo, IssueProvider, IssuesOverview, Orchestrator, ProjectId};
 
 use crate::error::IpcError;
 use crate::state::AppState;
@@ -24,50 +24,61 @@ pub async fn issues_list(
         .map_err(IpcError::from)
 }
 
-/// What the Settings → Issues tab shows. The token is never included — only
-/// whether one is stored.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IssuesSettingsDto {
-    pub gitlab_host: Option<String>,
-    pub gitlab_token_set: bool,
+/// Run an issues-settings call on a blocking thread (it touches the keychain).
+async fn blocking(
+    state: State<'_, AppState>,
+    f: impl FnOnce(&Orchestrator) -> CoreResult<IssuesOverview> + Send + 'static,
+) -> Result<IssuesOverview, IpcError> {
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || f(&orchestrator))
+        .await
+        .map_err(|e| IpcError::new("io", format!("issues settings task failed: {e}")))?
+        .map_err(IpcError::from)
 }
 
-/// The saved GitLab host and whether its token is in the keychain.
+/// Every setup (tokens never included — only `tokenSet`) and each project's pick.
 #[tauri::command]
-pub async fn issues_settings_get(
-    state: State<'_, AppState>,
-) -> Result<IssuesSettingsDto, IpcError> {
-    let orchestrator = Arc::clone(&state.orchestrator);
-    tauri::async_runtime::spawn_blocking(move || {
-        let (gitlab_host, gitlab_token_set) = orchestrator.issues_settings();
-        IssuesSettingsDto {
-            gitlab_host,
-            gitlab_token_set,
-        }
-    })
-    .await
-    .map_err(|e| IpcError::new("io", format!("issues settings task failed: {e}")))
+pub async fn issues_settings_get(state: State<'_, AppState>) -> Result<IssuesOverview, IpcError> {
+    blocking(state, |o| Ok(o.issues_overview())).await
 }
 
-/// Save the GitLab host (blank clears it). `gitlab_token`: omitted leaves the
-/// stored token alone, blank deletes it, anything else replaces it.
+/// Add (`id` omitted) or update a setup. `token` (GitLab): omitted keeps the
+/// stored one, blank deletes it, anything else replaces it.
 #[tauri::command]
-pub async fn issues_settings_set(
+#[allow(clippy::too_many_arguments)]
+pub async fn issues_setup_save(
     state: State<'_, AppState>,
-    gitlab_host: Option<String>,
-    gitlab_token: Option<String>,
-) -> Result<IssuesSettingsDto, IpcError> {
-    let orchestrator = Arc::clone(&state.orchestrator);
-    tauri::async_runtime::spawn_blocking(move || {
-        orchestrator.set_issues_settings(gitlab_host, gitlab_token)?;
-        let (gitlab_host, gitlab_token_set) = orchestrator.issues_settings();
-        Ok(IssuesSettingsDto {
-            gitlab_host,
-            gitlab_token_set,
-        })
+    id: Option<String>,
+    name: String,
+    provider: IssueProvider,
+    url: String,
+    account: Option<String>,
+    token: Option<String>,
+) -> Result<IssuesOverview, IpcError> {
+    blocking(state, move |o| {
+        o.save_issue_setup(id, name, provider, url, account, token)
     })
     .await
-    .map_err(|e| IpcError::new("io", format!("issues settings task failed: {e}")))?
-    .map_err(|e: podium_core::CoreError| IpcError::from(e))
+}
+
+/// Remove a setup and its stored token.
+#[tauri::command]
+pub async fn issues_setup_remove(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<IssuesOverview, IpcError> {
+    blocking(state, move |o| o.remove_issue_setup(&id)).await
+}
+
+/// Pick the setup a project's Issues section uses; omitted = match by host.
+#[tauri::command]
+pub async fn issues_project_setup_set(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    setup_id: Option<String>,
+) -> Result<IssuesOverview, IpcError> {
+    blocking(state, move |o| {
+        o.set_project_issue_setup(project_id, setup_id)
+    })
+    .await
 }

@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **82 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **84 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,7 +73,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 82 commands.
+  IPC wrappers over all 84 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -331,31 +331,41 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
 
-- **Issues** (`issues.rs`): the optional Issues sidebar section (per-project
-  toggle, off by default) lists the user's **open issues assigned to them** in
-  the repo behind the project's `origin` remote (`detect` → `parse_remote`,
-  ssh/`ssh://`/https, `.git` stripped). GitHub (`github.com`) goes through the
-  user's own `gh` login (`gh issue list --assignee @me --state open --json …`,
-  binary resolved once by `platform::gh_binary()`); Podium stores no token.
-  Any other host is `IssuesUnsupportedHost`, except the one self-hosted GitLab
-  in `AgentSettings.issues.gitlab_host` (normalized bare hostname): it is
-  fetched over HTTPS (`/api/v4/projects/:path/issues?scope=assigned_to_me`,
+- **Issues** (`issues.rs`): the Issues sidebar section (per-project toggle,
+  on by default) lists the user's **open issues assigned to them** in the repo
+  behind the project's `origin` remote (`detect` → `parse_remote`,
+  ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
+  (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
+  { id, name, provider: github|gitlab, url, account? }`, `url` normalized to
+  `scheme://host[:port]` with the scheme **kept** (`http://` for an instance
+  without TLS; `https` when omitted). A project can pin one setup from the
+  section's picker (`issues.projects`, project root → setup id, app-side);
+  otherwise `pick` takes the first setup whose host matches the remote, and a
+  pinned setup for another host is `IssuesHostMismatch`. github.com with no
+  setup still works zero-config. GitHub goes through the user's own `gh` login
+  (`gh issue list --repo host/owner/repo --assignee @me …`, binary resolved
+  once by `platform::gh_binary()`); a setup's `account` picks a logged-in `gh`
+  account via `gh auth token --user`, handed to that one `gh` call as
+  `GH_TOKEN` — Podium stores no GitHub token. Self-hosted GitLab is fetched
+  from the setup's URL (`/api/v4/projects/:path/issues?scope=assigned_to_me`,
   `PRIVATE-TOKEN`, blocking reqwest + rustls). **Temporary** — Connect still
-  runs on GitLab; removing it is one dispatch arm in `issues::list` plus the
-  `// ponytail: temporary` blocks (module GitLab part, `IssueSettings`, two
-  errors, Settings → Issues tab). **Token handling:** the GitLab token lives
-  only in the OS keychain (`keyring`, service `com.podium.app.gitlab`, account
-  = host); `issues_settings_get` reports just `gitlabTokenSet`, the token is
-  never returned over IPC, logged, or put in an error, and the Settings field
-  is never prefilled. Failures are typed
+  runs on GitLab; removing it is `IssueProvider::Gitlab`, its arm in
+  `issues::list` and the `// ponytail: temporary` blocks. **Token handling:**
+  a GitLab token lives only in the OS keychain (`keyring`, service
+  `com.podium.app.gitlab`, account = setup id); `issues_settings_get` reports
+  just `tokenSet`, the token is never returned over IPC, logged, or put in an
+  error, and the Settings field is never prefilled. Failures are typed
   (`IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
-  `IssuesGitlabNotConfigured` / `IssuesGitlabAuth` / `IssuesFetch`) and never
-  carry `gh`/`git` stderr or a GitLab response body; the two GitLab kinds
-  link the section to Settings → Issues (`settingsRequestStore`). Refresh is a frontend
-  concern (`issueStore`): one in-flight fetch per project, the stale list is
-  kept on error, and `startAutoRefresh` (mounted with the section) fetches
-  immediately, every 5 min, and on window focus when the last attempt is over
-  60 s old; the section shows each error inline, never as a toast.
+  `IssuesHostMismatch` / `IssuesGitlabNotConfigured` / `IssuesGitlabAuth` /
+  `IssuesFetch`) and never carry `gh`/`git` stderr or a GitLab response body;
+  the setup kinds link the section to Settings → Issues
+  (`settingsRequestStore`), as does the section header's gear. Refresh is a
+  frontend concern (`issueStore`, which also caches the setups overview and
+  refetches every shown project when it changes): one in-flight fetch per
+  project, the stale list is kept on error, and `startAutoRefresh` (mounted
+  with the section) fetches immediately, every 5 min, and on window focus when
+  the last attempt is over 60 s old; the section shows each error inline,
+  never as a toast.
 
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
@@ -724,8 +734,10 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_remove`     | `{ projectId, id }`                         | –                 |
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
 | `issues_list`           | `{ projectId }`                             | `IssueInfo[]`     |
-| `issues_settings_get`   | –                                           | `{ gitlabHost?, gitlabTokenSet }` (never the token) |
-| `issues_settings_set`   | `{ gitlabHost?, gitlabToken? }` (token omitted = keep, blank = delete) | `{ gitlabHost?, gitlabTokenSet }` |
+| `issues_settings_get`   | –                                           | `IssuesOverview` (`{ setups, projects }`, never a token) |
+| `issues_setup_save`     | `{ id?, name, provider, url, account?, token? }` (token omitted = keep, blank = delete) | `IssuesOverview` |
+| `issues_setup_remove`   | `{ id }`                                    | `IssuesOverview`  |
+| `issues_project_setup_set` | `{ projectId, setupId? }` (omitted = match by host) | `IssuesOverview` |
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |

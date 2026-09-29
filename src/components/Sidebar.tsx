@@ -526,7 +526,7 @@ function ProjectGroup({
             />
           )}
           {project.sections.issues && (
-            <IssueSubsection projectId={project.id} />
+            <IssueSubsection projectId={project.id} root={project.root} />
           )}
         </div>
       </div>

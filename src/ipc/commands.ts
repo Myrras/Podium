@@ -16,7 +16,8 @@ import type {
   AutonomyMode,
   CommentId,
   IssueInfo,
-  IssuesSettingsDto,
+  IssueProvider,
+  IssuesOverview,
   IpcError,
   LinkId,
   McpClientInfo,
@@ -776,18 +777,35 @@ export function issuesList(projectId: ProjectId): Promise<IssueInfo[]> {
   return invoke("issues_list", { projectId });
 }
 
-/** The saved GitLab host and whether its token is stored (never the token). */
-export function issuesSettingsGet(): Promise<IssuesSettingsDto> {
+/** Every issue setup (never a token) plus each project's pick. */
+export function issuesSettingsGet(): Promise<IssuesOverview> {
   return invoke("issues_settings_get");
 }
 
 /**
- * Save the GitLab host (blank clears it). `gitlabToken`: omit to leave the
- * stored token alone, blank to delete it, otherwise it replaces it.
+ * Add (`id` omitted) or update an issue setup. `token` (GitLab): omit to keep
+ * the stored one, blank to delete it, otherwise it replaces it.
  */
-export function issuesSettingsSet(
-  gitlabHost: string,
-  gitlabToken?: string,
-): Promise<IssuesSettingsDto> {
-  return invoke("issues_settings_set", { gitlabHost, gitlabToken });
+export function issuesSetupSave(setup: {
+  id?: string;
+  name: string;
+  provider: IssueProvider;
+  url: string;
+  account?: string;
+  token?: string;
+}): Promise<IssuesOverview> {
+  return invoke("issues_setup_save", setup);
+}
+
+/** Remove an issue setup and its stored token. */
+export function issuesSetupRemove(id: string): Promise<IssuesOverview> {
+  return invoke("issues_setup_remove", { id });
+}
+
+/** Pick the setup a project's Issues section uses; omit to match by host. */
+export function issuesProjectSetupSet(
+  projectId: ProjectId,
+  setupId?: string,
+): Promise<IssuesOverview> {
+  return invoke("issues_project_setup_set", { projectId, setupId });
 }

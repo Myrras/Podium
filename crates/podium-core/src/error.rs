@@ -70,10 +70,13 @@ pub enum CoreError {
     #[error("The GitHub CLI (gh) is missing or not logged in.")]
     IssuesGhUnavailable,
 
-    #[error("Issues are supported for GitHub, and the GitLab host set in Settings.")]
+    #[error("No setup in Settings → Issues matches this remote's host.")]
     IssuesUnsupportedHost,
 
-    #[error("GitLab is not configured: add the host and a token in Settings → Issues.")]
+    #[error("The selected setup \"{setup}\" is not for {remote}, this project's remote host.")]
+    IssuesHostMismatch { setup: String, remote: String },
+
+    #[error("This GitLab setup has no token: add one in Settings → Issues.")]
     IssuesGitlabNotConfigured,
 
     #[error("GitLab rejected the token: check Settings → Issues.")]
