@@ -70,8 +70,14 @@ pub enum CoreError {
     #[error("The GitHub CLI (gh) is missing or not logged in.")]
     IssuesGhUnavailable,
 
-    #[error("Issues are only supported for GitHub remotes.")]
+    #[error("Issues are supported for GitHub, and the GitLab host set in Settings.")]
     IssuesUnsupportedHost,
+
+    #[error("GitLab is not configured: add the host and a token in Settings → Issues.")]
+    IssuesGitlabNotConfigured,
+
+    #[error("GitLab rejected the token: check Settings → Issues.")]
+    IssuesGitlabAuth,
 
     /// Podium-owned text only; the tool's own output is never included.
     #[error("Could not fetch issues: {0}")]

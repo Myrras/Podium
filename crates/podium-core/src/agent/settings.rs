@@ -73,6 +73,20 @@ pub struct AgentSettings {
     /// shares this document rather than adding a second one-field file.
     #[serde(default)]
     pub assistant: AssistantSettings,
+    /// Issues-section preferences (shared document, like `assistant`).
+    #[serde(default)]
+    pub issues: IssueSettings,
+}
+
+/// Settings for the sidebar's Issues section.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSettings {
+    /// Bare hostname of the self-hosted GitLab (see `issues::normalize_host`).
+    /// The token lives in the OS keychain, never here.
+    // ponytail: temporary, remove once Connect is on GitHub
+    #[serde(default)]
+    pub gitlab_host: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -87,6 +101,7 @@ impl Default for AgentSettings {
             overrides: BTreeMap::new(),
             suggest_worktree: true,
             assistant: AssistantSettings::default(),
+            issues: IssueSettings::default(),
         }
     }
 }
@@ -166,6 +181,14 @@ impl AgentSettingsStore {
     pub fn set_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.suggest_worktree = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Set (or clear) the self-hosted GitLab host; returns the updated settings.
+    pub fn set_issues_gitlab_host(&self, host: Option<String>) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.issues.gitlab_host = host;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -401,6 +424,22 @@ mod tests {
             settings.override_for("claude-code").unwrap().default_args,
             args(&["--permission-mode", "plan"])
         );
+    }
+
+    #[test]
+    fn gitlab_host_defaults_none_and_persists() {
+        let legacy: AgentSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.issues.gitlab_host, None);
+        let store = AgentSettingsStore::new();
+        let updated = store
+            .set_issues_gitlab_host(Some("git.example.test".into()))
+            .unwrap();
+        assert_eq!(
+            updated.issues.gitlab_host.as_deref(),
+            Some("git.example.test")
+        );
+        let v = serde_json::to_value(&updated).unwrap();
+        assert_eq!(v["issues"]["gitlabHost"], "git.example.test");
     }
 
     #[test]

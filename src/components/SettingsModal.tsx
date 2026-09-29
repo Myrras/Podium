@@ -11,6 +11,10 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { useThemeStore, type ThemeMode } from "../state/themeStore";
 import { useSettingsStore } from "../state/settingsStore";
+import {
+  useSettingsRequestStore,
+  type SettingsTabId,
+} from "../state/settingsRequestStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
 import {
@@ -19,6 +23,8 @@ import {
   agentSettingsSetDefaultAdapter,
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
+  issuesSettingsGet,
+  issuesSettingsSet,
   mcpClientInstall,
   mcpClientsStatus,
   toIpcError,
@@ -40,7 +46,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "agents" | "assistant" | "mcp";
+type SettingsTab = SettingsTabId;
 
 const THEMES: {
   mode: ThemeMode;
@@ -183,6 +189,10 @@ function McpClientCard({
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [clients, setClients] = useState<McpClientInfo[] | null>(null);
+  const requestedTab = useSettingsRequestStore((s) => s.request);
+  useEffect(() => {
+    if (open && requestedTab) setTab(requestedTab);
+  }, [open, requestedTab]);
 
   // Refresh the client registration snapshot every time the dialog opens.
   useEffect(() => {
@@ -209,6 +219,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             ["general", "General"],
             ["agents", "Agents"],
             ["assistant", "Assistant"],
+            ["issues", "Issues"],
             ["mcp", "MCP"],
           ] as [SettingsTab, string][]
         ).map(([id, label]) => (
@@ -253,6 +264,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         <AgentsTab />
       ) : tab === "assistant" ? (
         <AssistantTab />
+      ) : tab === "issues" ? (
+        <IssuesTab />
       ) : (
         <GeneralTab />
       )}
@@ -377,6 +390,104 @@ const MERGE_MODES: { value: MergeMode; label: string }[] = [
   { value: "project-overrides", label: "Project overrides global" },
   { value: "global-overrides", label: "Global overrides project" },
 ];
+
+/**
+ * Issues tab: the self-hosted GitLab host and token. The token field is never
+ * prefilled — the backend only says whether one is stored.
+ */
+// ponytail: temporary, remove once Connect is on GitHub
+function IssuesTab() {
+  const [host, setHost] = useState("");
+  const [tokenSet, setTokenSet] = useState(false);
+  const [token, setToken] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    issuesSettingsGet()
+      .then((d) => {
+        if (cancelled) return;
+        setHost(d.gitlabHost ?? "");
+        setTokenSet(d.gitlabTokenSet);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = (newToken?: string) => {
+    setBusy(true);
+    issuesSettingsSet(host, newToken)
+      .then((d) => {
+        setHost(d.gitlabHost ?? "");
+        setTokenSet(d.gitlabTokenSet);
+        setToken("");
+        setReplacing(false);
+        toastSuccess("Issues settings saved");
+      })
+      .catch((e) => toastError(toIpcError(e).message))
+      .finally(() => setBusy(false));
+  };
+
+  const showTokenField = !tokenSet || replacing;
+
+  return (
+    <form
+      className={styles.section}
+      onSubmit={(e) => {
+        e.preventDefault();
+        save(token.trim() ? token : undefined);
+      }}
+    >
+      <h3 className={styles.sectionLabel}>Self-hosted GitLab</h3>
+      <small className={styles.rowHelp}>
+        GitHub issues use your <code>gh</code> login. Projects whose{" "}
+        <code>origin</code> is on this host list their open assigned issues via
+        a personal access token (<code>read_api</code>), kept in the OS
+        keychain. Temporary: this goes away once Connect is on GitHub.
+      </small>
+      <div className={styles.field}>
+        <label htmlFor="gitlab-host">Host</label>
+        <input
+          id="gitlab-host"
+          type="text"
+          value={host}
+          placeholder="gitlab.example.com"
+          onChange={(e) => setHost(e.target.value)}
+        />
+      </div>
+      <div className={styles.field}>
+        <label htmlFor="gitlab-token">Access token</label>
+        {showTokenField ? (
+          <input
+            id="gitlab-token"
+            type="password"
+            autoComplete="off"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        ) : (
+          <div className={styles.editActions}>
+            <span>Token saved</span>
+            <button type="button" onClick={() => setReplacing(true)}>
+              Replace
+            </button>
+            <button type="button" disabled={busy} onClick={() => save("")}>
+              Remove
+            </button>
+          </div>
+        )}
+      </div>
+      <div className={styles.editActions}>
+        <button type="submit" className="primary" disabled={busy}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </form>
+  );
+}
 
 /** Agents tab: per-adapter command + default arguments, plus the merge mode. */
 function AgentsTab() {

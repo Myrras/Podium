@@ -281,6 +281,8 @@ pub fn run() {
             commands::scratchpad::scratchpad_unassign,
             commands::window::window_confirm_close,
             commands::issues::issues_list,
+            commands::issues::issues_settings_get,
+            commands::issues::issues_settings_set,
             commands::worktree::worktree_list,
             commands::worktree::worktree_remove,
             commands::worktree::worktree_open_in_warp,

@@ -1701,7 +1701,41 @@ impl Orchestrator {
     /// Open issues assigned to the user in the repo behind the project's
     /// `origin` remote. Shells out — call from a blocking-friendly context.
     pub fn list_issues(&self, project_id: ProjectId) -> CoreResult<Vec<crate::IssueInfo>> {
-        crate::issues::list(&self.project_root(project_id)?)
+        let settings = self.agent_settings();
+        crate::issues::list(
+            &self.project_root(project_id)?,
+            settings.issues.gitlab_host.as_deref(),
+        )
+    }
+
+    /// The configured self-hosted GitLab host and whether its token is stored
+    /// (the token itself is never exposed). Touches the keychain.
+    pub fn issues_settings(&self) -> (Option<String>, bool) {
+        let host = self.agent_settings().issues.gitlab_host;
+        let set = host
+            .as_deref()
+            .is_some_and(crate::issues::gitlab_token_present);
+        (host, set)
+    }
+
+    /// Save the GitLab host (blank/`None` clears it) and, when `token` is
+    /// given, store it in the keychain for that host (blank deletes it).
+    pub fn set_issues_settings(
+        &self,
+        host: Option<String>,
+        token: Option<String>,
+    ) -> CoreResult<()> {
+        let host = host.as_deref().and_then(crate::issues::normalize_host);
+        if token.is_some() && host.is_none() {
+            return Err(CoreError::InvalidInput(
+                "a GitLab host is required to store a token".to_string(),
+            ));
+        }
+        if let (Some(host), Some(token)) = (&host, &token) {
+            crate::issues::gitlab_token_set(host, token)?;
+        }
+        self.agent_settings.set_issues_gitlab_host(host)?;
+        Ok(())
     }
 
     /// The project's Podium-managed git worktrees, with `in_use` marking the

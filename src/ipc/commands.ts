@@ -16,6 +16,7 @@ import type {
   AutonomyMode,
   CommentId,
   IssueInfo,
+  IssuesSettingsDto,
   IpcError,
   LinkId,
   McpClientInfo,
@@ -769,8 +770,24 @@ export async function processAttach(
 /**
  * The user's open assigned issues in the project's `origin` repo. Rejects
  * with kind `issuesNoRemote` / `issuesGhUnavailable` / `issuesUnsupportedHost`
- * / `issuesFetch`.
+ * / `issuesGitlabNotConfigured` / `issuesGitlabAuth` / `issuesFetch`.
  */
 export function issuesList(projectId: ProjectId): Promise<IssueInfo[]> {
   return invoke("issues_list", { projectId });
+}
+
+/** The saved GitLab host and whether its token is stored (never the token). */
+export function issuesSettingsGet(): Promise<IssuesSettingsDto> {
+  return invoke("issues_settings_get");
+}
+
+/**
+ * Save the GitLab host (blank clears it). `gitlabToken`: omit to leave the
+ * stored token alone, blank to delete it, otherwise it replaces it.
+ */
+export function issuesSettingsSet(
+  gitlabHost: string,
+  gitlabToken?: string,
+): Promise<IssuesSettingsDto> {
+  return invoke("issues_settings_set", { gitlabHost, gitlabToken });
 }
