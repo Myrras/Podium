@@ -1,14 +1,12 @@
 /**
- * Custom window controls (minimize / maximize-restore / close).
+ * Windows window controls (minimize / maximize-restore / close).
  *
- * Rendered into our custom title bar on Windows and macOS, where
- * `decorations: false` removes the native OS title bar (Windows puts this at
- * the top-right, macOS at the top-left — see App.tsx). Drives the window
- * through `@tauri-apps/api/window`; the maximize button reflects the live
- * maximized state (toggling its glyph) by polling `isMaximized()` on every
- * `onResized` event (also covers macOS's green-button fullscreen). The
- * buttons opt out of the title bar's drag region via `app-region: no-drag`
- * in the stylesheet so clicks aren't swallowed by dragging.
+ * Rendered into our custom title bar only on Windows, where `decorations: false`
+ * removes the native OS title bar. Drives the window through
+ * `@tauri-apps/api/window`; the maximize button reflects the live maximized
+ * state (toggling its glyph) by polling `isMaximized()` on every `onResized`
+ * event. The buttons opt out of the title bar's drag region via
+ * `app-region: no-drag` in the stylesheet so clicks aren't swallowed by dragging.
  */
 
 import { useEffect, useState } from "react";

@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // App wires up IPC on mount; jsdom has no Tauri bridge, so stub it out.
 // `invoke` resolves per-command fixtures (all list commands — including
@@ -22,8 +22,18 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
-// jsdom's user agent reads as macOS ("darwin"), so the app renders its
-// macOS window controls; WindowControls talks to the window API on mount.
+// jsdom leaves `navigator.platform` empty, so pin the platform explicitly;
+// each test picks one via `platform`. Getters, so a change is seen at render.
+const platform = vi.hoisted(() => ({ mac: false, windows: false }));
+vi.mock("./lib/platform", () => ({
+  get isMac() {
+    return platform.mac;
+  },
+  get isWindows() {
+    return platform.windows;
+  },
+}));
+// WindowControls (Windows only) talks to the window API on mount.
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     isMaximized: () => Promise.resolve(false),
@@ -40,6 +50,11 @@ import { useLayoutStore } from "./state/layoutStore";
 import App from "./App";
 
 describe("App", () => {
+  beforeEach(() => {
+    platform.mac = false;
+    platform.windows = false;
+  });
+
   it("renders the shell with the brand and the empty sidebar state", () => {
     render(<App />);
 
@@ -70,5 +85,28 @@ describe("App", () => {
 
     await user.click(screen.getByLabelText("Hide assistant"));
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+  });
+
+  it("draws its own window controls on Windows", () => {
+    platform.windows = true;
+    render(<App />);
+
+    expect(screen.getByLabelText("Minimize")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close")).toBeInTheDocument();
+    expect(screen.getByLabelText("Settings")).toBeInTheDocument();
+  });
+
+  it("leaves the window controls to the native traffic lights on macOS", () => {
+    platform.mac = true;
+    render(<App />);
+
+    expect(screen.queryByLabelText("Minimize")).toBeNull();
+    expect(screen.queryByLabelText("Close")).toBeNull();
+    // Settings lives in the native menu bar (⌘,) there.
+    expect(screen.queryByLabelText("Settings")).toBeNull();
+    expect(screen.getByText("Podium").closest("header")).toHaveAttribute(
+      "data-tauri-drag-region",
+      "true",
+    );
   });
 });

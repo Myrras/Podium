@@ -24,10 +24,10 @@
   padding-right: 0;
 }
 
-/* macOS: the (custom) window controls run flush to the top-left corner instead —
-   drop the left padding; the right side keeps it for the assistant/settings icons. */
+/* macOS: the native traffic lights overlay the top-left corner
+   (titleBarStyle: Overlay) — keep clear of them. */
 .titlebarMac {
-  padding-left: 0;
+  padding-left: 78px;
 }
 
 .brand {
@@ -36,7 +36,7 @@
   gap: var(--sp-2);
 }
 
-/* macOS: the window controls occupy the leading edge, so centering the brand
+/* macOS: the traffic lights occupy the leading edge, so centering the brand
    the normal flex way (space-between's midpoint) would skew it off-center —
    anchor it to the header's own true center instead, independent of how wide
    the control clusters on either side are. */
