@@ -271,6 +271,12 @@
   border-color: var(--border-strong);
 }
 
+/* The hover fill belongs to the whole card, linked PRs included — not to
+   the inner button, which the global button:hover would otherwise paint. */
+.card:hover {
+  background: var(--surface-hover);
+}
+
 .card[data-selected="true"] {
   box-shadow: inset 2px 0 0 var(--accent);
 }
@@ -289,6 +295,14 @@
   border: none;
   color: inherit;
   cursor: pointer;
+}
+
+.cardMain:hover:not(:disabled) {
+  background: none;
+}
+
+.cardMain:active:not(:disabled) {
+  transform: none;
 }
 
 .cardRef {
@@ -335,7 +349,7 @@
   top: var(--sp-1);
   right: var(--sp-1);
   display: flex;
-  background: var(--surface);
+  background: inherit;
   border-radius: var(--radius-sm);
   opacity: 0;
   transition: opacity var(--dur-1) var(--ease-out);
@@ -388,6 +402,13 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+
+/* A state tag inside the pill: no second outline. */
+.linkedPr .draft {
+  border: none;
+  padding: 0;
+  color: var(--text-faint);
 }
 
 .linkedPr:hover {
