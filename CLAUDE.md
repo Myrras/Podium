@@ -690,8 +690,9 @@ ignores a configured distro there).
   own new console window on Windows unless told otherwise — visible for the
   call's lifetime. `platform::hide_console_window` sets `CREATE_NO_WINDOW`;
   every non-ConPTY Windows spawn in this crate uses it (`run_shell_ok`,
-  `run_shell_stdout`, `git_command`, the assistant's CLI child, Warp's `cmd
-  /C start`). ConPTY-attached spawns (`process::pty`) are already windowless
+  `run_shell_stdout`, `git_command`, the WSL networking check and distro
+  listing, the assistant's CLI child — a tokio `Command`, via `as_std_mut()`
+  — and Warp's `cmd /C start`). ConPTY-attached spawns (`process::pty`) are already windowless
   and need nothing. New code that spawns a plain `Command` on Windows must
   use it too.
 - **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the

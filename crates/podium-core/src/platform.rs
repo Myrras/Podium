@@ -12,6 +12,8 @@ pub mod wsl_path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::error::{CoreError, CoreResult};
+
 /// `CREATE_NO_WINDOW`: suppresses the console window Windows otherwise
 /// allocates for a console-subsystem child (git, wsl.exe, cmd.exe, bash)
 /// spawned from a GUI-subsystem process (release-mode Podium has no console
@@ -32,8 +34,6 @@ pub fn hide_console_window(cmd: &mut std::process::Command) {
 
 #[cfg(not(windows))]
 pub fn hide_console_window(_cmd: &mut std::process::Command) {}
-
-use crate::error::{CoreError, CoreResult};
 
 /// WSL-backend mode: on Windows, run everything Podium executes (services,
 /// terminals, agents, the assistant, git) inside this WSL distro instead of
@@ -273,14 +273,13 @@ pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
 /// call from a blocking-friendly context.
 pub fn wsl_networking_mode() -> Option<String> {
     let w = wsl()?;
-    let output = run_gated(
-        std::process::Command::new("wsl.exe")
-            .args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null()),
-    )
-    .ok()?;
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    hide_console_window(&mut cmd);
+    let output = run_gated(&mut cmd).ok()?;
     if !output.status.success() {
         return None;
     }
