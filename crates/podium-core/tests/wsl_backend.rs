@@ -104,6 +104,16 @@ fn running_in_distro(distro: &str, pattern: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `wslinfo --networking-mode` inside `distro`, run without a shell.
+fn networking_mode(distro: &str) -> Option<String> {
+    let output = std::process::Command::new("wsl.exe")
+        .args(["-d", distro, "-e", "wslinfo", "--networking-mode"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_service_runs_in_the_distro_with_its_cwd_and_env() {
     let Some(distro) = distro() else { return };
@@ -217,6 +227,13 @@ async fn the_windows_host_is_reachable_on_localhost() {
     // The MCP server binds 127.0.0.1 on Windows; agents in WSL reach it only
     // with mirrored networking (`networkingMode=mirrored` in .wslconfig).
     let Some(distro) = distro() else { return };
+    // This checks the machine's .wslconfig, not Podium: without mirrored
+    // networking skip loudly rather than fail a correct build.
+    let mode = networking_mode(&distro);
+    if mode.as_deref() != Some("mirrored") {
+        eprintln!("skipped: WSL networking mode is {mode:?}, not \"mirrored\"");
+        return;
+    }
     let dir = WslDir::new(&distro, "net");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
