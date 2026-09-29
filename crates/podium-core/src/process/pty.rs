@@ -190,7 +190,20 @@ impl PtyProcess {
             let mut handshake = CursorHandshake::new();
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        // Bytes held back as a possible split query: the
+                        // stream ended, so they were output after all.
+                        #[cfg(windows)]
+                        {
+                            let rest = handshake.take_pending();
+                            if !rest.is_empty() {
+                                let mut sb = scrollback.lock().expect(LOCK_POISONED);
+                                let seq = sb.append(&rest);
+                                let _ = chunk_tx.send(TermChunk { seq, bytes: rest });
+                            }
+                        }
+                        break;
+                    }
                     Ok(n) => {
                         #[allow(unused_mut)] // only mutated on Windows
                         let mut bytes = buf[..n].to_vec();
@@ -291,10 +304,10 @@ impl PtyProcess {
 
 /// ConPTY's startup cursor-position query (DSR 6).
 #[cfg(any(windows, test))]
-const CURSOR_POSITION_QUERY: &[u8] = b"[6n";
+const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
 /// Reply for a fresh pseudoconsole: cursor at row 1, column 1.
 #[cfg(windows)]
-const CURSOR_POSITION_REPLY: &[u8] = b"[1;1R";
+const CURSOR_POSITION_REPLY: &[u8] = b"\x1b[1;1R";
 /// How far into a spawn's output the startup query may appear. Past this,
 /// a query is the program's own and is left for the terminal to answer.
 #[cfg(any(windows, test))]
@@ -312,8 +325,12 @@ const HANDSHAKE_WINDOW: usize = 256;
 /// Unix PTYs never send it.
 #[cfg(any(windows, test))]
 struct CursorHandshake {
+    /// Bytes of the stream read so far.
     seen: usize,
     done: bool,
+    /// The tail of the previous chunk, held back because it is the start of
+    /// a query that may finish in the next read (`ESC` | `[6n`).
+    pending: Vec<u8>,
 }
 
 #[cfg(any(windows, test))]
@@ -322,32 +339,55 @@ impl CursorHandshake {
         Self {
             seen: 0,
             done: false,
+            pending: Vec::new(),
         }
     }
 
     /// Removes the startup query from `bytes` if this chunk carries it;
-    /// returns whether it did (the caller then sends the reply).
+    /// returns whether it did (the caller then sends the reply). While the
+    /// query is still expected, a chunk ending in a partial query keeps that
+    /// tail back and prepends it to the next one, so a query split across
+    /// two reads is still found.
     fn strip(&mut self, bytes: &mut Vec<u8>) -> bool {
         if self.done {
             return false;
         }
-        let window = HANDSHAKE_WINDOW.saturating_sub(self.seen);
+        // Stream offset of the first byte of what gets searched.
+        let start = self.seen - self.pending.len();
+        self.seen += bytes.len();
+        if !self.pending.is_empty() {
+            let mut joined = std::mem::take(&mut self.pending);
+            joined.extend_from_slice(bytes);
+            *bytes = joined;
+        }
+        let window = HANDSHAKE_WINDOW.saturating_sub(start);
         let found = bytes
             .windows(CURSOR_POSITION_QUERY.len())
             .position(|w| w == CURSOR_POSITION_QUERY)
             .filter(|&at| at < window);
-        self.seen += bytes.len();
-        match found {
-            Some(at) => {
-                bytes.drain(at..at + CURSOR_POSITION_QUERY.len());
-                self.done = true;
-                true
-            }
-            None => {
-                self.done = self.seen >= HANDSHAKE_WINDOW;
-                false
-            }
+        if let Some(at) = found {
+            bytes.drain(at..at + CURSOR_POSITION_QUERY.len());
+            self.done = true;
+            return true;
         }
+        if start + bytes.len() >= HANDSHAKE_WINDOW {
+            self.done = true;
+            return false;
+        }
+        if let Some(k) = (1..CURSOR_POSITION_QUERY.len())
+            .rev()
+            .find(|&k| bytes.ends_with(&CURSOR_POSITION_QUERY[..k]))
+        {
+            self.pending = bytes.split_off(bytes.len() - k);
+        }
+        false
+    }
+
+    /// Whatever [`Self::strip`] is still holding back, for when the stream
+    /// ends before the next read.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn take_pending(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
     }
 }
 
@@ -358,24 +398,55 @@ mod tests {
     #[test]
     fn startup_query_is_stripped_once() {
         let mut hs = CursorHandshake::new();
-        let mut first = b"[?9001h[6n".to_vec();
+        let mut first = b"\x1b[?9001h\x1b[6n".to_vec();
         assert!(hs.strip(&mut first));
-        assert_eq!(first, b"[?9001h");
+        assert_eq!(first, b"\x1b[?9001h");
 
         // A later query is the program's own: left for the terminal.
-        let mut later = b"[6n".to_vec();
+        let mut later = b"\x1b[6n".to_vec();
         assert!(!hs.strip(&mut later));
-        assert_eq!(later, b"[6n");
+        assert_eq!(later, b"\x1b[6n");
     }
 
     #[test]
     fn query_in_a_later_chunk_within_the_window_is_stripped() {
         let mut hs = CursorHandshake::new();
-        let mut init = b"[?25l".to_vec();
+        let mut init = b"\x1b[?25l".to_vec();
         assert!(!hs.strip(&mut init));
-        let mut chunk = b"[6n[?25h".to_vec();
+        let mut chunk = b"\x1b[6n\x1b[?25h".to_vec();
         assert!(hs.strip(&mut chunk));
-        assert_eq!(chunk, b"[?25h");
+        assert_eq!(chunk, b"\x1b[?25h");
+    }
+
+    #[test]
+    fn query_split_across_two_reads_is_stripped() {
+        let mut hs = CursorHandshake::new();
+        let mut first = b"\x1b[?25l\x1b".to_vec();
+        assert!(!hs.strip(&mut first));
+        assert_eq!(first, b"\x1b[?25l", "the partial query is held back");
+        let mut second = b"[6nhello".to_vec();
+        assert!(hs.strip(&mut second));
+        assert_eq!(second, b"hello");
+    }
+
+    #[test]
+    fn held_back_bytes_that_are_not_a_query_come_through() {
+        let mut hs = CursorHandshake::new();
+        let mut first = b"a\x1b[".to_vec();
+        assert!(!hs.strip(&mut first));
+        assert_eq!(first, b"a");
+        let mut second = b"31mred".to_vec();
+        assert!(!hs.strip(&mut second));
+        assert_eq!(second, b"\x1b[31mred");
+    }
+
+    #[test]
+    fn held_back_bytes_are_returned_when_the_stream_ends() {
+        let mut hs = CursorHandshake::new();
+        let mut last = b"bye\x1b[6".to_vec();
+        assert!(!hs.strip(&mut last));
+        assert_eq!(last, b"bye");
+        assert_eq!(hs.take_pending(), b"\x1b[6");
     }
 
     #[test]
