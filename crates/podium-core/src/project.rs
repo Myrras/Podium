@@ -27,7 +27,7 @@ pub fn legacy_canonical_root(path: &Path) -> Option<PathBuf> {
 /// Which optional sidebar sections a project shows. Purely presentational:
 /// hiding a section never touches its data or processes, and MCP access is
 /// unaffected. Missing fields (partial or legacy JSON) fall back to the
-/// defaults: everything on except `issues`.
+/// defaults: everything on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectSections {
@@ -45,7 +45,7 @@ impl Default for ProjectSections {
             terminals: true,
             worktrees: true,
             scratchpads: true,
-            issues: false,
+            issues: true,
         }
     }
 }
@@ -202,13 +202,12 @@ mod tests {
     #[test]
     fn sections_default_and_partial_json() {
         let d = ProjectSections::default();
-        assert!(d.todos && d.terminals && d.worktrees && d.scratchpads);
-        assert!(!d.issues);
+        assert!(d.todos && d.terminals && d.worktrees && d.scratchpads && d.issues);
         let empty: ProjectSections = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, d);
         let partial: ProjectSections =
-            serde_json::from_str(r#"{"scratchpads":false,"issues":true}"#).unwrap();
-        assert!(!partial.scratchpads && partial.issues && partial.todos);
+            serde_json::from_str(r#"{"scratchpads":false,"issues":false}"#).unwrap();
+        assert!(!partial.scratchpads && !partial.issues && partial.todos);
     }
 
     fn write_config(dir: &Path, yml: &str) {
