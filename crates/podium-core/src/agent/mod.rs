@@ -686,10 +686,10 @@ mod tests {
         );
         // The resume flag comes before the positional prompt.
         let resume_pos = plan.command.find("--resume").unwrap();
-        let prompt_pos = plan
-            .command
-            .find("'continue where we left off'")
-            .expect("prompt present");
+        // Quoted the way this OS's login shell expects (POSIX `'…'`, or
+        // `"…"` for cmd.exe).
+        let prompt = crate::platform::quote_arg("continue where we left off").unwrap();
+        let prompt_pos = plan.command.find(&prompt).expect("prompt present");
         assert!(resume_pos < prompt_pos);
     }
 
