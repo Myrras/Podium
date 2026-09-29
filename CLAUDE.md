@@ -62,7 +62,8 @@ them in sync when you add a command or MCP tool.
   persistence, an app-quit close guard while agents/terminals run
   (`window_confirm_close`), dialog + log plugins, locked-down CSP.
 - ✅ **Frontend** (`src/`): project switcher + sidebar (To-dos / Agents /
-  Processes / Terminals / Worktrees / Scratchpads), xterm.js terminals living **outside
+  Processes / Terminals / Worktrees / Scratchpads / Git, the last opening a Kanban
+  board in the work area), xterm.js terminals living **outside
   React** (registry keyed by processId; scrollback survives tab switches and
   StrictMode), snapshot+seq attach protocol with lag re-attach, new-agent
   modal, agent activity ("working…"/idle) heuristic, to-do and scratchpad
@@ -109,7 +110,7 @@ podium/
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
-│  ├─ issues.rs                # the user's open assigned issues for a project's origin repo (GitHub via `gh`, temporarily self-hosted GitLab)
+│  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
@@ -136,7 +137,7 @@ shutdown. `src-tauri` holds one `Arc<Orchestrator>` in `AppState` and never
 reaches around it.
 
 Each project's sidebar shows or hides its To-do's / Terminals / Worktrees /
-Scratchpads (and, later, Issues) sections via `ProjectInfo.sections`
+Scratchpads / Git sections via `ProjectInfo.sections`
 (`ProjectSections`, all on by default; partial JSON loads).
 Presentation only: hiding never stops processes, deletes data or affects MCP.
 Agents and Processes are never hidden. Persisted per project in
@@ -338,46 +339,60 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
 
-- **Issues** (`issues.rs`): the Issues sidebar section (per-project toggle,
-  on by default) lists the user's **open issues assigned to them** in the repo
-  behind the project's `origin` remote (`detect` → `parse_remote`,
-  ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
+- **Git board** (`issues.rs`): the sidebar's **Git** tab (per-project
+  section toggle, key `issues`, on by default; `GitTab.tsx`) is one row that
+  opens a read-only Kanban of the repo behind the project's `origin` remote in
+  the work area (`GitBoard.tsx`, `layoutStore.openBoard`, exclusive with the
+  process/to-do/scratchpad). `issues::board` returns a `Board { provider,
+  items, prCounts }`: issues and PRs/MRs as `BoardItem`s, each already in its
+  `BoardColumn` — `open` (open issue), `inProgress` (open issue with a linked
+  open PR — GitHub `closingIssuesReferences`, GitLab `merge_requests_count >
+  0` — or an in-progress label, plus draft PRs/MRs), `review` (open non-draft
+  PR/MR), `done` (closed/merged within `DONE_DAYS` = 14). `mine` (the
+  default) narrows issues to assigned-to-me and PRs/MRs to authored-by-me;
+  the counts (`prCounts`, all-time open/merged in the same scope) come from a
+  GraphQL `search … issueCount` on GitHub and `X-Total` on GitLab (`None` when
+  GitLab omits it). Each board is five parallel calls (`std::thread::scope`),
+  lists capped at 100. The repo is detected via `detect` → `parse_remote`
+  (ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
   (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
   { id, name, provider: github|gitlab, url, account? }`, `url` normalized to
   `scheme://host[:port]` with the scheme **kept** (`http://` for an instance
   without TLS; `https` when omitted). A project can pin one setup from the
-  section's picker (`issues.projects`, project root → setup id, app-side);
+  board's picker (`issues.projects`, project root → setup id, app-side);
   otherwise `pick` takes the first setup whose host matches the remote, and a
   pinned setup for another host is `IssuesHostMismatch`. github.com with no
   setup still works zero-config. GitHub goes through the user's own `gh` login
-  (`gh issue list --repo host/owner/repo --assignee @me …`, binary resolved
-  once by `platform::gh_binary()`); a setup's `account` picks a logged-in `gh`
-  account via `gh auth token --user`, handed to that one `gh` call as
-  `GH_TOKEN` — Podium stores no GitHub token. Self-hosted GitLab is fetched
-  from the setup's URL (`/api/v4/projects/:path/issues?scope=assigned_to_me`,
-  `PRIVATE-TOKEN`, blocking reqwest + rustls). **Temporary** — Connect still
-  runs on GitLab; removing it is `IssueProvider::Gitlab`, its arm in
-  `issues::list` and the `// ponytail: temporary` blocks. **Token handling:**
-  a GitLab token lives only in the OS keychain (`keyring`, service
+  (`gh issue|pr list --repo host/owner/repo --search …`, `gh api graphql`,
+  binary resolved once by `platform::gh_binary()`); a setup's `account` picks a
+  logged-in `gh` account via `gh auth token --user`, handed to those `gh` calls
+  as `GH_TOKEN` — Podium stores no GitHub token. Self-hosted GitLab is fetched
+  from the setup's URL (`/api/v4/projects/:path/{issues,merge_requests}`,
+  `PRIVATE-TOKEN`, blocking reqwest + rustls; closed/merged lists filtered by
+  `updated_after`, then by the real `closed_at`/`merged_at`). **Temporary** —
+  Connect still runs on GitLab; removing it is `IssueProvider::Gitlab`, its
+  arm in `issues::board` and the `// ponytail: temporary` blocks. **Token
+  handling:** a GitLab token lives only in the OS keychain (`keyring`, service
   `com.podium.app.gitlab`, account = setup id); `issues_settings_get` reports
   just `tokenSet`, the token is never returned over IPC, logged, or put in an
   error, and the Settings field is never prefilled. Failures are typed
   (`IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
   `IssuesHostMismatch` / `IssuesGitlabNotConfigured` / `IssuesGitlabAuth` /
-  `IssuesFetch`) and never carry `gh`/`git` stderr or a GitLab response body;
-  the setup kinds link the section to Settings → Issues
-  (`settingsRequestStore`), as does the section header's gear. Refresh is a
-  frontend concern (`issueStore`, which also caches the setups overview and
-  refetches every shown project when it changes): one in-flight fetch per
-  project, the stale list is kept on error, and `startAutoRefresh` (mounted
-  with the section) fetches immediately, every 5 min, and on window focus when
-  the last attempt is over 60 s old; the section shows each error inline,
-  never as a toast.
-  A row click opens a read-only `IssueDetailPane` in the work area
-  (`layoutStore.openIssue`, exclusive with the process/to-do/scratchpad);
-  browser, "start agent" (`NewAgentModal` prefilled via `initialPrompt`) and
-  "turn into to-do" (`todoAdd` → `todoUpdate` → `todoAddLink`, hidden while an
-  active to-do already links the URL) are row actions. No backend involved.
+  `IssuesFetch`, the last also for rate limits) and never carry `gh`/`git`
+  stderr or a GitLab response body; the setup kinds link the board to Settings
+  → Issues (`settingsRequestStore`), as does its gear. Refresh is a frontend
+  concern (`issueStore`, which also caches the setups overview and refetches
+  every shown project when it changes, and holds the per-project Mine/All
+  scope — a switch mid-fetch refetches once the old answer lands): one
+  in-flight fetch per project, the stale board is kept on error, and
+  `startAutoRefresh` (mounted with the Git tab, so its "N open · M review"
+  summary stays live) fetches immediately, every 5 min, and on window focus
+  when the last attempt is over 60 s old; errors show inline, never as a
+  toast. A card click opens a read-only drawer (`IssueDetailPane`) beside the
+  columns; browser, "start agent" (`NewAgentModal` prefilled via
+  `initialPrompt`) and "turn into to-do" (`todoAdd` → `todoUpdate` →
+  `todoAddLink`, hidden while an active to-do already links the URL) are card
+  actions. GitLab MRs are referenced as `!n`, everything else `#n`.
 
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
@@ -745,7 +760,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_set_archived` | `{ projectId, id, archived }`             | `ScratchpadInfo`  |
 | `scratchpad_remove`     | `{ projectId, id }`                         | –                 |
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
-| `issues_list`           | `{ projectId }`                             | `IssueInfo[]`     |
+| `issues_board`          | `{ projectId, mine }`                       | `Board`           |
 | `issues_settings_get`   | –                                           | `IssuesOverview` (`{ setups, projects }`, never a token) |
 | `issues_setup_save`     | `{ id?, name, provider, url, account?, token? }` (token omitted = keep, blank = delete) | `IssuesOverview` |
 | `issues_setup_remove`   | `{ id }`                                    | `IssuesOverview`  |

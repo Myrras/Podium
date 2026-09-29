@@ -7,28 +7,25 @@ beforeEach(() => {
   useLayoutStore.setState({
     openTodo: null,
     openScratchpad: null,
-    openIssue: null,
+    openBoard: null,
   });
 });
 
-describe("openIssue", () => {
+describe("openBoard", () => {
   it("is mutually exclusive with to-do, scratchpad and the focused process", () => {
     const s = useLayoutStore.getState();
     s.openTodoInWorkArea("p", "t");
-    s.openIssueInWorkArea("p", 7);
+    s.openBoardInWorkArea("p");
     expect(useLayoutStore.getState().openTodo).toBeNull();
-    expect(useLayoutStore.getState().openIssue).toEqual({
-      projectId: "p",
-      number: 7,
-    });
+    expect(useLayoutStore.getState().openBoard).toEqual({ projectId: "p" });
 
     useLayoutStore.getState().openScratchpadInWorkArea("p", "s");
-    expect(useLayoutStore.getState().openIssue).toBeNull();
+    expect(useLayoutStore.getState().openBoard).toBeNull();
 
-    useLayoutStore.getState().openIssueInWorkArea("p", 8);
+    useLayoutStore.getState().openBoardInWorkArea("p");
     expect(useLayoutStore.getState().openScratchpad).toBeNull();
 
     useProcessStore.getState().setActiveProcess("proc");
-    expect(useLayoutStore.getState().openIssue).toBeNull();
+    expect(useLayoutStore.getState().openBoard).toBeNull();
   });
 });

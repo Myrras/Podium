@@ -47,7 +47,7 @@ import { useWorktreeStore } from "./state/worktreeStore";
 import { AssistantPane } from "./components/AssistantPane";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
-import { IssueDetailPane } from "./components/IssueDetailPane";
+import { GitBoard } from "./components/GitBoard";
 import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
 import { SettingsModal } from "./components/SettingsModal";
 import { useSettingsRequestStore } from "./state/settingsRequestStore";
@@ -72,7 +72,7 @@ export default function App() {
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const openTodo = useLayoutStore((s) => s.openTodo);
   const openScratchpad = useLayoutStore((s) => s.openScratchpad);
-  const openIssue = useLayoutStore((s) => s.openIssue);
+  const openBoard = useLayoutStore((s) => s.openBoard);
   const assistantOpen = useLayoutStore((s) => s.assistantOpen);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const assistantWidth = useLayoutStore((s) => s.assistantWidth);
@@ -296,11 +296,10 @@ export default function App() {
           aria-label="Resize sidebar"
         />
         <main className={styles.work}>
-          {openIssue ? (
-            <IssueDetailPane
-              key={`${openIssue.projectId}#${openIssue.number}`}
-              projectId={openIssue.projectId}
-              number={openIssue.number}
+          {openBoard ? (
+            <GitBoard
+              key={openBoard.projectId}
+              projectId={openBoard.projectId}
             />
           ) : openScratchpad ? (
             <ScratchpadDetailPane

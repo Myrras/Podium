@@ -1707,17 +1707,18 @@ impl Orchestrator {
             .collect()
     }
 
-    /// Open issues assigned to the user in the repo behind the project's
-    /// `origin` remote, via the project's chosen setup (or the one matching
-    /// the remote's host). Shells out — call from a blocking-friendly context.
-    pub fn list_issues(&self, project_id: ProjectId) -> CoreResult<Vec<crate::IssueInfo>> {
+    /// The Git board (issues + PRs/MRs, all-time PR/MR counts) of the repo
+    /// behind the project's `origin` remote, via the project's chosen setup
+    /// (or the one matching the remote's host); `mine` narrows it to the
+    /// user's own. Shells out — call from a blocking-friendly context.
+    pub fn issue_board(&self, project_id: ProjectId, mine: bool) -> CoreResult<crate::Board> {
         let root = self.project_root(project_id)?;
         let issues = self.agent_settings().issues;
         let selected = issues
             .projects
             .get(&root)
             .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
-        crate::issues::list(&root, &issues.setups, selected)
+        crate::issues::board(&root, &issues.setups, selected, mine)
     }
 
     /// Settings → Issues: every setup (with whether a GitLab token is stored —

@@ -80,10 +80,9 @@ export interface OpenScratchpad {
   scratchpadId: ScratchpadId;
 }
 
-/** The issue currently filling the work area (opened from the Issues section). */
-export interface OpenIssue {
+/** The project whose Git board fills the work area (opened from its Git tab). */
+export interface OpenBoard {
   projectId: ProjectId;
-  number: number;
 }
 
 export interface LayoutState extends LayoutPersisted {
@@ -101,10 +100,10 @@ export interface LayoutState extends LayoutPersisted {
    */
   openScratchpad: OpenScratchpad | null;
   /**
-   * Issue shown (read-only) in the work area, or `null`. In-memory. Mutually
+   * Git board shown in the work area, or `null`. In-memory. Mutually
    * exclusive with the focused process, to-do and scratchpad.
    */
-  openIssue: OpenIssue | null;
+  openBoard: OpenBoard | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
   /** Show or hide the assistant chat panel (persisted). */
@@ -122,10 +121,10 @@ export interface LayoutState extends LayoutPersisted {
   ) => void;
   /** Clear the open scratchpad (e.g. when a process takes the work area). */
   clearOpenScratchpad: () => void;
-  /** Fill the work area with an issue (clears the focused process/to-do/scratchpad). */
-  openIssueInWorkArea: (projectId: ProjectId, number: number) => void;
-  /** Clear the open issue (e.g. when a process takes the work area). */
-  clearOpenIssue: () => void;
+  /** Fill the work area with a project's Git board (clears the focused process/to-do/scratchpad). */
+  openBoardInWorkArea: (projectId: ProjectId) => void;
+  /** Clear the open board (e.g. when a process takes the work area). */
+  clearOpenBoard: () => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => {
@@ -134,7 +133,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     ...initial,
     openTodo: null,
     openScratchpad: null,
-    openIssue: null,
+    openBoard: null,
     setSidebarWidth: (w) => {
       const sidebarWidth = Math.min(600, Math.max(160, w));
       const s = get();
@@ -166,7 +165,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       set({
         openTodo: { projectId, todoId },
         openScratchpad: null,
-        openIssue: null,
+        openBoard: null,
       });
     },
     clearOpenTodo: () => set({ openTodo: null }),
@@ -175,18 +174,18 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       set({
         openScratchpad: { projectId, scratchpadId },
         openTodo: null,
-        openIssue: null,
+        openBoard: null,
       });
     },
     clearOpenScratchpad: () => set({ openScratchpad: null }),
-    openIssueInWorkArea: (projectId, number) => {
+    openBoardInWorkArea: (projectId) => {
       useProcessStore.getState().setActiveProcess(null);
       set({
-        openIssue: { projectId, number },
+        openBoard: { projectId },
         openTodo: null,
         openScratchpad: null,
       });
     },
-    clearOpenIssue: () => set({ openIssue: null }),
+    clearOpenBoard: () => set({ openBoard: null }),
   };
 });

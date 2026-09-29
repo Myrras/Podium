@@ -15,18 +15,22 @@ vi.mock("../ipc/commands", () => ({
 vi.mock("../lib/links", () => ({ openExternalLink: vi.fn() }));
 
 import { todoAdd, todoAddLink, todoUpdate } from "../ipc/commands";
-import type { IssueInfo, TodoInfo } from "../ipc/types";
+import type { BoardItem, TodoInfo } from "../ipc/types";
 import { useTodoStore } from "../state/todoStore";
 import { IssueActions } from "./IssueActions";
 
 const P = "proj-1";
-const issue: IssueInfo = {
+const issue: BoardItem = {
+  kind: "issue",
   number: 7,
   title: "Fix the widget",
   url: "https://github.com/acme/widgets/issues/7",
   body: "Body text",
   labels: [],
   updatedAt: "2026-09-01T10:00:00Z",
+  column: "open",
+  draft: false,
+  author: "",
 };
 
 function todo(over: Partial<TodoInfo> = {}): TodoInfo {
@@ -59,7 +63,9 @@ describe("IssueActions", () => {
     vi.mocked(todoAdd).mockResolvedValue(todo());
     vi.mocked(todoUpdate).mockResolvedValue(todo({ description: "Body text" }));
     vi.mocked(todoAddLink).mockResolvedValue(todo());
-    render(<IssueActions projectId={P} issue={issue} className="a" />);
+    render(
+      <IssueActions projectId={P} issue={issue} itemRef="#7" className="a" />,
+    );
     fireEvent.click(screen.getByLabelText("Create a to-do for #7"));
     await waitFor(() => expect(todoAddLink).toHaveBeenCalled());
     expect(todoAdd).toHaveBeenCalledWith(P, "#7 Fix the widget");
@@ -77,7 +83,9 @@ describe("IssueActions", () => {
         ],
       },
     });
-    render(<IssueActions projectId={P} issue={issue} className="a" />);
+    render(
+      <IssueActions projectId={P} issue={issue} itemRef="#7" className="a" />,
+    );
     expect(screen.queryByLabelText("Create a to-do for #7")).toBeNull();
     expect(screen.getByLabelText("To-do exists for #7")).toBeTruthy();
   });
@@ -93,12 +101,16 @@ describe("IssueActions", () => {
         ],
       },
     });
-    render(<IssueActions projectId={P} issue={issue} className="a" />);
+    render(
+      <IssueActions projectId={P} issue={issue} itemRef="#7" className="a" />,
+    );
     expect(screen.getByLabelText("Create a to-do for #7")).toBeTruthy();
   });
 
   it("opens the agent modal prefilled with the issue", async () => {
-    render(<IssueActions projectId={P} issue={issue} className="a" />);
+    render(
+      <IssueActions projectId={P} issue={issue} itemRef="#7" className="a" />,
+    );
     fireEvent.click(screen.getByLabelText("Start an agent on #7"));
     expect(
       ((await screen.findByLabelText("Name")) as HTMLInputElement).value,
@@ -109,5 +121,28 @@ describe("IssueActions", () => {
     expect(prompt.value).toBe(
       `Work on issue ${issue.url}\n\n# Fix the widget\n\nBody text`,
     );
+  });
+
+  it("prefills a merge request with its own reference and wording", async () => {
+    const mr: BoardItem = {
+      ...issue,
+      kind: "pr",
+      number: 41,
+      url: "https://git.example.test/grp/proj/-/merge_requests/41",
+    };
+    render(
+      <IssueActions projectId={P} issue={mr} itemRef="!41" className="a" />,
+    );
+    fireEvent.click(screen.getByLabelText("Start an agent on !41"));
+    expect(
+      ((await screen.findByLabelText("Name")) as HTMLInputElement).value,
+    ).toBe("!41 Fix the widget");
+    expect(
+      (
+        screen.getByLabelText(
+          "Initial prompt (optional)",
+        ) as HTMLTextAreaElement
+      ).value,
+    ).toMatch(/^Work on pull request https:\/\/git\.example\.test/);
   });
 });

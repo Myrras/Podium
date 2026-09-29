@@ -1,75 +1,74 @@
 /**
- * Read-only work-area pane for an opened issue. Reads the live issue from
- * `issueStore`, so it shows a "no longer open" note if a refresh drops it.
+ * Read-only detail drawer for a Git board card, beside the board. The board
+ * passes the live item (`undefined` once a refresh dropped it), so it shows a
+ * "no longer on the board" note instead of stale content.
  */
 
-import type { IssueInfo, ProjectId } from "../ipc/types";
-import { useIssueStore } from "../state/issueStore";
-import { useLayoutStore } from "../state/layoutStore";
-import { CloseIcon, IssueIcon } from "./icons";
+import type { BoardItem, ProjectId } from "../ipc/types";
+import { CloseIcon, IssueIcon, PrIcon } from "./icons";
 import { IssueActions } from "./IssueActions";
 import styles from "./IssueDetailPane.module.css";
 import { Markdown } from "./Markdown";
 
-const NO_ISSUES: IssueInfo[] = [];
-
 export function IssueDetailPane({
   projectId,
-  number,
+  item,
+  itemRef,
+  onClose,
 }: {
   projectId: ProjectId;
-  number: number;
+  item: BoardItem | undefined;
+  itemRef: string;
+  onClose: () => void;
 }) {
-  const issue = useIssueStore((s) =>
-    (s.byProject[projectId]?.issues ?? NO_ISSUES).find(
-      (i) => i.number === number,
-    ),
-  );
-  const clearOpenIssue = useLayoutStore((s) => s.clearOpenIssue);
-
+  const KindIcon = item?.kind === "pr" ? PrIcon : IssueIcon;
   return (
-    <div className={styles.pane}>
+    <aside className={styles.pane} aria-label={`${itemRef} details`}>
       <div className={styles.header}>
-        <IssueIcon className={styles.kindIcon} />
+        <KindIcon className={styles.kindIcon} />
         <span className={styles.title}>
-          #{number} {issue?.title}
+          {itemRef} {item?.title}
         </span>
-        {issue && (
+        {item && (
           <IssueActions
             projectId={projectId}
-            issue={issue}
+            issue={item}
+            itemRef={itemRef}
             className={styles.action}
           />
         )}
         <button
           type="button"
-          aria-label="Close issue"
+          className={styles.action}
+          aria-label="Close details"
           title="Close"
-          onClick={clearOpenIssue}
+          onClick={onClose}
         >
           <CloseIcon size={14} />
         </button>
       </div>
-      {issue ? (
+      {item ? (
         <div className={styles.content}>
-          {issue.labels.length > 0 && (
+          {(item.labels.length > 0 || item.draft || item.author) && (
             <ul className={styles.labels}>
-              {issue.labels.map((l) => (
+              {item.draft && <li>draft</li>}
+              {item.labels.map((l) => (
                 <li key={l}>{l}</li>
               ))}
+              {item.author && (
+                <li className={styles.author}>by {item.author}</li>
+              )}
             </ul>
           )}
-          {issue.body.trim() ? (
-            <Markdown>{issue.body}</Markdown>
+          {item.body.trim() ? (
+            <Markdown>{item.body}</Markdown>
           ) : (
             <p className={styles.muted}>No description.</p>
           )}
         </div>
       ) : (
-        <p className={styles.muted}>
-          This issue is no longer open or assigned to you.
-        </p>
+        <p className={styles.muted}>This is no longer on the board.</p>
       )}
-    </div>
+    </aside>
   );
 }

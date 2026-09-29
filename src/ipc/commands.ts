@@ -15,7 +15,7 @@ import type {
   Attachment,
   AutonomyMode,
   CommentId,
-  IssueInfo,
+  Board,
   IssueProvider,
   IssuesOverview,
   IpcError,
@@ -769,12 +769,16 @@ export async function processAttach(
 // ---------------------------------------------------------------------------
 
 /**
- * The user's open assigned issues in the project's `origin` repo. Rejects
- * with kind `issuesNoRemote` / `issuesGhUnavailable` / `issuesUnsupportedHost`
- * / `issuesGitlabNotConfigured` / `issuesGitlabAuth` / `issuesFetch`.
+ * The Git board of the project's `origin` repo; `mine` = only the user's own
+ * issues/PRs. Rejects with kind `issuesNoRemote` / `issuesGhUnavailable` /
+ * `issuesUnsupportedHost` / `issuesGitlabNotConfigured` / `issuesGitlabAuth`
+ * / `issuesFetch`.
  */
-export function issuesList(projectId: ProjectId): Promise<IssueInfo[]> {
-  return invoke("issues_list", { projectId });
+export function issuesBoard(
+  projectId: ProjectId,
+  mine: boolean,
+): Promise<Board> {
+  return invoke("issues_board", { projectId, mine });
 }
 
 /** Every issue setup (never a token) plus each project's pick. */

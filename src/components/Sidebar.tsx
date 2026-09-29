@@ -35,7 +35,7 @@ import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
-import { IssueSubsection } from "./IssueSubsection";
+import { GitTab } from "./GitTab";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
@@ -525,9 +525,7 @@ function ProjectGroup({
               onPickAgent={onPickScratchpadAgent}
             />
           )}
-          {project.sections.issues && (
-            <IssueSubsection projectId={project.id} root={project.root} />
-          )}
+          {project.sections.issues && <GitTab projectId={project.id} />}
         </div>
       </div>
     </div>
@@ -540,7 +538,7 @@ const SECTION_TOGGLES: { key: keyof ProjectSections; label: string }[] = [
   { key: "terminals", label: "Terminals" },
   { key: "worktrees", label: "Worktrees" },
   { key: "scratchpads", label: "Scratchpads" },
-  { key: "issues", label: "Issues" },
+  { key: "issues", label: "Git" },
 ];
 
 /** What the New agent modal is opened for: a plain new agent, or a to-do. */

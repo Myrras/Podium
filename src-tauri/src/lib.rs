@@ -280,7 +280,7 @@ pub fn run() {
             commands::scratchpad::scratchpad_remove,
             commands::scratchpad::scratchpad_unassign,
             commands::window::window_confirm_close,
-            commands::issues::issues_list,
+            commands::issues::issues_board,
             commands::issues::issues_settings_get,
             commands::issues::issues_setup_save,
             commands::issues::issues_setup_remove,

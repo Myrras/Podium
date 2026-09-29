@@ -423,11 +423,33 @@
   }
 }
 
-/* Issues: which Settings → Issues setup the project uses. */
-.issueSetupPicker {
-  width: auto;
-  max-width: calc(100% - 2 * var(--sp-3));
-  margin: 0 var(--sp-3) var(--sp-1);
-  padding: var(--sp-1) var(--sp-2);
-  font-size: var(--fs-sm);
+/* Git tab: a whole-row button opening the project's Git board. */
+.gitTab {
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gitTab:hover {
+  color: var(--text-muted);
+  background: var(--surface-hover);
+}
+
+.gitTab[data-open="true"] {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.gitSummary {
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-faint);
+}
+
+.gitError {
+  color: var(--warning);
 }

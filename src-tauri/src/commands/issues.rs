@@ -1,24 +1,25 @@
-//! Issues commands — thin forwarders over the orchestrator's issue listing
+//! Issues commands — thin forwarders over the orchestrator's Git board
 //! and Settings → Issues setups. Keychain/git/gh work runs on a blocking thread.
 
 use std::sync::Arc;
 
 use tauri::State;
 
-use podium_core::{CoreResult, IssueInfo, IssueProvider, IssuesOverview, Orchestrator, ProjectId};
+use podium_core::{Board, CoreResult, IssueProvider, IssuesOverview, Orchestrator, ProjectId};
 
 use crate::error::IpcError;
 use crate::state::AppState;
 
-/// List the user's open assigned issues for the project's repo. Shells out
-/// to git/gh, so it runs on a blocking thread.
+/// The project's Git board (`mine` = only the user's own issues/PRs). Shells
+/// out to git/gh, so it runs on a blocking thread.
 #[tauri::command]
-pub async fn issues_list(
+pub async fn issues_board(
     state: State<'_, AppState>,
     project_id: ProjectId,
-) -> Result<Vec<IssueInfo>, IpcError> {
+    mine: bool,
+) -> Result<Board, IpcError> {
     let orchestrator = Arc::clone(&state.orchestrator);
-    tauri::async_runtime::spawn_blocking(move || orchestrator.list_issues(project_id))
+    tauri::async_runtime::spawn_blocking(move || orchestrator.issue_board(project_id, mine))
         .await
         .map_err(|e| IpcError::new("io", format!("issues task failed: {e}")))?
         .map_err(IpcError::from)

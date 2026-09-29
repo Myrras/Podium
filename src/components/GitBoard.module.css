@@ -1,0 +1,258 @@
+.board {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header mirrors the other work-area panes: kind icon, title, actions. */
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.kindIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.scope {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.scope button {
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-xs);
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.scope button[aria-pressed="true"] {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.counts {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.counts strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.picker {
+  width: auto;
+  max-width: 180px;
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.refreshing {
+  animation: refreshPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes refreshPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.columns {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  overflow-x: auto;
+}
+
+.column {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.columnTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.columnCount {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.cards {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+
+.placeholder {
+  padding: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+.card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+
+.card:hover,
+.card[data-selected="true"] {
+  border-color: var(--border-strong);
+}
+
+.card[data-selected="true"] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.cardMain {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+  padding: var(--sp-2);
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cardRef {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.draft {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-1);
+}
+
+.cardTitle {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.cardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.label {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-1);
+}
+
+.author {
+  color: var(--text-faint);
+}
+
+/* Actions float top-right, revealed on hover/focus like sidebar rows. */
+.cardActions {
+  position: absolute;
+  top: var(--sp-1);
+  right: var(--sp-1);
+  display: flex;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.card:hover .cardActions,
+.card:focus-within .cardActions {
+  opacity: 1;
+}

@@ -26,14 +26,28 @@ export interface ProjectSections {
   issues: boolean;
 }
 
-/** One open issue assigned to the user (`podium_core::IssueInfo`). */
-export interface IssueInfo {
+/** Kanban column of a Git board item (`podium_core::issues::BoardColumn`). */
+export type BoardColumn = "open" | "inProgress" | "review" | "done";
+
+/** One card on the Git board: an issue or a PR/MR (`podium_core::issues::BoardItem`). */
+export interface BoardItem {
+  kind: "issue" | "pr";
   number: number;
   title: string;
   url: string;
   body: string;
   labels: string[];
   updatedAt: string;
+  column: BoardColumn;
+  draft: boolean;
+  author: string;
+}
+
+/** A project's Git board (`podium_core::Board`); counts are all-time, `null` = unknown. */
+export interface Board {
+  provider: IssueProvider;
+  items: BoardItem[];
+  prCounts: { open: number | null; merged: number | null };
 }
 
 /** Platform an issue setup talks to (`podium_core::IssueProvider`). */

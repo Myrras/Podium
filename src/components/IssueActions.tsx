@@ -1,8 +1,8 @@
-/** Row actions for one issue: open in browser, start an agent, turn into a to-do. */
+/** Card actions for one board item: open in browser, start an agent, turn into a to-do. */
 
 import { useState } from "react";
 
-import type { IssueInfo, ProjectId } from "../ipc/types";
+import type { BoardItem, ProjectId } from "../ipc/types";
 import {
   issueAgentName,
   issueAgentPrompt,
@@ -16,16 +16,18 @@ import { NewAgentModal } from "./NewAgentModal";
 export function IssueActions({
   projectId,
   issue,
+  itemRef: label,
   className,
 }: {
   projectId: ProjectId;
-  issue: IssueInfo;
-  /** Button style: the sidebar's hover-revealed action, or the pane's own. */
+  issue: BoardItem;
+  /** `#12` / `!41`, see `itemRef`. */
+  itemRef: string;
+  /** Button style: the card's hover-revealed action, or the drawer's own. */
   className: string;
 }) {
   const [agentOpen, setAgentOpen] = useState(false);
   const hasTodo = useHasIssueTodo(projectId, issue.url);
-  const label = `#${issue.number}`;
 
   return (
     <>
@@ -42,7 +44,7 @@ export function IssueActions({
         type="button"
         className={className}
         aria-label={`Start an agent on ${label}`}
-        title="Start an agent on this issue"
+        title="Start an agent on this"
         onClick={() => setAgentOpen(true)}
       >
         <AgentIcon size={13} />
@@ -62,7 +64,7 @@ export function IssueActions({
           className={className}
           aria-label={`Create a to-do for ${label}`}
           title="Turn into a to-do"
-          onClick={() => void issueToTodo(projectId, issue)}
+          onClick={() => void issueToTodo(projectId, issue, label)}
         >
           <TodoIcon size={13} />
         </button>
@@ -71,7 +73,7 @@ export function IssueActions({
         <NewAgentModal
           open
           projectId={projectId}
-          initialName={issueAgentName(issue)}
+          initialName={issueAgentName(issue, label)}
           initialPrompt={issueAgentPrompt(issue)}
           onClose={() => setAgentOpen(false)}
         />
