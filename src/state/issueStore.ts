@@ -17,6 +17,7 @@ import {
   issuesBoard,
   issuesBoardCached,
   issuesBoardMove,
+  issuesBoardUnassign,
   issuesSettingsGet,
   toIpcError,
 } from "../ipc/commands";
@@ -84,6 +85,8 @@ interface IssueState {
     item: BoardItem,
     columnId: string,
   ) => Promise<void>;
+  /** Unassign the signed-in user; a refusal becomes a toast. */
+  unassign: (projectId: ProjectId, item: BoardItem) => Promise<void>;
   /** Switch between the user's own items and the whole repo, then refetch. */
   setMine: (projectId: ProjectId, mine: boolean) => void;
   /** Fetch + poll + focus-refresh for as long as the returned stop fn is not called. */
@@ -182,6 +185,15 @@ export const useIssueStore = create<IssueState>((set, get) => {
       } catch (e: unknown) {
         patch(projectId, { board: prev });
         void get().hydrate(projectId);
+        toastError(toIpcError(e).message);
+      }
+    },
+
+    unassign: async (projectId, item) => {
+      try {
+        // The board follows via `board:changed` (the backend updated its cache).
+        await issuesBoardUnassign(projectId, item.kind, item.number);
+      } catch (e: unknown) {
         toastError(toIpcError(e).message);
       }
     },

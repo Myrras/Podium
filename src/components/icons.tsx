@@ -71,6 +71,7 @@ import {
   GitPullRequest,
   SquareKanban,
   GripVertical,
+  UserMinus,
   Paperclip,
   Image as ImageGlyph,
   File as FileGlyph,
@@ -135,6 +136,7 @@ export const BoardIcon = icon(SquareKanban);
 export const BranchIcon = icon(GitBranch, { size: 13 });
 export const ExternalLinkIcon = icon(ExternalLink, { size: 13 });
 export const GripIcon = icon(GripVertical, { size: 14 });
+export const UnassignIcon = icon(UserMinus, { size: 13 });
 
 // Scratchpad formatting toolbar (Tiptap commands) + fullscreen toggle.
 export const BoldIcon = icon(Bold, { size: 15 });

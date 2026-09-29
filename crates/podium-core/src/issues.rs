@@ -136,6 +136,9 @@ pub struct BoardItem {
     /// PRs/MRs folded into this issue (always empty on PRs).
     #[serde(default)]
     pub linked: Vec<LinkedPr>,
+    /// Logins/usernames the item is assigned to.
+    #[serde(default)]
+    pub assignees: Vec<String>,
 }
 
 /// All-time PR/MR totals in the board's scope; `None` when the platform
@@ -159,6 +162,10 @@ pub struct Board {
     /// Podium-owned text: how to unlock the project's columns.
     pub hint: Option<String>,
     pub pr_counts: PrCounts,
+    /// The signed-in user's login/username; `None` when the platform would
+    /// not say (or on a board cached before this existed).
+    #[serde(default)]
+    pub me: Option<String>,
 }
 
 /// Label names that mark an open issue as being worked on (`In progress`,
@@ -257,6 +264,13 @@ fn join<T>(h: ScopedJoinHandle<'_, CoreResult<T>>) -> CoreResult<T> {
 /// Split a remote URL into `(host, path)` with `.git` and slashes stripped.
 /// Handles `git@host:a/b.git`, `ssh://git@host[:port]/a/b.git` and
 /// `https://host/a/b(.git)`; anything else is `None`.
+/// The signed-in user's name from a "who am I" call; its failure never fails
+/// the board (unassign just stays hidden).
+fn me(h: ScopedJoinHandle<'_, CoreResult<String>>) -> Option<String> {
+    let name = join(h).ok()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 pub fn parse_remote(url: &str) -> Option<(String, String)> {
     let url = url.trim();
     let (host, path) = if let Some(rest) = url
@@ -322,6 +336,8 @@ struct GhItem {
     is_draft: bool,
     #[serde(default)]
     closing_issues_references: Vec<GhRef>,
+    #[serde(default)]
+    assignees: Vec<GhUser>,
 }
 
 #[derive(Deserialize)]
@@ -354,6 +370,7 @@ impl GhItem {
             author: self.author.map(|a| a.login).unwrap_or_default(),
             movable: movable(kind, column),
             linked: Vec::new(),
+            assignees: self.assignees.into_iter().map(|a| a.login).collect(),
         }
     }
 }
@@ -561,9 +578,9 @@ fn run_gh_scoped(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-const GH_ISSUE_FIELDS: &str = "number,title,url,body,labels,updatedAt,author";
+const GH_ISSUE_FIELDS: &str = "number,title,url,body,labels,updatedAt,author,assignees";
 const GH_PR_FIELDS: &str =
-    "number,title,url,body,labels,updatedAt,author,isDraft,closingIssuesReferences";
+    "number,title,url,body,labels,updatedAt,author,assignees,isDraft,closingIssuesReferences";
 const GH_COUNTS_QUERY: &str = "query($o:String!,$m:String!){\
 o:search(query:$o,type:ISSUE,first:0){issueCount} \
 m:search(query:$m,type:ISSUE,first:0){issueCount}}";
@@ -616,7 +633,7 @@ pub fn fetch_github(
     };
     let count_scope = format!("repo:{owner_repo} is:pr{author}");
     let (owner, name) = owner_repo.split_once('/').unwrap_or((owner_repo, ""));
-    let (open_issues, closed_issues, open_prs, merged_prs, counts, project) =
+    let (open_issues, closed_issues, open_prs, merged_prs, counts, project, me) =
         std::thread::scope(|s| {
             let a = s.spawn(|| {
                 list(
@@ -662,6 +679,14 @@ pub fn fetch_github(
                     ],
                 )
             });
+            let g = s.spawn(|| {
+                run_gh(
+                    gh,
+                    host,
+                    token,
+                    &["api", "user", "--hostname", host, "--jq", ".login"],
+                )
+            });
             let f = s.spawn(|| {
                 run_gh_scoped(
                     gh,
@@ -689,6 +714,7 @@ pub fn fetch_github(
                 join(e),
                 f.join()
                     .unwrap_or(Err((CoreError::IssuesGhUnavailable, false))),
+                me(g),
             )
         });
     let (project, hint) = match project {
@@ -717,6 +743,7 @@ pub fn fetch_github(
         source,
         hint,
         pr_counts: parse_gh_counts(&counts?)?,
+        me,
     })
 }
 
@@ -846,10 +873,14 @@ struct GlItem {
     /// MRs only.
     #[serde(default)]
     source_branch: Option<String>,
+    #[serde(default)]
+    assignees: Vec<GlUser>,
 }
 
 #[derive(Deserialize)]
 struct GlUser {
+    #[serde(default)]
+    id: u64,
     username: String,
 }
 
@@ -868,6 +899,7 @@ impl GlItem {
             author: self.author.map(|a| a.username).unwrap_or_default(),
             movable: movable(kind, column),
             linked: Vec::new(),
+            assignees: self.assignees.into_iter().map(|a| a.username).collect(),
         }
     }
 }
@@ -1044,13 +1076,41 @@ fn assemble_gitlab(
     Ok(sorted(fold_linked(items, &closing)))
 }
 
+/// Send a GitLab request, retrying connection-level failures (a VPN or Wi-Fi
+/// coming back after sleep, a dropped keep-alive) twice with a short backoff.
+/// A failure that made it to an HTTP status is never retried here. The error
+/// is a Podium-owned reason (timed out / connection failed), never reqwest's
+/// text, which carries the URL.
+fn gitlab_send(
+    request: impl Fn() -> reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response, &'static str> {
+    let mut last = "connection failed";
+    for delay_ms in [0, 500, 1500] {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        match request().send() {
+            Ok(response) => return Ok(response),
+            Err(e) => {
+                tracing::debug!("GitLab request failed: {e}");
+                last = if e.is_timeout() {
+                    "timed out"
+                } else {
+                    "connection failed"
+                };
+            }
+        }
+    }
+    Err(last)
+}
+
 /// One GitLab API GET: the body plus the `X-Total` header.
 fn gitlab_get(base: &str, token: &str, path: &str) -> CoreResult<(String, Option<u64>)> {
-    let response = reqwest::blocking::Client::new()
-        .get(format!("{base}{path}"))
-        .header("PRIVATE-TOKEN", token)
-        .send()
-        .map_err(|_| CoreError::IssuesFetch("could not reach GitLab".to_string()))?;
+    let client = reqwest::blocking::Client::new();
+    let response = gitlab_send(|| {
+        client
+            .get(format!("{base}{path}"))
+            .header("PRIVATE-TOKEN", token)
+    })
+    .map_err(|e| CoreError::IssuesFetch(format!("could not reach GitLab ({e})")))?;
     match response.status().as_u16() {
         200 => {
             let total = response
@@ -1096,7 +1156,7 @@ pub fn fetch_gitlab(
     };
     let after = since.format("%Y-%m-%dT%H:%M:%SZ");
     let get = |path: String| gitlab_get(base, token, &path);
-    let (open_issues, closed_issues, open_mrs, merged_mrs, merged_count, boards) =
+    let (open_issues, closed_issues, open_mrs, merged_mrs, merged_count, boards, me) =
         std::thread::scope(|s| {
             let a = s.spawn(|| {
                 get(format!(
@@ -1124,7 +1184,14 @@ pub fn fetch_gitlab(
                 ))
             });
             let f = s.spawn(|| get(format!("{p}/boards")));
-            (join(a), join(b), join(c), join(d), join(e), join(f))
+            let g = s.spawn(|| {
+                get("/api/v4/user".to_string()).and_then(|(json, _)| {
+                    serde_json::from_str::<GlUser>(&json)
+                        .map(|u| u.username)
+                        .map_err(|_| CoreError::IssuesFetch(String::new()))
+                })
+            });
+            (join(a), join(b), join(c), join(d), join(e), join(f), me(g))
         });
     let (open_mrs, open_total) = open_mrs?;
     let (source, lists) = match boards {
@@ -1155,6 +1222,7 @@ pub fn fetch_gitlab(
             open: open_total,
             merged: merged_count?.1,
         },
+        me,
     })
 }
 
@@ -1328,19 +1396,40 @@ fn gitlab_labels_after(board: &Board, item: &BoardItem, to: &str) -> Vec<String>
 }
 
 /// One GitLab API PUT with query params (an issue/MR edit).
-fn gitlab_put(base: &str, token: &str, path: &str, params: &[(&str, String)]) -> CoreResult<()> {
-    let response = reqwest::blocking::Client::new()
-        .put(format!("{base}{path}"))
-        .header("PRIVATE-TOKEN", token)
-        .query(params)
-        .send()
-        .map_err(|_| CoreError::IssuesMove("Could not reach GitLab.".to_string()))?;
+fn gitlab_put(
+    base: &str,
+    token: &str,
+    path: &str,
+    params: &[(&str, String)],
+    failed: &str,
+) -> CoreResult<()> {
+    let client = reqwest::blocking::Client::new();
+    let response = gitlab_send(|| {
+        client
+            .put(format!("{base}{path}"))
+            .header("PRIVATE-TOKEN", token)
+            .query(params)
+    })
+    .map_err(|e| CoreError::IssuesMove(format!("Could not reach GitLab ({e}).")))?;
     match response.status().as_u16() {
         200 => Ok(()),
         401 | 403 => Err(CoreError::IssuesGitlabAuth),
         429 => refused("GitLab rate limit reached, try again later."),
-        _ => refused("GitLab could not move the card."),
+        _ => refused(failed),
     }
+}
+
+/// The API path of a GitLab issue/MR.
+fn gitlab_item_path(project_path: &str, item: &BoardItem) -> String {
+    let kind = match item.kind {
+        ItemKind::Issue => "issues",
+        ItemKind::Pr => "merge_requests",
+    };
+    format!(
+        "/api/v4/projects/{}/{kind}/{}",
+        project_path.replace('/', "%2F"),
+        item.number
+    )
 }
 
 /// Move a validated card on GitLab; returns the item's labels afterwards.
@@ -1352,20 +1441,13 @@ pub fn move_gitlab(
     item: &BoardItem,
     to: &str,
 ) -> CoreResult<Vec<String>> {
-    let kind = match item.kind {
-        ItemKind::Issue => "issues",
-        ItemKind::Pr => "merge_requests",
-    };
-    let path = format!(
-        "/api/v4/projects/{}/{kind}/{}",
-        project_path.replace('/', "%2F"),
-        item.number
-    );
+    let path = gitlab_item_path(project_path, item);
     gitlab_put(
         base,
         token,
         &path,
         &gitlab_move_params(board, &item.column, to),
+        "GitLab could not move the card.",
     )?;
     Ok(gitlab_labels_after(board, item, to))
 }
@@ -1545,6 +1627,141 @@ pub fn move_item(
             let account = setup.and_then(|s| s.account.as_deref());
             move_github(gh, &host, &path, account, board, item, to)?;
             Ok(None)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unassigning yourself
+// ---------------------------------------------------------------------------
+
+/// Check that the signed-in user can be unassigned from `kind` #`number` on
+/// the board the user sees; returns the item and the user's name.
+pub fn validate_unassign(
+    board: &Board,
+    kind: ItemKind,
+    number: u64,
+) -> CoreResult<(&BoardItem, &str)> {
+    let Some(item) = board
+        .items
+        .iter()
+        .find(|i| i.kind == kind && i.number == number)
+    else {
+        return refused("That card is not on the board. Refresh the board first.");
+    };
+    let Some(me) = board.me.as_deref() else {
+        return refused("Refresh the board first.");
+    };
+    if !item.assignees.iter().any(|a| a == me) {
+        return refused("You are not assigned to that card.");
+    }
+    Ok((item, me))
+}
+
+/// The `assignee_ids` params that keep everyone but `me` (`0` = nobody, which
+/// is how GitLab spells "unassign all").
+fn gitlab_unassign_params(json: &str, me: &str) -> CoreResult<Vec<(&'static str, String)>> {
+    #[derive(Deserialize)]
+    struct Assigned {
+        #[serde(default)]
+        assignees: Vec<GlUser>,
+    }
+    let assigned: Assigned = serde_json::from_str(json)
+        .map_err(|_| CoreError::IssuesMove("Unexpected response from GitLab.".to_string()))?;
+    let rest: Vec<_> = assigned
+        .assignees
+        .iter()
+        .filter(|a| a.username != me)
+        .map(|a| ("assignee_ids[]", a.id.to_string()))
+        .collect();
+    Ok(if rest.is_empty() {
+        vec![("assignee_ids", "0".to_string())]
+    } else {
+        rest
+    })
+}
+
+/// Remove `me` from a GitLab issue/MR's assignees, reading them fresh first so
+/// a co-assignee added since the last fetch is kept.
+pub fn unassign_gitlab(
+    base: &str,
+    project_path: &str,
+    token: &str,
+    item: &BoardItem,
+    me: &str,
+) -> CoreResult<()> {
+    let path = gitlab_item_path(project_path, item);
+    let (json, _) = gitlab_get(base, token, &path).map_err(|e| match e {
+        CoreError::IssuesGitlabAuth => e,
+        _ => CoreError::IssuesMove("Could not read the card from GitLab.".to_string()),
+    })?;
+    gitlab_put(
+        base,
+        token,
+        &path,
+        &gitlab_unassign_params(&json, me)?,
+        "GitLab could not unassign you.",
+    )
+}
+
+/// Remove `me` from a GitHub issue/PR's assignees (PRs are issues to this
+/// REST endpoint). `gh` output is only inspected, never forwarded.
+pub fn unassign_github(
+    gh: &str,
+    host: &str,
+    owner_repo: &str,
+    account: Option<&str>,
+    item: &BoardItem,
+    me: &str,
+) -> CoreResult<()> {
+    let token = account.map(|a| gh_account_token(gh, host, a)).transpose()?;
+    run_gh(
+        gh,
+        host,
+        token.as_deref(),
+        &[
+            "api",
+            "--method",
+            "DELETE",
+            "--hostname",
+            host,
+            &format!("repos/{owner_repo}/issues/{}/assignees", item.number),
+            "-f",
+            &format!("assignees[]={me}"),
+        ],
+    )
+    .map_err(|e| match e {
+        CoreError::IssuesGhUnavailable => e,
+        _ => CoreError::IssuesMove("gh could not unassign you.".to_string()),
+    })?;
+    Ok(())
+}
+
+/// Unassign the signed-in user from a validated card on the platform behind
+/// `root`.
+pub fn unassign_item(
+    root: &Path,
+    setups: &[IssueSetup],
+    selected: Option<&IssueSetup>,
+    item: &BoardItem,
+    me: &str,
+) -> CoreResult<()> {
+    let (host, path) = detect(root)?;
+    match pick(&host, setups, selected)? {
+        Some(IssueSetup {
+            provider: IssueProvider::Gitlab,
+            id,
+            url,
+            ..
+        }) => {
+            // ponytail: temporary, remove once Connect is on GitHub
+            let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
+            unassign_gitlab(url, &path, &token, item, me)
+        }
+        setup => {
+            let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
+            let account = setup.and_then(|s| s.account.as_deref());
+            unassign_github(gh, &host, &path, account, item, me)
         }
     }
 }
@@ -1811,10 +2028,16 @@ mod tests {
                 } else {
                     ""
                 };
-                let body = if status.starts_with("200") {
-                    "[]"
-                } else {
+                let body = if !status.starts_with("200") {
                     "secret-ish body"
+                } else if req.starts_with("GET /api/v4/user ") {
+                    r#"{"id":5,"username":"fixture-me"}"#
+                } else if req.starts_with("GET ") && req.contains("/issues/2 ") {
+                    r#"{"assignees":[{"id":5,"username":"fixture-me"},{"id":6,"username":"kim"}]}"#
+                } else if req.starts_with("GET ") && req.contains("/merge_requests/10 ") {
+                    r#"{"assignees":[{"id":5,"username":"fixture-me"}]}"#
+                } else {
+                    "[]"
                 };
                 let reply = format!(
                     "HTTP/1.1 {status}\r\n{total}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1830,7 +2053,7 @@ mod tests {
 
     #[test]
     fn gitlab_fetch_sends_token_scope_and_reads_totals() {
-        let (base, seen) = serve_board("200 OK", 6);
+        let (base, seen) = serve_board("200 OK", 7);
         let board = fetch_gitlab(&base, "grp/sub/proj", "fake-token", true, since(), None).unwrap();
         assert_eq!(board.provider, IssueProvider::Gitlab);
         // The empty /boards answer means the default columns, no error.
@@ -1860,26 +2083,26 @@ mod tests {
             .iter()
             .any(|r| r.starts_with("GET /api/v4/projects/grp%2Fsub%2Fproj/boards ")));
 
-        let (base, seen) = serve_board("200 OK", 6);
+        let (base, seen) = serve_board("200 OK", 7);
         fetch_gitlab(&base, "a/b", "t", false, since(), None).unwrap();
         assert!(seen
             .join()
             .unwrap()
             .iter()
-            .filter(|r| !r.contains("/boards "))
+            .filter(|r| !r.contains("/boards ") && !r.contains("/user "))
             .all(|r| r.contains("scope=all")));
     }
 
     #[test]
     fn gitlab_fetch_maps_status() {
         for code in ["401 Unauthorized", "403 Forbidden"] {
-            let (base, _h) = serve_board(code, 6);
+            let (base, _h) = serve_board(code, 7);
             assert!(matches!(
                 fetch_gitlab(&base, "a/b", "wrong", true, since(), None),
                 Err(CoreError::IssuesGitlabAuth)
             ));
         }
-        let (base, _h) = serve_board("500 Internal Server Error", 6);
+        let (base, _h) = serve_board("500 Internal Server Error", 7);
         let err = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap_err();
         assert!(matches!(err, CoreError::IssuesFetch(_)));
         assert!(!err.to_string().contains("secret-ish"));
@@ -1902,8 +2125,11 @@ mod tests {
             source: None,
             hint: None,
             pr_counts: PrCounts::default(),
+            me: Some("octo".into()),
         })
         .unwrap();
+        assert_eq!(v["me"], "octo");
+        assert_eq!(v["items"][0]["assignees"], serde_json::json!([]));
         assert_eq!(v["items"][0]["updatedAt"], "y");
         assert_eq!(v["items"][0]["kind"], "pr");
         assert_eq!(v["items"][0]["column"], "review");
@@ -2072,6 +2298,7 @@ mod tests {
             author: String::new(),
             movable: movable(kind, column),
             linked: Vec::new(),
+            assignees: vec!["fixture-me".into()],
         }
     }
 
@@ -2090,6 +2317,7 @@ mod tests {
             source: Some("Development".into()),
             hint: None,
             pr_counts: PrCounts::default(),
+            me: Some("fixture-me".into()),
         }
     }
 
@@ -2262,6 +2490,73 @@ mod tests {
         assert!(!err.to_string().contains("secret-ish"));
     }
 
+    #[test]
+    fn gitlab_fetch_knows_who_i_am() {
+        let (base, _seen) = serve_board("200 OK", 7);
+        let b = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap();
+        assert_eq!(b.me.as_deref(), Some("fixture-me"));
+    }
+
+    #[test]
+    fn unassign_validation() {
+        let mut b = gl_board();
+        assert_eq!(
+            validate_unassign(&b, ItemKind::Issue, 2).unwrap().1,
+            "fixture-me"
+        );
+        assert!(validate_unassign(&b, ItemKind::Issue, 99).is_err());
+        b.items[1].assignees = vec!["kim".into()];
+        assert!(validate_unassign(&b, ItemKind::Issue, 2)
+            .unwrap_err()
+            .to_string()
+            .contains("not assigned"));
+        b.me = None;
+        assert!(validate_unassign(&b, ItemKind::Issue, 1).is_err());
+    }
+
+    #[test]
+    fn gitlab_unassign_keeps_the_others() {
+        let b = gl_board();
+        // Co-assignee kim stays.
+        let (base, seen) = serve_board("200 OK", 2);
+        unassign_gitlab(&base, "a/b", "t", &b.items[1], "fixture-me").unwrap();
+        let reqs = seen.join().unwrap();
+        assert!(reqs[0].starts_with("GET /api/v4/projects/a%2Fb/issues/2 "));
+        assert!(
+            reqs[1].starts_with("PUT /api/v4/projects/a%2Fb/issues/2?assignee_ids%5B%5D=6 "),
+            "{}",
+            reqs[1]
+        );
+        // Last assignee: 0 means nobody.
+        let (base, seen) = serve_board("200 OK", 2);
+        unassign_gitlab(&base, "a/b", "t", &b.items[3], "fixture-me").unwrap();
+        assert!(seen.join().unwrap()[1]
+            .starts_with("PUT /api/v4/projects/a%2Fb/merge_requests/10?assignee_ids=0 "));
+        let (base, _h) = serve_board("403 Forbidden", 1);
+        assert!(matches!(
+            unassign_gitlab(&base, "a/b", "t", &b.items[1], "fixture-me"),
+            Err(CoreError::IssuesGitlabAuth)
+        ));
+    }
+
+    #[test]
+    fn gitlab_retries_a_dropped_connection() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let h = std::thread::spawn(move || {
+            // First connection is dropped unanswered, the retry gets a reply.
+            drop(listener.accept().unwrap());
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+                .unwrap();
+        });
+        assert_eq!(gitlab_get(&base, "t", "/x").unwrap().0, "[]");
+        h.join().unwrap();
+    }
+
     /// Answers `/boards` with a 500 and everything else with `[]` (the MR
     /// list gets an `X-Total`).
     fn serve_boards_down(n: usize) -> String {
@@ -2297,16 +2592,16 @@ mod tests {
             fallback.as_ref().map(|(n, l)| (n.as_str(), l.len())),
             Some(("Development", 2))
         );
-        let base = serve_boards_down(6);
+        let base = serve_boards_down(7);
         let b = fetch_gitlab(&base, "a/b", "t", true, since(), fallback).unwrap();
         assert_eq!(b.source.as_deref(), Some("Development"));
         assert_eq!(b.columns, known.columns);
         // /boards succeeding without a label-list board is not a failure.
-        let (base, _seen) = serve_board("200 OK", 6);
+        let (base, _seen) = serve_board("200 OK", 7);
         let b = fetch_gitlab(&base, "a/b", "t", true, since(), gitlab_fallback(&known)).unwrap();
         assert_eq!((b.source, b.columns), (None, default_columns()));
         // No cache, no fallback: defaults, as before.
-        let base = serve_boards_down(6);
+        let base = serve_boards_down(7);
         let b = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap();
         assert_eq!(b.columns, default_columns());
         // A GitHub board never seeds GitLab columns.
@@ -2330,6 +2625,7 @@ mod tests {
             closed_at: None,
             merged_at: None,
             source_branch: Some(branch.into()),
+            assignees: vec![],
         };
         let n = |d: &str, b: &str| gl_closing(&mr(d, b), "grp/proj");
         assert_eq!(n("Closes #12", "x"), [12]);
@@ -2439,6 +2735,7 @@ mod tests {
         /// A fake `gh` answering lists with one item echoing its args, and the
         /// counts query with fixed numbers.
         const FAKE: &str = r#"if [ "$1" = auth ]; then [ "$6" = work ] && echo fake-tok && exit 0; exit 1; fi
+if [ "$2" = user ]; then echo octo-fixture; exit 0; fi
 if [ "$1" = api ]; then echo '{"data":{"o":{"issueCount":2},"m":{"issueCount":9}}}'; exit 0; fi
 echo "[{\"number\":1,\"title\":\"$1 $6 ${GH_TOKEN:-none} $4\",\"url\":\"u\",\"body\":\"${10}\"}]""#;
 
@@ -2463,6 +2760,7 @@ echo "[{\"number\":1,\"title\":\"$1 $6 ${GH_TOKEN:-none} $4\",\"url\":\"u\",\"bo
                     .unwrap()
                     .clone()
             };
+            assert_eq!(board.me.as_deref(), Some("octo-fixture"));
             assert_eq!(find("issue open").column, "open");
             assert_eq!(find("issue closed").column, "done");
             assert_eq!(find("pr open").column, "review");
@@ -2549,6 +2847,7 @@ echo "[{\"number\":1,\"title\":\"$1 $6 ${GH_TOKEN:-none} $4\",\"url\":\"u\",\"bo
                 source: Some("Widgets roadmap".into()),
                 hint: None,
                 pr_counts: PrCounts::default(),
+                me: Some("octo".into()),
             }
         }
 
@@ -2639,6 +2938,22 @@ echo "[{\"number\":1,\"title\":\"$1 $6 ${GH_TOKEN:-none} $4\",\"url\":\"u\",\"bo
                 calls(&log),
                 ["issue reopen 8 --repo github.com/acme/widgets"]
             );
+        }
+
+        #[test]
+        fn github_unassign_deletes_me_from_assignees() {
+            let dir = tempfile::tempdir().unwrap();
+            let b = gh_board();
+            let (gh, log) = mover(dir.path(), "", "");
+            unassign_github(&gh, "github.com", "acme/widgets", None, &b.items[0], "octo").unwrap();
+            assert_eq!(
+                calls(&log),
+                ["api --method DELETE --hostname github.com repos/acme/widgets/issues/7/assignees -f assignees[]=octo"]
+            );
+            let (gh, _log) = mover(dir.path(), "", "echo nope >&2; exit 1");
+            let err = unassign_github(&gh, "github.com", "acme/widgets", None, &b.items[0], "octo")
+                .unwrap_err();
+            assert_eq!(err.to_string(), "gh could not unassign you.");
         }
 
         #[test]

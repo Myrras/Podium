@@ -30,6 +30,7 @@ const card = (column: string, number: number): BoardItem => ({
   author: "",
   movable: false,
   linked: [],
+  assignees: [],
 });
 
 beforeEach(() => {
@@ -59,6 +60,7 @@ describe("GitButton", () => {
             columns: [],
             source: null,
             hint: null,
+            me: null,
             items: [
               card("open", 1),
               card("label:doing", 2),

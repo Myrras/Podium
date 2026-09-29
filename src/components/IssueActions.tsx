@@ -1,4 +1,7 @@
-/** Card actions for one board item: open in browser, start an agent, turn into a to-do. */
+/**
+ * Card actions for one board item: open in browser, start an agent, turn into
+ * a to-do, and unassign yourself when you are an assignee.
+ */
 
 import { useState } from "react";
 
@@ -10,7 +13,14 @@ import {
   useHasIssueTodo,
 } from "../lib/issueActions";
 import { openExternalLink } from "../lib/links";
-import { AgentIcon, CheckIcon, ExternalLinkIcon, TodoIcon } from "./icons";
+import { useIssueStore } from "../state/issueStore";
+import {
+  AgentIcon,
+  CheckIcon,
+  ExternalLinkIcon,
+  TodoIcon,
+  UnassignIcon,
+} from "./icons";
 import { NewAgentModal } from "./NewAgentModal";
 
 export function IssueActions({
@@ -28,6 +38,10 @@ export function IssueActions({
 }) {
   const [agentOpen, setAgentOpen] = useState(false);
   const hasTodo = useHasIssueTodo(projectId, issue.url);
+  const me = useIssueStore((s) => s.byProject[projectId]?.board?.me);
+  const unassign = useIssueStore((s) => s.unassign);
+  const [unassigning, setUnassigning] = useState(false);
+  const assignedToMe = !!me && (issue.assignees ?? []).includes(me);
 
   return (
     <>
@@ -67,6 +81,23 @@ export function IssueActions({
           onClick={() => void issueToTodo(projectId, issue, label)}
         >
           <TodoIcon size={13} />
+        </button>
+      )}
+      {assignedToMe && (
+        <button
+          type="button"
+          className={className}
+          aria-label={`Unassign me from ${label}`}
+          title="Unassign me"
+          disabled={unassigning}
+          onClick={() => {
+            setUnassigning(true);
+            void unassign(projectId, issue).finally(() =>
+              setUnassigning(false),
+            );
+          }}
+        >
+          <UnassignIcon size={13} />
         </button>
       )}
       {agentOpen && (

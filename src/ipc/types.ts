@@ -55,6 +55,8 @@ export interface BoardItem {
   movable: boolean;
   /** PRs/MRs folded into this issue (empty for PRs and unlinked issues). */
   linked: LinkedPr[];
+  /** Logins/usernames it is assigned to. */
+  assignees: string[];
 }
 
 /** A PR/MR linked to an issue, shown inside its card instead of as its own. */
@@ -77,6 +79,8 @@ export interface Board {
   /** Podium-owned text: how to unlock the project's columns. */
   hint: string | null;
   prCounts: { open: number | null; merged: number | null };
+  /** The signed-in user's login/username; null when the platform would not say. */
+  me: string | null;
 }
 
 /** The last fetched board of a scope, from the backend cache. */

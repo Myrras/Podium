@@ -61,14 +61,29 @@ pub async fn issues_board_move(
 }
 
 /// Run an issues-settings call on a blocking thread (it touches the keychain).
-async fn blocking(
+/// Unassign the signed-in user from a card on the platform (validated against
+/// the cached board); the UI follows the `board:changed` event.
+#[tauri::command]
+pub async fn issues_board_unassign(
     state: State<'_, AppState>,
-    f: impl FnOnce(&Orchestrator) -> CoreResult<IssuesOverview> + Send + 'static,
-) -> Result<IssuesOverview, IpcError> {
+    project_id: ProjectId,
+    kind: ItemKind,
+    number: u64,
+) -> Result<(), IpcError> {
+    blocking(state, move |o| {
+        o.unassign_board_item(project_id, kind, number)
+    })
+    .await
+}
+
+async fn blocking<T: Send + 'static>(
+    state: State<'_, AppState>,
+    f: impl FnOnce(&Orchestrator) -> CoreResult<T> + Send + 'static,
+) -> Result<T, IpcError> {
     let orchestrator = Arc::clone(&state.orchestrator);
     tauri::async_runtime::spawn_blocking(move || f(&orchestrator))
         .await
-        .map_err(|e| IpcError::new("io", format!("issues settings task failed: {e}")))?
+        .map_err(|e| IpcError::new("io", format!("issues task failed: {e}")))?
         .map_err(IpcError::from)
 }
 

@@ -5,6 +5,7 @@ vi.mock("../ipc/commands", () => ({
   todoAdd: vi.fn(),
   todoUpdate: vi.fn(),
   todoAddLink: vi.fn(),
+  issuesBoardUnassign: vi.fn(),
   adaptersList: vi.fn(async () => []),
   agentSettingsGet: vi.fn(async () => ({
     adapters: [],
@@ -14,8 +15,14 @@ vi.mock("../ipc/commands", () => ({
 }));
 vi.mock("../lib/links", () => ({ openExternalLink: vi.fn() }));
 
-import { todoAdd, todoAddLink, todoUpdate } from "../ipc/commands";
-import type { BoardItem, TodoInfo } from "../ipc/types";
+import {
+  issuesBoardUnassign,
+  todoAdd,
+  todoAddLink,
+  todoUpdate,
+} from "../ipc/commands";
+import type { Board, BoardItem, TodoInfo } from "../ipc/types";
+import { useIssueStore } from "../state/issueStore";
 import { useTodoStore } from "../state/todoStore";
 import { IssueActions } from "./IssueActions";
 
@@ -33,6 +40,7 @@ const issue: BoardItem = {
   author: "",
   movable: false,
   linked: [],
+  assignees: [],
 };
 
 function todo(over: Partial<TodoInfo> = {}): TodoInfo {
@@ -146,5 +154,35 @@ describe("IssueActions", () => {
         ) as HTMLTextAreaElement
       ).value,
     ).toMatch(/^Work on pull request https:\/\/git\.example\.test/);
+  });
+
+  it("unassigns me only when I am an assignee", async () => {
+    const seedMe = (me: string | null) =>
+      useIssueStore.setState({
+        byProject: { [P]: { board: { me } as Board } as never },
+      });
+    vi.mocked(issuesBoardUnassign).mockResolvedValue(undefined);
+    const mine = { ...issue, assignees: ["sam", "kim"] };
+
+    seedMe(null);
+    const { rerender } = render(
+      <IssueActions projectId={P} issue={mine} itemRef="#7" className="a" />,
+    );
+    expect(screen.queryByLabelText("Unassign me from #7")).toBeNull();
+
+    seedMe("robin");
+    rerender(
+      <IssueActions projectId={P} issue={mine} itemRef="#7" className="a" />,
+    );
+    expect(screen.queryByLabelText("Unassign me from #7")).toBeNull();
+
+    seedMe("sam");
+    rerender(
+      <IssueActions projectId={P} issue={mine} itemRef="#7" className="a" />,
+    );
+    fireEvent.click(screen.getByLabelText("Unassign me from #7"));
+    await waitFor(() =>
+      expect(issuesBoardUnassign).toHaveBeenCalledWith(P, "issue", 7),
+    );
   });
 });

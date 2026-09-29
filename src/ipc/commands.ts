@@ -803,6 +803,18 @@ export function issuesBoardMove(
   return invoke("issues_board_move", { projectId, kind, number, column });
 }
 
+/**
+ * Unassign the signed-in user from a card. Rejects with kind `issuesMove`
+ * (message is user-facing text). Success emits `board:changed`.
+ */
+export function issuesBoardUnassign(
+  projectId: ProjectId,
+  kind: "issue" | "pr",
+  number: number,
+): Promise<void> {
+  return invoke("issues_board_unassign", { projectId, kind, number });
+}
+
 /** Every issue setup (never a token) plus each project's pick. */
 export function issuesSettingsGet(): Promise<IssuesOverview> {
   return invoke("issues_settings_get");

@@ -287,6 +287,7 @@ pub fn run() {
             commands::issues::issues_board,
             commands::issues::issues_board_cached,
             commands::issues::issues_board_move,
+            commands::issues::issues_board_unassign,
             commands::issues::issues_settings_get,
             commands::issues::issues_setup_save,
             commands::issues::issues_setup_remove,

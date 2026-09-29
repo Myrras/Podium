@@ -46,6 +46,7 @@ function item(over: Partial<BoardItem>): BoardItem {
     author: "sam",
     movable: false,
     linked: [],
+    assignees: [],
     ...over,
   };
 }
@@ -61,6 +62,7 @@ const githubBoard: Board = {
   ],
   source: null,
   hint: null,
+  me: null,
   items: [
     item({ number: 7, title: "Fix widget", labels: ["bug"] }),
     item({ number: 8, title: "Being done", column: "inProgress" }),
@@ -161,6 +163,7 @@ describe("GitBoard", () => {
         columns: githubBoard.columns,
         source: null,
         hint: null,
+        me: null,
         items: [
           item({ kind: "pr", number: 41, column: "review", draft: true }),
         ],

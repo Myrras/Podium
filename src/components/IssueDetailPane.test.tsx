@@ -28,6 +28,7 @@ const issue: BoardItem = {
   author: "sam",
   movable: false,
   linked: [],
+  assignees: [],
 };
 
 beforeEach(() => {
@@ -112,6 +113,7 @@ describe("IssueDetailPane", () => {
                 ],
                 source: null,
                 hint: null,
+                me: null,
                 prCounts: { open: 0, merged: 0 },
               },
               error: null,

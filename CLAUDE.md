@@ -56,7 +56,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 33 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **86 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **87 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -74,7 +74,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 86 commands.
+  IPC wrappers over all 87 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -373,7 +373,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   default) narrows issues to assigned-to-me and PRs/MRs to authored-by-me;
   the counts (`prCounts`, all-time open/merged in the same scope) come from a
   GraphQL `search … issueCount` on GitHub and `X-Total` on GitLab (`None` when
-  GitLab omits it). Each board is six parallel calls (`std::thread::scope`),
+  GitLab omits it). Each board is seven parallel calls (`std::thread::scope`),
   lists capped at 100. The repo is detected via `detect` → `parse_remote`
   (ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
   (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
@@ -455,6 +455,23 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `board:changed`. MCP: `get_board` (cache if under 5 min old and not
   `refresh`; no bodies; classified read-only) and `move_board_item` (same
   path as the IPC command; state-changing for the autonomy gate).
+
+  **Unassign** (`Orchestrator::unassign_board_item` → `issues::
+  validate_unassign` then `unassign_item`): each board also carries `me` (the
+  signed-in login — a 7th parallel call, `gh api user` / GitLab `/user`, whose
+  failure only hides the action) and every `BoardItem.assignees`; the card and
+  drawer show "Unassign me" when `me` is among them. GitHub: `gh api --method
+  DELETE repos/:repo/issues/:n/assignees` (PRs too). GitLab: a fresh `GET` of
+  the issue/MR, then a `PUT` with the remaining `assignee_ids[]` (`0` = none),
+  so a co-assignee added since the fetch is kept. On success `me` leaves the
+  item's assignees in both cached scopes, an *issue* leaves the `mine` board
+  outright, and `board:changed` is published. IPC only, no MCP tool.
+
+  **GitLab connection retries** (`gitlab_send`): a request that fails before
+  any HTTP status (VPN/Wi-Fi not back yet after sleep — the focus refresh
+  fires right then — or a dropped connection) is retried twice (500 ms, 1.5 s);
+  the error names the reason (`timed out` / `connection failed`), never
+  reqwest's text. An HTTP status is never retried.
 
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
@@ -825,6 +842,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `issues_board`          | `{ projectId, mine }`                       | `Board`           |
 | `issues_board_cached`   | `{ projectId, mine }`                       | `CachedBoard \| null` (`{ board, fetchedAt }`, no network) |
 | `issues_board_move`     | `{ projectId, kind: "issue"\|"pr", number, column }` | – (refusals: `issuesMove`; UI follows `board:changed`) |
+| `issues_board_unassign` | `{ projectId, kind: "issue"\|"pr", number }` | – (removes the signed-in user from the assignees; refusals: `issuesMove`; UI follows `board:changed`) |
 | `issues_settings_get`   | –                                           | `IssuesOverview` (`{ setups, projects }`, never a token) |
 | `issues_setup_save`     | `{ id?, name, provider, url, account?, token? }` (token omitted = keep, blank = delete) | `IssuesOverview` |
 | `issues_setup_remove`   | `{ id }`                                    | `IssuesOverview`  |

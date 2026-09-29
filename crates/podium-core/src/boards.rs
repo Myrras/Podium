@@ -124,6 +124,37 @@ impl BoardStore {
         }
         let _ = save(&inner);
     }
+
+    /// After a successful unassign: drop `me` from the item's assignees in
+    /// both scopes. An issue leaves the `mine` board outright — that board is
+    /// the issues assigned to you (its PRs are the ones you wrote, so they stay).
+    pub fn apply_unassign(&self, root: &Path, kind: ItemKind, number: u64, me: &str) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let Some(root_boards) = inner.boards.get_mut(&key(root)) else {
+            return;
+        };
+        if let Some(mine) = &mut root_boards.mine {
+            if kind == ItemKind::Issue {
+                mine.board
+                    .items
+                    .retain(|i| !(i.kind == kind && i.number == number));
+            }
+        }
+        for cached in [&mut root_boards.mine, &mut root_boards.all]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(item) = cached
+                .board
+                .items
+                .iter_mut()
+                .find(|i| i.kind == kind && i.number == number)
+            {
+                item.assignees.retain(|a| a != me);
+            }
+        }
+        let _ = save(&inner);
+    }
 }
 
 fn key(root: &Path) -> String {
@@ -175,6 +206,7 @@ mod tests {
             author: "sam".into(),
             movable: true,
             linked: Vec::new(),
+            assignees: vec!["sam".into(), "kim".into()],
         };
         Board {
             provider: IssueProvider::Gitlab,
@@ -191,6 +223,7 @@ mod tests {
             source: Some("Dev".into()),
             hint: None,
             pr_counts: PrCounts::default(),
+            me: Some("sam".into()),
         }
     }
 
@@ -235,6 +268,22 @@ mod tests {
             again.get(&root, false).unwrap().board.items[0].column,
             "open"
         );
+    }
+
+    #[test]
+    fn unassign_drops_the_issue_from_mine_and_the_name_everywhere() {
+        let root = PathBuf::from("/tmp/fixture-project");
+        let store = BoardStore::new();
+        store.put(&root, true, board());
+        store.put(&root, false, board());
+        store.apply_unassign(&root, ItemKind::Issue, 1, "sam");
+        store.apply_unassign(&root, ItemKind::Pr, 2, "sam");
+        let mine = store.get(&root, true).unwrap().board;
+        assert_eq!(mine.items.len(), 1);
+        assert_eq!(mine.items[0].assignees, vec!["kim".to_string()]);
+        let all = store.get(&root, false).unwrap().board;
+        assert_eq!(all.items.len(), 2);
+        assert!(all.items.iter().all(|i| i.assignees == ["kim"]));
     }
 
     #[test]

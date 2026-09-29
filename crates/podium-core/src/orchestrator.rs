@@ -1794,6 +1794,45 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Unassign the signed-in user from a card of the project's Git board, on
+    /// the platform itself. Validated against the cached board (which knows
+    /// who you are), so it needs one. On success both cached scopes are
+    /// updated and `BoardChanged` published. Blocks — call from a
+    /// blocking-friendly context.
+    pub fn unassign_board_item(
+        &self,
+        project_id: ProjectId,
+        kind: crate::ItemKind,
+        number: u64,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let cached = [true, false]
+            .into_iter()
+            .filter_map(|mine| self.boards.get(&root, mine))
+            .find(|c| {
+                c.board
+                    .items
+                    .iter()
+                    .any(|i| i.kind == kind && i.number == number)
+            })
+            .ok_or_else(|| {
+                CoreError::IssuesMove(
+                    "That card is not on the board. Refresh the board first.".to_string(),
+                )
+            })?;
+        let (item, me) = crate::issues::validate_unassign(&cached.board, kind, number)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        crate::issues::unassign_item(&root, &issues.setups, selected, item, me)?;
+        self.boards.apply_unassign(&root, kind, number, me);
+        self.events
+            .publish(PodiumEvent::BoardChanged { project_id });
+        Ok(())
+    }
+
     /// Settings → Issues: every setup (with whether a GitLab token is stored —
     /// never the token) plus each project's pick. Touches the keychain.
     pub fn issues_overview(&self) -> crate::issues::IssuesOverview {

@@ -34,6 +34,7 @@ function board(...numbers: number[]): Board {
     columns: [],
     source: null,
     hint: null,
+    me: null,
     items: numbers.map((number) => ({
       kind: "issue",
       number,
@@ -47,6 +48,7 @@ function board(...numbers: number[]): Board {
       author: "",
       movable: true,
       linked: [],
+      assignees: [],
     })),
   };
 }
