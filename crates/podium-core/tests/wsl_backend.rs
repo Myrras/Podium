@@ -156,8 +156,12 @@ async fn stopping_a_service_ends_its_linux_children() {
         "bash -c 'exec -a {marker}-a sleep 300' & bash -c 'exec -a {marker}-b sleep 300' & wait"
     );
     let id = start(&orch, &dir, service(&command, &dir, Vec::new())).await;
+    // Anchored on argv0 (`exec -a`): the marker also appears in the wrapper
+    // `bash -lic` command line, which a bare `pgrep -f marker` would match
+    // before the `sleep` children exist.
+    let children = format!("^{marker}-");
     timeout(TEST_TIMEOUT, async {
-        while !running_in_distro(&distro, &marker) {
+        while !running_in_distro(&distro, &children) {
             sleep(Duration::from_millis(100)).await;
         }
     })
@@ -174,7 +178,7 @@ async fn stopping_a_service_ends_its_linux_children() {
     .expect("service never exited");
     // Give WSL a moment to tear the session down.
     let gone = timeout(Duration::from_secs(10), async {
-        while running_in_distro(&distro, &marker) {
+        while running_in_distro(&distro, &children) {
             sleep(Duration::from_millis(200)).await;
         }
     })
