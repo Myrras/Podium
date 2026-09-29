@@ -16,6 +16,7 @@ import {
   type SettingsTabId,
 } from "../state/settingsRequestStore";
 import { useAssistantStore } from "../state/assistantStore";
+import { useIssueStore } from "../state/issueStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
 import {
   agentSettingsGet,
@@ -23,13 +24,14 @@ import {
   agentSettingsSetDefaultAdapter,
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
-  issuesSettingsGet,
-  issuesSettingsSet,
+  issuesSetupRemove,
+  issuesSetupSave,
   mcpClientInstall,
   mcpClientsStatus,
   toIpcError,
 } from "../ipc/commands";
 import type {
+  IssueProvider,
   AgentAdapterConfig,
   AgentSettingsDto,
   AutonomyMode,
@@ -391,101 +393,200 @@ const MERGE_MODES: { value: MergeMode; label: string }[] = [
   { value: "global-overrides", label: "Global overrides project" },
 ];
 
+/** A setup being added (no `id`) or edited in the Issues tab. */
+interface IssueSetupDraft {
+  id?: string;
+  name: string;
+  provider: IssueProvider;
+  url: string;
+  account: string;
+  token: string;
+  tokenSet: boolean;
+}
+
+const PROVIDER_LABELS: Record<IssueProvider, string> = {
+  github: "GitHub",
+  gitlab: "GitLab (self-hosted)",
+};
+
 /**
- * Issues tab: the self-hosted GitLab host and token. The token field is never
- * prefilled — the backend only says whether one is stored.
+ * Issues tab: the GitHub/GitLab setups a project's Issues section can pick
+ * from. Token fields are never prefilled — the backend only says whether one
+ * is stored.
  */
-// ponytail: temporary, remove once Connect is on GitHub
 function IssuesTab() {
-  const [host, setHost] = useState("");
-  const [tokenSet, setTokenSet] = useState(false);
-  const [token, setToken] = useState("");
-  const [replacing, setReplacing] = useState(false);
+  const overview = useIssueStore((s) => s.overview);
+  const loadOverview = useIssueStore((s) => s.loadOverview);
+  const setOverview = useIssueStore((s) => s.setOverview);
+  const [draft, setDraft] = useState<IssueSetupDraft | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    issuesSettingsGet()
-      .then((d) => {
-        if (cancelled) return;
-        setHost(d.gitlabHost ?? "");
-        setTokenSet(d.gitlabTokenSet);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useEffect(() => void loadOverview(), [loadOverview]);
 
-  const save = (newToken?: string) => {
+  const startNew = (provider: IssueProvider) =>
+    setDraft({
+      provider,
+      name: "",
+      url: provider === "github" ? "https://github.com" : "",
+      account: "",
+      token: "",
+      tokenSet: false,
+    });
+
+  const save = (d: IssueSetupDraft) => {
     setBusy(true);
-    issuesSettingsSet(host, newToken)
-      .then((d) => {
-        setHost(d.gitlabHost ?? "");
-        setTokenSet(d.gitlabTokenSet);
-        setToken("");
-        setReplacing(false);
-        toastSuccess("Issues settings saved");
+    issuesSetupSave({
+      id: d.id,
+      name: d.name,
+      provider: d.provider,
+      url: d.url,
+      account: d.account || undefined,
+      // Blank on an edit keeps the stored token.
+      token: d.token.trim() ? d.token : undefined,
+    })
+      .then((o) => {
+        setOverview(o);
+        setDraft(null);
+        toastSuccess("Issue setup saved");
       })
       .catch((e) => toastError(toIpcError(e).message))
       .finally(() => setBusy(false));
   };
 
-  const showTokenField = !tokenSet || replacing;
+  const remove = (id: string) =>
+    issuesSetupRemove(id)
+      .then(setOverview)
+      .catch((e) => toastError(toIpcError(e).message));
+
+  const setups = overview?.setups ?? [];
 
   return (
-    <form
-      className={styles.section}
-      onSubmit={(e) => {
-        e.preventDefault();
-        save(token.trim() ? token : undefined);
-      }}
-    >
-      <h3 className={styles.sectionLabel}>Self-hosted GitLab</h3>
+    <section className={styles.section}>
+      <h3 className={styles.sectionLabel}>Issue setups</h3>
       <small className={styles.rowHelp}>
-        GitHub issues use your <code>gh</code> login. Projects whose{" "}
-        <code>origin</code> is on this host list their open assigned issues via
-        a personal access token (<code>read_api</code>), kept in the OS
-        keychain. Temporary: this goes away once Connect is on GitHub.
+        A project&apos;s Issues section uses the setup picked there, or the
+        first one whose host matches its <code>origin</code>. GitHub goes
+        through your <code>gh</code> login (optionally a specific account);
+        github.com works without a setup. Self-hosted GitLab needs a personal
+        access token (<code>read_api</code>), kept in the OS keychain —
+        temporary, until Connect is on GitHub.
       </small>
-      <div className={styles.field}>
-        <label htmlFor="gitlab-host">Host</label>
-        <input
-          id="gitlab-host"
-          type="text"
-          value={host}
-          placeholder="gitlab.example.com"
-          onChange={(e) => setHost(e.target.value)}
-        />
-      </div>
-      <div className={styles.field}>
-        <label htmlFor="gitlab-token">Access token</label>
-        {showTokenField ? (
-          <input
-            id="gitlab-token"
-            type="password"
-            autoComplete="off"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
-        ) : (
+      {setups.map((s) => (
+        <div key={s.id} className={styles.clientCard}>
+          <div className={styles.clientHeader}>
+            <span className={styles.clientName}>{s.name}</span>
+            <span className={styles.clientBadge}>
+              {PROVIDER_LABELS[s.provider]}
+            </span>
+            <div className={`${styles.clientActions} ${styles.pushRight}`}>
+              <button
+                type="button"
+                onClick={() =>
+                  setDraft({
+                    ...s,
+                    account: s.account ?? "",
+                    token: "",
+                  })
+                }
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove ${s.name}`}
+                onClick={() => void remove(s.id)}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+          <small className={styles.rowHelp}>
+            {s.url}
+            {s.provider === "github"
+              ? ` · ${s.account ? `gh account ${s.account}` : "active gh account"}`
+              : ` · ${s.tokenSet ? "token saved" : "no token"}`}
+          </small>
+        </div>
+      ))}
+      {draft ? (
+        <form
+          className={styles.clientCard}
+          onSubmit={(e) => {
+            e.preventDefault();
+            save(draft);
+          }}
+        >
+          <span className={styles.clientName}>
+            {draft.id ? "Edit" : "New"} {PROVIDER_LABELS[draft.provider]} setup
+          </span>
+          <div className={styles.field}>
+            <label htmlFor="issue-setup-name">Name</label>
+            <input
+              id="issue-setup-name"
+              type="text"
+              value={draft.name}
+              placeholder="Defaults to the host"
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
+          </div>
+          <div className={styles.field}>
+            <label htmlFor="issue-setup-url">URL</label>
+            <input
+              id="issue-setup-url"
+              type="text"
+              value={draft.url}
+              placeholder="https://gitlab.example.com (http:// is kept)"
+              onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+            />
+          </div>
+          {draft.provider === "github" ? (
+            <div className={styles.field}>
+              <label htmlFor="issue-setup-account">gh account</label>
+              <input
+                id="issue-setup-account"
+                type="text"
+                value={draft.account}
+                placeholder="Blank = the active gh account"
+                onChange={(e) =>
+                  setDraft({ ...draft, account: e.target.value })
+                }
+              />
+            </div>
+          ) : (
+            <div className={styles.field}>
+              <label htmlFor="issue-setup-token">Access token</label>
+              <input
+                id="issue-setup-token"
+                type="password"
+                autoComplete="off"
+                value={draft.token}
+                placeholder={
+                  draft.tokenSet ? "Saved — leave blank to keep" : undefined
+                }
+                onChange={(e) => setDraft({ ...draft, token: e.target.value })}
+              />
+            </div>
+          )}
           <div className={styles.editActions}>
-            <span>Token saved</span>
-            <button type="button" onClick={() => setReplacing(true)}>
-              Replace
+            <button type="button" onClick={() => setDraft(null)}>
+              Cancel
             </button>
-            <button type="button" disabled={busy} onClick={() => save("")}>
-              Remove
+            <button type="submit" className="primary" disabled={busy}>
+              {busy ? "Saving…" : "Save"}
             </button>
           </div>
-        )}
-      </div>
-      <div className={styles.editActions}>
-        <button type="submit" className="primary" disabled={busy}>
-          {busy ? "Saving…" : "Save"}
-        </button>
-      </div>
-    </form>
+        </form>
+      ) : (
+        <div className={styles.editActions}>
+          <button type="button" onClick={() => startNew("github")}>
+            Add GitHub setup
+          </button>
+          <button type="button" onClick={() => startNew("gitlab")}>
+            Add GitLab setup
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

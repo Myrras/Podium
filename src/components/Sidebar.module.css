@@ -422,3 +422,12 @@
     opacity: 0.35;
   }
 }
+
+/* Issues: which Settings → Issues setup the project uses. */
+.issueSetupPicker {
+  width: auto;
+  max-width: calc(100% - 2 * var(--sp-3));
+  margin: 0 var(--sp-3) var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
+}

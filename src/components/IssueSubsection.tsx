@@ -4,16 +4,19 @@
  * opens the issue in the browser. A refresh in flight never hides the list
  * (stale rows stay, the header icon spins); each failure kind gets its own
  * inline message — no toasts. The store owns the refresh cadence; this only
- * mounts it.
+ * mounts it. A picker chooses which Settings → Issues setup the project uses
+ * ("Auto" matches the remote's host); the gear links to those settings.
  */
 
 import { useEffect } from "react";
 
+import { issuesProjectSetupSet, toIpcError } from "../ipc/commands";
 import type { IpcError, IssueInfo, ProjectId } from "../ipc/types";
 import { openExternalLink } from "../lib/links";
 import { useSettingsRequestStore } from "../state/settingsRequestStore";
 import { useIssueStore, type ProjectIssues } from "../state/issueStore";
-import { IssueIcon, RestartIcon } from "./icons";
+import { toastError } from "../state/toastStore";
+import { IssueIcon, RestartIcon, SettingsIcon } from "./icons";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 
@@ -35,9 +38,9 @@ function errorText(error: IpcError): string {
     case "issuesGhUnavailable":
       return "GitHub CLI missing or not logged in. Run `gh auth login`.";
     case "issuesUnsupportedHost":
-      return "Issues are supported for GitHub, and the GitLab host set in Settings.";
+      return "No setup in Settings matches this remote's host.";
     case "issuesGitlabNotConfigured":
-      return "GitLab needs a token.";
+      return "This GitLab setup has no token.";
     case "issuesGitlabAuth":
       return "GitLab rejected the token.";
     default:
@@ -50,24 +53,48 @@ const SETUP_ERRORS = new Set([
   "issuesNoRemote",
   "issuesGhUnavailable",
   "issuesUnsupportedHost",
+  "issuesHostMismatch",
   "issuesGitlabNotConfigured",
   "issuesGitlabAuth",
 ]);
 
-/** GitLab failures the user fixes in Settings → Issues. */
-const GITLAB_SETTINGS_ERRORS = new Set([
+/** Failures the user fixes in Settings → Issues. */
+const SETTINGS_ERRORS = new Set([
+  "issuesGhUnavailable",
+  "issuesUnsupportedHost",
+  "issuesHostMismatch",
   "issuesGitlabNotConfigured",
   "issuesGitlabAuth",
 ]);
 
-export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
+const openIssueSettings = () =>
+  useSettingsRequestStore.getState().open("issues");
+
+export function IssueSubsection({
+  projectId,
+  root,
+}: {
+  projectId: ProjectId;
+  /** Project root: the key of the project's setup pick. */
+  root: string;
+}) {
   const { issues, error, loading, fetchedAt } = useIssueStore(
     (s) => s.byProject[projectId] ?? NONE,
   );
   const refresh = useIssueStore((s) => s.refresh);
   const startAutoRefresh = useIssueStore((s) => s.startAutoRefresh);
+  const overview = useIssueStore((s) => s.overview);
+  const loadOverview = useIssueStore((s) => s.loadOverview);
 
   useEffect(() => startAutoRefresh(projectId), [projectId, startAutoRefresh]);
+  useEffect(() => void loadOverview(), [loadOverview]);
+
+  const setups = overview?.setups ?? [];
+  const picked = overview?.projects[root] ?? "";
+  const pick = (setupId: string) =>
+    issuesProjectSetupSet(projectId, setupId || undefined)
+      .then((o) => useIssueStore.getState().setOverview(o))
+      .catch((e) => toastError(toIpcError(e).message));
 
   // A setup error means the list (if any) is meaningless; a transient one
   // keeps the stale rows under the message.
@@ -83,6 +110,15 @@ export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
         <button
           type="button"
           className={sidebarStyles.addBtn}
+          aria-label="Issue settings"
+          title="Issue settings"
+          onClick={openIssueSettings}
+        >
+          <SettingsIcon size={13} />
+        </button>
+        <button
+          type="button"
+          className={sidebarStyles.addBtn}
           aria-label="Refresh issues"
           title="Refresh issues"
           aria-busy={loading}
@@ -94,14 +130,26 @@ export function IssueSubsection({ projectId }: { projectId: ProjectId }) {
           />
         </button>
       </div>
+      {setups.length > 0 && (
+        <select
+          className={sidebarStyles.issueSetupPicker}
+          aria-label="Issue setup"
+          value={picked}
+          onChange={(e) => void pick(e.target.value)}
+        >
+          <option value="">Auto (match remote)</option>
+          {setups.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+      )}
       {error && (
         <div className={sidebarStyles.placeholder} role="status">
           <span>{errorText(error)}</span>
-          {GITLAB_SETTINGS_ERRORS.has(error.kind) && (
-            <button
-              type="button"
-              onClick={() => useSettingsRequestStore.getState().open("issues")}
-            >
+          {SETTINGS_ERRORS.has(error.kind) && (
+            <button type="button" onClick={openIssueSettings}>
               Check Settings
             </button>
           )}

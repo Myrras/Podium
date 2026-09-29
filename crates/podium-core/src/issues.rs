@@ -1,10 +1,12 @@
 //! Issues assigned to the user in a project's repo, for the sidebar's Issues
-//! section. The repo is auto-detected from the git `origin` remote; GitHub
-//! issues come from the user's own `gh` login (Podium stores no token).
+//! section. The repo is auto-detected from the git `origin` remote; which
+//! credentials fetch it is an [`IssueSetup`] from Settings → Issues (picked
+//! per project, or matched by host). GitHub goes through the user's own `gh`
+//! login, optionally a specific `gh` account (Podium stores no GitHub token).
 //!
 //! Self-hosted GitLab (temporary, see [`fetch_gitlab`]) uses a personal access
-//! token kept only in the OS keychain: it is never returned, logged or put in
-//! an error message.
+//! token kept only in the OS keychain, per setup: it is never returned, logged
+//! or put in an error message.
 //!
 //! Everything here shells out or does blocking I/O, so call it from a blocking-friendly context.
 //! Error messages are Podium-owned text — `gh`/`git` output is never captured
@@ -111,19 +113,49 @@ pub fn parse_gh_issues(json: &str) -> CoreResult<Vec<IssueInfo>> {
         .collect())
 }
 
-/// Open issues assigned to `@me` in `owner_repo`, via the `gh` binary at `gh`
-/// (injectable so tests can point it at a fake script).
-pub fn fetch_github(gh: &str, owner_repo: &str) -> CoreResult<Vec<IssueInfo>> {
+/// The token of a specific `gh` account on `host`. `gh` already holds it, so
+/// this only picks which one — Podium never stores it.
+fn gh_account_token(gh: &str, host: &str, account: &str) -> CoreResult<String> {
     let output = Command::new(gh)
-        .args(["issue", "list", "--repo", owner_repo])
+        .args(["auth", "token", "--hostname", host, "--user", account])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| CoreError::IssuesGhUnavailable)?;
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || token.is_empty() {
+        return Err(CoreError::IssuesGhUnavailable);
+    }
+    Ok(token)
+}
+
+/// Open issues assigned to `@me` in `owner_repo` on `host`, via the `gh`
+/// binary at `gh` (injectable so tests can point it at a fake script).
+/// `account` picks a logged-in `gh` account; `None` uses the active one.
+pub fn fetch_github(
+    gh: &str,
+    host: &str,
+    owner_repo: &str,
+    account: Option<&str>,
+) -> CoreResult<Vec<IssueInfo>> {
+    let mut cmd = Command::new(gh);
+    cmd.args(["issue", "list", "--repo", &format!("{host}/{owner_repo}")])
         .args(["--assignee", "@me", "--state", "open", "--limit", "100"])
         .args(["--json", "number,title,url,body,labels,updatedAt"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => CoreError::IssuesGhUnavailable,
-            _ => CoreError::IssuesFetch("could not run gh".to_string()),
-        })?;
+        .stdin(Stdio::null());
+    if let Some(account) = account {
+        let token = gh_account_token(gh, host, account)?;
+        let var = if host == "github.com" {
+            "GH_TOKEN"
+        } else {
+            "GH_ENTERPRISE_TOKEN"
+        };
+        cmd.env(var, token);
+    }
+    let output = cmd.output().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => CoreError::IssuesGhUnavailable,
+        _ => CoreError::IssuesFetch("could not run gh".to_string()),
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
         // stderr is only inspected, never forwarded.
@@ -138,29 +170,86 @@ pub fn fetch_github(gh: &str, owner_repo: &str) -> CoreResult<Vec<IssueInfo>> {
     parse_gh_issues(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Which platform a setup talks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IssueProvider {
+    Github,
+    // ponytail: temporary, remove once Connect is on GitHub
+    Gitlab,
+}
+
+/// One configured GitHub/GitLab connection (Settings → Issues).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSetup {
+    pub id: String,
+    pub name: String,
+    pub provider: IssueProvider,
+    /// Base URL with its scheme kept (`http://` is honoured for an instance
+    /// without TLS), see [`normalize_url`].
+    pub url: String,
+    /// GitHub only: the `gh` account to use; `None` = gh's active account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// A setup as Settings → Issues shows it: `token_set` says whether a GitLab
+/// token is in the keychain; the token itself never leaves this module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSetupInfo {
+    #[serde(flatten)]
+    pub setup: IssueSetup,
+    pub token_set: bool,
+}
+
+/// Every setup plus each project's pick (project root → setup id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssuesOverview {
+    pub setups: Vec<IssueSetupInfo>,
+    pub projects: std::collections::BTreeMap<std::path::PathBuf, String>,
+}
+
+/// Reduce user input to `scheme://host[:port]`: the scheme is kept (default
+/// `https`), the host lowercased, any path dropped. `None` when no host is left.
+pub fn normalize_url(input: &str) -> Option<String> {
+    let s = input.trim();
+    let (scheme, rest) = match s.split_once("://") {
+        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
+        None => ("https".to_string(), s),
+    };
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = rest.split('/').next().unwrap_or("").trim();
+    (!host.is_empty() && !host.contains(char::is_whitespace))
+        .then(|| format!("{scheme}://{}", host.to_ascii_lowercase()))
+}
+
+/// The bare hostname of a normalized setup URL (port dropped, as
+/// [`parse_remote`] drops it from the remote).
+pub fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or("");
+    authority.split(':').next().unwrap_or("")
+}
+
 // ponytail: temporary, remove once Connect is on GitHub — the GitLab parts
-// of this module (this block, `Route::GitLab`, the dispatch arm in `list`,
-// `IssueSettings`, the two errors, the Settings tab) go in one sweep.
+// of this module (this block, `IssueProvider::Gitlab`, the dispatch arm in
+// `list`, the two errors, the Settings fields) go in one sweep.
 
 const KEYCHAIN_SERVICE: &str = "com.podium.app.gitlab";
 
-/// Reduce user input (`https://Git.Example.test/`) to a bare hostname; `None`
-/// when nothing usable is left.
-pub fn normalize_host(input: &str) -> Option<String> {
-    let s = input.trim();
-    let s = s.split_once("://").map_or(s, |(_, rest)| rest);
-    let host = s.split('/').next().unwrap_or("").trim();
-    (!host.is_empty() && !host.contains(char::is_whitespace)).then(|| host.to_ascii_lowercase())
-}
-
-fn keychain_entry(host: &str) -> CoreResult<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, host)
+fn keychain_entry(setup_id: &str) -> CoreResult<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, setup_id)
         .map_err(|_| CoreError::IssuesFetch("could not open the keychain".to_string()))
 }
 
-/// Store the token for `host` in the OS keychain; a blank token deletes it.
-pub fn gitlab_token_set(host: &str, token: &str) -> CoreResult<()> {
-    let entry = keychain_entry(host)?;
+/// Store the token for a setup in the OS keychain; a blank token deletes it.
+pub fn gitlab_token_set(setup_id: &str, token: &str) -> CoreResult<()> {
+    let entry = keychain_entry(setup_id)?;
     let result = if token.trim().is_empty() {
         match entry.delete_credential() {
             Err(keyring::Error::NoEntry) => Ok(()),
@@ -172,13 +261,13 @@ pub fn gitlab_token_set(host: &str, token: &str) -> CoreResult<()> {
     result.map_err(|_| CoreError::IssuesFetch("could not update the keychain".to_string()))
 }
 
-fn gitlab_token_get(host: &str) -> Option<String> {
-    keychain_entry(host).ok()?.get_password().ok()
+fn gitlab_token_get(setup_id: &str) -> Option<String> {
+    keychain_entry(setup_id).ok()?.get_password().ok()
 }
 
-/// Whether a token is stored for `host` (the token itself never leaves here).
-pub fn gitlab_token_present(host: &str) -> bool {
-    gitlab_token_get(host).is_some()
+/// Whether a token is stored for a setup (the token itself never leaves here).
+pub fn gitlab_token_present(setup_id: &str) -> bool {
+    gitlab_token_get(setup_id).is_some()
 }
 
 #[derive(Deserialize)]
@@ -237,39 +326,56 @@ pub fn fetch_gitlab(base: &str, project_path: &str, token: &str) -> CoreResult<V
     }
 }
 
-/// Where a remote's issues come from.
-#[derive(Debug, PartialEq, Eq)]
-enum Route {
-    GitHub,
-    GitLab,
-    Unsupported,
-}
-
-fn route(remote_host: &str, gitlab_host: Option<&str>) -> Route {
-    if remote_host == "github.com" {
-        Route::GitHub
-    } else if gitlab_host == Some(remote_host) {
-        // ponytail: temporary, remove once Connect is on GitHub
-        Route::GitLab
-    } else {
-        Route::Unsupported
+/// The setup that serves `remote_host`: the project's `selected` one (which
+/// must be for that host), else the first configured for it. `Ok(None)` means
+/// github.com with nothing configured — the active `gh` account, zero-config.
+fn pick<'a>(
+    remote_host: &str,
+    setups: &'a [IssueSetup],
+    selected: Option<&'a IssueSetup>,
+) -> CoreResult<Option<&'a IssueSetup>> {
+    if let Some(setup) = selected {
+        return if url_host(&setup.url) == remote_host {
+            Ok(Some(setup))
+        } else {
+            Err(CoreError::IssuesHostMismatch {
+                setup: setup.name.clone(),
+                remote: remote_host.to_string(),
+            })
+        };
+    }
+    match setups.iter().find(|s| url_host(&s.url) == remote_host) {
+        Some(setup) => Ok(Some(setup)),
+        None if remote_host == "github.com" => Ok(None),
+        None => Err(CoreError::IssuesUnsupportedHost),
     }
 }
 
-/// Detect the repo behind `root` and list the user's open issues there.
-/// `gitlab_host` is the configured self-hosted GitLab, if any.
-pub fn list(root: &Path, gitlab_host: Option<&str>) -> CoreResult<Vec<IssueInfo>> {
+/// Detect the repo behind `root` and list the user's open issues there,
+/// using the project's `selected` setup or the first matching one.
+pub fn list(
+    root: &Path,
+    setups: &[IssueSetup],
+    selected: Option<&IssueSetup>,
+) -> CoreResult<Vec<IssueInfo>> {
     let (host, path) = detect(root)?;
-    match route(&host, gitlab_host) {
-        Route::GitHub => {
+    let setup = pick(&host, setups, selected)?;
+    match setup {
+        Some(IssueSetup {
+            provider: IssueProvider::Gitlab,
+            id,
+            url,
+            ..
+        }) => {
+            // ponytail: temporary, remove once Connect is on GitHub
+            let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
+            fetch_gitlab(url, &path, &token)
+        }
+        _ => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
-            fetch_github(gh, &path)
+            let account = setup.and_then(|s| s.account.as_deref());
+            fetch_github(gh, &host, &path, account)
         }
-        Route::GitLab => {
-            let token = gitlab_token_get(&host).ok_or(CoreError::IssuesGitlabNotConfigured)?;
-            fetch_gitlab(&format!("https://{host}"), &path, &token)
-        }
-        Route::Unsupported => Err(CoreError::IssuesUnsupportedHost),
     }
 }
 
@@ -329,22 +435,32 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_host() {
+    fn normalizes_url() {
         for (input, want) in [
-            ("git.example.test", Some("git.example.test")),
-            ("https://Git.Example.test/", Some("git.example.test")),
+            ("git.example.test", Some("https://git.example.test")),
+            (
+                "https://Git.Example.test/",
+                Some("https://git.example.test"),
+            ),
             (
                 "  http://git.example.test/group/proj ",
-                Some("git.example.test"),
+                Some("http://git.example.test"),
             ),
-            ("git.example.test:8443", Some("git.example.test:8443")),
+            ("HTTP://git.example.test", Some("http://git.example.test")),
+            (
+                "git.example.test:8443",
+                Some("https://git.example.test:8443"),
+            ),
+            ("ftp://git.example.test", None),
             ("", None),
             ("   ", None),
             ("https://", None),
             ("two words", None),
         ] {
-            assert_eq!(normalize_host(input).as_deref(), want, "{input:?}");
+            assert_eq!(normalize_url(input).as_deref(), want, "{input:?}");
         }
+        assert_eq!(url_host("http://git.example.test:8080"), "git.example.test");
+        assert_eq!(url_host("https://github.com"), "github.com");
     }
 
     #[test]
@@ -370,19 +486,37 @@ mod tests {
         ));
     }
 
+    fn setup(id: &str, provider: IssueProvider, url: &str) -> IssueSetup {
+        IssueSetup {
+            id: id.into(),
+            name: id.into(),
+            provider,
+            url: url.into(),
+            account: None,
+        }
+    }
+
     #[test]
-    fn dispatches_by_host() {
-        assert_eq!(route("github.com", None), Route::GitHub);
-        assert_eq!(route("github.com", Some("git.example.test")), Route::GitHub);
-        assert_eq!(
-            route("git.example.test", Some("git.example.test")),
-            Route::GitLab
-        );
-        assert_eq!(route("git.example.test", None), Route::Unsupported);
-        assert_eq!(
-            route("other.test", Some("git.example.test")),
-            Route::Unsupported
-        );
+    fn picks_setup_by_selection_then_host() {
+        let gl = setup("gl", IssueProvider::Gitlab, "http://git.example.test");
+        let gh2 = setup("gh2", IssueProvider::Github, "https://github.com");
+        let setups = vec![gl.clone(), gh2.clone()];
+
+        // Zero-config github.com, and unknown hosts.
+        assert_eq!(pick("github.com", &[], None).unwrap(), None);
+        assert!(matches!(
+            pick("other.test", &setups, None),
+            Err(CoreError::IssuesUnsupportedHost)
+        ));
+        // Auto: first setup whose host matches.
+        assert_eq!(pick("git.example.test", &setups, None).unwrap(), Some(&gl));
+        assert_eq!(pick("github.com", &setups, None).unwrap(), Some(&gh2));
+        // An explicit pick wins, but must be for the remote's host.
+        assert_eq!(pick("github.com", &setups, Some(&gh2)).unwrap(), Some(&gh2));
+        assert!(matches!(
+            pick("github.com", &setups, Some(&gl)),
+            Err(CoreError::IssuesHostMismatch { .. })
+        ));
     }
 
     /// One-shot local HTTP server answering with `status` + `body`; returns
@@ -458,21 +592,42 @@ mod tests {
         fn success_and_error_classification() {
             let dir = tempfile::tempdir().unwrap();
             let ok = script(dir.path(), r#"echo '[{"number":3,"title":"t","url":"u"}]'"#);
-            assert_eq!(fetch_github(&ok, "acme/widgets").unwrap()[0].number, 3);
+            assert_eq!(
+                fetch_github(&ok, "github.com", "acme/widgets", None).unwrap()[0].number,
+                3
+            );
 
             let auth = script(dir.path(), "echo 'run: gh auth login' >&2; exit 4");
             assert!(matches!(
-                fetch_github(&auth, "acme/widgets"),
+                fetch_github(&auth, "github.com", "acme/widgets", None),
                 Err(CoreError::IssuesGhUnavailable)
             ));
 
             let other = script(dir.path(), "echo 'secret-ish stderr' >&2; exit 1");
-            let err = fetch_github(&other, "acme/widgets").unwrap_err();
+            let err = fetch_github(&other, "github.com", "acme/widgets", None).unwrap_err();
             assert!(matches!(err, CoreError::IssuesFetch(_)));
             assert!(!err.to_string().contains("secret-ish"));
 
             assert!(matches!(
-                fetch_github("/nonexistent/gh", "acme/widgets"),
+                fetch_github("/nonexistent/gh", "github.com", "acme/widgets", None),
+                Err(CoreError::IssuesGhUnavailable)
+            ));
+        }
+
+        #[test]
+        fn account_token_is_passed_to_gh_only_via_env() {
+            let dir = tempfile::tempdir().unwrap();
+            let gh = script(
+                dir.path(),
+                r#"if [ "$1" = auth ]; then [ "$6" = work ] && echo fake-tok && exit 0; exit 1; fi
+echo "[{\"number\":1,\"title\":\"$GH_TOKEN $4\",\"url\":\"u\"}]""#,
+            );
+            let issues = fetch_github(&gh, "github.com", "acme/widgets", Some("work")).unwrap();
+            assert_eq!(issues[0].title, "fake-tok github.com/acme/widgets");
+            let unset = fetch_github(&gh, "github.com", "acme/widgets", None).unwrap();
+            assert_eq!(unset[0].title, " github.com/acme/widgets");
+            assert!(matches!(
+                fetch_github(&gh, "github.com", "acme/widgets", Some("nobody")),
                 Err(CoreError::IssuesGhUnavailable)
             ));
         }

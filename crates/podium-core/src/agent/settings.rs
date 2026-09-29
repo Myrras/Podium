@@ -82,11 +82,14 @@ pub struct AgentSettings {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueSettings {
-    /// Bare hostname of the self-hosted GitLab (see `issues::normalize_host`).
-    /// The token lives in the OS keychain, never here.
-    // ponytail: temporary, remove once Connect is on GitHub
+    /// The GitHub/GitLab setups the user configured. Tokens live in the OS
+    /// keychain (keyed by setup id), never here.
     #[serde(default)]
-    pub gitlab_host: Option<String>,
+    pub setups: Vec<crate::issues::IssueSetup>,
+    /// Per-project pick (project root → setup id). Absent = match the
+    /// remote's host automatically.
+    #[serde(default)]
+    pub projects: BTreeMap<PathBuf, String>,
 }
 
 fn default_true() -> bool {
@@ -185,10 +188,10 @@ impl AgentSettingsStore {
         Ok(inner.settings.clone())
     }
 
-    /// Set (or clear) the self-hosted GitLab host; returns the updated settings.
-    pub fn set_issues_gitlab_host(&self, host: Option<String>) -> CoreResult<AgentSettings> {
+    /// Replace the Issues settings; returns the updated settings.
+    pub fn set_issues(&self, issues: IssueSettings) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.settings.issues.gitlab_host = host;
+        inner.settings.issues = issues;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -427,19 +430,26 @@ mod tests {
     }
 
     #[test]
-    fn gitlab_host_defaults_none_and_persists() {
+    fn issue_settings_default_empty_and_persist() {
         let legacy: AgentSettings = serde_json::from_str("{}").unwrap();
-        assert_eq!(legacy.issues.gitlab_host, None);
+        assert_eq!(legacy.issues, IssueSettings::default());
         let store = AgentSettingsStore::new();
-        let updated = store
-            .set_issues_gitlab_host(Some("git.example.test".into()))
-            .unwrap();
-        assert_eq!(
-            updated.issues.gitlab_host.as_deref(),
-            Some("git.example.test")
-        );
+        let mut issues = IssueSettings::default();
+        issues.setups.push(crate::issues::IssueSetup {
+            id: "s1".into(),
+            name: "Work GitLab".into(),
+            provider: crate::issues::IssueProvider::Gitlab,
+            url: "http://git.example.test".into(),
+            account: None,
+        });
+        issues
+            .projects
+            .insert(PathBuf::from("/work/widgets"), "s1".into());
+        let updated = store.set_issues(issues.clone()).unwrap();
+        assert_eq!(updated.issues, issues);
         let v = serde_json::to_value(&updated).unwrap();
-        assert_eq!(v["issues"]["gitlabHost"], "git.example.test");
+        assert_eq!(v["issues"]["setups"][0]["provider"], "gitlab");
+        assert_eq!(v["issues"]["projects"]["/work/widgets"], "s1");
     }
 
     #[test]

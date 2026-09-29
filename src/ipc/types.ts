@@ -36,10 +36,26 @@ export interface IssueInfo {
   updatedAt: string;
 }
 
-/** Settings → Issues (`IssuesSettingsDto`); the token itself never crosses IPC. */
-export interface IssuesSettingsDto {
-  gitlabHost: string | null;
-  gitlabTokenSet: boolean;
+/** Platform an issue setup talks to (`podium_core::IssueProvider`). */
+export type IssueProvider = "github" | "gitlab";
+
+/** One Settings → Issues setup (`IssueSetupInfo`); a token never crosses IPC. */
+export interface IssueSetup {
+  id: string;
+  name: string;
+  provider: IssueProvider;
+  /** Base URL, scheme kept (`http://` for an instance without TLS). */
+  url: string;
+  /** GitHub: the `gh` account to use; absent = gh's active account. */
+  account?: string;
+  /** GitLab: whether a token is stored in the keychain. */
+  tokenSet: boolean;
+}
+
+/** Every setup plus each project's pick, keyed by project root (`IssuesOverview`). */
+export interface IssuesOverview {
+  setups: IssueSetup[];
+  projects: Record<string, string>;
 }
 
 /** Open project snapshot (`podium_core::ProjectInfo`). */

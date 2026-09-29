@@ -80,6 +80,7 @@ impl From<CoreError> for IpcError {
             CoreError::IssuesNoRemote => "issuesNoRemote",
             CoreError::IssuesGhUnavailable => "issuesGhUnavailable",
             CoreError::IssuesUnsupportedHost => "issuesUnsupportedHost",
+            CoreError::IssuesHostMismatch { .. } => "issuesHostMismatch",
             CoreError::IssuesGitlabNotConfigured => "issuesGitlabNotConfigured",
             CoreError::IssuesGitlabAuth => "issuesGitlabAuth",
             CoreError::IssuesFetch(_) => "issuesFetch",

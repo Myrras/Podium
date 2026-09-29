@@ -11,8 +11,13 @@
 
 import { create } from "zustand";
 
-import { issuesList, toIpcError } from "../ipc/commands";
-import type { IpcError, IssueInfo, ProjectId } from "../ipc/types";
+import { issuesList, issuesSettingsGet, toIpcError } from "../ipc/commands";
+import type {
+  IpcError,
+  IssueInfo,
+  IssuesOverview,
+  ProjectId,
+} from "../ipc/types";
 
 export const ISSUE_POLL_MS = 5 * 60_000;
 export const ISSUE_FOCUS_STALE_MS = 60_000;
@@ -35,6 +40,12 @@ const EMPTY: ProjectIssues = {
 
 interface IssueState {
   byProject: Record<ProjectId, ProjectIssues>;
+  /** Settings → Issues setups + per-project picks; `null` until loaded. */
+  overview: IssuesOverview | null;
+  /** Load `overview` once (a no-op when already loaded). */
+  loadOverview: () => Promise<void>;
+  /** Apply a changed overview and refetch every shown project with it. */
+  setOverview: (overview: IssuesOverview) => void;
   /** Fetch now; a no-op while this project already has one in flight. */
   refresh: (projectId: ProjectId) => Promise<void>;
   /** Fetch + poll + focus-refresh for as long as the returned stop fn is not called. */
@@ -45,6 +56,24 @@ interface IssueState {
 
 export const useIssueStore = create<IssueState>((set, get) => ({
   byProject: {},
+  overview: null,
+
+  loadOverview: async () => {
+    if (get().overview) return;
+    try {
+      const overview = await issuesSettingsGet();
+      set({ overview });
+    } catch {
+      // The picker just stays hidden; fetching issues still works.
+    }
+  },
+
+  setOverview: (overview) => {
+    set({ overview });
+    for (const projectId of Object.keys(get().byProject)) {
+      void get().refresh(projectId);
+    }
+  },
 
   refresh: async (projectId) => {
     const current = get().byProject[projectId] ?? EMPTY;
