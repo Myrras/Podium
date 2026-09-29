@@ -241,9 +241,21 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  margin: 0;
   font-size: var(--fs-sm);
   color: var(--text);
+  white-space: nowrap;
   cursor: pointer;
+}
+
+/* The global input rule (width: 100%, padding) would stretch the checkbox
+   and push its label out of the popover. */
+.sectionsItem input {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
 }
 
 /* ── Group body ────────────────────────────────────────────────────────────── */
