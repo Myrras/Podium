@@ -5,7 +5,7 @@
  */
 
 import type { BoardItem, ProjectId } from "../ipc/types";
-import { prRef } from "../lib/issueActions";
+import { approvalBadge, prRef } from "../lib/issueActions";
 import { openExternalLink } from "../lib/links";
 import { scrollEdges } from "../lib/scrollEdges";
 import { moveTargets, useIssueStore } from "../state/issueStore";
@@ -31,6 +31,10 @@ export function IssueDetailPane({
   const targets = item && board ? moveTargets(item, board.columns) : [];
   const provider = board?.provider ?? "github";
   const prWord = provider === "gitlab" ? "merge" : "pull";
+  const approvalLine = (a: ReturnType<typeof approvalBadge>) =>
+    a && ` · ${a.text} approved${a.mine ? " (incl. you)" : ""}`;
+  const own =
+    item && item.column !== "done" && approvalBadge(item.approvals, board?.me);
   return (
     <aside className={styles.pane} aria-label={`${itemRef} details`}>
       <div className={styles.header}>
@@ -66,6 +70,11 @@ export function IssueDetailPane({
               ))}
               {item.author && (
                 <li className={styles.author}>by {item.author}</li>
+              )}
+              {own && (
+                <li className={styles.author} title={own.title}>
+                  {own.text} approved{own.mine ? " (incl. you)" : ""}
+                </li>
               )}
             </ul>
           )}
@@ -103,6 +112,8 @@ export function IssueDetailPane({
                       <PrIcon size={12} />
                       {prRef(pr.number, provider)} {pr.title}
                       {pr.merged ? " (merged)" : pr.draft ? " (draft)" : ""}
+                      {!pr.merged &&
+                        approvalLine(approvalBadge(pr.approvals, board?.me))}
                     </button>
                   </li>
                 ))}

@@ -29,6 +29,7 @@ const issue: BoardItem = {
   movable: false,
   linked: [],
   assignees: [],
+  approvals: null,
 };
 
 beforeEach(() => {
@@ -165,6 +166,7 @@ describe("IssueDetailPane", () => {
           url: "https://github.com/acme/widgets/pull/20",
           draft: false,
           merged: true,
+          approvals: null,
         },
       ],
     };

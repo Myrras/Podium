@@ -94,6 +94,16 @@ pub enum ItemKind {
     Pr,
 }
 
+/// Who approved an open PR/MR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Approvals {
+    /// Logins/usernames that approved.
+    pub by: Vec<String>,
+    /// Approvals the platform requires (GitLab); `None` when it does not say.
+    pub required: Option<u32>,
+}
+
 /// A PR/MR that closes an issue on the board, shown on the issue's card
 /// instead of as a card of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +114,8 @@ pub struct LinkedPr {
     pub url: String,
     pub draft: bool,
     pub merged: bool,
+    #[serde(default)]
+    pub approvals: Option<Approvals>,
 }
 
 fn yes() -> bool {
@@ -139,6 +151,9 @@ pub struct BoardItem {
     /// Logins/usernames the item is assigned to.
     #[serde(default)]
     pub assignees: Vec<String>,
+    /// Open PRs/MRs only; `None` when unknown.
+    #[serde(default)]
+    pub approvals: Option<Approvals>,
 }
 
 /// All-time PR/MR totals in the board's scope; `None` when the platform
@@ -233,6 +248,7 @@ fn fold_linked(items: Vec<BoardItem>, closing: &[Closing]) -> Vec<BoardItem> {
                     url: i.url.clone(),
                     draft: i.draft,
                     merged: c.merged,
+                    approvals: i.approvals.clone(),
                 },
             ))
         })
@@ -338,6 +354,17 @@ struct GhItem {
     closing_issues_references: Vec<GhRef>,
     #[serde(default)]
     assignees: Vec<GhUser>,
+    /// PRs only: each reviewer's latest review.
+    #[serde(default)]
+    latest_reviews: Option<Vec<GhReview>>,
+}
+
+#[derive(Deserialize)]
+struct GhReview {
+    #[serde(default)]
+    author: Option<GhUser>,
+    #[serde(default)]
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -371,6 +398,14 @@ impl GhItem {
             movable: movable(kind, column),
             linked: Vec::new(),
             assignees: self.assignees.into_iter().map(|a| a.login).collect(),
+            approvals: self.latest_reviews.map(|reviews| Approvals {
+                by: reviews
+                    .into_iter()
+                    .filter(|r| r.state == "APPROVED")
+                    .filter_map(|r| r.author.map(|a| a.login))
+                    .collect(),
+                required: None,
+            }),
         }
     }
 }
@@ -579,8 +614,8 @@ fn run_gh_scoped(
 }
 
 const GH_ISSUE_FIELDS: &str = "number,title,url,body,labels,updatedAt,author,assignees";
-const GH_PR_FIELDS: &str =
-    "number,title,url,body,labels,updatedAt,author,assignees,isDraft,closingIssuesReferences";
+const GH_PR_FIELDS: &str = "number,title,url,body,labels,updatedAt,author,assignees,isDraft,\
+closingIssuesReferences,latestReviews";
 const GH_COUNTS_QUERY: &str = "query($o:String!,$m:String!){\
 o:search(query:$o,type:ISSUE,first:0){issueCount} \
 m:search(query:$m,type:ISSUE,first:0){issueCount}}";
@@ -900,6 +935,7 @@ impl GlItem {
             movable: movable(kind, column),
             linked: Vec::new(),
             assignees: self.assignees.into_iter().map(|a| a.username).collect(),
+            approvals: None,
         }
     }
 }
@@ -1001,13 +1037,16 @@ fn gl_closing(m: &GlItem, project: &str) -> Vec<u64> {
             }
         }
     }
+    // A branch segment that starts with the issue number: `42-fix`,
+    // `issue/12661`, `issue/12661b`, `feature/7-x`. The first one wins.
     let branch = m.source_branch.as_deref().unwrap_or_default();
-    if let Some(n) = branch
-        .split_once('-')
-        .filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|(n, _)| n.parse().ok())
-    {
-        out.push(n);
+    if let Some(n) = branch.split('/').find_map(|seg| {
+        let digits = seg.bytes().take_while(u8::is_ascii_digit).count();
+        seg[..digits].parse::<u64>().ok()
+    }) {
+        if !out.contains(&n) {
+            out.push(n);
+        }
     }
     out
 }
@@ -1016,6 +1055,7 @@ fn gl_closing(m: &GlItem, project: &str) -> Vec<u64> {
 /// lists are filtered by `updated_after`, so the real closed/merged time is
 /// checked here. With board `lists`, an open card sits in the first list whose
 /// label it carries, else issue → `open`, MR → `review`.
+#[allow(clippy::too_many_arguments)]
 fn assemble_gitlab(
     open_issues: &str,
     closed_issues: &str,
@@ -1024,6 +1064,7 @@ fn assemble_gitlab(
     lists: &[Column],
     project: &str,
     since: DateTime<Utc>,
+    approvals: &HashMap<u64, Approvals>,
 ) -> CoreResult<Vec<BoardItem>> {
     let listed = |labels: &[String], default: &str| {
         lists
@@ -1061,7 +1102,10 @@ fn assemble_gitlab(
         } else {
             listed(&m.labels, "review")
         };
-        items.push(m.into_item(ItemKind::Pr, &column));
+        let approved = approvals.get(&m.iid).cloned();
+        let mut item = m.into_item(ItemKind::Pr, &column);
+        item.approvals = approved;
+        items.push(item);
     }
     for m in parse_gl(merged_mrs)? {
         if at_or_after(m.merged_at.as_deref(), since) {
@@ -1198,6 +1242,7 @@ pub fn fetch_gitlab(
         Ok((json, _)) => parse_gl_board(&json).map_or((None, Vec::new()), |(n, l)| (Some(n), l)),
         Err(_) => fallback.map_or((None, Vec::new()), |(n, l)| (Some(n), l)),
     };
+    let approvals = gitlab_approvals(base, token, project_path, &open_mrs);
     let items = assemble_gitlab(
         &open_issues?.0,
         &closed_issues?.0,
@@ -1206,6 +1251,7 @@ pub fn fetch_gitlab(
         &lists,
         project_path,
         since,
+        &approvals,
     )?;
     let columns = if source.is_some() {
         project_columns("Open", lists, "Closed (14d)")
@@ -1224,6 +1270,68 @@ pub fn fetch_gitlab(
         },
         me,
     })
+}
+
+const GL_APPROVALS_QUERY: &str = "query($p:ID!,$i:[String!]){project(fullPath:$p){\
+mergeRequests(iids:$i,first:100){nodes{iid approvalsRequired approvedBy{nodes{username}}}}}}";
+
+/// Approvals of the open MRs, one GraphQL call after the lists (the REST MR
+/// list does not carry them). Any failure — CE without `approvalsRequired`,
+/// no GraphQL — is an empty map: the board just shows no approvals.
+fn gitlab_approvals(
+    base: &str,
+    token: &str,
+    project_path: &str,
+    open_mrs: &str,
+) -> HashMap<u64, Approvals> {
+    let iids: Vec<String> = parse_gl(open_mrs)
+        .unwrap_or_default()
+        .iter()
+        .map(|m| m.iid.to_string())
+        .collect();
+    if iids.is_empty() {
+        return HashMap::new();
+    }
+    let body = serde_json::json!({
+        "query": GL_APPROVALS_QUERY,
+        "variables": { "p": project_path, "i": iids },
+    });
+    let client = reqwest::blocking::Client::new();
+    let Ok(response) = gitlab_send(|| {
+        client
+            .post(format!("{base}/api/graphql"))
+            .header("PRIVATE-TOKEN", token)
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+    }) else {
+        return HashMap::new();
+    };
+    response
+        .text()
+        .ok()
+        .map(|json| parse_gl_approvals(&json))
+        .unwrap_or_default()
+}
+
+fn parse_gl_approvals(json: &str) -> HashMap<u64, Approvals> {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    v["data"]["project"]["mergeRequests"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let iid = n["iid"].as_str()?.parse().ok()?;
+            let by = n["approvedBy"]["nodes"]
+                .as_array()?
+                .iter()
+                .filter_map(|u| u["username"].as_str().map(str::to_string))
+                .collect();
+            let required = n["approvalsRequired"]
+                .as_u64()
+                .and_then(|r| u32::try_from(r).ok());
+            Some((iid, Approvals { by, required }))
+        })
+        .collect()
 }
 
 /// The setup that serves `remote_host`: the project's `selected` one (which
@@ -1946,6 +2054,7 @@ mod tests {
             &[],
             "grp/proj",
             since(),
+            &HashMap::new(),
         )
         .unwrap();
         let col = |n: u64| {
@@ -1966,7 +2075,16 @@ mod tests {
         assert_eq!(twelve.author, "sam");
         assert_eq!(twelve.kind, ItemKind::Issue);
         assert!(matches!(
-            assemble_gitlab("{}", "[]", "[]", "[]", &[], "grp/proj", since()),
+            assemble_gitlab(
+                "{}",
+                "[]",
+                "[]",
+                "[]",
+                &[],
+                "grp/proj",
+                since(),
+                &HashMap::new()
+            ),
             Err(CoreError::IssuesFetch(_))
         ));
     }
@@ -2185,6 +2303,7 @@ mod tests {
             &lists,
             "grp/proj",
             since(),
+            &HashMap::new(),
         )
         .unwrap();
         let col = |n: u64, k: ItemKind| {
@@ -2299,6 +2418,7 @@ mod tests {
             movable: movable(kind, column),
             linked: Vec::new(),
             assignees: vec!["fixture-me".into()],
+            approvals: None,
         }
     }
 
@@ -2634,10 +2754,15 @@ mod tests {
         assert_eq!(n("Implements #8\n\nFixed #9", "x"), [8, 9]);
         assert_eq!(n("", "42-fix-invoice"), [42]);
         assert_eq!(n("closes #1", "2-b"), [1, 2]);
+        // A branch segment starting with the number (Connect: `issue/N`).
+        assert_eq!(n("", "issue/12661"), [12661]);
+        assert_eq!(n("", "issue/12661b"), [12661]);
+        assert_eq!(n("", "feature/7-x"), [7]);
+        assert_eq!(n("closes #5", "issue/5"), [5]);
         // Other projects, plain mentions, lookalike words and branches.
-        assert!(n("closes other/proj#7", "feature/7-x").is_empty());
+        assert!(n("closes other/proj#7", "feature/x").is_empty());
         assert!(n("see #7, prefix #8, fixture #9", "x").is_empty());
-        assert!(n("closes #", "7up-drink").is_empty());
+        assert!(n("closes #", "drink-7up").is_empty());
     }
 
     #[test]
@@ -2646,7 +2771,9 @@ mod tests {
             r#"[{"number":7,"title":"a","url":"u7"},{"number":8,"title":"b","url":"u8"}]"#,
             "[]",
             r#"[{"number":20,"title":"fix 7 and 8","url":"u20","isDraft":true,
-                 "closingIssuesReferences":[{"number":7},{"number":8}]},
+                 "closingIssuesReferences":[{"number":7},{"number":8}],
+                 "latestReviews":[{"author":{"login":"kim"},"state":"APPROVED"},
+                                  {"author":{"login":"sam"},"state":"CHANGES_REQUESTED"}]},
                 {"number":21,"title":"off board","url":"u21",
                  "closingIssuesReferences":[{"number":99}]}]"#,
             r#"[{"number":19,"title":"merged","url":"u19","closingIssuesReferences":[{"number":7}]}]"#,
@@ -2678,6 +2805,44 @@ mod tests {
         let v = serde_json::to_value(issue(8)).unwrap();
         assert_eq!(v["linked"][0]["title"], "fix 7 and 8");
         assert_eq!(v["linked"][0]["merged"], false);
+        // Only APPROVED reviews count; GitHub does not say how many are needed.
+        assert_eq!(
+            issue(8).linked[0].approvals,
+            Some(Approvals {
+                by: vec!["kim".into()],
+                required: None
+            })
+        );
+    }
+
+    #[test]
+    fn gitlab_approvals_parse_and_land_on_linked_mrs() {
+        let map = parse_gl_approvals(
+            r#"{"data":{"project":{"mergeRequests":{"nodes":[
+                {"iid":"40","approvalsRequired":2,"approvedBy":{"nodes":[{"username":"kim"}]}},
+                {"iid":"41","approvalsRequired":null,"approvedBy":{"nodes":[]}}]}}}}"#,
+        );
+        assert_eq!(map[&41].required, None);
+        assert!(parse_gl_approvals(r#"{"errors":[{"message":"nope"}]}"#).is_empty());
+        let items = assemble_gitlab(
+            r#"[{"iid":12,"title":"a","web_url":"u12"}]"#,
+            "[]",
+            r#"[{"iid":40,"title":"m","web_url":"u40","source_branch":"issue/12"}]"#,
+            "[]",
+            &[],
+            "grp/proj",
+            since(),
+            &map,
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].linked[0].approvals,
+            Some(Approvals {
+                by: vec!["kim".into()],
+                required: Some(2)
+            })
+        );
     }
 
     #[test]
@@ -2693,6 +2858,7 @@ mod tests {
             &[],
             "grp/proj",
             since(),
+            &HashMap::new(),
         )
         .unwrap();
         assert_eq!(items.len(), 3);

@@ -435,7 +435,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   board stays a card. GitHub uses `closingIssuesReferences`; GitLab makes no
   extra calls and matches the MR description against the default closing
   pattern (`closes|fixes|resolves|implements` + `#N` / `group/project#N`) plus
-  a `N-…` source branch (`gl_closing`, a heuristic — upgrade path
+  a source-branch segment starting with `N` (`gl_closing`, a heuristic — upgrade path
   `/merge_requests/:iid/closes_issues`).
 
   **Moves** (`Orchestrator::move_board_item` → `issues::validate_move` then
@@ -466,6 +466,17 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   so a co-assignee added since the fetch is kept. On success `me` leaves the
   item's assignees in both cached scopes, an *issue* leaves the `mine` board
   outright, and `board:changed` is published. IPC only, no MCP tool.
+
+  **Approvals**: open PRs/MRs (cards and linked pills) carry `approvals:
+  { by, required }`, shown as a `✓ n/required` badge (`approvalBadge`,
+  accented when `me` is among `by`). GitHub: `latestReviews` in state
+  `APPROVED` (`required` unknown → `None`). GitLab: one GraphQL call after the
+  lists (`/api/graphql`, same `PRIVATE-TOKEN`, `mergeRequests(iids:)` →
+  `approvedBy` + `approvalsRequired`), whose failure only hides the badges.
+  The **search** field (Cmd/Ctrl+F focuses it, Escape clears) filters every
+  column by ref, title, labels, author, assignees and linked PRs.
+  MR ↔ issue linking also takes a branch segment starting with the issue
+  number (`issue/12661`, `issue/12661b`, `42-fix`), Connect's convention.
 
   **GitLab connection retries** (`gitlab_send`): a request that fails before
   any HTTP status (VPN/Wi-Fi not back yet after sleep — the focus refresh

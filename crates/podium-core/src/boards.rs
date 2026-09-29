@@ -207,6 +207,7 @@ mod tests {
             movable: true,
             linked: Vec::new(),
             assignees: vec!["sam".into(), "kim".into()],
+            approvals: None,
         };
         Board {
             provider: IssueProvider::Gitlab,

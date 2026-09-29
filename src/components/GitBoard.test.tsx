@@ -47,6 +47,7 @@ function item(over: Partial<BoardItem>): BoardItem {
     movable: false,
     linked: [],
     assignees: [],
+    approvals: null,
     ...over,
   };
 }
@@ -367,13 +368,18 @@ describe("GitBoard", () => {
                 url: "https://github.com/acme/widgets/pull/20",
                 draft: true,
                 merged: false,
+                approvals: { by: ["kim", "sam"], required: 2 },
               },
             ],
           }),
         ],
+        me: "sam",
       },
     });
     render(<GitBoard projectId={P} />);
+    expect(
+      column("Open").getByLabelText("Approvals 2/2, including yours").title,
+    ).toBe("Approved by kim, you");
     expect(column("Open").getByText("1")).toBeTruthy(); // one card
     expect(column("Open").getByText("draft")).toBeTruthy();
     fireEvent.click(column("Open").getByLabelText("Open #20 in browser"));
@@ -381,5 +387,29 @@ describe("GitBoard", () => {
       "https://github.com/acme/widgets/pull/20",
     );
     expect(screen.queryByLabelText("#7 details")).toBeNull();
+  });
+
+  it("filters every column by the search, focused with Cmd+F", () => {
+    seed({
+      board: {
+        ...githubBoard,
+        items: [
+          item({ number: 1, title: "Fix widget", labels: ["bug"] }),
+          item({ number: 2, title: "Other thing", column: "done" }),
+        ],
+      },
+    });
+    render(<GitBoard projectId={P} />);
+    const search = screen.getByLabelText("Search board");
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    expect(document.activeElement).toBe(search);
+    fireEvent.change(search, { target: { value: "BUG" } });
+    expect(column("Open").getByText("Fix widget")).toBeTruthy();
+    expect(column("Done (14d)").queryByText("Other thing")).toBeNull();
+    fireEvent.change(search, { target: { value: "#2" } });
+    expect(column("Open").queryByText("Fix widget")).toBeNull();
+    expect(column("Done (14d)").getByText("Other thing")).toBeTruthy();
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(column("Open").getByText("Fix widget")).toBeTruthy();
   });
 });

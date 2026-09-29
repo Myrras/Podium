@@ -41,6 +41,7 @@ const issue: BoardItem = {
   movable: false,
   linked: [],
   assignees: [],
+  approvals: null,
 };
 
 function todo(over: Partial<TodoInfo> = {}): TodoInfo {

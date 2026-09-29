@@ -57,6 +57,15 @@ export interface BoardItem {
   linked: LinkedPr[];
   /** Logins/usernames it is assigned to. */
   assignees: string[];
+  /** Open PRs/MRs only; null when unknown. */
+  approvals: Approvals | null;
+}
+
+/** Who approved an open PR/MR (`podium_core::issues::Approvals`). */
+export interface Approvals {
+  by: string[];
+  /** Approvals the platform requires (GitLab); null when it does not say. */
+  required: number | null;
 }
 
 /** A PR/MR linked to an issue, shown inside its card instead of as its own. */
@@ -66,6 +75,7 @@ export interface LinkedPr {
   url: string;
   draft: boolean;
   merged: boolean;
+  approvals: Approvals | null;
 }
 
 /** A project's Git board (`podium_core::Board`); counts are all-time, `null` = unknown. */

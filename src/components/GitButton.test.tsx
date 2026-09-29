@@ -31,6 +31,7 @@ const card = (column: string, number: number): BoardItem => ({
   movable: false,
   linked: [],
   assignees: [],
+  approvals: null,
 });
 
 beforeEach(() => {

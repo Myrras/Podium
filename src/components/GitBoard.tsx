@@ -7,19 +7,34 @@
  * icon spins); each failure kind gets its own inline message, no toasts. A
  * card click opens the detail drawer beside the columns. Movable cards drag
  * onto columns that accept their kind (the drawer has a "Move to" select for
- * the keyboard). PRs/MRs linked to an issue show inside its card.
+ * the keyboard). PRs/MRs linked to an issue show inside its card, and open
+ * PRs/MRs carry an approval badge (accented when you approved). Cmd/Ctrl+F
+ * focuses the search field, which filters every column; Escape clears it.
  */
 
-import { useState, type CSSProperties, type DragEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+} from "react";
 
 import { issuesProjectSetupSet, toIpcError } from "../ipc/commands";
 import type {
   BoardColumn,
   BoardItem,
   IssueProvider,
+  LinkedPr,
   ProjectId,
 } from "../ipc/types";
-import { boardErrorText, itemRef, prRef } from "../lib/issueActions";
+import {
+  approvalBadge,
+  boardErrorText,
+  itemRef,
+  matchesSearch,
+  prRef,
+} from "../lib/issueActions";
 import { dragAutoScroll, scrollEdges } from "../lib/scrollEdges";
 import {
   moveTargets,
@@ -34,6 +49,7 @@ import { toastError } from "../state/toastStore";
 import styles from "./GitBoard.module.css";
 import {
   BoardIcon,
+  CheckIcon,
   CloseIcon,
   IssueIcon,
   PrIcon,
@@ -103,6 +119,21 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
   const move = useIssueStore((s) => s.move);
   const [selected, setSelected] = useState<string | null>(null);
   const [dragging, setDragging] = useState<BoardItem | null>(null);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // The webview has no find bar of its own, so Cmd/Ctrl+F is the board's.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const setups = overview?.setups ?? [];
   const picked = overview?.projects[root] ?? "";
@@ -118,6 +149,7 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
   const provider = board?.provider ?? "github";
   const prWord = provider === "gitlab" ? "MRs" : "PRs";
   const ref = (i: BoardItem) => itemRef(i, provider);
+  const shown = items.filter((i) => matchesSearch(i, ref(i), query));
   const firstLoad = loading && fetchedAt === 0;
   const open = selected ? items.find((i) => itemKey(i) === selected) : null;
   const openRef = selected
@@ -155,6 +187,21 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
           <span className={styles.source}>{board.source}</span>
         )}
         <span className={styles.spacer} />
+        <input
+          ref={searchRef}
+          type="search"
+          className={styles.search}
+          placeholder="Search (⌘F)"
+          aria-label="Search board"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setQuery("");
+              e.currentTarget.blur();
+            }
+          }}
+        />
         {setups.length > 0 && (
           <select
             className={styles.picker}
@@ -237,7 +284,7 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
             onDragOver={(e) => dragging && dragAutoScroll(e, "x")}
           >
             {(board?.columns ?? DEFAULT_COLUMNS).map((col) => {
-              const cards = items.filter((i) => i.column === col.id);
+              const cards = shown.filter((i) => i.column === col.id);
               const valid =
                 dragging !== null && moveTargets(dragging, [col]).length > 0;
               const drop = (e: DragEvent) => {
@@ -285,6 +332,7 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
                         provider={provider}
                         onDragState={setDragging}
                         showAuthor={!mine}
+                        me={board?.me ?? null}
                         selected={selected === itemKey(item)}
                         onOpen={() => setSelected(itemKey(item))}
                       />
@@ -315,6 +363,7 @@ function Card({
   provider,
   onDragState,
   showAuthor,
+  me,
   selected,
   onOpen,
 }: {
@@ -324,10 +373,12 @@ function Card({
   provider: IssueProvider;
   onDragState: (item: BoardItem | null) => void;
   showAuthor: boolean;
+  me: string | null;
   selected: boolean;
   onOpen: () => void;
 }) {
   const Icon = item.kind === "pr" ? PrIcon : IssueIcon;
+  const approval = item.column !== "done" && approvalBadge(item.approvals, me);
   return (
     <div
       className={styles.card}
@@ -350,6 +401,7 @@ function Card({
           <Icon size={12} />
           {itemRef}
           {item.draft && <span className={styles.draft}>draft</span>}
+          {approval && <Approval {...approval} />}
         </span>
         <span className={styles.cardTitle}>{item.title}</span>
         {(item.labels.length > 0 || (showAuthor && item.author)) && (
@@ -384,6 +436,7 @@ function Card({
                 ) : (
                   pr.draft && <span className={styles.draft}>draft</span>
                 )}
+                {!pr.merged && <LinkedApproval pr={pr} me={me} />}
               </button>
             </li>
           ))}
@@ -398,5 +451,33 @@ function Card({
         />
       </div>
     </div>
+  );
+}
+
+function LinkedApproval({ pr, me }: { pr: LinkedPr; me: string | null }) {
+  const approval = approvalBadge(pr.approvals, me);
+  return approval && <Approval {...approval} />;
+}
+
+/** `✓ 1/2`; accented when you are one of the approvers. */
+function Approval({
+  text,
+  mine,
+  title,
+}: {
+  text: string;
+  mine: boolean;
+  title: string;
+}) {
+  return (
+    <span
+      className={styles.approval}
+      data-mine={mine ? "true" : undefined}
+      title={title}
+      aria-label={`Approvals ${text}${mine ? ", including yours" : ""}`}
+    >
+      <CheckIcon size={11} />
+      {text}
+    </span>
   );
 }

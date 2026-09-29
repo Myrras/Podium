@@ -142,6 +142,10 @@
   /* One row, as many columns as the board has; past the width it scrolls. */
   grid-auto-flow: column;
   grid-auto-columns: minmax(220px, 1fr);
+  /* The row is the board's height, never its content's: only the card lists
+     scroll vertically, the board itself does not. */
+  grid-template-rows: minmax(0, 1fr);
+  overflow-y: hidden;
   gap: var(--sp-2);
   padding: var(--sp-2);
   overflow-x: auto;
@@ -402,6 +406,26 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+
+/* Approval count on a PR card / linked pill; accent when you approved. */
+.approval {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.approval[data-mine] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.search {
+  width: 160px;
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-sm);
 }
 
 /* A state tag inside the pill: no second outline. */

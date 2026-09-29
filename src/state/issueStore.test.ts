@@ -49,6 +49,7 @@ function board(...numbers: number[]): Board {
       movable: true,
       linked: [],
       assignees: [],
+      approvals: null,
     })),
   };
 }

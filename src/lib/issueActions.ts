@@ -2,6 +2,7 @@
 
 import { todoAdd, toIpcError } from "../ipc/commands";
 import type {
+  Approvals,
   BoardItem,
   IpcError,
   IssueProvider,
@@ -13,6 +14,44 @@ import { useTodoStore } from "../state/todoStore";
 /** `#12` for issues and GitHub PRs, `!41` for GitLab MRs. */
 export const itemRef = (i: BoardItem, provider: IssueProvider) =>
   i.kind === "pr" && provider === "gitlab" ? `!${i.number}` : `#${i.number}`;
+
+/**
+ * The approval badge of an open PR/MR: `2/2`, or `1` when the platform does
+ * not say how many are needed; null when there is nothing worth showing.
+ */
+export function approvalBadge(
+  approvals: Approvals | null | undefined,
+  me: string | null | undefined,
+): { text: string; mine: boolean; title: string } | null {
+  if (!approvals) return null;
+  const { by, required } = approvals;
+  if (by.length === 0 && required === null) return null;
+  const mine = !!me && by.includes(me);
+  const names = by.map((n) => (n === me ? "you" : n)).join(", ");
+  return {
+    text: required === null ? `${by.length}` : `${by.length}/${required}`,
+    mine,
+    title: by.length ? `Approved by ${names}` : "No approvals yet",
+  };
+}
+
+/** Case-insensitive board search over ref, title, labels and people. */
+export function matchesSearch(
+  i: BoardItem,
+  ref: string,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [
+    ref,
+    i.title,
+    i.author,
+    ...i.labels,
+    ...(i.assignees ?? []),
+    ...i.linked.flatMap((p) => [`#${p.number}`, `!${p.number}`, p.title]),
+  ].some((s) => s.toLowerCase().includes(q));
+}
 
 /** Ref of a linked PR/MR: `!n` on GitLab, `#n` on GitHub. */
 export const prRef = (number: number, provider: IssueProvider) =>
