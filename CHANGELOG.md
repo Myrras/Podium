@@ -8,6 +8,19 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.0.2] - 2026-09-29
+
+### Fixed
+
+- **A long assistant queue no longer hides the chat.** Messages waiting for the
+  current turn grew the pinned list at the bottom of the panel until it covered
+  the whole transcript. The list now tops out at 40% of the window height and
+  scrolls within itself.
+- **Waiting messages are cut off cleanly.** A queued message's preview broke
+  mid-word after a few characters. It now wraps at word boundaries and shows at
+  most three lines, ending in an ellipsis; the edit action still shows the full
+  text.
+
 ## [2.0.1] - 2026-09-22
 
 ### Added
