@@ -33,6 +33,11 @@ pub enum ProcessStatus {
     Exited {
         code: Option<i32>,
         crashed: bool,
+        /// Podium stopped it on request (`stop_process`, which the UI stop
+        /// button, `respawn_agent` and shutdown all go through) — it did not
+        /// exit on its own.
+        #[serde(default)]
+        stopped: bool,
         at: DateTime<Utc>,
     },
 }
