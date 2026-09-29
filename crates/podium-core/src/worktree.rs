@@ -8,9 +8,9 @@
 //! the distro's git via `wsl.exe -e git`, with paths translated both ways)
 //! rather than re-spawning a login shell on every call — list/create/remove
 //! can each fire several git calls, and a login shell per call is slow on
-//! heavy shell profiles. stderr never
-//! reaches a `CoreError` message (it can contain repo paths), but is logged
-//! via `tracing::warn!` on failure so the real cause is diagnosable.
+//! heavy shell profiles. stderr never reaches a `CoreError` message (it can
+//! contain repo paths), but is logged via `tracing::warn!` on failure so the
+//! real cause is diagnosable.
 //! There is no persistence, and `list` has no events (`git worktree list
 //! --porcelain` is the source of truth); `create`/`remove` do emit
 //! `WorktreesChanged` via the orchestrator.
