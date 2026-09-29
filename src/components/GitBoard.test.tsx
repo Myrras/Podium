@@ -45,6 +45,14 @@ function item(over: Partial<BoardItem>): BoardItem {
 const githubBoard: Board = {
   provider: "github",
   prCounts: { open: 5, merged: 1200 },
+  columns: [
+    { id: "open", title: "Open", color: null },
+    { id: "inProgress", title: "In progress", color: null },
+    { id: "review", title: "In review", color: null },
+    { id: "done", title: "Done (14d)", color: null },
+  ],
+  source: null,
+  hint: null,
   items: [
     item({ number: 7, title: "Fix widget", labels: ["bug"] }),
     item({ number: 8, title: "Being done", column: "inProgress" }),
@@ -100,11 +108,51 @@ describe("GitBoard", () => {
     expect(screen.queryByText("sam")).toBeNull();
   });
 
+  it("renders the project's own columns, source and hint", () => {
+    seed({
+      board: {
+        ...githubBoard,
+        columns: [
+          { id: "open", title: "Open", color: null },
+          { id: "label:doing", title: "doing", color: "#428BCA" },
+          { id: "status:o2", title: "Rework", color: "red" },
+        ],
+        source: "Development",
+        hint: "To use your GitHub Project's columns, run: gh auth refresh -s read:project",
+        items: [
+          item({ number: 5, title: "On the board", column: "label:doing" }),
+        ],
+      },
+    });
+    render(<GitBoard projectId={P} />);
+    const doing = screen.getByRole("region", { name: "doing" });
+    expect(doing.getAttribute("data-column")).toBe("label:doing");
+    expect(doing.style.getPropertyValue("--column-color")).toBe("#428BCA");
+    expect(within(doing).getByText("On the board")).toBeTruthy();
+    const rework = screen.getByRole("region", { name: "Rework" });
+    expect(rework.style.getPropertyValue("--column-color")).toBe(
+      "var(--board-red)",
+    );
+    expect(
+      screen
+        .getByRole("region", { name: "Open" })
+        .style.getPropertyValue("--column-color"),
+    ).toBe("");
+    expect(screen.queryByRole("region", { name: "In review" })).toBeNull();
+    expect(screen.getByText("Development")).toBeTruthy();
+    expect(screen.getByRole("note").textContent).toContain(
+      "gh auth refresh -s read:project",
+    );
+  });
+
   it("says MRs and !n for GitLab", () => {
     seed({
       board: {
         provider: "gitlab",
         prCounts: { open: 2, merged: null },
+        columns: githubBoard.columns,
+        source: null,
+        hint: null,
         items: [
           item({ kind: "pr", number: 41, column: "review", draft: true }),
         ],

@@ -92,13 +92,31 @@
 }
 
 .refreshing {
-  animation: refreshPulse 0.9s var(--ease-in-out) infinite;
+  animation: refreshPulse calc(var(--dur-4) * 2.5) var(--ease-in-out) infinite;
 }
 
 @keyframes refreshPulse {
   50% {
     opacity: 0.35;
   }
+}
+
+/* Which project board drives the columns. */
+.source {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+/* Calm informational line; .error is for things that need attention. */
+.hint {
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
 }
 
 .error {
@@ -121,10 +139,23 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  /* One row, as many columns as the board has; past the width it scrolls. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
   gap: var(--sp-2);
   padding: var(--sp-2);
   overflow-x: auto;
+  /* Fade the edges that have more content beyond them (scrollEdges). A
+     mask draws over the children, unlike a background shadow. */
+  --fade-left: 0px;
+  --fade-right: 0px;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-left),
+    #000 calc(100% - var(--fade-right)),
+    transparent
+  );
 }
 
 .column {
@@ -134,6 +165,39 @@
   flex-direction: column;
   background: var(--surface-2);
   border-radius: var(--radius-md);
+  /* --column-color: default per column id below; an inline value (GitLab
+     label hex, GitHub Project colour) wins because inline beats selectors. */
+  border-top: 2px solid
+    color-mix(
+      in srgb,
+      var(--column-color, var(--border-strong)) 60%,
+      transparent
+    );
+}
+
+.column[data-column="open"] {
+  --column-color: var(--board-blue);
+}
+
+.column[data-column="inProgress"] {
+  --column-color: var(--board-yellow);
+}
+
+.column[data-column="review"] {
+  --column-color: var(--board-purple);
+}
+
+.column[data-column="done"] {
+  --column-color: var(--board-green);
+}
+
+/* Small marker only: a GitLab hex can be any colour, never text background. */
+.columnDot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--column-color, var(--text-faint));
 }
 
 .columnTitle {
@@ -161,6 +225,31 @@
   flex-direction: column;
   gap: var(--sp-2);
   padding: 0 var(--sp-2) var(--sp-2);
+  /* Fade the edges that have more content beyond them (scrollEdges). */
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  mask-image: linear-gradient(
+    transparent,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent
+  );
+}
+
+.columns[data-more-left] {
+  --fade-left: 28px;
+}
+
+.columns[data-more-right] {
+  --fade-right: 28px;
+}
+
+.cards[data-more-top] {
+  --fade-top: 28px;
+}
+
+.cards[data-more-bottom] {
+  --fade-bottom: 28px;
 }
 
 .placeholder {

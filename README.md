@@ -115,14 +115,20 @@ forced); the branch is always kept.
 
 ### Git board
 
-The **Git** tab in a project's sidebar opens a Kanban board of the repo
-behind its `origin` remote, in four columns:
+The **Git** button on a project's header opens a Kanban board of the repo
+behind its `origin` remote. If the repo has its own board (a GitLab issue
+board with label lists, or a GitHub Project with a Status field), its columns
+are used; otherwise there are four:
 
 - **Open** — open issues nobody is visibly on yet.
 - **In progress** — open issues with a linked PR/MR or an in-progress label
   (`In progress`, `workflow::In Progress`, `doing`, `wip`), and draft PRs/MRs.
 - **In review** — open, non-draft PRs/MRs.
 - **Done (14d)** — issues closed and PRs/MRs merged in the last 14 days.
+
+GitHub Project columns need the `read:project` scope; if it is missing the
+board says so and shows the default columns until you run
+`gh auth refresh -s read:project`.
 
 **Mine** (the default) shows issues assigned to you and PRs/MRs you opened;
 **All** shows the whole repo. The header counts all-time open and merged

@@ -5,6 +5,7 @@
  */
 
 import type { BoardItem, ProjectId } from "../ipc/types";
+import { scrollEdges } from "../lib/scrollEdges";
 import { CloseIcon, IssueIcon, PrIcon } from "./icons";
 import { IssueActions } from "./IssueActions";
 import styles from "./IssueDetailPane.module.css";
@@ -48,7 +49,7 @@ export function IssueDetailPane({
         </button>
       </div>
       {item ? (
-        <div className={styles.content}>
+        <div ref={scrollEdges} className={styles.content}>
           {(item.labels.length > 0 || item.draft || item.author) && (
             <ul className={styles.labels}>
               {item.draft && <li>draft</li>}

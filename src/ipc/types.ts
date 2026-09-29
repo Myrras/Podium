@@ -26,8 +26,15 @@ export interface ProjectSections {
   issues: boolean;
 }
 
-/** Kanban column of a Git board item (`podium_core::issues::BoardColumn`). */
-export type BoardColumn = "open" | "inProgress" | "review" | "done";
+/**
+ * A Git board column (`podium_core::issues::Column`). `color` is a hex string
+ * (GitLab) or a lowercase GitHub option colour name ("gray", "blue", …).
+ */
+export interface BoardColumn {
+  id: string;
+  title: string;
+  color: string | null;
+}
 
 /** One card on the Git board: an issue or a PR/MR (`podium_core::issues::BoardItem`). */
 export interface BoardItem {
@@ -38,7 +45,8 @@ export interface BoardItem {
   body: string;
   labels: string[];
   updatedAt: string;
-  column: BoardColumn;
+  /** A `BoardColumn.id` of the board. */
+  column: string;
   draft: boolean;
   author: string;
 }
@@ -47,6 +55,12 @@ export interface BoardItem {
 export interface Board {
   provider: IssueProvider;
   items: BoardItem[];
+  /** Display order. */
+  columns: BoardColumn[];
+  /** Name of the project board the columns come from; null = Podium's defaults. */
+  source: string | null;
+  /** Podium-owned text: how to unlock the project's columns. */
+  hint: string | null;
   prCounts: { open: number | null; merged: number | null };
 }
 

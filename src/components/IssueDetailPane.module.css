@@ -38,6 +38,23 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--sp-3);
+  /* Fade the edges that have more content beyond them (scrollEdges, see GitBoard.module.css). */
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  mask-image: linear-gradient(
+    transparent,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent
+  );
+}
+
+.content[data-more-top] {
+  --fade-top: 28px;
+}
+
+.content[data-more-bottom] {
+  --fade-bottom: 28px;
 }
 
 .labels {

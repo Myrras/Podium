@@ -339,20 +339,37 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
 
-- **Git board** (`issues.rs`): the sidebar's **Git** tab (per-project
-  section toggle, key `issues`, on by default; `GitTab.tsx`) is one row that
-  opens a read-only Kanban of the repo behind the project's `origin` remote in
-  the work area (`GitBoard.tsx`, `layoutStore.openBoard`, exclusive with the
-  process/to-do/scratchpad). `issues::board` returns a `Board { provider,
-  items, prCounts }`: issues and PRs/MRs as `BoardItem`s, each already in its
-  `BoardColumn` — `open` (open issue), `inProgress` (open issue with a linked
-  open PR — GitHub `closingIssuesReferences`, GitLab `merge_requests_count >
-  0` — or an in-progress label, plus draft PRs/MRs), `review` (open non-draft
-  PR/MR), `done` (closed/merged within `DONE_DAYS` = 14). `mine` (the
+- **Git board** (`issues.rs`): the project row's **Git** header button
+  (`GitButton.tsx`, always visible, accent while the board is open, warning
+  dot on error; per-project section toggle "Git board", key `issues`, on by
+  default) opens a read-only Kanban of the repo behind the project's `origin`
+  remote in the work area (`GitBoard.tsx`, `layoutStore.openBoard`, exclusive
+  with the process/to-do/scratchpad). `issues::board` returns a `Board {
+  provider, items, columns, source, hint, prCounts }`: issues and PRs/MRs as
+  `BoardItem`s, each already in a `Column { id, title, color }` (`BoardItem.
+  column` = a column id; `color` is a GitLab hex or a lowercase GitHub option
+  name, which the UI maps to `--board-<name>` tokens). **Columns** come from
+  the project's own board when the platform has one (`source` = its name),
+  else the defaults `open` / `inProgress` (open issue with a linked open PR —
+  GitHub `closingIssuesReferences`, GitLab `merge_requests_count > 0` — or an
+  in-progress label, plus draft PRs/MRs) / `review` / `done` (closed/merged
+  within `DONE_DAYS` = 14). Fixed system ids are reused either way: `open`
+  (lead: unplaced issues), `review` (unplaced open PR/MR, shown only when
+  non-empty with a project), `done`. *GitLab*: the `/boards` request (a 6th
+  parallel call; first board with a label list only, lists by `position`,
+  label-less lists skipped) gives `label:<name>` columns; an open card sits in
+  the first list whose label it carries. Any `/boards` failure or no usable
+  board → defaults, never an error. *GitHub*: a 6th `gh api graphql` call reads
+  the repo's first Project v2 (first 100 items) and its `Status` options as
+  `status:<optionId>` columns, items matched by number; it needs the
+  `read:project` scope, and when stderr says it is missing the board falls back
+  to defaults with `hint` = the `gh auth refresh -s read:project` command
+  (stderr is only inspected). Any other failure there → defaults, no hint.
+  `mine` (the
   default) narrows issues to assigned-to-me and PRs/MRs to authored-by-me;
   the counts (`prCounts`, all-time open/merged in the same scope) come from a
   GraphQL `search … issueCount` on GitHub and `X-Total` on GitLab (`None` when
-  GitLab omits it). Each board is five parallel calls (`std::thread::scope`),
+  GitLab omits it). Each board is six parallel calls (`std::thread::scope`),
   lists capped at 100. The repo is detected via `detect` → `parse_remote`
   (ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
   (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
@@ -385,8 +402,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   every shown project when it changes, and holds the per-project Mine/All
   scope — a switch mid-fetch refetches once the old answer lands): one
   in-flight fetch per project, the stale board is kept on error, and
-  `startAutoRefresh` (mounted with the Git tab, so its "N open · M review"
-  summary stays live) fetches immediately, every 5 min, and on window focus
+  `startAutoRefresh` (mounted with the Git button, so its "N open" —
+  every card not in `done` — tooltip stays live) fetches immediately, every 5 min, and on window focus
   when the last attempt is over 60 s old; errors show inline, never as a
   toast. A card click opens a read-only drawer (`IssueDetailPane`) beside the
   columns; browser, "start agent" (`NewAgentModal` prefilled via

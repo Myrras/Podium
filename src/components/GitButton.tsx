@@ -29,14 +29,11 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
   useEffect(() => void loadOverview(), [loadOverview]);
 
   const items = entry?.board?.items ?? [];
-  const open = items.filter(
-    (i) => i.column === "open" || i.column === "inProgress",
-  ).length;
-  const review = items.filter((i) => i.column === "review").length;
+  const open = items.filter((i) => i.column !== "done").length;
   const title = entry?.error
     ? `Git board — ${boardErrorText(entry.error)}`
     : entry?.board
-      ? `Git board — ${open} open · ${review} review`
+      ? `Git board — ${open} open`
       : "Git board";
 
   return (

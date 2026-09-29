@@ -1,17 +1,19 @@
 /**
  * The Git board: a read-only Kanban of the project's repo in the work area,
- * opened from the sidebar's Git tab. Four columns (open / in progress / in
+ * opened from the project header's Git button. The project's own columns
+ * (GitLab board, GitHub Project) or four defaults (open / in progress / in
  * review / done in the last 14 days), a Mine/All scope toggle, and all-time
  * PR/MR counts. A refresh never blanks it (the last board stays, the refresh
  * icon spins); each failure kind gets its own inline message, no toasts. A
  * card click opens the detail drawer beside the columns.
  */
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 
 import { issuesProjectSetupSet, toIpcError } from "../ipc/commands";
 import type { BoardColumn, BoardItem, ProjectId } from "../ipc/types";
 import { boardErrorText, itemRef } from "../lib/issueActions";
+import { scrollEdges } from "../lib/scrollEdges";
 import { useIssueStore, type ProjectBoard } from "../state/issueStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
@@ -38,12 +40,16 @@ const NONE: ProjectBoard = {
   mine: true,
 };
 
-const COLUMNS: { key: BoardColumn; title: string }[] = [
-  { key: "open", title: "Open" },
-  { key: "inProgress", title: "In progress" },
-  { key: "review", title: "In review" },
-  { key: "done", title: "Done (14d)" },
+/** Shown until the first board arrives; mirrors the backend's defaults. */
+const DEFAULT_COLUMNS: BoardColumn[] = [
+  { id: "open", title: "Open", color: null },
+  { id: "inProgress", title: "In progress", color: null },
+  { id: "review", title: "In review", color: null },
+  { id: "done", title: "Done (14d)", color: null },
 ];
+
+/** A hex colour as is; a GitHub colour name maps to the `--board-<name>` token. */
+const cssColor = (c: string) => (c.startsWith("#") ? c : `var(--board-${c})`);
 
 /** Errors with nothing to retry: the remote or CLI setup has to change first. */
 const SETUP_ERRORS = new Set([
@@ -131,6 +137,9 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
             <strong>{fmt(board.prCounts.merged)}</strong> merged
           </span>
         )}
+        {board?.source && !setupError && (
+          <span className={styles.source}>{board.source}</span>
+        )}
         <span className={styles.spacer} />
         {setups.length > 0 && (
           <select
@@ -179,6 +188,11 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
           <CloseIcon size={14} />
         </button>
       </div>
+      {board?.hint && !setupError && (
+        <div className={styles.hint} role="note">
+          {board.hint}
+        </div>
+      )}
       {error && (
         <div className={styles.error} role="status">
           <span>{boardErrorText(error)}</span>
@@ -203,20 +217,29 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
       )}
       <div className={styles.body}>
         {!setupError && (
-          <div className={styles.columns}>
-            {COLUMNS.map((col) => {
-              const cards = items.filter((i) => i.column === col.key);
+          <div ref={scrollEdges} className={styles.columns}>
+            {(board?.columns ?? DEFAULT_COLUMNS).map((col) => {
+              const cards = items.filter((i) => i.column === col.id);
               return (
                 <section
-                  key={col.key}
+                  key={col.id}
                   className={styles.column}
                   aria-label={col.title}
+                  data-column={col.id}
+                  style={
+                    col.color
+                      ? ({
+                          "--column-color": cssColor(col.color),
+                        } as CSSProperties)
+                      : undefined
+                  }
                 >
                   <h3 className={styles.columnTitle}>
+                    <span className={styles.columnDot} aria-hidden />
                     {col.title}
                     <span className={styles.columnCount}>{cards.length}</span>
                   </h3>
-                  <div className={styles.cards}>
+                  <div ref={scrollEdges} className={styles.cards}>
                     {firstLoad && (
                       <div className={styles.placeholder}>Loading…</div>
                     )}

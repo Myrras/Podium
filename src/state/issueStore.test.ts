@@ -20,6 +20,9 @@ function board(...numbers: number[]): Board {
   return {
     provider: "github",
     prCounts: { open: 1, merged: 2 },
+    columns: [],
+    source: null,
+    hint: null,
     items: numbers.map((number) => ({
       kind: "issue",
       number,

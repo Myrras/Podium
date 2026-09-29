@@ -16,7 +16,7 @@ import { GitButton } from "./GitButton";
 
 const P = "proj-1";
 
-const card = (column: BoardItem["column"], number: number): BoardItem => ({
+const card = (column: string, number: number): BoardItem => ({
   kind: "issue",
   number,
   title: `Item ${number}`,
@@ -53,7 +53,15 @@ describe("GitButton", () => {
           board: {
             provider: "github",
             prCounts: { open: 1, merged: 1 },
-            items: [card("open", 1), card("inProgress", 2), card("review", 3)],
+            columns: [],
+            source: null,
+            hint: null,
+            items: [
+              card("open", 1),
+              card("label:doing", 2),
+              card("review", 3),
+              card("done", 4),
+            ],
           },
           error: null,
           loading: true,
@@ -64,7 +72,7 @@ describe("GitButton", () => {
     });
     const { rerender } = render(<GitButton projectId={P} />);
     expect(
-      screen.getByRole("button", { name: "Git board — 2 open · 1 review" }),
+      screen.getByRole("button", { name: "Git board — 3 open" }),
     ).toBeTruthy();
     useIssueStore.setState({
       byProject: {
