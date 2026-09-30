@@ -11,7 +11,7 @@ use std::time::Duration;
 use podium_core::assistant::{AssistantEvent, AssistantPolling, TranscriptRole};
 use podium_core::{
     AssistantConfig, Attachment, CoreError, McpConnectInfo, Orchestrator, PendingId, PodiumEvent,
-    ProactivityConfig, ProcessKind, ProcessSpec, RestartPolicy,
+    ProactivityConfig, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
 };
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
@@ -592,6 +592,68 @@ async fn an_agent_that_finished_is_reported_in_the_chat() {
     let notice = next_notice(&mut rx).await;
     assert!(notice.contains("fix-login"), "{notice}");
     assert!(notice.contains("finished"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_stopped_on_request_is_not_reported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            idle_after: Duration::from_secs(60),
+            ..fast_proactivity()
+        },
+    );
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    // `stop_process` is what the UI stop button, the MCP tool and
+    // `respawn_agent` all end up in.
+    orch.stop_process(agent).await.expect("stop agent");
+
+    // Wait for the exit itself, so the quiet window below cannot pass just
+    // because the stop was slow.
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(PodiumEvent::ProcessStatusChanged {
+                process_id,
+                status: ProcessStatus::Exited { .. },
+                ..
+            }) = rx.recv().await
+            {
+                if process_id == agent {
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .expect("agent exited");
+    let quiet = timeout(Duration::from_millis(500), async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Notice { text },
+            }) = rx.recv().await
+            {
+                return text;
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "nudged about a requested stop: {quiet:?}");
     orch.shutdown().await;
 }
 

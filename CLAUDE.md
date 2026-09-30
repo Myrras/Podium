@@ -865,7 +865,7 @@ output never travels this path): `process:added` / `process:removed` /
 > **camelCase** — DTO fields (`projectId`, `dataB64`, `configError`, …) and
 > the serde tags: `ProcessKind` is tagged by `kind`
 > (`service`/`terminal`/`agent {adapter}`), `ProcessStatus` by `state`
-> (`notStarted`/`running {pid, since}`/`stopping`/`exited {code, crashed, …}`),
+> (`notStarted`/`running {pid, since}`/`stopping`/`exited {code, crashed, stopped, …}`),
 > `TermEvent` by `type` (`snapshot`/`data`/`lagged`). The one exception:
 > `RestartPolicy` values are **kebab-case** (`never`/`on-crash`/`always`) —
 > matching `podium.yml`'s `auto_restart` — and so are `MergeMode` and

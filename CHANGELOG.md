@@ -27,6 +27,28 @@ yet set up.)
   because Windows' console layer waits for a reply that only the terminal view
   gave. Podium now answers it itself.
 
+## [2.0.3] - 2026-09-29
+
+### Fixed
+
+- **No "check what it did" nudge for an agent you stopped.** Stopping an agent
+  (the stop button, or the assistant stopping or respawning it) still made the
+  assistant report it as finished. That report is now kept for agents that exit
+  on their own or crash.
+
+## [2.0.2] - 2026-09-29
+
+### Fixed
+
+- **A long assistant queue no longer hides the chat.** Messages waiting for the
+  current turn grew the pinned list at the bottom of the panel until it covered
+  the whole transcript. The list now tops out at 40% of the window height and
+  scrolls within itself.
+- **Waiting messages are cut off cleanly.** A queued message's preview broke
+  mid-word after a few characters. It now wraps at word boundaries and shows at
+  most three lines, ending in an ellipsis; the edit action still shows the full
+  text.
+
 ## [2.0.1] - 2026-09-22
 
 ### Added
