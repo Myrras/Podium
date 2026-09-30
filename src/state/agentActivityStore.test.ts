@@ -8,11 +8,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-const lastOutput = vi.fn<(id: string) => number | null>();
 const viewport = vi.fn<(id: string) => string | null>();
 vi.mock("../lib/terminalRegistry", () => ({
   disposeTerminal: vi.fn(),
-  getLastOutputAt: (id: string) => lastOutput(id),
   readViewportText: (id: string) => viewport(id),
 }));
 
@@ -23,13 +21,23 @@ vi.mock("../lib/notify", () => ({
 }));
 
 const processReportWaiting = vi.fn<(id: string) => Promise<void>>();
+const processActivity = vi.fn<() => Promise<Record<string, OutputActivity>>>();
 vi.mock("../ipc/commands", () => ({
   processReportWaiting: (id: string) => processReportWaiting(id),
+  processActivity: () => processActivity(),
 }));
 
-import type { ProcessInfo, ProcessKind, ProcessStatus } from "../ipc/types";
+import type {
+  OutputActivity,
+  ProcessInfo,
+  ProcessKind,
+  ProcessStatus,
+} from "../ipc/types";
 import { useProcessStore } from "./processStore";
-import { useAgentActivityStore } from "./agentActivityStore";
+import {
+  startAgentActivityMonitor,
+  useAgentActivityStore,
+} from "./agentActivityStore";
 
 function proc(
   id: string,
@@ -52,13 +60,18 @@ function proc(
 
 const RUNNING: ProcessStatus = { state: "running", pid: 1, since: "now" };
 const AGENT: ProcessKind = { kind: "agent", adapter: "claude-code" };
+/** A spinner that has been animating for a while: recent, sustained output. */
+const WORKING: OutputActivity = { quietMs: 100, burstMs: 1200 };
+/** One redraw just now (a repaint after the pane was fitted): not work. */
+const REDRAW: OutputActivity = { quietMs: 50, burstMs: 0 };
 
 function seed(processes: ProcessInfo[]) {
   useProcessStore.setState({ processes });
 }
 
-function tick() {
-  useAgentActivityStore.getState().tick();
+/** One monitor step with the backend's output timing (none by default). */
+function tick(output: Record<string, OutputActivity> = {}) {
+  useAgentActivityStore.getState().tick(output);
 }
 
 describe("agentActivityStore", () => {
@@ -66,22 +79,48 @@ describe("agentActivityStore", () => {
     vi.clearAllMocks();
     useAgentActivityStore.setState({ activity: {}, shells: {}, notified: {} });
     useProcessStore.setState({ activeProcessId: null });
-    lastOutput.mockReturnValue(null);
     viewport.mockReturnValue(null);
     // Default: the user is not looking at any agent, so waiting agents ping.
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
   });
 
-  it("marks recent output as working", () => {
-    lastOutput.mockReturnValue(Date.now());
+  it("marks recent sustained output as working", () => {
     seed([proc("a1", AGENT, RUNNING)]);
-    tick();
+    tick({ a1: WORKING });
     expect(useAgentActivityStore.getState().activity.a1).toBe("working");
     expect(notifyAgentWaiting).not.toHaveBeenCalled();
   });
 
+  it("does not mistake a lone redraw for work", () => {
+    // Opening a terminal fits the pane, and the agent repaints once: a burst
+    // of ~0 ms. That used to show "working…" for seconds on every open.
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick({ a1: REDRAW });
+    expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
+  });
+
+  it("marks stale output as idle", () => {
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick({ a1: { quietMs: 10_000, burstMs: 5000 } });
+    expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
+  });
+
+  it("polls the backend for output timing on each tick", async () => {
+    vi.useFakeTimers();
+    try {
+      processActivity.mockResolvedValue({ a1: WORKING });
+      seed([proc("a1", AGENT, RUNNING)]);
+      const stop = startAgentActivityMonitor();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(processActivity).toHaveBeenCalledOnce();
+      expect(useAgentActivityStore.getState().activity.a1).toBe("working");
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks a quiet prompt screen as waiting and notifies once", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     seed([proc("a1", AGENT, RUNNING, "claude")]);
 
@@ -101,7 +140,6 @@ describe("agentActivityStore", () => {
   });
 
   it("marks a quiet non-prompt screen as idle", () => {
-    lastOutput.mockReturnValue(null);
     viewport.mockReturnValue("Compiled successfully.");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
@@ -116,7 +154,6 @@ describe("agentActivityStore", () => {
   });
 
   it("flags a terminal stalled on a sudo password prompt", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("$ sudo systemctl restart api\nPassword:");
     seed([proc("t1", { kind: "terminal" }, RUNNING, "shell")]);
 
@@ -128,7 +165,6 @@ describe("agentActivityStore", () => {
   });
 
   it("leaves a quiet terminal idle", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("tester@host ~/podium %");
     seed([proc("t1", { kind: "terminal" }, RUNNING)]);
     tick();
@@ -138,7 +174,6 @@ describe("agentActivityStore", () => {
 
   it("drops agents that are no longer running", () => {
     viewport.mockReturnValue("(y/n)");
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
     expect(useAgentActivityStore.getState().activity.a1).toBe("waiting");
@@ -148,6 +183,7 @@ describe("agentActivityStore", () => {
         state: "exited",
         code: 0,
         crashed: false,
+        stopped: false,
         at: "now",
       }),
     ]);
@@ -156,25 +192,21 @@ describe("agentActivityStore", () => {
   });
 
   it("does not re-alert on working↔waiting flicker while unattended", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Continue? (y/n)");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
 
-    // A live prompt repaints (spinner/cursor), briefly reading as "working",
-    // then reads as waiting again — the user must not be pinged again.
-    lastOutput.mockReturnValue(Date.now());
-    tick();
+    // The agent briefly reads as "working" (a spinner while it re-checks),
+    // then sits on the same prompt again — the user must not be pinged again.
+    tick({ a1: WORKING });
     expect(useAgentActivityStore.getState().activity.a1).toBe("working");
 
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     tick();
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
   });
 
   it("does not ping while the user is viewing the agent", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     vi.mocked(document.hasFocus).mockReturnValue(true);
     useProcessStore.setState({ activeProcessId: "a1" });
@@ -186,7 +218,6 @@ describe("agentActivityStore", () => {
   });
 
   it("does not re-ping after the user viewed the prompt and switches away", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     seed([proc("a1", AGENT, RUNNING)]);
 
@@ -209,7 +240,6 @@ describe("agentActivityStore", () => {
   });
 
   it("viewing the prompt before any ping also acknowledges the episode", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     vi.mocked(document.hasFocus).mockReturnValue(true);
     useProcessStore.setState({ activeProcessId: "a1" });
@@ -223,7 +253,6 @@ describe("agentActivityStore", () => {
   });
 
   it("pings again for a fresh prompt after the previous one cleared", () => {
-    lastOutput.mockReturnValue(Date.now() - 10_000);
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
@@ -240,7 +269,6 @@ describe("agentActivityStore", () => {
   });
 
   it("tracks the background-shell count from the footer", () => {
-    lastOutput.mockReturnValue(null);
     viewport.mockReturnValue(
       "⏵⏵ auto mode on (shift+tab to cycle) · 2 shells · ↓ to manage",
     );
@@ -252,7 +280,6 @@ describe("agentActivityStore", () => {
   });
 
   it("clears the shell count once the footer stops reporting one", () => {
-    lastOutput.mockReturnValue(null);
     viewport.mockReturnValue("⏵⏵ auto mode on · 1 shell · ↓ to manage");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();

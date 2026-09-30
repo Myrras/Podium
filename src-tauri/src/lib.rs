@@ -229,6 +229,7 @@ pub fn run() {
             commands::process::process_list,
             commands::process::process_git_branch,
             commands::process::process_report_waiting,
+            commands::process::process_activity,
             commands::process::process_rename,
             commands::process::process_start,
             commands::process::process_stop,
