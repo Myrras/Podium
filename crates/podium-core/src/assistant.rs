@@ -1349,7 +1349,7 @@ impl AssistantManager {
         if let Some(cwd) = &config.cwd {
             cmd.current_dir(cwd);
         }
-        let mut child = cmd.spawn()?;
+        let mut child = crate::platform::spawn_gated(|| cmd.spawn())?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let events = self.events.clone();
