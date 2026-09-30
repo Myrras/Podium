@@ -36,6 +36,9 @@ struct WorkspaceEntry {
     path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// User-picked badge colour (`#rrggbb`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
 }
 
 /// Accepts both the current object form and the legacy bare-path-string form,
@@ -51,7 +54,11 @@ enum RawEntry {
 impl From<RawEntry> for WorkspaceEntry {
     fn from(raw: RawEntry) -> Self {
         match raw {
-            RawEntry::Path(path) => WorkspaceEntry { path, name: None },
+            RawEntry::Path(path) => WorkspaceEntry {
+                path,
+                name: None,
+                color: None,
+            },
             RawEntry::Full(entry) => entry,
         }
     }
@@ -93,6 +100,7 @@ fn add_entry(entries: &mut Vec<WorkspaceEntry>, path: &Path) {
         entries.push(WorkspaceEntry {
             path: path.to_path_buf(),
             name: None,
+            color: None,
         });
     }
 }
@@ -134,6 +142,20 @@ fn set_entry_name(entries: &mut Vec<WorkspaceEntry>, path: &Path, name: Option<S
         entries.push(WorkspaceEntry {
             path: path.to_path_buf(),
             name,
+            color: None,
+        });
+    }
+}
+
+/// Set (or clear) the badge colour for `path`. Creates the entry if absent.
+fn set_entry_color(entries: &mut Vec<WorkspaceEntry>, path: &Path, color: Option<String>) {
+    if let Some(entry) = entries.iter_mut().find(|e| e.path == path) {
+        entry.color = color;
+    } else {
+        entries.push(WorkspaceEntry {
+            path: path.to_path_buf(),
+            name: None,
+            color,
         });
     }
 }
@@ -202,6 +224,25 @@ pub fn name_for(app: &AppHandle, path: &Path) -> Result<Option<String>, IpcError
         .and_then(|e| e.name))
 }
 
+/// Persist a project's badge colour (`None` clears it).
+pub fn set_color(app: &AppHandle, path: &Path, color: Option<String>) -> Result<(), IpcError> {
+    let file = workspace_path(app)?;
+    let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
+    let mut entries = load(&file);
+    set_entry_color(&mut entries, path, color);
+    save(&file, &entries)
+}
+
+/// The persisted badge colour for `path`, if any.
+pub fn color_for(app: &AppHandle, path: &Path) -> Result<Option<String>, IpcError> {
+    let file = workspace_path(app)?;
+    let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
+    Ok(load(&file)
+        .into_iter()
+        .find(|e| e.path == path)
+        .and_then(|e| e.color))
+}
+
 /// Reorder the persisted workspace to match `ordered` (the new sidebar order).
 pub fn reorder(app: &AppHandle, ordered: &[PathBuf]) -> Result<(), IpcError> {
     let file = workspace_path(app)?;
@@ -263,10 +304,12 @@ mod tests {
             WorkspaceEntry {
                 path: PathBuf::from("/a"),
                 name: Some("Alpha".into()),
+                color: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/b"),
                 name: None,
+                color: None,
             },
         ];
         add_entry(&mut entries, Path::new("/a"));
@@ -282,6 +325,7 @@ mod tests {
         let mut entries = vec![WorkspaceEntry {
             path: PathBuf::from(r"\\?\C:\Meridian"),
             name: Some("Meridian".into()),
+            color: None,
         }];
         migrate_legacy_entry(
             &mut entries,
@@ -302,10 +346,12 @@ mod tests {
             WorkspaceEntry {
                 path: PathBuf::from(r"\\?\C:\Meridian"),
                 name: None,
+                color: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from(r"C:\Meridian"),
                 name: Some("Meridian".into()),
+                color: None,
             },
         ];
         migrate_legacy_entry(
@@ -322,6 +368,7 @@ mod tests {
         let mut entries = vec![WorkspaceEntry {
             path: PathBuf::from(r"C:\Other"),
             name: None,
+            color: None,
         }];
         migrate_legacy_entry(
             &mut entries,
@@ -337,10 +384,12 @@ mod tests {
             WorkspaceEntry {
                 path: PathBuf::from("/a"),
                 name: None,
+                color: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/b"),
                 name: None,
+                color: None,
             },
         ];
         remove_entry(&mut entries, Path::new("/a"));
@@ -354,6 +403,7 @@ mod tests {
         let mut entries = vec![WorkspaceEntry {
             path: PathBuf::from("/a"),
             name: None,
+            color: None,
         }];
         set_entry_name(&mut entries, Path::new("/a"), Some("  Cool  ".into()));
         assert_eq!(entries[0].name.as_deref(), Some("Cool"), "trimmed");
@@ -366,19 +416,46 @@ mod tests {
     }
 
     #[test]
+    fn set_color_keeps_name_and_round_trips_through_json() {
+        let mut entries = vec![WorkspaceEntry {
+            path: PathBuf::from("/a"),
+            name: Some("Alpha".into()),
+            color: None,
+        }];
+        set_entry_color(&mut entries, Path::new("/a"), Some("#3e63dd".into()));
+        assert_eq!(entries[0].color.as_deref(), Some("#3e63dd"));
+        assert_eq!(entries[0].name.as_deref(), Some("Alpha"));
+
+        let json = serde_json::to_string(&entries).unwrap();
+        let back: Vec<WorkspaceEntry> = serde_json::from_str::<Vec<RawEntry>>(&json)
+            .unwrap()
+            .into_iter()
+            .map(WorkspaceEntry::from)
+            .collect();
+        assert_eq!(back, entries);
+
+        set_entry_color(&mut entries, Path::new("/a"), None);
+        assert_eq!(entries[0].color, None);
+        assert!(!serde_json::to_string(&entries).unwrap().contains("color"));
+    }
+
+    #[test]
     fn reorder_matches_order_and_appends_missing() {
         let mut entries = vec![
             WorkspaceEntry {
                 path: PathBuf::from("/a"),
                 name: None,
+                color: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/b"),
                 name: Some("Bee".into()),
+                color: None,
             },
             WorkspaceEntry {
                 path: PathBuf::from("/c"),
                 name: None,
+                color: None,
             },
         ];
         // Mention c, a plus an unknown; b is appended at the end.

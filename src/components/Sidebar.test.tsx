@@ -31,6 +31,7 @@ function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
     iconInitials: "WS",
     configError: null,
     renamed: false,
+    color: null,
     ...overrides,
   };
 }
@@ -84,6 +85,21 @@ describe("Sidebar project header", () => {
       name: "Drag to reorder Webshop",
     });
     expect(handle).toHaveAttribute("draggable", "true");
+  });
+
+  it("recolours the project badge from its colour picker", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    expect(picker).toHaveValue("#3e63dd");
+    fireEvent.change(picker, { target: { value: "#e5484d" } });
+
+    expect(setProjectColor).toHaveBeenCalledWith("proj-1", "#e5484d");
   });
 
   it("reorders projects when a project is dropped onto another", () => {

@@ -167,6 +167,7 @@ function ProjectGroup({
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const setProjectColor = useProjectStore((s) => s.setProjectColor);
 
   const addProcess = useProcessStore((s) => s.addProcess);
   const startProcess = useProcessStore((s) => s.startProcess);
@@ -298,9 +299,30 @@ function ProjectGroup({
         >
           <CaretIcon />
         </span>
-        <span className={styles.projectBadge} aria-hidden>
-          {project.iconInitials}
-        </span>
+        <label
+          className={styles.projectBadge}
+          title="Change colour"
+          style={
+            project.color
+              ? {
+                  background: project.color,
+                  color: readableOn(project.color),
+                }
+              : undefined
+          }
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span aria-hidden>{project.iconInitials}</span>
+          {/* ponytail: persists on every input event; debounce if a platform's
+              picker streams values while dragging and disk writes show up. */}
+          <input
+            type="color"
+            className={styles.badgeColorInput}
+            aria-label={`Change colour of ${project.name}`}
+            value={project.color ?? "#4493f8"}
+            onChange={(e) => void setProjectColor(project.id, e.target.value)}
+          />
+        </label>
         {editing ? (
           <input
             ref={inputRef}
@@ -577,4 +599,11 @@ export function Sidebar() {
       />
     </aside>
   );
+}
+
+/** Black or white initials, whichever reads better on a `#rrggbb` badge. */
+function readableOn(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  const luma = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+  return luma > 150 ? "#000" : "#fff";
 }

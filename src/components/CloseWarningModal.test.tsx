@@ -61,6 +61,7 @@ describe("CloseWarningModal", () => {
           iconInitials: "WS",
           configError: null,
           renamed: false,
+          color: null,
         },
       ],
     });

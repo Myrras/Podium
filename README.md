@@ -26,8 +26,9 @@ One window, three columns:
 
 Open a folder and it stays. The sidebar is a **persistent workspace**: every
 open project is remembered and re-opened at launch. Projects can be
-**renamed** (double-click the name) and **reordered** (drag the grip in the
-project header) — both survive a restart. A project whose folder has moved is
+**renamed** (double-click the name), **recoloured** (click the initials badge
+to pick a colour) and **reordered** (drag the grip in the project header) —
+all survive a restart. A project whose folder has moved is
 never silently dropped; its error toast offers "Remove from workspace"
 instead.
 
@@ -267,6 +268,7 @@ last) line, so a multi-line draft still navigates normally.
 **Mouse**
 
 - **Double-click** a project name, process name or to-do title to rename it.
+- **Click** a project's initials badge to give it its own colour.
 - **⌘/Ctrl+click** a to-do or scratchpad title, or an agent/process row, to
   add it to a multi-select; **Shift+click** to extend the range over a list.
   Selected rows become chips above the assistant's composer, so your next

@@ -58,6 +58,9 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`;
+    /// `None` keeps the theme accent.
+    pub color: Option<String>,
 }
 
 struct ProjectHandle {
@@ -72,6 +75,8 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`.
+    color: Option<String>,
 }
 
 impl ProjectHandle {
@@ -87,6 +92,7 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            color: self.color.clone(),
         }
     }
 }
@@ -648,6 +654,7 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        color: None,
                     },
                 );
                 inner.order.push(id);
@@ -771,6 +778,38 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
             handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set or clear a project's badge colour. `None` or blank clears it; anything
+    /// but a `#rrggbb` hex is refused, since the value lands in a CSS property.
+    pub fn set_project_color(
+        &self,
+        id: ProjectId,
+        color: Option<String>,
+    ) -> CoreResult<ProjectInfo> {
+        let color = color
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| !c.is_empty());
+        if let Some(c) = &color {
+            let hex = c.strip_prefix('#').unwrap_or("");
+            if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return Err(CoreError::InvalidInput(format!(
+                    "project colour must be #rrggbb, got {c:?}"
+                )));
+            }
+        }
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.color = color;
             handle.info(id)
         };
         self.events
@@ -2889,6 +2928,38 @@ mod tests {
         let cleared = orch.rename_project(id, Some("   ".to_string())).unwrap();
         assert_eq!(cleared.name, original.name);
         assert_eq!(cleared.icon_initials, original.icon_initials);
+    }
+
+    #[tokio::test]
+    async fn project_color_sets_validates_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        let info = orch
+            .set_project_color(id, Some(" #3E63DD ".to_string()))
+            .unwrap();
+        assert_eq!(info.color.as_deref(), Some("#3e63dd"));
+
+        for bad in ["red", "#12345", "#1234567", "#gggggg", "3e63dd"] {
+            assert!(
+                orch.set_project_color(id, Some(bad.to_string())).is_err(),
+                "{bad}"
+            );
+        }
+        let still = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(
+            still.color.as_deref(),
+            Some("#3e63dd"),
+            "a refused value keeps the old one"
+        );
+
+        let cleared = orch.set_project_color(id, Some("  ".to_string())).unwrap();
+        assert_eq!(cleared.color, None);
     }
 
     #[tokio::test]

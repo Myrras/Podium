@@ -48,6 +48,11 @@ pub async fn project_open(
             tracing::warn!("failed to apply persisted project name: {e}");
         }
     }
+    if let Ok(Some(color)) = workspace::color_for(&app, &root) {
+        if let Err(e) = state.orchestrator.set_project_color(id, Some(color)) {
+            tracing::warn!("failed to apply persisted project colour: {e}");
+        }
+    }
     let info = state
         .orchestrator
         .list_projects()
@@ -84,6 +89,22 @@ pub fn project_rename(
     };
     if let Err(e) = workspace::set_name(&app, &info.root, stored) {
         tracing::warn!("failed to persist project name: {e}");
+    }
+    Ok(info)
+}
+
+/// Set or clear a project's sidebar badge colour (`#rrggbb`; blank clears).
+/// Persisted in `workspace.json` like the name override.
+#[tauri::command]
+pub fn project_set_color(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    color: Option<String>,
+) -> Result<ProjectInfo, IpcError> {
+    let info = state.orchestrator.set_project_color(project_id, color)?;
+    if let Err(e) = workspace::set_color(&app, &info.root, info.color.clone()) {
+        tracing::warn!("failed to persist project colour: {e}");
     }
     Ok(info)
 }

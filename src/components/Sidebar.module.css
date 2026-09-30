@@ -75,6 +75,8 @@
 
 /* Square initials badge for a project (from podium.yml or derived). */
 .projectBadge {
+  position: relative;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -360,4 +362,17 @@
 .addProjectBtn:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/* Invisible native colour input covering the badge: clicking the badge opens
+   the platform picker, and it stays keyboard-focusable. */
+.badgeColorInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
 }
