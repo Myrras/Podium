@@ -19,6 +19,13 @@ yet set up.)
   itself stays a native Windows app. It needs WSL's mirrored networking, and
   warns at startup when that is off.
 
+### Changed
+
+- **One title bar on macOS.** The window's native title bar is gone: the
+  traffic lights now sit in Podium's own header strip, with the logo centered
+  and the header still draggable. Native fullscreen and the menu bar are
+  unchanged.
+
 ### Fixed
 
 - **Background processes on Windows no longer wait for their terminal to be
@@ -30,6 +37,9 @@ yet set up.)
   focusing a terminal briefly popped up an empty console window, because the
   git and shell calls Podium makes in the background each got a visible
   window of their own. They now run hidden.
+- **No more double title bar on Windows.** The native Windows title bar sat
+  on top of Podium's own, each with its own minimize/maximize/close buttons.
+  Only Podium's remains, and it keeps working with Aero Snap.
 
 ## [2.0.4] - 2026-09-30
 
