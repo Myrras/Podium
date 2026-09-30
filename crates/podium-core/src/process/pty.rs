@@ -71,9 +71,14 @@ impl PtyProcess {
     /// unaffected — their `command` is arbitrary shell syntax from
     /// `podium.yml` or the user's chosen shell, which still needs a real
     /// shell (`cmd.exe` on Windows) to interpret.
+    ///
+    /// In WSL-backend mode there is no `cmd.exe` layer: the string goes to
+    /// bash inside the distro (`wsl.exe … -e bash -lic <string>`), already
+    /// POSIX-quoted by `build_launch`, exactly like Unix — so agents take the
+    /// shell path too.
     #[cfg(windows)]
     fn build_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
-        if matches!(spec.kind, ProcessKind::Agent { .. }) {
+        if crate::platform::wsl().is_none() && matches!(spec.kind, ProcessKind::Agent { .. }) {
             let mut tokens = crate::platform::parse_windows_argv(&spec.command).into_iter();
             let program = tokens
                 .next()
@@ -92,18 +97,19 @@ impl PtyProcess {
             }
             return Ok(cmd);
         }
-        let (shell, prefix) = crate::platform::login_shell();
-        let mut cmd = CommandBuilder::new(shell);
-        for arg in prefix {
-            cmd.arg(arg);
-        }
-        cmd.arg(&spec.command);
-        Ok(cmd)
+        Self::shell_command(spec)
     }
 
     #[cfg(unix)]
     fn build_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
-        let (shell, prefix) = crate::platform::login_shell();
+        Self::shell_command(spec)
+    }
+
+    /// `spec.command` through the backend's login shell. In WSL-backend mode
+    /// the working directory rides along as `wsl.exe --cd` (see
+    /// [`crate::platform::login_shell_in`]).
+    fn shell_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
+        let (shell, prefix) = crate::platform::login_shell_in(&spec.cwd)?;
         let mut cmd = CommandBuilder::new(shell);
         for arg in prefix {
             cmd.arg(arg);
@@ -130,11 +136,25 @@ impl PtyProcess {
             .map_err(|e| CoreError::Pty(e.to_string()))?;
 
         let mut cmd = Self::build_command(spec)?;
-        cmd.cwd(&spec.cwd);
         for (key, value) in &spec.env {
             cmd.env(key, value);
         }
         cmd.env("TERM", "xterm-256color");
+        if crate::platform::wsl().is_some() {
+            // The real cwd went to `wsl.exe --cd`; `wsl.exe` itself gets a
+            // plain local directory (it starts in a distro-default dir when
+            // handed a `\\wsl.localhost` one). And environment variables only
+            // cross into WSL when listed in `WSLENV`.
+            cmd.cwd(std::env::temp_dir());
+            let keys = spec.env.iter().map(|(key, _)| key.as_str()).chain(["TERM"]);
+            let existing = std::env::var("WSLENV").ok();
+            cmd.env(
+                "WSLENV",
+                crate::platform::wslenv_with(existing.as_deref(), keys),
+            );
+        } else {
+            cmd.cwd(&spec.cwd);
+        }
 
         let mut child = pair
             .slave
