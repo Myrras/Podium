@@ -148,6 +148,7 @@ describe("agentActivityStore", () => {
         state: "exited",
         code: 0,
         crashed: false,
+        stopped: false,
         at: "now",
       }),
     ]);
