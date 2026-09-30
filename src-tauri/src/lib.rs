@@ -38,8 +38,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // Native OS notifications (e.g. when an agent stalls needing input).
         .plugin(tauri_plugin_notification::init())
-        // Persist window size/position across runs.
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        // Persist window size/position across runs. Decorations excluded: its
+        // on_window_ready restore runs after our own setup hook (see below)
+        // and, with default StateFlags, would reassert the native title bar
+        // on every launch — confirmed by a persisted `"decorated": true` in
+        // .window-state.json overriding our fix every time.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
+                .build(),
+        )
         // Opens to-do links and markdown links in the OS default browser.
         .plugin(tauri_plugin_opener::init())
         // Logging sinks: stdout (dev), the per-OS log directory (support), and
@@ -125,6 +136,11 @@ pub fn run() {
                     }
                 });
             }
+
+            // Fix the backend (native, or WSL on Windows) before anything
+            // can spawn: the MCP server, the assistant and the projects the
+            // frontend reopens all run through it.
+            init_backend(&app.path().app_data_dir()?);
 
             // Forward core lifecycle events to the webview for the app's
             // whole lifetime.
@@ -221,6 +237,7 @@ pub fn run() {
             commands::process::process_list,
             commands::process::process_git_branch,
             commands::process::process_report_waiting,
+            commands::process::process_activity,
             commands::process::process_rename,
             commands::process::process_start,
             commands::process::process_stop,
@@ -245,6 +262,9 @@ pub fn run() {
             commands::assistant::assistant_queue_send_now,
             commands::assistant::assistant_queue_remove,
             commands::assistant::assistant_interrupt,
+            commands::backend::backend_settings_get,
+            commands::backend::backend_settings_set_wsl_distro,
+            commands::backend::backend_wsl_networking_mode,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,
             commands::agent::agent_settings_get,
@@ -322,6 +342,18 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+/// Read `backend.json` from the app data dir and fix this run's backend
+/// ([`podium_core::platform::init_wsl`]). A missing or corrupt file is the
+/// native backend; off Windows a configured distro is ignored.
+fn init_backend(app_data_dir: &std::path::Path) {
+    let settings =
+        podium_core::backend_settings::load(&app_data_dir.join(commands::backend::BACKEND_FILE));
+    podium_core::platform::init_wsl(settings.wsl_distro.as_deref());
+    if let Some(wsl) = podium_core::platform::wsl() {
+        tracing::info!("WSL backend: running processes in distro {}", wsl.distro());
+    }
 }
 
 /// Run the `mcp-bridge` subcommand: a headless stdio ↔ streamable-HTTP proxy

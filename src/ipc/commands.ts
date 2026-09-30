@@ -11,6 +11,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AdapterInfo,
   AgentSettingsDto,
+  BackendSettingsDto,
   AgentSpawnOptions,
   Attachment,
   AutonomyMode,
@@ -22,6 +23,7 @@ import type {
   MergeMode,
   NewProcess,
   PollingSettings,
+  OutputActivity,
   ProcessId,
   ProcessInfo,
   ProjectId,
@@ -167,6 +169,15 @@ export function processGitBranch(processId: ProcessId): Promise<string | null> {
 }
 
 /**
+ * Output timing per running process, keyed by process id (a process that
+ * never printed is absent). Polled by the activity monitor — read off the
+ * backend's scrollback, so it covers agents whose terminal was never opened.
+ */
+export function processActivity(): Promise<Record<ProcessId, OutputActivity>> {
+  return invoke("process_activity");
+}
+
+/**
  * Tell the backend this agent is sitting on an input prompt, so the assistant
  * hears about it now rather than after the watcher's silence timer. Called
  * once per prompt episode, from the activity monitor that already detects it.
@@ -237,6 +248,31 @@ export function agentSpawn(
     worktree: options.worktree ?? null,
     worktreeName: options.worktreeName ?? null,
     args: options.args ?? null,
+  });
+}
+
+/** Saved backend settings plus the backend this run uses (Windows WSL mode). */
+export function backendSettingsGet(): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_get");
+}
+
+/**
+ * WSL-backend mode only: the distro's networking mode (`mirrored`, `nat`, …),
+ * or `null` natively / when WSL can't tell.
+ */
+export function backendWslNetworkingMode(): Promise<string | null> {
+  return invoke("backend_wsl_networking_mode");
+}
+
+/**
+ * Save the WSL distro to run everything in from the next launch on. Blank =
+ * run natively. Returns the refreshed settings.
+ */
+export function backendSettingsSetWslDistro(
+  distro: string,
+): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_set_wsl_distro", {
+    distro: distro.trim() || null,
   });
 }
 

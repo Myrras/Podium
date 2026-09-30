@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod assignment;
 pub mod assistant;
+pub mod backend_settings;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -42,6 +43,7 @@ pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;
 pub use process::pty::TermChunk;
+pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 pub use scratchpad::ScratchpadInfo;

@@ -8,16 +8,20 @@ use podium_core::mcp::tools::{
     AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
     CreateWorktreeParams, GetProcessOutputParams, ListScratchpadsParams, ListTodosParams,
     ListWorktreesParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
-    ReportToAssistantParams, RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams,
-    SpawnAgentParams, UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams,
-    VerifySenderParams,
+    RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
     Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
-    TodoId, TranscriptRole,
+    TodoId,
 };
+// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
+#[cfg(unix)]
+use podium_core::mcp::tools::ReportToAssistantParams;
+#[cfg(unix)]
+use podium_core::TranscriptRole;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -295,6 +299,9 @@ async fn tools_list_includes_scratchpad_tools() {
     server.stop();
 }
 
+// `printf` is not a `cmd.exe` builtin, so on Windows this process fails to
+// produce the expected ANSI-coded "red" output.
+#[cfg_attr(windows, ignore = "printf has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_list_projects_and_read_ansi_stripped_output() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -687,6 +694,24 @@ async fn list_scratchpads_round_trip_via_mcp() {
 }
 
 /// Adapter whose "agent" is just a long sleep, for cap testing.
+///
+/// Every test below (and the other fake adapters further down: `EchoAdapter`,
+/// `BetaAdapter`, `PromptEchoAdapter`) plans a command line for a binary that
+/// is not installed, or not reliably present, on Windows (`sleep`, `fake-agent`,
+/// `echo-agent`, `beta-agent`, `/opt/echo`, …) — `sleep` only resolves there via
+/// Git for Windows' `usr\bin` on `PATH`, which GitHub's `windows-latest` runner
+/// happens to have but which isn't guaranteed. On Unix that is harmless:
+/// `ProcessKind::Agent` still runs through the login shell (`$SHELL -lic
+/// <command>`, see `PtyProcess::build_command`), so the *shell* spawns fine and
+/// only the command it tries to run inside fails — invisibly, since none of
+/// these tests waits on the process's own exit. On Windows, `build_command`
+/// bypasses the shell entirely for agent commands (see its doc comment) and
+/// hands the binary straight to `CreateProcessW`; an unresolved binary makes
+/// that spawn itself fail, so `spawn_agent`/`add_process` + `start_process`
+/// return `Err` before the test's own assertions ever run — and for `sleep`
+/// specifically, whether it resolves at all is environment-dependent. Every
+/// test that spawns one of these fake adapters is therefore
+/// `#[cfg_attr(windows, ignore)]`.
 struct FakeAgentAdapter;
 
 impl AgentAdapter for FakeAgentAdapter {
@@ -714,6 +739,10 @@ impl AgentAdapter for FakeAgentAdapter {
     }
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -762,6 +791,10 @@ async fn spawn_agent_is_capped_at_eight_active_agents_per_project() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_spawned_from_todo_takes_the_todo_name() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -841,6 +874,10 @@ async fn agent_spawned_from_todo_takes_the_todo_name() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -894,6 +931,10 @@ async fn spawning_on_a_todo_assigns_the_agent_and_unassign_clears_it() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn removing_an_agent_clears_its_todo_assignment() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -932,6 +973,10 @@ async fn removing_an_agent_clears_its_todo_assignment() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn assign_todo_tool_self_assigns_a_running_agent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -989,6 +1034,10 @@ async fn assign_todo_tool_self_assigns_a_running_agent() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn rename_session_tool_renames_the_calling_agent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1215,6 +1264,10 @@ async fn report_to_assistant_starts_the_session_when_nobody_is_chatting() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_tool_accepts_multiple_todo_ids_as_one_agent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1301,6 +1354,10 @@ impl AgentAdapter for PromptEchoAdapter {
     }
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn respawn_agent_hands_the_to_do_and_the_answer_to_a_fresh_session() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1389,6 +1446,10 @@ async fn respawn_agent_hands_the_to_do_and_the_answer_to_a_fresh_session() {
 /// Without a to-do there is nothing to carry the task, so an answer on its own
 /// would spawn a session that knows only the reply to a question nobody asked
 /// it. Refusing beats burning an agent.
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn respawning_an_agent_with_no_to_do_needs_a_task_as_well() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1456,6 +1517,10 @@ async fn respawning_an_agent_with_no_to_do_needs_a_task_as_well() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawning_on_a_scratchpad_assigns_the_agent_and_unassign_clears_it() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1511,6 +1576,10 @@ async fn spawning_on_a_scratchpad_assigns_the_agent_and_unassign_clears_it() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawning_on_both_todo_and_scratchpad_ignores_the_scratchpad() {
     // to-dos win: when both are passed, the scratchpad is neither assigned
@@ -1553,6 +1622,10 @@ async fn spawning_on_both_todo_and_scratchpad_ignores_the_scratchpad() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawning_on_a_todo_with_a_bogus_scratchpad_still_succeeds() {
     // Per the "ignored if a to-do is also given" contract, an
@@ -1590,6 +1663,10 @@ async fn spawning_on_a_todo_with_a_bogus_scratchpad_still_succeeds() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn removing_an_agent_clears_its_scratchpad_assignment() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1628,6 +1705,10 @@ async fn removing_an_agent_clears_its_scratchpad_assignment() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn list_scratchpads_enriches_assigned_agent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1666,6 +1747,10 @@ async fn list_scratchpads_enriches_assigned_agent() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_tool_accepts_scratchpad_ids() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1803,6 +1888,10 @@ fn planned_command(orch: &Orchestrator, project_id: ProjectId, id: ProcessId) ->
         .expect("process present")
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn bare_spawn_uses_the_global_default_adapter() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1838,6 +1927,10 @@ async fn bare_spawn_uses_the_global_default_adapter() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn project_default_adapter_overrides_the_global_one() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1878,6 +1971,10 @@ async fn project_default_adapter_overrides_the_global_one() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_applies_global_override_and_default_args() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1921,6 +2018,10 @@ async fn spawn_agent_applies_global_override_and_default_args() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_args_override_replaces_global_default_args() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1965,6 +2066,10 @@ async fn spawn_agent_args_override_replaces_global_default_args() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_tool_args_become_the_launch_args_override() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2093,6 +2198,10 @@ async fn worktree_tools_round_trip_create_list_remove() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_with_worktree_does_not_create_one() {
     let dir = init_git_repo();
@@ -2139,6 +2248,10 @@ async fn spawn_agent_with_worktree_does_not_create_one() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_agent_with_worktree_works_on_a_non_git_project() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2169,6 +2282,10 @@ async fn spawn_agent_with_worktree_works_on_a_non_git_project() {
     orch.shutdown().await;
 }
 
+// `sleep` has no `cmd.exe` builtin equivalent, so this "busy" terminal
+// process would exit almost instantly on Windows instead of holding the
+// worktree open for the removal check.
+#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn remove_worktree_is_refused_while_a_process_runs_in_it() {
     let dir = init_git_repo();
@@ -2217,6 +2334,10 @@ async fn remove_worktree_is_refused_while_a_process_runs_in_it() {
     orch.shutdown().await;
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn assign_todo_is_blocked_when_already_owned_by_another_session() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2638,6 +2759,14 @@ async fn every_tool_is_classified_for_the_autonomy_gate() {
     server.stop();
 }
 
+// Adds an `Agent`-kind process directly with `command: "sleep 30"`: on
+// Windows agent commands bypass the shell and exec the binary directly (see
+// FakeAgentAdapter's comment), and whether `sleep` resolves at all there is
+// environment-dependent, so the spawn is unreliable.
+#[cfg_attr(
+    windows,
+    ignore = "spawns `sleep` as an agent binary; see FakeAgentAdapter's comment"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn verify_sender_answers_from_podiums_own_registry() {
     let dir = tempfile::tempdir().expect("tempdir");

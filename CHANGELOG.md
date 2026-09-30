@@ -8,7 +8,7 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
-## [2.1.0] - 2026-09-22
+## [2.1.0] - 2026-09-30
 
 ### Added
 
@@ -20,6 +20,66 @@ yet set up.)
   an item does not send it: reading a to-do should not put it in your next
   message. Each chip has an × if you'd rather not send it, and a selection you
   make inside the chat panel itself is left alone.
+- **Run everything inside WSL on Windows.** Settings → General → Backend takes
+  a WSL distro name; after a restart, services, terminals, agents, the
+  personal assistant, git worktrees and the MCP install all run inside that
+  distro, with projects opened from `\\wsl.localhost\<distro>\…`. Podium
+  itself stays a native Windows app. It needs WSL's mirrored networking, and
+  warns at startup when that is off.
+
+### Changed
+
+- **One title bar on macOS.** The window's native title bar is gone: the
+  traffic lights now sit in Podium's own header strip, with the logo centered
+  and the header still draggable. Native fullscreen and the menu bar are
+  unchanged.
+
+### Fixed
+
+- **Background processes on Windows no longer wait for their terminal to be
+  opened.** An `auto_start` service, an agent started from a to-do, or a
+  supervised restart used to sit blocked until someone opened its terminal,
+  because Windows' console layer waits for a reply that only the terminal view
+  gave. Podium now answers it itself.
+- **No more console windows flashing up on Windows.** Starting an agent or
+  focusing a terminal briefly popped up an empty console window, because the
+  git and shell calls Podium makes in the background each got a visible
+  window of their own. They now run hidden.
+- **No more double title bar on Windows.** The native Windows title bar sat
+  on top of Podium's own, each with its own minimize/maximize/close buttons.
+  Only Podium's remains, and it keeps working with Aero Snap.
+
+## [2.0.4] - 2026-09-30
+
+### Fixed
+
+- **The "working…" indicator tells the truth.** Opening a terminal made its
+  agent read "working…" for a few seconds, just from the terminal redrawing
+  itself, and an agent whose terminal you never opened always read "idle". The
+  state now comes from the agent's actual output, whether or not its terminal is
+  open, and a single repaint no longer counts as work.
+
+## [2.0.3] - 2026-09-29
+
+### Fixed
+
+- **No "check what it did" nudge for an agent you stopped.** Stopping an agent
+  (the stop button, or the assistant stopping or respawning it) still made the
+  assistant report it as finished. That report is now kept for agents that exit
+  on their own or crash.
+
+## [2.0.2] - 2026-09-29
+
+### Fixed
+
+- **A long assistant queue no longer hides the chat.** Messages waiting for the
+  current turn grew the pinned list at the bottom of the panel until it covered
+  the whole transcript. The list now tops out at 40% of the window height and
+  scrolls within itself.
+- **Waiting messages are cut off cleanly.** A queued message's preview broke
+  mid-word after a few characters. It now wraps at word boundaries and shows at
+  most three lines, ending in an ellipsis; the edit action still shows the full
+  text.
 
 ## [2.0.1] - 2026-09-22
 

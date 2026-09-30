@@ -39,8 +39,6 @@ interface Entry {
   nextSeq: number;
   /** Bumped on every (re-)attach; stale channel callbacks check it. */
   generation: number;
-  /** Unix ms of the last output bytes (backs the agent "working" heuristic). */
-  lastOutputAt: number | null;
 }
 
 const entries = new Map<ProcessId, Entry>();
@@ -67,13 +65,11 @@ function handleTermEvent(
       entry.terminal.reset();
       entry.terminal.write(base64ToBytes(event.dataB64));
       entry.nextSeq = event.seq;
-      if (event.dataB64.length > 0) entry.lastOutputAt = Date.now();
       break;
     case "data":
       if (event.seq < entry.nextSeq) return; // covered by the snapshot
       entry.terminal.write(base64ToBytes(event.dataB64));
       entry.nextSeq = event.seq + 1;
-      entry.lastOutputAt = Date.now();
       break;
     case "lagged":
       // Bytes were dropped server-side; a partial stream would corrupt the
@@ -121,19 +117,9 @@ export function acquireTerminal(
     terminal,
     nextSeq: 0,
     generation: 0,
-    lastOutputAt: null,
   });
   attach(processId);
   return terminal;
-}
-
-/**
- * Unix ms of the last output bytes for a process, or `null` when it has no
- * live terminal / no output yet. Polled by `useAgentActivity` for the
- * "working" heuristic — deliberately a plain accessor, not a subscription.
- */
-export function getLastOutputAt(processId: ProcessId): number | null {
-  return entries.get(processId)?.lastOutputAt ?? null;
 }
 
 /**

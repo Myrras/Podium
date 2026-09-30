@@ -89,6 +89,13 @@ async fn wait_for_output(orch: &Orchestrator, id: ProcessId, needle: &str) -> St
     .expect("timed out waiting for expected output")
 }
 
+// `printf` and the `;` statement separator are POSIX shell syntax: on
+// Windows this runs through `cmd.exe /C`, which has neither, so the whole
+// line is treated as one unrecognized command and never produces "hello".
+#[cfg_attr(
+    windows,
+    ignore = "printf/`;` are POSIX-only; cmd.exe can't run this line"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn printf_hello_exits_cleanly() {
     let (orch, id, _dir) = setup("printf hello; exit 0").await;
@@ -150,6 +157,10 @@ async fn user_stop_is_not_a_crash_and_kills_the_group() {
     .expect("process group still alive after stop");
 }
 
+// `sleep` is a coreutils binary with no `cmd.exe` builtin equivalent; the
+// service/terminal processes here would fail almost instantly on Windows
+// instead of staying "Running" for the gate to observe.
+#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn active_agents_or_terminals_gate_tracks_only_agents_and_terminals() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -202,6 +213,12 @@ async fn active_agents_or_terminals_gate_tracks_only_agents_and_terminals() {
     assert!(!orch.has_active_agents_or_terminals());
 }
 
+// A POSIX `while`/`[ … ]` loop with fractional `sleep`: `cmd.exe` has neither,
+// so this never produces the expected `line0..line19` stream on Windows.
+#[cfg_attr(
+    windows,
+    ignore = "POSIX shell loop syntax; cmd.exe can't run this line"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn mid_stream_attach_reconstructs_output_without_gaps_or_dups() {
     let command = "i=0; while [ $i -lt 20 ]; do echo line$i; i=$((i+1)); sleep 0.05; done";
@@ -300,4 +317,20 @@ async fn zshrc_only_env_is_visible_to_spawned_processes() {
     orch.start_process(process_id).await.expect("start");
     let text = wait_for_output(&orch, process_id, "zshrc_was_sourced").await;
     assert!(text.contains("zshrc_was_sourced"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_activity_lists_running_processes_that_printed() {
+    let (orch, id, _dir) = setup("printf hello; sleep 30").await;
+    assert!(orch.output_activity().is_empty(), "nothing before start");
+
+    orch.start_process(id).await.expect("start");
+    wait_for_output(&orch, id, "hello").await;
+    let activity = orch.output_activity();
+    let mine = activity.get(&id).expect("running process that printed");
+    assert!(mine.quiet_ms < 30_000, "just printed: {mine:?}");
+
+    orch.stop_process(id).await.expect("stop");
+    wait_for_exit(&orch, id).await;
+    assert!(!orch.output_activity().contains_key(&id));
 }

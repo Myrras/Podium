@@ -2,32 +2,36 @@
  * Centralized process activity: "working" / "waiting" / "idle".
  *
  * A single polling loop (started once from App) derives each running
- * process's state from its terminal — recent output means "working"; an otherwise quiet
- * screen showing a permission/confirmation prompt means "waiting" (needs the
- * user); everything else is "idle" (done or paused). Computing this in one
- * place — rather than per row/pane — means the state is derived once and the
- * "needs input" alert fires exactly once per transition, no matter how many
- * views show the same process. Every running process is tracked, not just
- * agents: a terminal stalled on a `sudo` password or a `[y/N]` confirmation
- * needs the user exactly as much as an agent does (the UI only surfaces
- * "waiting" for non-agents — "working"/"idle" is noise for a plain shell).
- * The same screen read also yields an agent's background-shell count, so "idle" can be qualified with the work still
- * running behind the prompt.
+ * process's state once a second. "Working" comes from the backend
+ * (`processActivity`): how long ago the process last printed and how long
+ * that burst of output has lasted, read off its scrollback — so it covers
+ * every running process, whether or not its terminal was ever opened here.
+ * An otherwise quiet screen showing a permission/confirmation prompt means
+ * "waiting" (needs the user); everything else is "idle" (done or paused).
+ * Computing this in one place — rather than per row/pane — means the state
+ * is derived once and the "needs input" alert fires exactly once per
+ * transition, no matter how many views show the same process. Every running
+ * process is tracked, not just agents: a terminal stalled on a `sudo`
+ * password or a `[y/N]` confirmation needs the user exactly as much as an
+ * agent does (the UI only surfaces "waiting" for non-agents —
+ * "working"/"idle" is noise for a plain shell). The same screen read also
+ * yields an agent's background-shell count, so "idle" can be qualified with
+ * the work still running behind the prompt.
  *
- * Detection is a frontend heuristic (see `detectInputPrompt`): neither
- * coding-agent CLIs nor ordinary commands emit structured PTY events, and the existing "working" signal is
- * already output-timestamp based, so this only reads what the agent has
- * printed — no extra IPC. Like that signal, it only covers agents whose
- * terminal has been opened at least once (otherwise there's no buffer to read).
+ * Prompt detection is a frontend heuristic (see `detectInputPrompt`): neither
+ * coding-agent CLIs nor ordinary commands emit structured PTY events, so it
+ * reads what is drawn on the terminal. Unlike "working", it only covers
+ * processes whose terminal has been opened at least once (otherwise there is
+ * no screen to read).
  */
 
 import { create } from "zustand";
 
-import type { ProcessId } from "../ipc/types";
+import type { OutputActivity, ProcessId } from "../ipc/types";
 import { detectBackgroundShells, detectInputPrompt } from "../lib/agentPrompt";
-import { processReportWaiting } from "../ipc/commands";
+import { processActivity, processReportWaiting } from "../ipc/commands";
 import { notifyAgentWaiting } from "../lib/notify";
-import { getLastOutputAt, readViewportText } from "../lib/terminalRegistry";
+import { readViewportText } from "../lib/terminalRegistry";
 import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 
@@ -36,10 +40,28 @@ export type AgentActivity = "working" | "waiting" | "idle";
 
 /** Output younger than this counts as "working". */
 const WORKING_WINDOW_MS = 2500;
+/**
+ * A burst shorter than this is a lone redraw — Claude Code repainting after
+ * the pane was fitted, a prompt being drawn — not work. A working agent
+ * animates its spinner for as long as it works, so its burst keeps growing.
+ */
+const MIN_BURST_MS = 300;
 /** Poll cadence for the monitor loop. */
 const POLL_INTERVAL_MS = 1000;
 
-function computeActivity(processId: ProcessId): {
+/** Whether the backend's output timing reads as recent, sustained output. */
+export function isWorking(output: OutputActivity | undefined): boolean {
+  return (
+    output !== undefined &&
+    output.quietMs <= WORKING_WINDOW_MS &&
+    output.burstMs >= MIN_BURST_MS
+  );
+}
+
+function computeActivity(
+  processId: ProcessId,
+  output: OutputActivity | undefined,
+): {
   activity: AgentActivity;
   /** Whether the screen shows an input prompt right now, regardless of
    * recent output — one prompt on screen = one notification episode. */
@@ -50,9 +72,7 @@ function computeActivity(processId: ProcessId): {
   const screen = readViewportText(processId);
   const prompting = screen !== null && detectInputPrompt(screen);
   const shells = screen === null ? 0 : detectBackgroundShells(screen);
-  const last = getLastOutputAt(processId);
-  if (last !== null && Date.now() - last <= WORKING_WINDOW_MS)
-    return { activity: "working", prompting, shells };
+  if (isWorking(output)) return { activity: "working", prompting, shells };
   return { activity: prompting ? "waiting" : "idle", prompting, shells };
 }
 
@@ -86,15 +106,18 @@ interface AgentActivityState {
    * switch-away), and only a fresh prompt after this one clears pings again.
    */
   notified: Record<string, true>;
-  /** One monitor step: recompute, fire alerts on new "waiting" transitions. */
-  tick: () => void;
+  /**
+   * One monitor step: recompute from the backend's output timing (keyed by
+   * process id), fire alerts on new "waiting" transitions.
+   */
+  tick: (output: Record<ProcessId, OutputActivity>) => void;
 }
 
 export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   activity: {},
   shells: {},
   notified: {},
-  tick: () => {
+  tick: (output) => {
     const { processes } = useProcessStore.getState();
     const prev = get().activity;
     const prevNotified = get().notified;
@@ -105,7 +128,11 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 
     for (const p of processes) {
       if (p.status.state !== "running") continue;
-      const { activity, prompting, shells: count } = computeActivity(p.id);
+      const {
+        activity,
+        prompting,
+        shells: count,
+      } = computeActivity(p.id, output[p.id]);
       next[p.id] = activity;
       if (count > 0) shells[p.id] = count;
       if (prev[p.id] !== activity) changed = true;
@@ -149,11 +176,23 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 
 /**
  * Start the activity monitor. Call once (App mount); returns a stop function.
+ * Each tick asks the backend for output timing first and schedules the next
+ * tick only after applying it, so a slow answer can never let two ticks
+ * overlap and race each other's writes.
  */
 export function startAgentActivityMonitor(): () => void {
-  const timer = setInterval(
-    () => useAgentActivityStore.getState().tick(),
-    POLL_INTERVAL_MS,
-  );
-  return () => clearInterval(timer);
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const poll = async () => {
+    // A failed poll is one idle tick, not worth a log line every second.
+    const output = await processActivity().catch(() => ({}));
+    if (stopped) return;
+    useAgentActivityStore.getState().tick(output);
+    timer = setTimeout(poll, POLL_INTERVAL_MS);
+  };
+  timer = setTimeout(poll, POLL_INTERVAL_MS);
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
 }

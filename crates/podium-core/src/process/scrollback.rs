@@ -1,10 +1,31 @@
 //! Bounded ring buffer of raw terminal output (ANSI bytes included).
 
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
 
 /// Default byte cap: 2 MiB of raw output per process.
 pub const DEFAULT_CAP_BYTES: usize = 2 * 1024 * 1024;
+
+/// Two chunks further apart than this belong to different bursts of output.
+/// A working agent's spinner repaints every ~100 ms, so it never leaves a
+/// gap this long; a lone redraw (after a resize, drawing a prompt) does.
+pub const BURST_GAP: Duration = Duration::from_secs(1);
+
+/// How recently, and for how long, a process has been printing. Backs the
+/// UI's "working…" indicator: a lone redraw is one short burst, sustained
+/// output (a spinner, streamed text) is a burst that keeps growing. Ages
+/// rather than timestamps, so the frontend has no clock to align.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputActivity {
+    /// Milliseconds since the last chunk of output.
+    pub quiet_ms: u64,
+    /// Milliseconds the latest burst lasted: from its first chunk (the first
+    /// after a gap of at least [`BURST_GAP`]) to its last.
+    pub burst_ms: u64,
+}
 
 /// Ring buffer of output chunks with a monotonically increasing sequence
 /// number per appended chunk. Oldest chunks are evicted once the byte cap
@@ -18,6 +39,8 @@ pub struct ScrollbackBuffer {
     /// When the last chunk arrived; `None` before any output. Drives the
     /// assistant's "this agent may be waiting on input" detection.
     last_append_at: Option<Instant>,
+    /// First chunk of the burst `last_append_at` belongs to.
+    burst_started_at: Option<Instant>,
 }
 
 impl ScrollbackBuffer {
@@ -32,12 +55,24 @@ impl ScrollbackBuffer {
             cap_bytes,
             next_seq: 0,
             last_append_at: None,
+            burst_started_at: None,
         }
     }
 
     /// Append a chunk and return the sequence number assigned to it.
     pub fn append(&mut self, bytes: &[u8]) -> u64 {
-        self.last_append_at = Some(Instant::now());
+        self.append_at(bytes, Instant::now())
+    }
+
+    /// [`Self::append`] with an explicit clock, so burst timing is testable.
+    fn append_at(&mut self, bytes: &[u8], now: Instant) -> u64 {
+        if self
+            .last_append_at
+            .is_none_or(|last| now.duration_since(last) > BURST_GAP)
+        {
+            self.burst_started_at = Some(now);
+        }
+        self.last_append_at = Some(now);
         let seq = self.next_seq;
         self.next_seq += 1;
         self.total_bytes += bytes.len();
@@ -65,6 +100,17 @@ impl ScrollbackBuffer {
     /// since it started.
     pub fn last_append_at(&self) -> Option<Instant> {
         self.last_append_at
+    }
+
+    /// Output timing as of `now`, or `None` while nothing was ever printed.
+    pub fn output_activity(&self, now: Instant) -> Option<OutputActivity> {
+        let last = self.last_append_at?;
+        let start = self.burst_started_at.unwrap_or(last);
+        let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        Some(OutputActivity {
+            quiet_ms: ms(now.saturating_duration_since(last)),
+            burst_ms: ms(last.saturating_duration_since(start)),
+        })
     }
 
     /// The last `max` bytes of retained output.
@@ -130,6 +176,42 @@ mod tests {
         buf.append(b"toolongchunk");
         let (bytes, _) = buf.snapshot();
         assert_eq!(bytes, b"toolongchunk");
+    }
+
+    #[test]
+    fn output_activity_tracks_quiet_time_and_burst_length() {
+        let t0 = Instant::now();
+        let mut buf = ScrollbackBuffer::new();
+        assert_eq!(buf.output_activity(t0), None);
+
+        // A spinner repainting every 100 ms is one growing burst.
+        buf.append_at(b"a", t0);
+        buf.append_at(b"b", t0 + Duration::from_millis(100));
+        buf.append_at(b"c", t0 + Duration::from_millis(200));
+        let a = buf
+            .output_activity(t0 + Duration::from_millis(250))
+            .unwrap();
+        assert_eq!(
+            a,
+            OutputActivity {
+                quiet_ms: 50,
+                burst_ms: 200
+            }
+        );
+
+        // A lone redraw after a silence longer than the gap is a fresh burst
+        // of zero length — a resize repaint must not read as work.
+        buf.append_at(b"d", t0 + Duration::from_secs(5));
+        let a = buf
+            .output_activity(t0 + Duration::from_millis(5010))
+            .unwrap();
+        assert_eq!(
+            a,
+            OutputActivity {
+                quiet_ms: 10,
+                burst_ms: 0
+            }
+        );
     }
 
     #[test]

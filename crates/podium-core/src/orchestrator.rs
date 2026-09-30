@@ -22,7 +22,7 @@ use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
 use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
-use crate::process::scrollback::ScrollbackBuffer;
+use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 use crate::project::{self, ConfiguredProcess};
@@ -422,6 +422,28 @@ impl Orchestrator {
                     .last_append_at()
                     .or(p.started_at)?;
                 (now.duration_since(last) >= min_idle).then(|| p.info(*id))
+            })
+            .collect()
+    }
+
+    /// How recently and how steadily each running process has been printing,
+    /// keyed by process id — what the UI polls for its "working…" indicator.
+    /// Read off the scrollback, so it covers processes whose terminal was
+    /// never opened; a process that never printed is left out.
+    pub fn output_activity(&self) -> HashMap<ProcessId, OutputActivity> {
+        let now = Instant::now();
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
+            .processes
+            .iter()
+            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+            .filter_map(|(id, p)| {
+                let activity = p
+                    .scrollback
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .output_activity(now)?;
+                Some((*id, activity))
             })
             .collect()
     }
@@ -2412,6 +2434,11 @@ fn do_start(
     id: ProcessId,
     manual: bool,
 ) -> CoreResult<()> {
+    // In WSL-backend mode, one `wsl.exe` start at a time. Taken *before*
+    // `inner` and declared first so it drops last: waiting for the gate —
+    // and its settle sleep on drop — must never happen under `inner`, which
+    // every command (sync ones on the main thread included) needs.
+    let launch_gate = crate::platform::wsl_launch_guard();
     let mut guard = inner.lock().expect(LOCK_POISONED);
     let proc = guard
         .processes
@@ -2428,6 +2455,7 @@ fn do_start(
     let project_id = proc.project_id;
     let pty = PtyProcess::spawn(
         &proc.spec,
+        launch_gate.as_ref(),
         None,
         Arc::clone(&proc.scrollback),
         proc.chunk_tx.clone(),
@@ -2481,6 +2509,7 @@ fn make_exit_handler(
             let status = ProcessStatus::Exited {
                 code,
                 crashed,
+                stopped: p.user_stopped,
                 at: Utc::now(),
             };
             p.status = status.clone();
@@ -2810,7 +2839,7 @@ mod tests {
         let legacy_root = std::fs::canonicalize(dir.path()).unwrap();
         let orch = Orchestrator::new();
         orch.todos
-            .add(ProjectId::new(), &legacy_root, "pre-existing todo")
+            .add(ProjectId::new(), &legacy_root, "pre-existing todo", None)
             .unwrap();
         orch.scratchpads
             .add(ProjectId::new(), &legacy_root, "tester")

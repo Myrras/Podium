@@ -276,10 +276,17 @@
   animation: messageIn var(--dur-2) var(--ease-out);
 }
 
+/* At most three lines, then an ellipsis — the full text is one click away
+   in the edit action. */
 .pendingText {
   flex: 1;
   min-width: 0;
-  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: break-word;
   white-space: pre-wrap;
 }
 
@@ -324,10 +331,13 @@
 /* The busy row plus whatever is queued behind it, pinned to the bottom of the
    log: a long transcript scrolls *under* it instead of pushing it out of
    view. Opaque (the pane's own surface) and bled over the log's horizontal
-   padding, so no transcript text shows through or around it. */
+   padding, so no transcript text shows through or around it. Capped and
+   scrollable, so a long queue never covers the whole transcript. */
 .tail {
   position: sticky;
   bottom: 0;
+  max-height: 40vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);

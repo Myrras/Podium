@@ -1,7 +1,22 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentSettingsDto, McpClientInfo } from "../ipc/types";
+import type {
+  AgentSettingsDto,
+  BackendSettingsDto,
+  McpClientInfo,
+} from "../ipc/types";
+
+// Platform flags, flippable per test: the WSL backend field is Windows-only.
+const platform = vi.hoisted(() => ({ isWindows: false }));
+vi.mock("../lib/platform", () => ({
+  get isWindows() {
+    return platform.isWindows;
+  },
+  isMac: false,
+}));
+
+let backendDto: BackendSettingsDto = { wslDistro: "", activeWslDistro: "" };
 
 // The settings modal reaches the backend only through the Tauri invoke bridge,
 // which jsdom lacks — route every command by name to a canned response.
@@ -78,6 +93,20 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
       });
     case "assistant_polling_set":
       return Promise.resolve(args);
+    case "backend_settings_get":
+      return Promise.resolve(backendDto);
+    case "backend_settings_set_wsl_distro":
+      if ((args as { distro: string | null }).distro === "Ubunto") {
+        return Promise.reject({
+          kind: "invalidInput",
+          message: 'WSL distro "Ubunto" is not installed (installed: Ubuntu)',
+        });
+      }
+      backendDto = {
+        ...backendDto,
+        wslDistro: (args as { distro: string | null }).distro ?? "",
+      };
+      return Promise.resolve(backendDto);
     default:
       return Promise.resolve(null);
   }
@@ -282,6 +311,86 @@ describe("SettingsModal — General tab", () => {
       target: { value: "pwsh" },
     });
     expect(useSettingsStore.getState().terminal.shell).toBe("pwsh");
+  });
+});
+
+describe("SettingsModal — General tab, WSL backend", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+    backendDto = { wslDistro: "", activeWslDistro: "" };
+  });
+  afterEach(() => {
+    platform.isWindows = false;
+  });
+
+  it("fetches the backend settings once for the whole tab", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "backend_settings_get"),
+    ).toHaveLength(1);
+  });
+
+  it("is hidden off Windows", () => {
+    render(<SettingsModal open onClose={() => undefined} />);
+    expect(screen.queryByLabelText("WSL distro")).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("backend_settings_get", undefined);
+  });
+
+  it("hints the distro's $SHELL as the terminal default in WSL mode", async () => {
+    platform.isWindows = true;
+    backendDto = { wslDistro: "Ubuntu", activeWslDistro: "Ubuntu" };
+    render(<SettingsModal open onClose={() => undefined} />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Shell")).toHaveAttribute(
+        "placeholder",
+        "$SHELL (default)",
+      ),
+    );
+  });
+
+  it("hints PowerShell as the terminal default on native Windows", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    await screen.findByLabelText("WSL distro");
+    expect(screen.getByLabelText("Shell")).toHaveAttribute(
+      "placeholder",
+      "powershell (default)",
+    );
+  });
+
+  it("saves the distro on Windows and asks for a restart", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    fireEvent.change(input, { target: { value: " Ubuntu " } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("backend_settings_set_wsl_distro", {
+        distro: "Ubuntu",
+      }),
+    );
+    expect(
+      await screen.findByText("Restart Podium to apply this change."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows why a distro that is not installed was refused", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    fireEvent.change(input, { target: { value: "Ubunto" } });
+    fireEvent.blur(input);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'WSL distro "Ubunto" is not installed (installed: Ubuntu)',
+    );
+    expect(
+      screen.queryByText("Restart Podium to apply this change."),
+    ).toBeNull();
   });
 });
 
