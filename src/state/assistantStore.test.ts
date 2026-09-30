@@ -142,6 +142,9 @@ describe("assistantStore", () => {
       expect(
         responseLabel(responseItem({ agent: null, project: null, todo: null })),
       ).toBe("Responses item");
+      expect(
+        responseLabel(responseItem({ agent: "checkout\n  fix", todo: null })),
+      ).toBe("checkout fix · Webshop");
     });
 
     it("loads the list and mirrors responsesChanged snapshots", async () => {
@@ -155,20 +158,24 @@ describe("assistantStore", () => {
       expect(useAssistantStore.getState().responses).toEqual([]);
     });
 
-    it("dismisses optimistically and rolls back on failure", async () => {
+    it("dismisses optimistically and reloads the backend's list on failure", async () => {
       useAssistantStore.setState({ responses: [responseItem()] });
 
       await useAssistantStore.getState().dismissResponse("r-1");
       expect(assistantResponseDismiss).toHaveBeenCalledWith("r-1");
       expect(useAssistantStore.getState().responses).toEqual([]);
 
+      // Superseded meanwhile: the backend now holds a newer item, and the
+      // failure must not bring the stale one back over it.
+      const newer = responseItem({ id: "r-2", text: "newer" });
       useAssistantStore.setState({ responses: [responseItem()] });
+      vi.mocked(assistantResponsesList).mockResolvedValueOnce([newer]);
       vi.mocked(assistantResponseDismiss).mockRejectedValueOnce({
         kind: "responseNotFound",
         message: "no such item",
       });
       await useAssistantStore.getState().dismissResponse("r-1");
-      expect(useAssistantStore.getState().responses).toHaveLength(1);
+      expect(useAssistantStore.getState().responses).toEqual([newer]);
       expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
         role: "notice",
         text: "no such item",

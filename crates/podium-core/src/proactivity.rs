@@ -394,7 +394,13 @@ fn describe(orchestrator: &Orchestrator, process: &ProcessInfo) -> String {
         .find(|p| p.id == process.project_id)
         .map(|p| p.name)
         .unwrap_or_else(|| "a closed project".to_string());
-    format!("\"{}\" in project \"{project}\"", process.name)
+    // The process id lets the assistant file the update as a Responses item
+    // keyed to this agent (`add_response`'s `process_id`), so a later update
+    // replaces it instead of piling up.
+    format!(
+        "\"{}\" (process {}) in project \"{project}\"",
+        process.name, process.id
+    )
 }
 
 fn exit_code(code: Option<i32>) -> String {

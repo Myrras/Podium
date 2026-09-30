@@ -554,8 +554,14 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   exited agent still reads right. A newer item with the same `processId` or
   `todoId` replaces the open one; an item with neither key never replaces
   anything. `add_response` is refused on the agent route (the list is the
-  assistant's to curate) and classified read-only, so the gate never parks
-  it as a proposal. Every change publishes a full `responsesChanged`
+  assistant's to curate) — a guard against a confused agent, not a security
+  boundary: both routes share one bearer token, so an agent that deliberately
+  posts to `/mcp-assistant` gets through, exactly as it could reach every
+  other assistant-route tool; the OS user stays the trust boundary. It is
+  classified read-only, so the gate never parks it as a proposal, and capped
+  (newest 100 items, 500-char text) since the assistant writes it from
+  content it read. The nudges Podium sends name the agent's process id so the
+  assistant can pass it as the supersede key. Every change publishes a full `responsesChanged`
   snapshot, never recorded in the transcript. The user either ticks an item
   (`assistant_response_dismiss`, it is just removed) or replies
   (`assistant_response_reply`): the reply is an ordinary user turn through
@@ -565,8 +571,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   transcript stores it as a `reply` row (`"<label>\n<reply>"`), and a waiting
   reply exposes `replyTo` (the label) on `QueuedMessage` and on
   `queueItemDelivered`; editing a waiting reply changes only its text. The
-  item is removed only after the send succeeded (sent or queued), so a failed
-  send leaves it to try again. The label is the non-empty parts of agent ·
+  item is taken off the list before the send (so a double submit cannot send
+  twice) and put back if the send fails; a queued reply that never goes out
+  (the conversation ended) is named with its item in the undelivered notice.
+  Snapshots are published under the store's lock, so they arrive in the order
+  the changes happened. The label is the non-empty parts of agent ·
   project · to-do · source, or `Responses item`.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form

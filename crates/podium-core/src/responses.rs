@@ -24,6 +24,13 @@ use crate::ids::{ProcessId, ResponseId, TodoId};
 
 const LOCK_POISONED: &str = "response store lock poisoned";
 
+/// Most items the list holds; the oldest go first. The assistant files these
+/// from content it read (agent reports, a Slack sweep), so a runaway or
+/// prompt-injected session must not grow the file and the pinned list
+/// without bound.
+// ponytail: flat cap, oldest dropped.
+pub const MAX_ITEMS: usize = 100;
+
 /// Whether an item asks something of the user or only keeps them posted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -62,9 +69,13 @@ impl ResponseItem {
     /// How the item is named to the user and, in a reply, to the assistant:
     /// whatever of agent, project, to-do and source it has.
     pub fn label(&self) -> String {
-        let parts: Vec<&str> = [&self.agent, &self.project, &self.todo, &self.source]
+        // Whitespace collapsed per part: the label is the first line of a
+        // reply row and sits inside a one-line bracket on the wire, and an
+        // agent name or source may carry a newline.
+        let parts: Vec<String> = [&self.agent, &self.project, &self.todo, &self.source]
             .into_iter()
             .filter_map(|p| p.as_deref())
+            .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|p| !p.is_empty())
             .collect();
         if parts.is_empty() {
@@ -116,28 +127,30 @@ impl ResponseStore {
         self.inner.lock().expect(LOCK_POISONED).items.clone()
     }
 
-    pub fn get(&self, id: ResponseId) -> CoreResult<ResponseItem> {
-        self.inner
-            .lock()
-            .expect(LOCK_POISONED)
-            .items
-            .iter()
-            .find(|i| i.id == id)
-            .cloned()
-            .ok_or(CoreError::ResponseNotFound)
-    }
+    // Every mutation hands the new list to `changed` while still holding the
+    // lock, so snapshots are published in the order the changes happened: an
+    // add racing a dismiss can never publish its older list last and bring
+    // the dismissed item back on screen. `changed` must not block (a
+    // broadcast send does not).
 
-    /// Add `item` at the top, dropping any open item it supersedes. Returns
-    /// the new list.
-    pub fn add(&self, item: ResponseItem) -> CoreResult<Vec<ResponseItem>> {
+    /// Add `item` at the top, dropping any open item it supersedes and,
+    /// past [`MAX_ITEMS`], the oldest.
+    pub fn add(&self, item: ResponseItem, changed: impl FnOnce(&[ResponseItem])) -> CoreResult<()> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.items.retain(|old| !old.superseded_by(&item));
         inner.items.insert(0, item);
+        inner.items.truncate(MAX_ITEMS);
         save(&inner)?;
-        Ok(inner.items.clone())
+        changed(&inner.items);
+        Ok(())
     }
 
-    pub fn remove(&self, id: ResponseId) -> CoreResult<ResponseItem> {
+    /// Take one item off the list.
+    pub fn remove(
+        &self,
+        id: ResponseId,
+        changed: impl FnOnce(&[ResponseItem]),
+    ) -> CoreResult<ResponseItem> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         let index = inner
             .items
@@ -146,7 +159,26 @@ impl ResponseStore {
             .ok_or(CoreError::ResponseNotFound)?;
         let item = inner.items.remove(index);
         save(&inner)?;
+        changed(&inner.items);
         Ok(item)
+    }
+
+    /// Put back an item [`remove`](Self::remove) took, in its place by age —
+    /// unless a newer item about the same agent or to-do arrived meanwhile,
+    /// which is the one the user should see.
+    pub fn restore(&self, item: ResponseItem, changed: impl FnOnce(&[ResponseItem])) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        if inner.items.iter().any(|i| item.superseded_by(i)) {
+            return;
+        }
+        let at = inner
+            .items
+            .iter()
+            .position(|i| i.created_at < item.created_at)
+            .unwrap_or(inner.items.len());
+        inner.items.insert(at, item);
+        let _ = save(&inner);
+        changed(&inner.items);
     }
 }
 
@@ -195,6 +227,13 @@ mod tests {
         }
     }
 
+    /// Add, returning the list `add` announced.
+    fn add(store: &ResponseStore, i: ResponseItem) -> Vec<ResponseItem> {
+        let mut announced = Vec::new();
+        store.add(i, |l| announced = l.to_vec()).unwrap();
+        announced
+    }
+
     fn texts(items: &[ResponseItem]) -> Vec<&str> {
         items.iter().map(|i| i.text.as_str()).collect()
     }
@@ -202,8 +241,8 @@ mod tests {
     #[test]
     fn items_list_newest_first() {
         let store = ResponseStore::new();
-        store.add(item(None, None, "first")).unwrap();
-        store.add(item(None, None, "second")).unwrap();
+        add(&store, item(None, None, "first"));
+        add(&store, item(None, None, "second"));
         assert_eq!(texts(&store.list()), vec!["second", "first"]);
     }
 
@@ -211,9 +250,9 @@ mod tests {
     fn a_newer_item_about_the_same_agent_replaces_the_open_one() {
         let store = ResponseStore::new();
         let agent = ProcessId::new();
-        store.add(item(Some(agent), None, "tests failing")).unwrap();
-        store.add(item(None, None, "unrelated")).unwrap();
-        let list = store.add(item(Some(agent), None, "tests green")).unwrap();
+        add(&store, item(Some(agent), None, "tests failing"));
+        add(&store, item(None, None, "unrelated"));
+        let list = add(&store, item(Some(agent), None, "tests green"));
         assert_eq!(texts(&list), vec!["tests green", "unrelated"]);
     }
 
@@ -221,42 +260,74 @@ mod tests {
     fn a_newer_item_about_the_same_to_do_replaces_the_open_one() {
         let store = ResponseStore::new();
         let todo = TodoId::new();
-        store
-            .add(item(Some(ProcessId::new()), Some(todo), "old agent"))
-            .unwrap();
-        let list = store
-            .add(item(Some(ProcessId::new()), Some(todo), "new agent"))
-            .unwrap();
+        add(
+            &store,
+            item(Some(ProcessId::new()), Some(todo), "old agent"),
+        );
+        let list = add(
+            &store,
+            item(Some(ProcessId::new()), Some(todo), "new agent"),
+        );
         assert_eq!(texts(&list), vec!["new agent"]);
     }
 
     #[test]
     fn items_without_keys_never_supersede() {
         let store = ResponseStore::new();
-        store
-            .add(item(Some(ProcessId::new()), None, "keyed"))
-            .unwrap();
-        store.add(item(None, None, "a")).unwrap();
-        let list = store.add(item(None, None, "b")).unwrap();
+        add(&store, item(Some(ProcessId::new()), None, "keyed"));
+        add(&store, item(None, None, "a"));
+        let list = add(&store, item(None, None, "b"));
         assert_eq!(texts(&list), vec!["b", "a", "keyed"]);
     }
 
     #[test]
     fn removing_drops_the_item_and_an_unknown_id_fails() {
         let store = ResponseStore::new();
-        let kept = store.add(item(None, None, "kept")).unwrap()[0].id;
-        let gone = store.add(item(None, None, "gone")).unwrap()[0].id;
-        assert_eq!(store.remove(gone).unwrap().text, "gone");
-        assert_eq!(texts(&store.list()), vec!["kept"]);
+        let kept = add(&store, item(None, None, "kept"))[0].id;
+        let gone = add(&store, item(None, None, "gone"))[0].id;
+        let mut announced = Vec::new();
+        let removed = store.remove(gone, |l| announced = l.to_vec()).unwrap();
+        assert_eq!(removed.text, "gone");
+        assert_eq!(texts(&announced), vec!["kept"]);
+        assert_eq!(store.list()[0].id, kept);
         assert!(matches!(
-            store.remove(gone),
+            store.remove(gone, |_| panic!("nothing changed")),
             Err(CoreError::ResponseNotFound)
         ));
-        assert!(matches!(
-            store.get(ResponseId::new()),
-            Err(CoreError::ResponseNotFound)
-        ));
-        assert_eq!(store.get(kept).unwrap().text, "kept");
+    }
+
+    #[test]
+    fn a_restored_item_goes_back_in_its_place_unless_it_was_replaced() {
+        let store = ResponseStore::new();
+        let agent = ProcessId::new();
+        let mut older = item(None, None, "older");
+        older.created_at -= chrono::Duration::minutes(2);
+        let mut middle = item(Some(agent), None, "middle");
+        middle.created_at -= chrono::Duration::minutes(1);
+        add(&store, older);
+        let id = add(&store, middle)[0].id;
+        add(&store, item(None, None, "newer"));
+
+        let taken = store.remove(id, |_| {}).unwrap();
+        store.restore(taken.clone(), |_| {});
+        assert_eq!(texts(&store.list()), vec!["newer", "middle", "older"]);
+
+        let taken = store.remove(id, |_| {}).unwrap();
+        add(&store, item(Some(agent), None, "replacement"));
+        store.restore(taken, |_| panic!("a replaced item stays gone"));
+        assert_eq!(texts(&store.list()), vec!["replacement", "newer", "older"]);
+    }
+
+    #[test]
+    fn the_list_keeps_only_the_newest_items() {
+        let store = ResponseStore::new();
+        for n in 0..=MAX_ITEMS {
+            add(&store, item(None, None, &n.to_string()));
+        }
+        let list = store.list();
+        assert_eq!(list.len(), MAX_ITEMS);
+        assert_eq!(list[0].text, MAX_ITEMS.to_string());
+        assert_eq!(list[MAX_ITEMS - 1].text, "1");
     }
 
     #[test]
@@ -265,8 +336,8 @@ mod tests {
         let file = dir.path().join("assistant-responses.json");
         let store = ResponseStore::new();
         store.set_path(file.clone());
-        store.add(item(None, None, "older")).unwrap();
-        store.add(item(None, None, "newer")).unwrap();
+        add(&store, item(None, None, "older"));
+        add(&store, item(None, None, "newer"));
 
         let reloaded = ResponseStore::new();
         reloaded.set_path(file);
@@ -301,6 +372,12 @@ mod tests {
             ..bare
         };
         assert_eq!(empty.label(), "Responses item");
+        let multiline = ResponseItem {
+            agent: Some("checkout\n  fix".to_string()),
+            project: Some("  ".to_string()),
+            ..item(None, None, "x")
+        };
+        assert_eq!(multiline.label(), "checkout fix");
     }
 
     #[test]

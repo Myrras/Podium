@@ -728,9 +728,9 @@ impl PodiumTools {
             .unwrap_or_else(|| "a closed project".to_string());
         self.orchestrator
             .assistant_nudge(format!(
-                "[Podium] The agent \"{}\" in project \"{project}\" reports: {summary} Tell \
-                 the user in a line or two.",
-                process.name
+                "[Podium] The agent \"{}\" (process {}) in project \"{project}\" reports: \
+                 {summary} Tell the user in a line or two.",
+                process.name, process.id
             ))
             .await;
         Ok(text_result("Reported to the assistant.".to_string()))
@@ -914,7 +914,9 @@ impl PodiumTools {
         Parameters(p): Parameters<AddResponseParams>,
     ) -> Result<CallToolResult, McpError> {
         // The list is the assistant's summary for the user; an agent writing
-        // to it would bypass the one voice that is meant to curate it.
+        // to it would bypass the one voice that is meant to curate it. A
+        // guard against a confused agent, not a boundary: both routes share
+        // one bearer token, so the route is identity only by convention.
         if !self.assistant {
             return Err(McpError::invalid_request(
                 "add_response is only available to the personal assistant".to_string(),

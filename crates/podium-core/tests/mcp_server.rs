@@ -2844,7 +2844,7 @@ async fn verify_sender_answers_from_podiums_own_registry() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn add_response_files_an_item_for_the_assistant_only() {
+async fn add_response_files_an_item_and_is_refused_on_the_agent_route() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(Orchestrator::new());
     let (project_id, todo_id) = project_with_todo(&orch, dir.path()).await;

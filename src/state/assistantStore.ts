@@ -87,7 +87,10 @@ export type ChatRole =
 export function responseLabel(item: ResponseItem): string {
   return (
     [item.agent, item.project, item.todo, item.source]
-      .filter((part): part is string => !!part)
+      // Whitespace collapsed per part, as the backend does: the label is the
+      // first line of a reply row, so a newline in a name must not split it.
+      .map((part) => (part ?? "").split(/\s+/).filter(Boolean).join(" "))
+      .filter(Boolean)
       .join(" · ") || "Responses item"
   );
 }
@@ -245,15 +248,17 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     }
   },
   dismissResponse: async (id) => {
-    const previous = get().responses;
-    set({ responses: previous.filter((r) => r.id !== id) });
+    set((s) => ({ responses: s.responses.filter((r) => r.id !== id) }));
     try {
       await assistantResponseDismiss(id);
     } catch (e) {
+      // Back to the backend's list rather than the one from before the
+      // click: a snapshot may have landed meanwhile (the item superseded,
+      // a new one filed), and restoring the old array would undo it.
       set((s) => ({
-        responses: previous,
         messages: [...s.messages, message("notice", toIpcError(e).message)],
       }));
+      await get().loadResponses();
     }
   },
   replyResponse: async (id, text) => {

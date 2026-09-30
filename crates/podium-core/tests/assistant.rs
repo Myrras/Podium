@@ -11,7 +11,7 @@ use std::time::Duration;
 use podium_core::assistant::{AssistantEvent, AssistantPolling, TranscriptRole};
 use podium_core::{
     AssistantConfig, Attachment, CoreError, McpConnectInfo, Orchestrator, PendingId, PodiumEvent,
-    ProactivityConfig, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
+    ProactivityConfig, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
 };
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
@@ -1663,6 +1663,110 @@ async fn a_reply_to_a_responses_item_reaches_the_session_and_clears_the_item() {
     let first = &orch.assistant_transcript()[0];
     assert_eq!(first.role, TranscriptRole::Reply);
     assert_eq!(first.text, "GitHub\nmerge it");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_sent_behind_a_running_turn_queues_and_is_announced_as_a_reply() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "CSV or XLSX for the export?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    orch.assistant_send("first").await.expect("send first");
+    let delivered = orch
+        .reply_assistant_response(item.id, "XLSX")
+        .await
+        .expect("reply");
+    assert!(
+        !delivered,
+        "the first turn is in flight, so the reply waits"
+    );
+    // Taken off the list at once — it is on its way — and a second submit
+    // of the same reply finds nothing to send.
+    assert!(orch.assistant_responses().is_empty());
+    assert!(matches!(
+        orch.reply_assistant_response(item.id, "XLSX").await,
+        Err(CoreError::ResponseNotFound)
+    ));
+
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(
+        turn2.contains(&AssistantEvent::QueueItemDelivered {
+            text: "XLSX".to_string(),
+            reply_to: Some("GitHub".to_string()),
+        }),
+        "{turn2:?}"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn every_change_to_the_responses_list_publishes_a_snapshot() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let is_snapshot = |e: &AssistantEvent| matches!(e, AssistantEvent::ResponsesChanged { .. });
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Merged.",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+    let added = collect_until(&mut rx, is_snapshot).await;
+    assert!(
+        matches!(added.last(), Some(AssistantEvent::ResponsesChanged { items }) if items.len() == 1)
+    );
+
+    orch.dismiss_assistant_response(item.id).expect("dismiss");
+    let dismissed = collect_until(&mut rx, is_snapshot).await;
+    assert!(
+        matches!(dismissed.last(), Some(AssistantEvent::ResponsesChanged { items }) if items.is_empty())
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_item_about_an_agent_that_is_gone_keeps_its_key_but_not_a_name() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let gone = ProcessId::new();
+    let item = orch
+        .add_assistant_response(ResponseKind::Fyi, "Finished.", Some(gone), None, None, None)
+        .expect("an exited agent is no reason to drop the item");
+    assert_eq!(item.agent, None);
+    assert_eq!(item.process_id, Some(gone));
+
+    // Still the supersede key: the next update about it replaces this one.
+    orch.add_assistant_response(ResponseKind::Fyi, "Merged.", Some(gone), None, None, None)
+        .expect("add response");
+    let texts: Vec<String> = orch
+        .assistant_responses()
+        .into_iter()
+        .map(|i| i.text)
+        .collect();
+    assert_eq!(texts, vec!["Merged.".to_string()]);
 
     orch.shutdown().await;
 }

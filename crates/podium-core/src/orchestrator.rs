@@ -45,6 +45,9 @@ const DEFAULT_ADAPTER_ID: &str = "claude-code";
 
 const LOCK_POISONED: &str = "orchestrator lock poisoned";
 
+/// Longest Responses item text kept; the rest is clipped.
+const MAX_RESPONSE_TEXT_CHARS: usize = 500;
+
 /// Read-only snapshot of an open project, for listing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -567,6 +570,9 @@ impl Orchestrator {
     /// right after the agent exits or the project closes. The project comes
     /// from `project_id`, else from the agent; a to-do needs one of the two.
     /// A newer item about the same agent or to-do replaces the open one.
+    /// An agent that is already gone keeps its id as the supersede key but
+    /// loses its name: it may well have exited between the nudge and this
+    /// call, which is no reason to drop the item.
     pub fn add_assistant_response(
         &self,
         kind: ResponseKind,
@@ -582,14 +588,8 @@ impl Orchestrator {
                 "response text must not be blank".to_string(),
             ));
         }
-        let process = process_id
-            .map(|id| {
-                self.list_processes(None)
-                    .into_iter()
-                    .find(|p| p.id == id)
-                    .ok_or(CoreError::ProcessNotFound)
-            })
-            .transpose()?;
+        let process =
+            process_id.and_then(|id| self.list_processes(None).into_iter().find(|p| p.id == id));
         let project_id = project_id.or(process.as_ref().map(|p| p.project_id));
         let project = project_id
             .map(|id| {
@@ -615,7 +615,9 @@ impl Orchestrator {
         let item = ResponseItem {
             id: ResponseId::new(),
             kind,
-            text: text.to_string(),
+            // Capped like the list itself: the assistant writes these from
+            // content it read, and the panel row is meant to be a line or two.
+            text: crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS),
             project: project.map(|p| p.name),
             agent: process.as_ref().map(|p| p.name.clone()),
             agent_color: process.as_ref().and_then(|p| p.color.clone()),
@@ -623,27 +625,28 @@ impl Orchestrator {
             source: source
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .map(str::to_string),
+                .map(|s| crate::assistant::truncate(s, 40)),
             process_id,
             todo_id,
             created_at: Utc::now(),
         };
-        let items = self.responses.add(item.clone())?;
-        self.publish_responses(items);
+        self.responses
+            .add(item.clone(), |items| self.publish_responses(items))?;
         Ok(item)
     }
 
     /// Mark one Responses item as read: it is simply removed.
     pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
-        self.responses.remove(id)?;
-        self.publish_responses(self.responses.list());
+        self.responses
+            .remove(id, |items| self.publish_responses(items))?;
         Ok(())
     }
 
     /// Answer one Responses item: `text` goes to the assistant as the user's
-    /// message, carrying which item it answers, and the item is removed. The
-    /// item goes only once the message is in (sent or queued) — a send that
-    /// fails leaves it there to try again. Returns delivered-or-queued, as
+    /// message, carrying which item it answers, and the item is removed.
+    /// Taken off the list *before* sending, so a double submit finds nothing
+    /// the second time instead of sending the reply twice; a send that fails
+    /// puts it back to try again. Returns delivered-or-queued, as
     /// [`assistant_send`](Self::assistant_send).
     pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
         if text.trim().is_empty() {
@@ -651,24 +654,29 @@ impl Orchestrator {
                 "reply must not be blank".to_string(),
             ));
         }
-        let item = self.responses.get(id)?;
+        let item = self
+            .responses
+            .remove(id, |items| self.publish_responses(items))?;
         let reply_to = ReplyTo {
             label: item.label(),
-            question: item.text,
+            question: item.text.clone(),
         };
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        let delivered = self.assistant.send_reply(text, reply_to, mcp).await?;
-        // The reply is already on its way, so failing now would only tell the
-        // panel it was not sent. Dismissed meanwhile, or a save that failed,
-        // both leave nothing worth reporting.
-        let _ = self.responses.remove(id);
-        self.publish_responses(self.responses.list());
-        Ok(delivered)
+        match self.assistant.send_reply(text, reply_to, mcp).await {
+            Ok(delivered) => Ok(delivered),
+            Err(e) => {
+                self.responses
+                    .restore(item, |items| self.publish_responses(items));
+                Err(e)
+            }
+        }
     }
 
-    fn publish_responses(&self, items: Vec<ResponseItem>) {
+    fn publish_responses(&self, items: &[ResponseItem]) {
         self.events.publish(PodiumEvent::AssistantEvent {
-            event: crate::assistant::AssistantEvent::ResponsesChanged { items },
+            event: crate::assistant::AssistantEvent::ResponsesChanged {
+                items: items.to_vec(),
+            },
         });
     }
 

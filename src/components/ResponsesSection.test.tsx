@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -136,6 +136,24 @@ describe("ResponsesSection", () => {
     await user.click(replyBtn);
     await user.type(screen.getByLabelText("Reply text"), "XLSX{Enter}");
     expect(replyResponse).toHaveBeenCalledWith("r-1", "XLSX");
+  });
+
+  it("sends a reply once, however often it is submitted while in flight", async () => {
+    let finish: (sent: boolean) => void = () => {};
+    replyResponse.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => (finish = resolve)),
+    );
+    const user = userEvent.setup();
+    render(<ResponsesSection />);
+
+    await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await user.type(screen.getByLabelText("Reply text"), "XLSX{Enter}");
+    expect(screen.getByLabelText("Send reply")).toBeDisabled();
+    await user.keyboard("{Enter}");
+    expect(replyResponse).toHaveBeenCalledOnce();
+
+    await act(async () => finish(true));
+    expect(screen.queryByLabelText("Reply text")).not.toBeInTheDocument();
   });
 });
 

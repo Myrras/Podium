@@ -48,12 +48,18 @@ function ResponseRow({ item }: { item: ResponseItem }) {
   const dismissResponse = useAssistantStore((s) => s.dismissResponse);
   const replyResponse = useAssistantStore((s) => s.replyResponse);
   const [draft, setDraft] = useState<string | null>(null);
+  // Enter and the Send button both submit; ignore a second one while the
+  // first is in flight.
+  const [sending, setSending] = useState(false);
   const context = [item.project, item.todo, item.source].filter(Boolean);
 
   async function send() {
-    if (!draft?.trim()) return;
+    if (!draft?.trim() || sending) return;
+    setSending(true);
     // Keep the draft on failure: the store already logged why.
-    if (await replyResponse(item.id, draft)) setDraft(null);
+    const sent = await replyResponse(item.id, draft);
+    setSending(false);
+    if (sent) setDraft(null);
   }
 
   return (
@@ -105,7 +111,7 @@ function ResponseRow({ item }: { item: ResponseItem }) {
               className={styles.sendBtn}
               aria-label="Send reply"
               title="Send reply"
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || sending}
               onClick={() => void send()}
             >
               <SendIcon />
