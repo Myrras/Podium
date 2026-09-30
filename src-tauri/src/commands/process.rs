@@ -36,14 +36,29 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 /// Flush immediately once this many bytes are buffered.
 const BATCH_MAX_BYTES: usize = 64 * 1024;
 
-/// Default command for terminal processes: replace the wrapper `$SHELL -lc`
-/// with an interactive shell so the user gets prompts, job control, etc.
-#[cfg(unix)]
-const TERMINAL_DEFAULT_COMMAND: &str = "exec \"$SHELL\" -i";
-/// Windows: the wrapper is `cmd /C <command>`, so launching PowerShell hands
-/// the user an interactive shell inside the ConPTY.
+/// Default command for terminal processes on Unix, and in WSL-backend mode
+/// (where the wrapper is bash inside the distro): replace the wrapper
+/// `$SHELL -lc` with an interactive shell so the user gets prompts, job
+/// control, etc.
+const UNIX_TERMINAL_COMMAND: &str = "exec \"$SHELL\" -i";
+/// Native Windows: the wrapper is `cmd /C <command>`, so launching PowerShell
+/// hands the user an interactive shell inside the ConPTY.
 #[cfg(windows)]
-const TERMINAL_DEFAULT_COMMAND: &str = "powershell";
+const WINDOWS_TERMINAL_COMMAND: &str = "powershell";
+
+fn terminal_default_command() -> &'static str {
+    if podium_core::platform::wsl().is_some() {
+        return UNIX_TERMINAL_COMMAND;
+    }
+    #[cfg(unix)]
+    {
+        UNIX_TERMINAL_COMMAND
+    }
+    #[cfg(windows)]
+    {
+        WINDOWS_TERMINAL_COMMAND
+    }
+}
 
 /// Frontend payload for creating a process. `kind` is flattened, so the wire
 /// shape is `{ name, command?, cwd?, kind: "service"|"terminal"|"agent",
@@ -100,7 +115,9 @@ pub async fn process_add(
     let cwd = podium_core::project::resolve_cwd(&root, spec.cwd.as_deref())?;
     let command = match spec.command.filter(|c| !c.trim().is_empty()) {
         Some(c) => c,
-        None if matches!(spec.kind, ProcessKind::Terminal) => TERMINAL_DEFAULT_COMMAND.to_string(),
+        None if matches!(spec.kind, ProcessKind::Terminal) => {
+            terminal_default_command().to_string()
+        }
         None => {
             return Err(IpcError::invalid_input(
                 "command is required for non-terminal processes",

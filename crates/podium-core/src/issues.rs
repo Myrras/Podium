@@ -333,14 +333,15 @@ pub fn parse_remote(url: &str) -> Option<(String, String)> {
 
 /// `(host, path)` of the project's `origin` remote.
 pub fn detect(root: &Path) -> CoreResult<(String, String)> {
-    let output = Command::new(crate::platform::git_binary())
-        .arg("-C")
-        .arg(root)
+    let root_arg = crate::platform::backend_path(root).map_err(|_| CoreError::IssuesNoRemote)?;
+    let mut cmd = crate::platform::git_command();
+    cmd.arg("-C")
+        .arg(root_arg)
         .args(["remote", "get-url", "origin"])
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| CoreError::IssuesNoRemote)?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = crate::platform::run_gated(&mut cmd).map_err(|_| CoreError::IssuesNoRemote)?;
     if !output.status.success() {
         return Err(CoreError::IssuesNoRemote);
     }

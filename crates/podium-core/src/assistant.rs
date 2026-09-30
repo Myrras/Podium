@@ -1277,7 +1277,13 @@ impl AssistantManager {
         // installed by nvm/homebrew resolves even when Podium was started
         // from Finder with a bare PATH. `exec` replaces the shell, so the
         // child we hold IS the CLI — killing it needs no process group.
-        let (shell, prefix) = crate::platform::login_shell();
+        // In WSL-backend mode the CLI runs inside the distro, so its working
+        // directory rides along as `wsl.exe --cd` (natively this is just the
+        // login shell, and `current_dir` below does the job).
+        let (shell, prefix) = match &config.cwd {
+            Some(cwd) => crate::platform::login_shell_in(cwd)?,
+            None => crate::platform::login_shell(),
+        };
         // Its own endpoint, not the agents' one: that is what puts the
         // assistant's tool calls through the autonomy gate. The user's own MCP
         // servers (mail, Slack, …) stay available — this config only adds to
@@ -1288,7 +1294,7 @@ impl AssistantManager {
             .map(|path| {
                 Ok::<String, CoreError>(format!(
                     " --mcp-config {}",
-                    crate::platform::quote_arg(&path.to_string_lossy())?
+                    crate::platform::quote_arg(&crate::platform::backend_path(&path)?)?
                 ))
             })
             .transpose()?
@@ -1344,7 +1350,11 @@ impl AssistantManager {
         if let Some(cwd) = &config.cwd {
             cmd.current_dir(cwd);
         }
-        let mut child = cmd.spawn()?;
+        // Not a PTY (ConPTY is already windowless): a plain console-subsystem
+        // child (bash, wsl.exe, cmd.exe) spawned from a GUI-subsystem Podium
+        // would otherwise flash a console window on Windows.
+        crate::platform::hide_console_window(cmd.as_std_mut());
+        let mut child = crate::platform::spawn_gated(|| cmd.spawn())?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let events = self.events.clone();
@@ -1859,7 +1869,12 @@ fn turn_content(text: &str, attachments: &[Attachment]) -> serde_json::Value {
                 }));
             }
             Attachment::Path { path } => {
-                full_text.push_str(&format!("\n\n[Attached file: {path}]"));
+                // The assistant reads the file itself, so name it the way its
+                // process sees it (a Linux path in WSL-backend mode); a path
+                // it cannot map is passed on as-is.
+                let shown =
+                    crate::platform::backend_path(Path::new(path)).unwrap_or_else(|_| path.clone());
+                full_text.push_str(&format!("\n\n[Attached file: {shown}]"));
             }
             Attachment::Text { name, text: inline } => {
                 full_text.push_str(&format!("\n\n[Attached: {name}]\n{inline}"));
@@ -2928,11 +2943,22 @@ mod tests {
         );
     }
 
+    /// An absolute attachment path on this platform. `/abs/...` has no drive on
+    /// Windows, where `Path::is_absolute` (and so `resolve_attachments`) would
+    /// reject it.
+    fn abs(name: &str) -> String {
+        if cfg!(windows) {
+            format!(r"C:\abs\{name}")
+        } else {
+            format!("/abs/{name}")
+        }
+    }
+
     #[test]
     fn more_than_five_attachments_are_refused_naming_each_one() {
         let attachments = (0..7)
             .map(|i| Attachment::Path {
-                path: format!("/abs/f{i}.txt"),
+                path: abs(&format!("f{i}.txt")),
             })
             .collect::<Vec<_>>();
         let (accepted, notices) = resolve_attachments(attachments);
@@ -2951,14 +2977,14 @@ mod tests {
                 data: BASE64.encode(vec![0u8; MAX_IMAGE_BYTES + 1]),
             },
             Attachment::Path {
-                path: "/abs/notes.txt".to_string(),
+                path: abs("notes.txt"),
             },
         ];
         let (accepted, notices) = resolve_attachments(attachments);
         assert_eq!(
             accepted,
             vec![Attachment::Path {
-                path: "/abs/notes.txt".to_string()
+                path: abs("notes.txt")
             }]
         );
         assert_eq!(notices.len(), 1);
@@ -3111,13 +3137,13 @@ mod tests {
     #[test]
     fn a_non_image_path_passes_through_unchanged() {
         let (accepted, notices) = resolve_attachments(vec![Attachment::Path {
-            path: "/abs/report.pdf".to_string(),
+            path: abs("report.pdf"),
         }]);
         assert!(notices.is_empty(), "{notices:?}");
         assert_eq!(
             accepted,
             vec![Attachment::Path {
-                path: "/abs/report.pdf".to_string()
+                path: abs("report.pdf")
             }]
         );
     }

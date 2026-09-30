@@ -1,17 +1,36 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// jsdom leaves `navigator.platform` empty, so pin the platform explicitly;
+// each test picks one via `platform`. Getters, so a change is seen at render.
+const platform = vi.hoisted(() => ({ mac: false, windows: false }));
+vi.mock("./lib/platform", () => ({
+  get isMac() {
+    return platform.mac;
+  },
+  get isWindows() {
+    return platform.windows;
+  },
+}));
+// What `backend_wsl_networking_mode` answers (`null` = native backend).
+const backend = vi.hoisted(() => ({ networkingMode: null as string | null }));
 
 // App wires up IPC on mount; jsdom has no Tauri bridge, so stub it out.
 // `invoke` resolves per-command fixtures (all list commands — including
 // `workspace_list` — return arrays) and `listen` resolves a no-op unlisten.
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn((cmd: string) =>
+const invoke = vi.hoisted(() =>
+  vi.fn((cmd: string) =>
     Promise.resolve(
       cmd === "adapters_list"
         ? [{ id: "claude-code", displayName: "Claude Code", available: true }]
-        : [],
+        : cmd === "backend_wsl_networking_mode"
+          ? backend.networkingMode
+          : [],
     ),
   ),
+);
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke,
   Channel: class {
     onmessage: (message: unknown) => void = () => undefined;
   },
@@ -22,11 +41,68 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
+// WindowControls (Windows only) talks to the window API on mount.
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isMaximized: () => Promise.resolve(false),
+    onResized: () => Promise.resolve(() => undefined),
+    minimize: () => Promise.resolve(),
+    toggleMaximize: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  }),
+}));
 
 import userEvent from "@testing-library/user-event";
 
 import { useLayoutStore } from "./state/layoutStore";
+import { useToastStore } from "./state/toastStore";
 import App from "./App";
+
+beforeEach(() => {
+  platform.mac = false;
+  platform.windows = false;
+  backend.networkingMode = null;
+  invoke.mockClear();
+  useToastStore.setState({ toasts: [] });
+});
+
+describe("App — WSL networking warning", () => {
+  const warning = "WSL networking is not mirrored";
+
+  it("warns once, stickily, when WSL networking is not mirrored", async () => {
+    platform.windows = true;
+    backend.networkingMode = "nat";
+    render(<App />);
+
+    expect(await screen.findByText(warning)).toBeInTheDocument();
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts.filter((t) => t.message === warning)).toHaveLength(1);
+    expect(toasts.find((t) => t.message === warning)?.sticky).toBe(true);
+  });
+
+  it.each([["mirrored"], [null]])(
+    "stays quiet when the mode is %s",
+    async (mode) => {
+      platform.windows = true;
+      backend.networkingMode = mode;
+      render(<App />);
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("backend_wsl_networking_mode"),
+      );
+      expect(screen.queryByText(warning)).toBeNull();
+    },
+  );
+
+  it("does not ask off Windows", async () => {
+    backend.networkingMode = "nat";
+    render(<App />);
+
+    await screen.findByText("Welcome to Podium");
+    expect(invoke).not.toHaveBeenCalledWith("backend_wsl_networking_mode");
+    expect(screen.queryByText(warning)).toBeNull();
+  });
+});
 
 describe("App", () => {
   it("renders the shell with the brand and the empty sidebar state", () => {
@@ -59,5 +135,28 @@ describe("App", () => {
 
     await user.click(screen.getByLabelText("Hide assistant"));
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+  });
+
+  it("draws its own window controls on Windows", () => {
+    platform.windows = true;
+    render(<App />);
+
+    expect(screen.getByLabelText("Minimize")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close")).toBeInTheDocument();
+    expect(screen.getByLabelText("Settings")).toBeInTheDocument();
+  });
+
+  it("leaves the window controls to the native traffic lights on macOS", () => {
+    platform.mac = true;
+    render(<App />);
+
+    expect(screen.queryByLabelText("Minimize")).toBeNull();
+    expect(screen.queryByLabelText("Close")).toBeNull();
+    // Settings lives in the native menu bar (⌘,) there.
+    expect(screen.queryByLabelText("Settings")).toBeNull();
+    expect(screen.getByText("Podium").closest("header")).toHaveAttribute(
+      "data-tauri-drag-region",
+      "true",
+    );
   });
 });

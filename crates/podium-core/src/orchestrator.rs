@@ -2679,6 +2679,11 @@ fn do_start(
     id: ProcessId,
     manual: bool,
 ) -> CoreResult<()> {
+    // In WSL-backend mode, one `wsl.exe` start at a time. Taken *before*
+    // `inner` and declared first so it drops last: waiting for the gate —
+    // and its settle sleep on drop — must never happen under `inner`, which
+    // every command (sync ones on the main thread included) needs.
+    let launch_gate = crate::platform::wsl_launch_guard();
     let mut guard = inner.lock().expect(LOCK_POISONED);
     let proc = guard
         .processes
@@ -2695,6 +2700,7 @@ fn do_start(
     let project_id = proc.project_id;
     let pty = PtyProcess::spawn(
         &proc.spec,
+        launch_gate.as_ref(),
         None,
         Arc::clone(&proc.scrollback),
         proc.chunk_tx.clone(),
@@ -3138,7 +3144,7 @@ mod tests {
         let legacy_root = std::fs::canonicalize(dir.path()).unwrap();
         let orch = Orchestrator::new();
         orch.todos
-            .add(ProjectId::new(), &legacy_root, "pre-existing todo")
+            .add(ProjectId::new(), &legacy_root, "pre-existing todo", None)
             .unwrap();
         orch.scratchpads
             .add(ProjectId::new(), &legacy_root, "tester")
