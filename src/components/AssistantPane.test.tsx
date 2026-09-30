@@ -390,12 +390,13 @@ describe("AssistantPane", () => {
     // squeezes it to nothing, hiding every waiting message.
     it("never lets the transcript squeeze the tail away", () => {
       // `css: false` stubs even a `?raw` stylesheet import, so read the file.
-      // Relative to the project root, Vitest's cwd.
+      // Relative to the project root, Vitest's cwd (under jsdom
+      // `import.meta.url` is not a file: URL, so it can't anchor the path).
       const css: string = readFileSync(
         "src/components/AssistantPane.module.css",
         "utf8",
       );
-      const tail = /\.tail \{([^}]*)\}/.exec(css)?.[1] ?? "";
+      const tail = /(?:^|\n)\.tail \{([^}]*)\}/.exec(css)?.[1] ?? "";
       expect(tail).toMatch(/overflow-y:\s*auto/);
       expect(tail).toMatch(/flex-shrink:\s*0/);
     });
