@@ -8,7 +8,7 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
-## [2.1.0] - 2026-09-30
+## [2.2.1] - 2026-09-30
 
 ### Added
 
@@ -20,6 +20,11 @@ yet set up.)
   an item does not send it: reading a to-do should not put it in your next
   message. Each chip has an × if you'd rather not send it, and a selection you
   make inside the chat panel itself is left alone.
+
+## [2.1.0] - 2026-09-30
+
+### Added
+
 - **Run everything inside WSL on Windows.** Settings → General → Backend takes
   a WSL distro name; after a restart, services, terminals, agents, the
   personal assistant, git worktrees and the MCP install all run inside that
