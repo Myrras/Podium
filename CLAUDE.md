@@ -669,6 +669,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_attach`        | `{ processId, channel: Channel<TermEvent> }`| –                 |
 | `backend_settings_get`  | –                                           | `BackendSettingsDto` (`{ wslDistro, activeWslDistro }`, empty = native) |
 | `backend_settings_set_wsl_distro` | `{ distro? }` (blank = native; must be installed — checked against `wsl.exe -l -q`; applies on restart) | `BackendSettingsDto` |
+| `backend_wsl_networking_mode` | – (WSL mode only; the app warns when not `mirrored`) | `string \| null` |
 | `adapters_list`         | –                                           | `AdapterInfo[]`   |
 | `agent_spawn`           | `{ projectId, adapterId?, name?, prompt?, todoIds?, scratchpadIds?, worktree?, worktreeName?, args? }` | `ProcessInfo` |
 | `agent_settings_get`    | –                                           | `AgentSettingsDto` |
