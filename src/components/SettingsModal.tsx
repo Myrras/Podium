@@ -70,10 +70,11 @@ const FONT_SIZE_MIN = 10;
 const FONT_SIZE_MAX = 24;
 
 // Placeholder for the terminal-shell field: the platform default the backend
-// falls back to when the field is blank.
-const DEFAULT_SHELL_HINT = navigator.userAgent.includes("Windows")
-  ? "powershell (default)"
-  : "$SHELL (default)";
+// falls back to when the field is blank. In WSL-backend mode that is the
+// distro's `$SHELL`, as on Unix.
+function defaultShellHint(wslActive: boolean): string {
+  return isWindows && !wslActive ? "powershell (default)" : "$SHELL (default)";
+}
 
 /** Checkbox toggle row with label and optional helper text. */
 function SettingToggle({
@@ -755,6 +756,9 @@ function GeneralTab() {
   const setTheme = useThemeStore((s) => s.setTheme);
   const settings = useSettingsStore();
   const fontSize = settings.terminal.fontSize;
+  // Fetched once here for both the shell hint and the Backend section.
+  const backend = useBackendSettings();
+  const wslActive = (backend.saved?.activeWslDistro ?? "") !== "";
 
   return (
     <>
@@ -836,61 +840,84 @@ function GeneralTab() {
             id="terminal-shell"
             type="text"
             value={settings.terminal.shell}
-            placeholder={DEFAULT_SHELL_HINT}
+            placeholder={defaultShellHint(wslActive)}
             onChange={(e) =>
               settings.set("terminal", { shell: e.target.value })
             }
           />
           <small className={styles.rowHelp}>
             Command new terminals launch. Leave blank for the system default
-            (your login shell on macOS/Linux, PowerShell on Windows). Examples:{" "}
-            <code>pwsh</code>, <code>cmd</code>, <code>bash</code>,{" "}
-            <code>wsl</code>.
+            (your login shell on macOS/Linux and in WSL mode, PowerShell on
+            Windows). Examples: <code>pwsh</code>, <code>cmd</code>,{" "}
+            <code>bash</code>, <code>wsl</code>.
           </small>
         </div>
       </section>
 
-      {isWindows && <BackendSettings />}
+      {isWindows && (
+        <BackendSettings
+          saved={backend.saved}
+          loadError={backend.loadError}
+          onSaved={backend.setSaved}
+        />
+      )}
 
       <NotificationsSettings />
     </>
   );
 }
 
-/**
- * Windows only: run everything Podium executes inside a WSL distro. Read once
- * at startup, so a saved change shows a restart hint until the next launch.
- */
-function BackendSettings() {
-  const [draft, setDraft] = useState("");
+/** The backend settings (Windows only — `null` elsewhere and until loaded). */
+function useBackendSettings() {
   const [saved, setSaved] = useState<BackendSettingsDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
+    if (!isWindows) return;
     let cancelled = false;
     backendSettingsGet()
       .then((d) => {
-        if (cancelled) return;
-        setSaved(d);
-        setDraft(d.wslDistro);
+        if (!cancelled) setSaved(d);
       })
       .catch((e) => {
-        if (!cancelled) setError(toIpcError(e).message);
+        if (!cancelled) setLoadError(toIpcError(e).message);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+  return { saved, setSaved, loadError };
+}
+
+/**
+ * Windows only: run everything Podium executes inside a WSL distro. Read once
+ * at startup, so a saved change shows a restart hint until the next launch.
+ */
+function BackendSettings({
+  saved,
+  loadError,
+  onSaved,
+}: {
+  saved: BackendSettingsDto | null;
+  loadError: string | null;
+  onSaved: (d: BackendSettingsDto) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const error = saveError ?? loadError;
+
+  // Follow the stored value: once loaded, and normalized after a save.
+  useEffect(() => {
+    if (saved) setDraft(saved.wslDistro);
+  }, [saved]);
 
   const save = () => {
     if (!saved || draft.trim() === saved.wslDistro) return;
     backendSettingsSetWslDistro(draft)
       .then((d) => {
-        setSaved(d);
-        setDraft(d.wslDistro);
-        setError(null);
+        onSaved(d);
+        setSaveError(null);
       })
-      .catch((e) => setError(toIpcError(e).message));
+      .catch((e) => setSaveError(toIpcError(e).message));
   };
 
   const restartNeeded =

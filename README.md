@@ -156,6 +156,8 @@ through the stdio bridge (see below).
 - **Node.js** + **pnpm**
 - An agent CLI on your `PATH` if you want to spawn agents — e.g. `claude`
   ([Claude Code](https://docs.claude.com/en/docs/claude-code))
+- Optional, on Windows: a WSL 2 distro, to run everything inside WSL (see
+  [Windows with a WSL backend](#windows-with-a-wsl-backend))
 
 ## Build & run
 
@@ -200,10 +202,48 @@ you added by hand alone.
 
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file) |
+| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — resumes a running Claude Code agent's conversation after a restart; off by default, Claude Code only |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
+
+## Windows with a WSL backend
+
+On Windows, Podium itself runs natively, but it can run **everything it
+executes** inside a WSL distro: services from `podium.yml`, terminals,
+agents, the personal assistant, git and worktrees, and the MCP install. Your
+projects then live in the Linux filesystem, where builds and git are fast
+and your Linux toolchain applies.
+
+**Prerequisite: mirrored networking.** Agents in WSL reach Podium's MCP server
+on `127.0.0.1`, which only works with WSL's mirrored networking. Add this to
+`%UserProfile%\.wslconfig`, then run `wsl --shutdown`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Podium checks this at startup in WSL mode and shows a warning if it's off.
+
+**Turn it on.**
+
+1. Install the agent CLIs you use (e.g. `claude`) **inside the distro**. In
+   WSL mode Podium looks for them there, not on Windows.
+2. In **Settings → General → Backend**, enter the distro name (for example
+   `Ubuntu`; `wsl -l -q` lists yours).
+3. Restart Podium. The backend is fixed at startup; the field shows a restart
+   hint until you do.
+4. Open projects by their WSL path, e.g.
+   `\\wsl.localhost\Ubuntu\home\you\webshop`.
+
+Commands in `podium.yml` then run through `bash -lic` inside the distro, so
+your `.bashrc`/`.profile` PATH setup applies. Terminals open your distro
+shell. **Settings → MCP → install** registers the bridge with the distro's
+`claude`/`auggie`. Clear the field and restart to go back to native Windows.
+
+Limits: it's one global setting (no per-project choice), projects must live in
+that distro, and **Open in Warp** is unchanged.
 
 ## Things you'd otherwise never find
 

@@ -54,13 +54,14 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
             return None;
         }
     };
-    let output = crate::platform::git_command()
-        .arg("-C")
+    let mut cmd = crate::platform::git_command();
+    cmd.arg("-C")
         .arg(root_arg)
         .args(args)
         .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = crate::platform::run_gated(&mut cmd).ok()?;
     if !output.status.success() {
         tracing::warn!(
             root = %root.display(),
