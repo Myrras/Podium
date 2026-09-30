@@ -135,6 +135,10 @@ whether agents are done, no recap of what they did.
   all projects.
 - **Queue** — one turn runs at a time; anything you send mid-turn waits, and
   can be edited, removed or pushed into the running turn.
+- **Push go-ahead** — tell the assistant an agent may push, and it messages
+  that agent instead of starting a new one. Spawned agents may run a plain
+  `git push` without a prompt; force, tag, mirror and delete pushes still
+  ask in the agent's terminal.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 

@@ -244,7 +244,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   / `ListAgents`. Two things make that work, both set per session so the
   user's own `~/.claude/settings.json` is never touched:
   - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
-    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    (`agent::PEER_INBOUND_SETTINGS`; an agent gets
+    `agent::AGENT_SESSION_SETTINGS`, which adds an allow rule for a plain
+    `git push` and ask rules for force/tag/mirror/delete pushes — so a push
+    go-ahead the assistant relays by message can run in the existing
+    session, where no peer message could approve a prompt). Without it the CLI decides per message
     from the two sessions' permission-mode classes, and the assistant
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
@@ -388,8 +392,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   lookups go to `spawn_agent`, never its own Agent-tool subagents, which have
   no shell here), to keep agent updates to warnings and done-ness, how to stop
   agents safely (only the project in question; check the output for follow-up
-  work and complete the to-do first), and how to get a peer-refused external
-  write done (a fresh agent carrying the authorisation and `--allowedTools`).
+  work and complete the to-do first), and how to pass on a push go-ahead (a
+  message to the existing agent, which accepts it once `verify_sender` says
+  the sender is the assistant; a fresh agent with `--allowedTools` only if it
+  refuses).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
