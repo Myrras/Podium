@@ -27,6 +27,7 @@ import {
   onWindowCloseRequested,
   onWorktreesChanged,
 } from "./ipc/events";
+import { backendWslNetworkingMode } from "./ipc/commands";
 import { isMac, isWindows } from "./lib/platform";
 import {
   applyFontSizeToTerminals,
@@ -38,6 +39,7 @@ import { useAssistantStore } from "./state/assistantStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useProcessStore } from "./state/processStore";
 import { useProjectStore } from "./state/projectStore";
+import { toastError } from "./state/toastStore";
 import { useScratchpadStore } from "./state/scratchpadStore";
 import { useSettingsStore } from "./state/settingsStore";
 import { useThemeStore } from "./state/themeStore";
@@ -142,6 +144,28 @@ export default function App() {
   useEffect(() => {
     applyThemeToTerminals(readTerminalTheme());
   }, [themeMode]);
+
+  // WSL-backend mode: agents inside WSL reach Podium's MCP server on
+  // 127.0.0.1 only with mirrored networking. Say so once if it's off.
+  useEffect(() => {
+    if (!isWindows) return;
+    let cancelled = false;
+    backendWslNetworkingMode()
+      .then((mode) => {
+        if (cancelled || !mode || mode === "mirrored") return;
+        toastError(
+          "WSL networking is not mirrored",
+          `Agents in WSL can't reach Podium's MCP tools (networking mode: ${mode}). ` +
+            "Set networkingMode=mirrored under [wsl2] in %UserProfile%\\.wslconfig, " +
+            "run `wsl --shutdown`, and restart Podium.",
+          { sticky: true },
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const termFontSize = useSettingsStore((s) => s.terminal.fontSize);
   useEffect(() => {

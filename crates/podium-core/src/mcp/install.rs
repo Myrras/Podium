@@ -8,7 +8,10 @@
 //!
 //! Everything shells out via the user's login shell (like adapter
 //! availability probing) so shell-profile PATH edits (nvm, homebrew, …) are
-//! honoured. Command output is discarded and only exit statuses inspected,
+//! honoured. In WSL-backend mode that shell runs inside the distro, so the
+//! registration lands in the distro's `claude`/`auggie`, and the exe path
+//! is its `/mnt/c/…` spelling: WSL clients start the Windows bridge through
+//! interop. Command output is discarded and only exit statuses inspected,
 //! with one exception: Auggie has no `get <name>` subcommand, so its
 //! installed-check reads `auggie mcp list --json` on stdout to find the
 //! `podium` entry. That listing never carries the bearer token (the bridge
@@ -47,7 +50,7 @@ pub fn claude_status() -> ClientStatus {
 /// The `claude mcp add …` command line that registers the bridge, exactly as
 /// [`claude_install`] runs it (also shown in the UI for manual use).
 pub fn claude_add_command(exe: &Path) -> CoreResult<String> {
-    let exe = quote(&exe.to_string_lossy())?;
+    let exe = quote(&crate::platform::backend_path(exe)?)?;
     Ok(format!(
         "claude mcp add --scope user --transport stdio {SERVER_NAME} -- {exe} mcp-bridge"
     ))
@@ -74,7 +77,7 @@ pub fn claude_install(exe: &Path) -> CoreResult<()> {
 /// The `auggie mcp add …` command line that registers the bridge, exactly as
 /// [`auggie_install`] runs it (also shown in the UI for manual use).
 pub fn auggie_add_command(exe: &Path) -> CoreResult<String> {
-    let exe = quote(&exe.to_string_lossy())?;
+    let exe = quote(&crate::platform::backend_path(exe)?)?;
     Ok(format!(
         "auggie mcp add {SERVER_NAME} --command {exe} --args mcp-bridge --replace"
     ))

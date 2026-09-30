@@ -257,6 +257,14 @@ export function backendSettingsGet(): Promise<BackendSettingsDto> {
 }
 
 /**
+ * WSL-backend mode only: the distro's networking mode (`mirrored`, `nat`, …),
+ * or `null` natively / when WSL can't tell.
+ */
+export function backendWslNetworkingMode(): Promise<string | null> {
+  return invoke("backend_wsl_networking_mode");
+}
+
+/**
  * Save the WSL distro to run everything in from the next launch on. Blank =
  * run natively. Returns the refreshed settings.
  */
