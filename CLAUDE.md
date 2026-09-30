@@ -15,8 +15,9 @@ PTY layer runs on Windows via ConPTY; process-group stop is Unix-only, Windows
 terminates the ConPTY child directly; the PTY reader answers ConPTY's startup
 `ESC[6n` cursor query itself and strips it from the output, since ConPTY holds
 the child until it's answered and xterm.js only exists once a terminal is
-opened — see `CursorHandshake` in `process/pty.rs`). Linux is kept in mind,
-not yet packaged.
+opened — see `CursorHandshake` in `process/pty.rs`). On Windows an optional
+**WSL-backend mode** runs everything Podium executes inside a WSL distro (see
+_WSL-backend mode_ below). Linux is kept in mind, not yet packaged.
 
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id
 > `com.podium.app`.
@@ -60,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **82 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -77,7 +78,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 79 commands.
+  IPC wrappers over all 82 commands.
 - ✅ CI (`.github/workflows/ci.yml`): a macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build — plus a Windows job (rustfmt, clippy, `cargo test
@@ -115,6 +116,9 @@ podium/
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
+│  ├─ platform.rs              # the OS gap: login shell, quoting, probe, git command, WSL-backend switch
+│  ├─ platform/wsl_path.rs     # pure Windows <-> WSL path translation
+│  ├─ backend_settings.rs      # backend.json (the WSL distro), read once at startup
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
 │  ├─ ids.rs                   # ProjectId / ProcessId / TodoId (UUID newtypes)
@@ -124,7 +128,7 @@ podium/
 │  ├─ state.rs                 # AppState: Arc<Orchestrator> + McpServer handle
 │  ├─ events.rs                # PodiumEvent → global Tauri events ("process:status", …)
 │  ├─ error.rs                 # IpcError { kind, message } ← CoreError
-│  └─ commands/{project,recents,workspace,process,agent,assistant,mcp,todo}.rs
+│  └─ commands/{project,recents,workspace,process,agent,assistant,backend,mcp,todo}.rs
 └─ src/                        # React + Vite frontend
    ├─ components/              # Sidebar, ProcessRow, TodoSubsection, TerminalPane/View, StatusDot, modals, …
    ├─ state/                   # Zustand stores (project, process, todo, layout, settings, theme, toast)
@@ -299,9 +303,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   MCP tool before its first code change, named `worktreeName` when given, else
   a name the agent picks. So every worktree comes from `create_worktree`,
   whether at the start of a session or mid-session. Every worktree git call
-  runs `platform::git_binary()` directly (a path resolved once via the login
-  shell, then reused — not a login shell per call, which was slow on heavy
-  shell profiles) rather than through the shell. `git worktree list
+  runs `platform::git_command()` — natively a git path resolved once via
+  the login shell, then reused (not a login shell per call, which was slow on
+  heavy shell profiles); in WSL-backend mode the distro's git via `wsl.exe -e
+  git` — rather than through the shell. `git worktree list
   --porcelain` is the source of truth and `list` has no events, but
   `create`/`remove` emit `WorktreesChanged` for the project, which the
   frontend's `worktreeStore` uses (alongside a background load on project
@@ -634,6 +639,58 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   argument): confirming it later could only fail, so the card resolves itself
   with the reason and the assistant is told.
 
+### WSL-backend mode (Windows)
+
+`backend.json` (`backend_settings.rs`) holds an optional WSL distro. Setup
+reads it **first thing** (`init_backend` in `src-tauri/src/lib.rs`) and fixes
+`platform::init_wsl` before the MCP server, the assistant or any project can
+spawn; changing it needs a restart. `platform::wsl()` is the switch:
+`Some(&WslBackend)` in WSL mode, always `None` off Windows (`init_wsl`
+ignores a configured distro there).
+
+- **Not behind `cfg(windows)`.** Call sites branch at runtime on `wsl()`, so
+  macOS/Linux CI compiles, lints and tests the WSL code. Pure helpers take
+  the mode as a parameter (`wsl_login_shell`, `worktree_path`,
+  `WslBackend::for_tests`) so both modes are unit-testable anywhere; tests
+  never call `init_wsl` (it is process-global).
+- **Shell, quoting and probe.** `login_shell()` is `wsl.exe -d <distro> -e bash
+  -lic`; `login_shell_in(cwd)` adds `--cd <linux path>`. `quote_arg` is POSIX
+  (`quote_posix`), since bash parses the string. `command_exists_query` is
+  `command -v`. Agents skip the Windows direct launch in `pty.rs` and take the
+  shell path, like Unix.
+- **Paths.** Podium keeps Windows `PathBuf`s everywhere
+  (`\\wsl.localhost\<distro>\…`, `C:\…`). Anything handed to a backend
+  process goes through `platform::backend_path` (`wsl_path::to_linux`:
+  UNC → `/…`, `C:\x` → `/mnt/c/x`); anything a backend process prints goes
+  back through `from_backend_path` (`to_windows`). `git worktree list` paths
+  are matched in the Linux spelling and rebuilt under the project's own path,
+  so a `\\wsl$\…` project keeps its spelling.
+- **cwd and env.** A PTY child's cwd rides on `--cd`, while `wsl.exe` itself
+  starts in the local temp dir (never the UNC path). Environment variables
+  reach Linux **only** when listed in `WSLENV`: `pty.rs` appends `KEY/u` for
+  every `spec.env` key and `TERM` (`platform::wslenv_with`). Add any new
+  per-process variable to `spec.env`, not straight to the command.
+- **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the
+  distro's git without a shell.
+- **Stop.** Killing `wsl.exe` (the ConPTY child) takes the whole Linux session
+  with it, children included (`stopping_a_service_ends_its_linux_children`),
+  so no `setsid`/PGID bookkeeping is needed.
+- **MCP.** The server still binds `127.0.0.1` on Windows; agents in WSL reach
+  it through **mirrored networking**. `backend_wsl_networking_mode` lets the
+  app warn at startup when it's off. The install registers
+  `/mnt/c/…/Podium.exe mcp-bridge` with the distro's CLIs, which start the
+  bridge through interop.
+- **Tests.** `crates/podium-core/tests/wsl_backend.rs` runs the real thing
+  (ConPTY, `wsl.exe`, a distro). It is Windows-only and opt-in: every test is
+  `#[ignore]`d, so CI compiles it and reports each test as *ignored* — CI
+  never exercises WSL itself. Run it on Windows with
+  `PODIUM_TEST_WSL_DISTRO=Ubuntu cargo test -p podium-core --test wsl_backend -- --ignored --test-threads=1`.
+  One thread, because a burst of concurrent `wsl.exe` starts fails; without
+  the variable the run fails instead of passing vacuously, and the localhost
+  test skips with a message unless networking is mirrored. It covers
+  cwd/env, argv round-trip, stop, config paths, the localhost reachability
+  prerequisite, worktrees and interop.
+
 ### Tauri IPC contract
 
 Commands return `Result<T, IpcError>` where `IpcError = { kind, message }`
@@ -895,7 +952,8 @@ and a real MCP server on ephemeral ports — they run in plain `cargo test`
 commands/shell syntax or process-group semantics that have no Windows
 equivalent; those are `#[cfg(unix)]` (compiled out entirely on Windows) or
 `#[cfg_attr(windows, ignore = "…")]` (compiled and linted, skipped at run
-time) with a comment explaining why. Frontend tests are Vitest + jsdom +
+time) with a comment explaining why. `tests/wsl_backend.rs` is the opt-in
+Windows + WSL suite (see _WSL-backend mode_). Frontend tests are Vitest + jsdom +
 React Testing Library (`src/test/setup.ts` registers matchers and cleanup);
 Tauri APIs are mocked per test file.
 
