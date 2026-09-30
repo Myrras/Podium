@@ -51,12 +51,29 @@ export type ProcessStatus =
   | { state: "notStarted" }
   | { state: "running"; pid: number; since: string }
   | { state: "stopping" }
-  | { state: "exited"; code: number | null; crashed: boolean; at: string };
+  | {
+      state: "exited";
+      code: number | null;
+      crashed: boolean;
+      stopped: boolean;
+      at: string;
+    };
 
 /** Restart behaviour (`podium_core::RestartPolicy`, kebab-case values). */
 export type RestartPolicy = "never" | "on-crash" | "always";
 
 /** Managed process snapshot (`podium_core::ProcessInfo`). */
+/**
+ * How recently and how steadily a running process has been printing (see
+ * `processActivity`). Ages in milliseconds, so there is no clock to align.
+ */
+export interface OutputActivity {
+  /** Ms since the last chunk of output. */
+  quietMs: number;
+  /** Ms the latest burst of output lasted, first chunk to last. */
+  burstMs: number;
+}
+
 export interface ProcessInfo {
   id: ProcessId;
   projectId: ProjectId;
