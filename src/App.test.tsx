@@ -136,4 +136,27 @@ describe("App", () => {
     await user.click(screen.getByLabelText("Hide assistant"));
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
   });
+
+  it("draws its own window controls on Windows", () => {
+    platform.windows = true;
+    render(<App />);
+
+    expect(screen.getByLabelText("Minimize")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close")).toBeInTheDocument();
+    expect(screen.getByLabelText("Settings")).toBeInTheDocument();
+  });
+
+  it("leaves the window controls to the native traffic lights on macOS", () => {
+    platform.mac = true;
+    render(<App />);
+
+    expect(screen.queryByLabelText("Minimize")).toBeNull();
+    expect(screen.queryByLabelText("Close")).toBeNull();
+    // Settings lives in the native menu bar (⌘,) there.
+    expect(screen.queryByLabelText("Settings")).toBeNull();
+    expect(screen.getByText("Podium").closest("header")).toHaveAttribute(
+      "data-tauri-drag-region",
+      "true",
+    );
+  });
 });
