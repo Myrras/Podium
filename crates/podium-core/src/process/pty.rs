@@ -118,8 +118,16 @@ impl PtyProcess {
         Ok(cmd)
     }
 
+    /// Spawn `spec` in a new PTY. In WSL-backend mode the caller must hold
+    /// the WSL launch gate (`launch_gate`, from
+    /// [`crate::platform::wsl_launch_guard`]) across this call and drop it
+    /// only once it returns — by then the reader thread is running and can
+    /// answer ConPTY's startup query. It is taken by reference, not dropped
+    /// here, so the caller can take it before any lock of its own and release
+    /// it (with its settle sleep) after that lock, never while holding it.
     pub fn spawn(
         spec: &ProcessSpec,
+        _launch_gate: Option<&crate::platform::WslLaunchGuard>,
         size: Option<(u16, u16)>,
         scrollback: Arc<Mutex<ScrollbackBuffer>>,
         chunk_tx: broadcast::Sender<TermChunk>,
