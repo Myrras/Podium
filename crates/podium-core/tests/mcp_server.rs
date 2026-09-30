@@ -706,6 +706,7 @@ impl AgentAdapter for FakeAgentAdapter {
         Ok(LaunchPlan {
             command: "sleep 30".to_string(),
             env: Vec::new(),
+            resume_command: None,
         })
     }
 
@@ -1293,6 +1294,7 @@ impl AgentAdapter for PromptEchoAdapter {
         Ok(LaunchPlan {
             command: format!("sleep 30 # {}", ctx.prompt.unwrap_or("")),
             env: Vec::new(),
+            resume_command: None,
         })
     }
 
@@ -1757,6 +1759,7 @@ impl AgentAdapter for EchoAdapter {
         Ok(LaunchPlan {
             command: parts.join(" "),
             env: Vec::new(),
+            resume_command: None,
         })
     }
 
@@ -1786,6 +1789,7 @@ impl AgentAdapter for BetaAdapter {
         Ok(LaunchPlan {
             command: self.binary().to_string(),
             env: Vec::new(),
+            resume_command: None,
         })
     }
 
@@ -2708,6 +2712,152 @@ async fn verify_sender_answers_from_podiums_own_registry() {
         false,
         "an exited session must not verify"
     );
+
+    orch.shutdown().await;
+}
+
+/// Agent whose restart resumes its session when `stored` says the CLI has one.
+struct ResumableAdapter {
+    stored: std::sync::atomic::AtomicBool,
+}
+
+impl AgentAdapter for ResumableAdapter {
+    fn id(&self) -> &'static str {
+        "resumable"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Resumable"
+    }
+
+    fn binary(&self) -> &'static str {
+        "resumable-agent"
+    }
+
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        Ok(LaunchPlan {
+            command: format!("sleep 30 # fresh {}", ctx.process_id),
+            env: Vec::new(),
+            resume_command: Some(format!("sleep 30 # resume {}", ctx.process_id)),
+        })
+    }
+
+    fn session_exists(&self, _session_id: &str) -> bool {
+        self.stored.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let adapter = Arc::new(ResumableAdapter {
+        stored: std::sync::atomic::AtomicBool::new(false),
+    });
+    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth", None)
+        .expect("todo");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn");
+    let process = |orch: &Orchestrator| {
+        orch.list_processes(Some(project_id))
+            .into_iter()
+            .find(|p| p.id == agent)
+            .expect("listed")
+    };
+    let todo_owner = |orch: &Orchestrator| {
+        orch.list_todos(project_id)
+            .expect("list")
+            .into_iter()
+            .find(|t| t.id == todo.id)
+            .and_then(|t| t.assigned_agent)
+    };
+    let first = process(&orch).color.expect("a live agent has a colour");
+    assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
+
+    // Stopped: the colour goes from the agent and its to-do, the link stays.
+    orch.stop_process(agent).await.expect("stop");
+    wait_for_exit(&orch, agent).await;
+    assert_eq!(process(&orch).color, None);
+    let owner = todo_owner(&orch).expect("the to-do is still linked");
+    assert_eq!(owner.process_id, agent);
+    assert_eq!(owner.color, None);
+
+    // A second live agent takes the first colour, so the restart has to pick
+    // a new one — the same way a spawn does.
+    orch.spawn_agent(
+        project_id,
+        Some("resumable".to_string()),
+        None,
+        None,
+        vec![],
+        vec![],
+        false,
+        None,
+        None,
+    )
+    .await
+    .expect("spawn second");
+
+    // No stored session yet: the restart starts fresh.
+    orch.restart_process(agent).await.expect("restart");
+    let restarted = process(&orch);
+    assert!(
+        restarted.command.contains("# fresh"),
+        "{}",
+        restarted.command
+    );
+    let second = restarted.color.expect("a restarted agent gets a colour");
+    assert_ne!(second, first, "the old colour is held by another agent");
+    assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(second));
+
+    // Once the CLI stored the session, a restart resumes it.
+    adapter
+        .stored
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    orch.restart_process(agent).await.expect("restart again");
+    assert_eq!(process(&orch).command, format!("sleep 30 # resume {agent}"));
+
+    orch.stop_process(agent).await.expect("stop again");
+    wait_for_exit(&orch, agent).await;
+    // A link to a stopped agent does not block another agent from claiming
+    // the to-do.
+    let claimer = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn claimer");
+    orch.assign_todo(project_id, todo.id, claimer)
+        .expect("a stopped owner can be taken over");
 
     orch.shutdown().await;
 }

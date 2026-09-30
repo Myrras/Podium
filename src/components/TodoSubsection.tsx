@@ -75,8 +75,11 @@ function TodoRow({
       data-open={open ? "true" : undefined}
       data-assigned={assigned ? "true" : undefined}
       style={
-        assigned?.color
-          ? ({ "--session-color": assigned.color } as React.CSSProperties)
+        // A stopped owner has no colour: the link stays, tinted neutral grey.
+        assigned
+          ? ({
+              "--session-color": assigned.color ?? "var(--text-faint)",
+            } as React.CSSProperties)
           : undefined
       }
     >

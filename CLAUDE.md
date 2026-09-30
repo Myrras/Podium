@@ -258,7 +258,18 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `ProcessInfo.color`): the to-do row **and the agent's own sidebar row** are
   tinted the same colour so the two can be matched at a glance; the to-do's
   spawn button is hidden and it drops out of multi-select — one session owns
-  it. Sidebar rows distinguish being **open** in the work area (a subtle
+  it. An agent that **exits** keeps its to-do/scratchpad links (only removing
+  the process drops them) but loses its colour (`spec.color` cleared in the
+  exit handler, to-do row tinted neutral grey); the next start (`do_start`)
+  picks a fresh one with the same `pick_session_color` a spawn uses.
+  **Restart resumes the session**: Claude Code agents launch with
+  `--session-id <process id>`, and the adapter's `LaunchPlan.resume_command`
+  (`--resume <process id>`, no initial prompt) replaces the command on a
+  manual start of an exited agent once `AgentAdapter::session_exists` finds
+  the CLI's transcript (`~/.claude/projects/*/<id>.jsonl`, or under
+  `$CLAUDE_CONFIG_DIR`); otherwise it starts fresh with the original prompt.
+  A session flag the user put in `extra_args` (`--session-id`, `--resume`,
+  `--continue`, …) disables both. Sidebar rows distinguish being **open** in the work area (a subtle
   accent highlight, like agents/terminals) from being in a **Cmd/Ctrl+click
   multi-select** (a bolder accent fill — those rows are queued for the next
   agent).

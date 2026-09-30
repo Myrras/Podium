@@ -108,6 +108,10 @@ struct ManagedProcess {
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
+    /// For an agent: the command that resumes its CLI session (from
+    /// [`LaunchPlan::resume_command`]); a manual restart switches to it once
+    /// the session exists. `None` for everything else.
+    resume_command: Option<String>,
 }
 
 impl ManagedProcess {
@@ -899,12 +903,13 @@ impl Orchestrator {
                 ));
             }
             // Block claiming a to-do already owned by a *different* live agent
-            // (a stale assignment whose process is gone resolves to `None`, so
-            // it can be reclaimed; re-claiming your own is idempotent).
-            if let Some(existing) = assigned_agent_of(&inner, todo_id) {
-                if existing.process_id != process_id {
-                    return Err(CoreError::TodoAlreadyAssigned);
-                }
+            // (one that exited or is gone can be reclaimed; re-claiming your
+            // own is idempotent).
+            let owner = inner.todo_assignments.get(&todo_id);
+            if owner.is_some_and(|pid| {
+                *pid != process_id && inner.processes.get(pid).is_some_and(|p| p.is_active())
+            }) {
+                return Err(CoreError::TodoAlreadyAssigned);
             }
             inner.todo_assignments.insert(todo_id, process_id);
             info.assigned_agent = assigned_agent_of(&inner, todo_id);
@@ -1615,6 +1620,7 @@ impl Orchestrator {
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && !worktree,
         })?;
+        let resume_command = plan.resume_command;
         let spec = ProcessSpec {
             name,
             command: plan.command,
@@ -1641,6 +1647,9 @@ impl Orchestrator {
                 return Err(err);
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
+            if let Some(p) = inner.processes.get_mut(&process_id) {
+                p.resume_command = resume_command;
+            }
         }
         self.events.publish(PodiumEvent::ProcessAdded {
             project_id,
@@ -1846,7 +1855,41 @@ impl Orchestrator {
     /// Manually start a process. Cancels any pending supervised restart and
     /// resets the backoff/breaker state: an explicit user start is a fresh
     /// beginning.
+    ///
+    /// An agent that ran before picks its CLI session back up (see
+    /// [`LaunchPlan::resume_command`]) once the CLI has one stored; until
+    /// then it starts fresh with its original prompt.
     pub async fn start_process(&self, id: ProcessId) -> CoreResult<()> {
+        let resume = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            match (&proc.spec.kind, &proc.resume_command) {
+                (ProcessKind::Agent { adapter }, Some(cmd))
+                    if matches!(proc.status, ProcessStatus::Exited { .. }) =>
+                {
+                    Some((adapter.clone(), cmd.clone()))
+                }
+                _ => None,
+            }
+        };
+        // The session check reads the disk, so it runs outside the lock.
+        if let Some((adapter, cmd)) = resume {
+            let stored = self
+                .adapters
+                .by_id(&adapter)
+                .is_some_and(|a| a.session_exists(&id.to_string()));
+            if stored {
+                if let Some(p) = self
+                    .inner
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .processes
+                    .get_mut(&id)
+                {
+                    p.spec.command = cmd;
+                }
+            }
+        }
         do_start(&self.inner, &self.events, self.supervisor, id, true)
     }
 
@@ -2420,6 +2463,7 @@ fn insert_process(
             restart: RestartState::default(),
             started_at: None,
             waiting_since: None,
+            resume_command: None,
         },
     );
 }
@@ -2435,6 +2479,18 @@ fn do_start(
     manual: bool,
 ) -> CoreResult<()> {
     let mut guard = inner.lock().expect(LOCK_POISONED);
+    // An agent that lost its colour on exit gets a fresh one, picked exactly
+    // as at spawn (it is not active, so its old colour is free again too).
+    let new_color = match guard.processes.get(&id) {
+        Some(p)
+            if p.spec.color.is_none()
+                && !p.is_active()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. }) =>
+        {
+            Some(pick_session_color(&guard, p.project_id))
+        }
+        _ => None,
+    };
     let proc = guard
         .processes
         .get_mut(&id)
@@ -2468,6 +2524,10 @@ fn do_start(
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
     proc.started_at = Some(Instant::now());
+    let recolored = new_color.is_some();
+    if recolored {
+        proc.spec.color = new_color;
+    }
     // Publish while still holding the lock: the exit callback also takes
     // the lock, so an instantly-exiting child's Exited event can never be
     // observed before this Running event.
@@ -2476,7 +2536,26 @@ fn do_start(
         process_id: id,
         status,
     });
+    if recolored {
+        publish_color_change(&guard, events, id, project_id);
+    }
     Ok(())
+}
+
+/// Tell the UI an agent's colour changed: its own row (`ProcessUpdated`
+/// re-lists processes) and the to-dos/scratchpads it owns, which carry the
+/// colour on their assignment.
+fn publish_color_change(inner: &Inner, events: &EventBus, id: ProcessId, project_id: ProjectId) {
+    events.publish(PodiumEvent::ProcessUpdated {
+        project_id,
+        process_id: id,
+    });
+    if inner.todo_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::TodosChanged { project_id });
+    }
+    if inner.scratchpad_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::ScratchpadsChanged { project_id });
+    }
 }
 
 /// Handler run on the PTY wait-thread when the child exits. A non-zero exit
@@ -2494,7 +2573,7 @@ fn make_exit_handler(
     // (all `do_start` callers run inside the runtime).
     let rt = tokio::runtime::Handle::current();
     Box::new(move |code| {
-        let (status, restart, cleared) = {
+        let restart = {
             let mut guard = inner.lock().expect(LOCK_POISONED);
             let Some(p) = guard.processes.get_mut(&id) else {
                 return;
@@ -2533,27 +2612,23 @@ fn make_exit_handler(
             } else {
                 None
             };
-            // An exited agent that is not being restarted no longer works on
-            // its to-dos/scratchpads; drop the assignments so the UI stops
-            // showing it.
-            let cleared = if restart.is_none() {
-                clear_agent_assignments(&mut guard, id)
-            } else {
-                ClearedAssignments::default()
-            };
-            (status, restart, cleared)
+            // An exited agent that is not being restarted keeps its
+            // to-dos/scratchpads (a restart picks the work back up) but loses
+            // its colour, so the UI shows it as no longer live. The next
+            // start picks a fresh one.
+            let decolored = restart.is_none()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. })
+                && p.spec.color.take().is_some();
+            events.publish(PodiumEvent::ProcessStatusChanged {
+                project_id,
+                process_id: id,
+                status,
+            });
+            if decolored {
+                publish_color_change(&guard, &events, id, project_id);
+            }
+            restart
         };
-        events.publish(PodiumEvent::ProcessStatusChanged {
-            project_id,
-            process_id: id,
-            status,
-        });
-        for pid in cleared.todos {
-            events.publish(PodiumEvent::TodosChanged { project_id: pid });
-        }
-        for pid in cleared.scratchpads {
-            events.publish(PodiumEvent::ScratchpadsChanged { project_id: pid });
-        }
         if let Some((delay, generation)) = restart {
             schedule_restart(&rt, inner, events, supervisor, id, delay, generation);
         }

@@ -290,7 +290,11 @@ describe("TodoSubsection spawn button", () => {
 });
 
 /** A to-do owned by a session, tinted with that session's colour. */
-function assignedTodo(id: string, text: string, color: string): TodoInfo {
+function assignedTodo(
+  id: string,
+  text: string,
+  color: string | null,
+): TodoInfo {
   return {
     ...todo(id, text),
     assignedAgent: { processId: "sess-1", name: "session", color },
@@ -324,6 +328,23 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(row).not.toBeNull();
     expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
       "#3e63dd",
+    );
+  });
+
+  it("keeps a stopped owner's link but tints it neutral grey", () => {
+    seed([assignedTodo("a", "Todo A", null)]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    const row = screen.getByText("Todo A").closest('[data-assigned="true"]');
+    expect(row).not.toBeNull();
+    expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
+      "var(--text-faint)",
     );
   });
 
