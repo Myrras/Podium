@@ -1,3 +1,6 @@
+// @ts-expect-error no @types/node here; Vitest itself runs in Node
+import { readFileSync } from "node:fs";
+
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -381,6 +384,22 @@ describe("AssistantPane", () => {
   });
 
   describe("the pending queue", () => {
+    // jsdom does no layout, so this pins the rule itself. The tail is a
+    // scroll container inside the `.log` flex column; without
+    // `flex-shrink: 0` its automatic min-height is 0 and a long transcript
+    // squeezes it to nothing, hiding every waiting message.
+    it("never lets the transcript squeeze the tail away", () => {
+      // `css: false` stubs even a `?raw` stylesheet import, so read the file.
+      // Relative to the project root, Vitest's cwd.
+      const css: string = readFileSync(
+        "src/components/AssistantPane.module.css",
+        "utf8",
+      );
+      const tail = /\.tail \{([^}]*)\}/.exec(css)?.[1] ?? "";
+      expect(tail).toMatch(/overflow-y:\s*auto/);
+      expect(tail).toMatch(/flex-shrink:\s*0/);
+    });
+
     it("shows nothing when the queue is empty", () => {
       render(<AssistantPane />);
       expect(screen.queryByLabelText("Edit waiting message")).toBeNull();
