@@ -9,6 +9,11 @@ interface LayoutPersisted {
   sidebarWidth: number;
   /** Collapsed project groups, keyed by project root path (default expanded). */
   collapsedProjects: Record<string, boolean>;
+  /**
+   * Collapsed subsections (To-dos, Agents, …), keyed by `sectionKey(root,
+   * section)` (default expanded).
+   */
+  collapsedSections: Record<string, boolean>;
   /** Whether the assistant chat panel is expanded on the right. */
   assistantOpen: boolean;
   /** Width of the assistant chat panel in px. */
@@ -20,6 +25,7 @@ const STORAGE_KEY = "podium.layout";
 const DEFAULTS: LayoutPersisted = {
   sidebarWidth: 280,
   collapsedProjects: {},
+  collapsedSections: {},
   assistantOpen: false,
   assistantWidth: 340,
 };
@@ -38,6 +44,10 @@ function load(): LayoutPersisted {
       collapsedProjects:
         saved.collapsedProjects && typeof saved.collapsedProjects === "object"
           ? saved.collapsedProjects
+          : {},
+      collapsedSections:
+        saved.collapsedSections && typeof saved.collapsedSections === "object"
+          ? saved.collapsedSections
           : {},
       assistantOpen: saved.assistantOpen === true,
       assistantWidth:
@@ -63,9 +73,26 @@ function persistable(state: LayoutPersisted): LayoutPersisted {
   return {
     sidebarWidth: state.sidebarWidth,
     collapsedProjects: state.collapsedProjects,
+    collapsedSections: state.collapsedSections,
     assistantOpen: state.assistantOpen,
     assistantWidth: state.assistantWidth,
   };
+}
+
+/** The collapsible subsections of a project group, in sidebar order. */
+export const SECTIONS = [
+  "todos",
+  "agents",
+  "processes",
+  "terminals",
+  "worktrees",
+  "scratchpads",
+] as const;
+export type Section = (typeof SECTIONS)[number];
+
+/** Key into `collapsedSections` for one project's subsection. */
+export function sectionKey(root: string, section: Section): string {
+  return `${root}\n${section}`;
 }
 
 /** The to-do currently filling the work area (opened from the sidebar). */
@@ -96,6 +123,14 @@ export interface LayoutState extends LayoutPersisted {
   openScratchpad: OpenScratchpad | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
+  /** Collapse or expand one subsection of a project (persisted). */
+  setSectionCollapsed: (
+    root: string,
+    section: Section,
+    collapsed: boolean,
+  ) => void;
+  /** Collapse or expand every subsection of a project at once (persisted). */
+  setAllSectionsCollapsed: (root: string, collapsed: boolean) => void;
   /** Show or hide the assistant chat panel (persisted). */
   setAssistantOpen: (open: boolean) => void;
   /** Resize the assistant chat panel (persisted, clamped). */
@@ -133,6 +168,24 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       };
       persist({ ...persistable(s), collapsedProjects });
       set({ collapsedProjects });
+    },
+    setSectionCollapsed: (root, section, collapsed) => {
+      const s = get();
+      const collapsedSections = {
+        ...s.collapsedSections,
+        [sectionKey(root, section)]: collapsed,
+      };
+      persist({ ...persistable(s), collapsedSections });
+      set({ collapsedSections });
+    },
+    setAllSectionsCollapsed: (root, collapsed) => {
+      const s = get();
+      const collapsedSections = { ...s.collapsedSections };
+      for (const section of SECTIONS) {
+        collapsedSections[sectionKey(root, section)] = collapsed;
+      }
+      persist({ ...persistable(s), collapsedSections });
+      set({ collapsedSections });
     },
     setAssistantOpen: (assistantOpen) => {
       persist({ ...persistable(get()), assistantOpen });

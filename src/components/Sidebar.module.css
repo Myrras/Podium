@@ -265,6 +265,37 @@
   user-select: none;
 }
 
+/* Caret + icon + title: the click target that collapses the subsection. */
+.sectionToggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sectionToggle:hover {
+  color: var(--text-muted);
+}
+
+.sectionCount {
+  font-weight: 400;
+}
+
+/* A collapsed subsection shows only its header; modals it owns stay usable. */
+.subsection[data-collapsed="true"] > :not(.sectionHeader):not([data-modal]) {
+  display: none;
+}
+
 .panelIcon {
   color: var(--text-faint);
   flex-shrink: 0;

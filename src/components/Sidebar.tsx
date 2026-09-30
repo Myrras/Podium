@@ -26,7 +26,8 @@ import type {
   WorktreeInfo,
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
-import { useLayoutStore } from "../state/layoutStore";
+import { SECTIONS, sectionKey, useLayoutStore } from "../state/layoutStore";
+import type { Section } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSettingsStore } from "../state/settingsStore";
@@ -35,6 +36,8 @@ import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
 import { WorktreeSubsection } from "./WorktreeSubsection";
@@ -42,6 +45,8 @@ import {
   AddIcon,
   AgentIcon,
   CaretIcon,
+  CollapseIcon,
+  ExpandIcon,
   CloseIcon,
   EditIcon,
   ErrorIcon,
@@ -55,6 +60,8 @@ import {
 import styles from "./Sidebar.module.css";
 
 interface SubsectionProps {
+  projectId: ProjectId;
+  section: Section;
   title: string;
   Icon: typeof AgentIcon;
   rows: ProcessInfo[];
@@ -67,12 +74,30 @@ interface SubsectionProps {
 }
 
 /** One entity subsection (Agents / Processes / Terminals) in a group. */
-function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
+function Subsection({
+  projectId,
+  section,
+  title,
+  Icon,
+  rows,
+  empty,
+  add,
+  extra,
+}: SubsectionProps) {
+  const [collapsed, setCollapsed] = useSectionCollapsed(projectId, section);
   return (
-    <div className={styles.subsection}>
+    <div
+      className={styles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={styles.sectionHeader}>
-        <Icon className={styles.panelIcon} />
-        <span className={styles.panelTitle}>{title}</span>
+        <SectionTitle
+          title={title}
+          Icon={Icon}
+          count={rows.length}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
         {extra?.map((action) => (
           <button
             key={action.label}
@@ -91,7 +116,10 @@ function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
             className={styles.addBtn}
             aria-label={add.label}
             title={add.label}
-            onClick={add.onClick}
+            onClick={() => {
+              setCollapsed(false);
+              add.onClick();
+            }}
           >
             <AddIcon size={13} />
           </button>
@@ -167,6 +195,12 @@ function ProjectGroup({
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const allSectionsCollapsed = useLayoutStore((s) =>
+    SECTIONS.every((sec) => s.collapsedSections[sectionKey(project.root, sec)]),
+  );
+  const setAllSectionsCollapsed = useLayoutStore(
+    (s) => s.setAllSectionsCollapsed,
+  );
 
   const addProcess = useProcessStore((s) => s.addProcess);
   const startProcess = useProcessStore((s) => s.startProcess);
@@ -361,6 +395,26 @@ function ProjectGroup({
         <button
           type="button"
           className={styles.projectAction}
+          aria-label={`${allSectionsCollapsed ? "Expand" : "Collapse"} all sections of ${project.name}`}
+          title={
+            allSectionsCollapsed
+              ? "Expand all sections"
+              : "Collapse all sections"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            setAllSectionsCollapsed(project.root, !allSectionsCollapsed);
+          }}
+        >
+          {allSectionsCollapsed ? (
+            <ExpandIcon size={12} />
+          ) : (
+            <CollapseIcon size={12} />
+          )}
+        </button>
+        <button
+          type="button"
+          className={styles.projectAction}
           aria-label={`Reload podium.yml for ${project.name}`}
           title="Reload podium.yml"
           onClick={(e) => {
@@ -393,6 +447,8 @@ function ProjectGroup({
             onPickAgent={onPickAgent}
           />
           <Subsection
+            projectId={project.id}
+            section="agents"
             title="Agents"
             Icon={AgentIcon}
             rows={agents}
@@ -406,9 +462,17 @@ function ProjectGroup({
             }}
           />
           {services.length > 0 && (
-            <Subsection title="Processes" Icon={RunIcon} rows={services} />
+            <Subsection
+              projectId={project.id}
+              section="processes"
+              title="Processes"
+              Icon={RunIcon}
+              rows={services}
+            />
           )}
           <Subsection
+            projectId={project.id}
+            section="terminals"
             title="Terminals"
             Icon={TerminalIcon}
             rows={terminals.filter((p) => p.worktree == null)}

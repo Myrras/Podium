@@ -37,6 +37,8 @@ import {
   ScratchpadIcon,
 } from "./icons";
 import { ScratchpadArchiveModal } from "./ScratchpadArchiveModal";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 
@@ -222,11 +224,24 @@ export function ScratchpadSubsection({
     anchorRef.current = null;
   };
 
+  const [collapsed, setCollapsed] = useSectionCollapsed(
+    projectId,
+    "scratchpads",
+  );
+
   return (
-    <div className={sidebarStyles.subsection}>
+    <div
+      className={sidebarStyles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={sidebarStyles.sectionHeader}>
-        <ScratchpadIcon className={sidebarStyles.panelIcon} />
-        <span className={sidebarStyles.panelTitle}>Scratchpads</span>
+        <SectionTitle
+          title="Scratchpads"
+          Icon={ScratchpadIcon}
+          count={scratchpads.length}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
         <button
           type="button"
           className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
@@ -241,7 +256,10 @@ export function ScratchpadSubsection({
           className={sidebarStyles.addBtn}
           aria-label="New scratchpad"
           title="New scratchpad"
-          onClick={() => void addAndOpen()}
+          onClick={() => {
+            setCollapsed(false);
+            void addAndOpen();
+          }}
         >
           <AddIcon size={13} />
         </button>

@@ -40,6 +40,8 @@ import {
   RunIcon,
   TerminalIcon,
 } from "./icons";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 import ownStyles from "./WorktreeSubsection.module.css";
@@ -77,6 +79,8 @@ export function WorktreeSubsection({
   useEffect(() => {
     void refresh(projectId);
   }, [projectId, refresh]);
+
+  const [collapsed, setCollapsed] = useSectionCollapsed(projectId, "worktrees");
 
   if (worktrees.length === 0) return null;
 
@@ -122,10 +126,18 @@ export function WorktreeSubsection({
   };
 
   return (
-    <div className={sidebarStyles.subsection}>
+    <div
+      className={sidebarStyles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={sidebarStyles.sectionHeader}>
-        <BranchIcon className={sidebarStyles.panelIcon} />
-        <span className={sidebarStyles.panelTitle}>Worktrees</span>
+        <SectionTitle
+          title="Worktrees"
+          Icon={BranchIcon}
+          count={worktrees.length}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
       </div>
       <div className={styles.rows}>
         {worktrees.map((wt) => {

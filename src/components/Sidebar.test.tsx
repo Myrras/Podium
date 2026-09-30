@@ -130,4 +130,61 @@ describe("Sidebar project header", () => {
     await screen.findByText("worktree-shell");
     expect(screen.getByText("No terminals yet.")).toBeInTheDocument();
   });
+
+  it("collapses one subsection to its header with a row count", () => {
+    useProjectStore.setState({ projects: [project()] });
+    useProcessStore.setState({
+      processes: [terminal("t1", "shell", null), terminal("t2", "logs", null)],
+    });
+    render(<Sidebar />);
+
+    const toggle = screen.getByRole("button", { name: "Collapse Terminals" });
+    fireEvent.click(toggle);
+
+    const expand = screen.getByRole("button", { name: "Expand Terminals" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(expand).toHaveTextContent("Terminals (2)");
+    expect(expand.closest("[data-collapsed]")).toHaveAttribute(
+      "data-collapsed",
+      "true",
+    );
+    // Persisted per project root, so it survives a restart.
+    expect(
+      useLayoutStore.getState().collapsedSections["/fake/webshop\nterminals"],
+    ).toBe(true);
+  });
+
+  it("collapses and expands every subsection from the project header", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse all sections of Webshop" }),
+    );
+    for (const title of ["To-dos", "Agents", "Terminals", "Scratchpads"]) {
+      expect(
+        screen.getByRole("button", { name: `Expand ${title}` }),
+      ).toBeInTheDocument();
+    }
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand all sections of Webshop" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Collapse To-dos" }),
+    ).toBeInTheDocument();
+  });
+
+  it("expands a collapsed subsection when its add button is used", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse To-dos" }));
+    fireEvent.click(screen.getByRole("button", { name: "New to-do" }));
+
+    expect(
+      screen.getByRole("button", { name: "Collapse To-dos" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("New to-do text")).toBeInTheDocument();
+  });
 });
