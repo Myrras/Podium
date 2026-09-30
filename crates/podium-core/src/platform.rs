@@ -96,6 +96,22 @@ pub fn wsl() -> Option<&'static WslBackend> {
     WSL.get().and_then(Option::as_ref)
 }
 
+/// The backend for work rooted at `path` (a project root, a process cwd):
+/// the WSL backend only when `path` lives inside a WSL distro
+/// (`\\wsl.localhost\…`). A project on a Windows drive runs natively even in
+/// WSL-backend mode — its tools (git, node, `claude`) are the Windows ones
+/// the user set it up with. Workspace-wide work with no project (the
+/// assistant, MCP install) keeps using [`wsl`].
+pub fn wsl_for(path: &std::path::Path) -> Option<&'static WslBackend> {
+    backend_for(wsl(), path)
+}
+
+/// [`wsl_for`] with the configured backend passed in, so it is testable
+/// without [`init_wsl`].
+fn backend_for<'a>(wsl: Option<&'a WslBackend>, path: &std::path::Path) -> Option<&'a WslBackend> {
+    wsl.filter(|_| wsl_path::is_wsl_path(path))
+}
+
 /// Serializes `wsl.exe` launches in WSL-backend mode. `wsl.exe` does not
 /// survive a burst of concurrent starts: measured on WSL 2 (Windows 11), with
 /// three or more launched at once all but two hang ~30 s and then fail
@@ -150,7 +166,9 @@ impl Drop for WslLaunchGuard {
 }
 
 /// Take the WSL launch gate for a launch (WSL-backend mode); `None`
-/// natively. Waits at most [`WSL_LAUNCH_GATE_TIMEOUT`].
+/// natively. Waits at most [`WSL_LAUNCH_GATE_TIMEOUT`]. A native launch in
+/// WSL-backend mode (a project on a Windows drive) takes it too — harmless,
+/// it only costs the settle delay.
 pub fn wsl_launch_guard() -> Option<WslLaunchGuard> {
     wsl()?;
     let gate = lock_with_deadline(&WSL_LAUNCH_GATE, WSL_LAUNCH_GATE_TIMEOUT);
@@ -212,14 +230,17 @@ pub fn login_shell() -> (String, Vec<String>) {
     }
 }
 
-/// [`login_shell`] for a command that must run in `cwd`. In WSL mode the
-/// directory is passed to `wsl.exe --cd` as its Linux path (a `cwd` outside
-/// the backend distro is an error); the caller should then give `wsl.exe`
-/// itself a plain local working directory, not the `\\wsl.localhost` one.
-/// Natively this is just [`login_shell`], and the caller sets the process's
-/// working directory as before.
-pub fn login_shell_in(cwd: &std::path::Path) -> CoreResult<(String, Vec<String>)> {
-    match wsl() {
+/// [`login_shell`] on backend `wsl` (see [`wsl_for`]) for a command that
+/// must run in `cwd`. In WSL mode the directory is passed to `wsl.exe --cd`
+/// as its Linux path (a `cwd` outside the backend distro is an error); the
+/// caller should then give `wsl.exe` itself a plain local working directory,
+/// not the `\\wsl.localhost` one. Natively this is the native login shell,
+/// and the caller sets the process's working directory as before.
+pub fn login_shell_in(
+    wsl: Option<&WslBackend>,
+    cwd: &std::path::Path,
+) -> CoreResult<(String, Vec<String>)> {
+    match wsl {
         Some(w) => {
             let linux_cwd = wsl_path::to_linux(w.distro(), cwd)?;
             Ok(wsl_login_shell(w, Some(&linux_cwd)))
@@ -258,7 +279,12 @@ fn wsl_login_shell(wsl: &WslBackend, linux_cwd: Option<&str>) -> (String, Vec<St
 /// the path itself natively. For paths handed to a child as an argument
 /// (config files, rules files) — a `--cd` goes through [`login_shell_in`].
 pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
-    match wsl() {
+    backend_path_in(wsl(), path)
+}
+
+/// [`backend_path`] for a process on backend `wsl` (see [`wsl_for`]).
+pub fn backend_path_in(wsl: Option<&WslBackend>, path: &std::path::Path) -> CoreResult<String> {
+    match wsl {
         Some(w) => wsl_path::to_linux(w.distro(), path),
         None => Ok(path.to_string_lossy().into_owned()),
     }
@@ -299,7 +325,12 @@ fn parse_networking_mode(stdout: &str) -> Option<String> {
 /// The reverse of [`backend_path`]: a path printed by a backend process (e.g.
 /// git), as a Windows path in WSL-backend mode, unchanged natively.
 pub fn from_backend_path(path: &str) -> std::path::PathBuf {
-    match wsl() {
+    from_backend_path_in(wsl(), path)
+}
+
+/// [`from_backend_path`] for a process on backend `wsl` (see [`wsl_for`]).
+pub fn from_backend_path_in(wsl: Option<&WslBackend>, path: &str) -> std::path::PathBuf {
+    match wsl {
         Some(w) => wsl_path::to_windows(w.distro(), path),
         None => std::path::PathBuf::from(path),
     }
@@ -353,7 +384,12 @@ pub fn command_exists_query(binary: &str) -> String {
 /// `You're …`) is not treated as one quoted token — `cmd.exe` still splits it
 /// on whitespace, truncating the argument at the first space.
 pub fn quote_arg(arg: &str) -> CoreResult<String> {
-    if wsl().is_some() {
+    quote_arg_in(wsl(), arg)
+}
+
+/// [`quote_arg`] for a command run on backend `wsl` (see [`wsl_for`]).
+pub fn quote_arg_in(wsl: Option<&WslBackend>, arg: &str) -> CoreResult<String> {
+    if wsl.is_some() {
         return quote_posix(arg);
     }
     quote_native(arg)
@@ -512,8 +548,9 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
 /// [`git_binary`], invoked directly; in WSL-backend mode it is `wsl.exe -d
 /// <distro> -e git` — the distro's own git, run without a shell, so path
 /// arguments must be in the backend's spelling ([`backend_path`]).
-pub fn git_command() -> std::process::Command {
-    let mut cmd = match wsl() {
+/// On backend `wsl` (see [`wsl_for`]).
+pub fn git_command(wsl: Option<&WslBackend>) -> std::process::Command {
+    let mut cmd = match wsl {
         Some(w) => {
             let mut cmd = std::process::Command::new("wsl.exe");
             cmd.args(["-d", w.distro(), "-e", "git"]);
@@ -803,7 +840,26 @@ mod tests {
         assert!(wsl().is_none());
         assert_eq!(login_shell(), native_login_shell());
         let dir = std::env::temp_dir();
-        assert_eq!(login_shell_in(&dir).unwrap(), native_login_shell());
+        assert_eq!(login_shell_in(None, &dir).unwrap(), native_login_shell());
+    }
+
+    #[test]
+    fn only_projects_inside_the_distro_use_the_wsl_backend() {
+        let w = WslBackend::for_tests("Ubuntu");
+        let in_distro = std::path::Path::new(r"\\wsl.localhost\Ubuntu\home\me\app");
+        let on_drive = std::path::Path::new(r"C:\Users\me\app");
+        assert!(backend_for(Some(&w), in_distro).is_some());
+        assert!(backend_for(Some(&w), on_drive).is_none());
+        assert!(backend_for(None, in_distro).is_none());
+        // A drive project in WSL mode is quoted and spelled natively.
+        assert_eq!(
+            quote_arg_in(backend_for(Some(&w), on_drive), "it's").unwrap(),
+            quote_native("it's").unwrap()
+        );
+        assert_eq!(
+            backend_path_in(backend_for(Some(&w), on_drive), on_drive).unwrap(),
+            on_drive.to_string_lossy()
+        );
     }
 
     #[test]

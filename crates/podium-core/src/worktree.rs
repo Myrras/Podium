@@ -4,11 +4,11 @@
 //! working tree.
 //!
 //! Git is invoked directly via `platform::git_command()` (natively a path
-//! resolved once through the login shell, then reused; in WSL-backend mode
-//! the distro's git via `wsl.exe -e git`, with paths translated both ways)
-//! rather than re-spawning a login shell on every call — list/create/remove
-//! can each fire several git calls, and a login shell per call is slow on
-//! heavy shell profiles. stderr never reaches a `CoreError` message (it can
+//! resolved once through the login shell, then reused; for a project inside
+//! the WSL distro (`platform::wsl_for`) the distro's git via `wsl.exe -e
+//! git`, with paths translated both ways) rather than re-spawning a login
+//! shell on every call — list/create/remove can each fire several git calls,
+//! and a login shell per call is slow on heavy shell profiles. stderr never reaches a `CoreError` message (it can
 //! contain repo paths), but is logged via `tracing::warn!` on failure so the
 //! real cause is diagnosable.
 //! There is no persistence, and `list` has no events (`git worktree list
@@ -46,7 +46,8 @@ const MAX_SLUG_LEN: usize = 40;
 /// failure (e.g. "dubious ownership", git missing, wrong cwd) is visible in
 /// the app logs instead of collapsing into a generic error.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let root_arg = match crate::platform::backend_path(root) {
+    let wsl = crate::platform::wsl_for(root);
+    let root_arg = match crate::platform::backend_path_in(wsl, root) {
         Ok(path) => path,
         Err(e) => {
             // WSL-backend mode and a root outside the backend distro.
@@ -54,7 +55,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
             return None;
         }
     };
-    let mut cmd = crate::platform::git_command();
+    let mut cmd = crate::platform::git_command(wsl);
     cmd.arg("-C")
         .arg(root_arg)
         .args(args)
@@ -131,7 +132,7 @@ fn ensure_excluded(root: &Path) -> CoreResult<()> {
         .ok_or(CoreError::NotAGitRepo)?
         .trim()
         .to_string();
-    let common = crate::platform::from_backend_path(&common);
+    let common = crate::platform::from_backend_path_in(crate::platform::wsl_for(root), &common);
     let common = if common.is_absolute() {
         common
     } else {
@@ -204,7 +205,7 @@ pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
     ensure_excluded(&root)?;
     let path = dir.join(&candidate);
     std::fs::create_dir_all(&dir)?;
-    let path_str = crate::platform::backend_path(&path)?;
+    let path_str = crate::platform::backend_path_in(crate::platform::wsl_for(&root), &path)?;
     let branch = format!("podium/{candidate}");
     if git(&root, &["worktree", "add", &path_str, "-b", &branch]).is_none() {
         return Err(CoreError::Git(
@@ -236,7 +237,7 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
         let mut branch: Option<String> = None;
         for line in block.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
-                path = worktree_path(crate::platform::wsl(), p, &base);
+                path = worktree_path(crate::platform::wsl_for(&root), p, &base);
             } else if let Some(b) = line.strip_prefix("branch ") {
                 branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
             } else if line == "detached" {
@@ -307,7 +308,7 @@ pub fn remove(root: &Path, name: &str, force: bool) -> CoreResult<()> {
             "worktree",
             "remove",
             "--force",
-            &crate::platform::backend_path(&entry.path)?,
+            &crate::platform::backend_path_in(crate::platform::wsl_for(&root), &entry.path)?,
         ],
     )
     .is_none()

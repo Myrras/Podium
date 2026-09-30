@@ -174,20 +174,23 @@ impl AgentAdapter for CliAdapter {
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        // Quoted and spelled for the shell the project's processes run in:
+        // bash in the WSL distro for a project inside it, the native shell for
+        // one on a Windows drive (see `platform::wsl_for`).
+        let wsl = crate::platform::wsl_for(ctx.project_root);
+        let quote = |arg: &str| crate::platform::quote_arg_in(wsl, arg);
         let bin = ctx.command_override.unwrap_or(self.binary);
-        let mut args: Vec<String> = vec![crate::platform::quote_arg(bin)?];
+        let mut args: Vec<String> = vec![quote(bin)?];
         if let Some(prompt) = ctx.prompt {
-            args.push(crate::platform::quote_arg(prompt)?);
+            args.push(quote(prompt)?);
         }
         for arg in ctx.extra_args {
-            args.push(crate::platform::quote_arg(arg)?);
+            args.push(quote(arg)?);
         }
         if let Some(mcp) = ctx.mcp {
             let path = write_mcp_config(mcp, ctx.process_id)?;
             args.push("--mcp-config".to_string());
-            args.push(crate::platform::quote_arg(&crate::platform::backend_path(
-                &path,
-            )?)?);
+            args.push(quote(&crate::platform::backend_path_in(wsl, &path)?)?);
             // Cross-session messaging: with no explicit inbound setting the
             // CLI decides per message from the two sessions' permission-mode
             // classes, and the assistant (`bypassPermissions`) never matches
@@ -201,7 +204,7 @@ impl AgentAdapter for CliAdapter {
             if let Some(flag) = self.settings_flag {
                 if !ctx.extra_args.iter().any(|a| a == flag) {
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(PEER_INBOUND_SETTINGS)?);
+                    args.push(quote(PEER_INBOUND_SETTINGS)?);
                 }
             }
             // Stamp the session with a name Podium can resolve back to this
@@ -213,7 +216,7 @@ impl AgentAdapter for CliAdapter {
                 // in extra_args means the user named the session themselves.
                 if !ctx.extra_args.iter().any(|a| a == flag || a == "--name") {
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&peer_session_name(&peer_tag(
+                    args.push(quote(&peer_session_name(&peer_tag(
                         &ctx.process_id.to_string(),
                     )))?);
                 }
@@ -225,10 +228,7 @@ impl AgentAdapter for CliAdapter {
             match self.identity {
                 IdentityDelivery::Flag(flag) => {
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&identity_prompt(
-                        ctx,
-                        peer_messaging,
-                    ))?);
+                    args.push(quote(&identity_prompt(ctx, peer_messaging))?);
                 }
                 IdentityDelivery::RulesFile(flag) => {
                     let path = write_identity_rules(
@@ -237,9 +237,7 @@ impl AgentAdapter for CliAdapter {
                         &identity_prompt(ctx, peer_messaging),
                     )?;
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&crate::platform::backend_path(
-                        &path,
-                    )?)?);
+                    args.push(quote(&crate::platform::backend_path_in(wsl, &path)?)?);
                 }
                 IdentityDelivery::Unsupported => {}
             }

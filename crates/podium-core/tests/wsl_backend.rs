@@ -120,6 +120,33 @@ fn networking_mode(distro: &str) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
+async fn a_project_on_a_windows_drive_runs_natively() {
+    distro();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let orch = Orchestrator::new();
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let spec = ProcessSpec {
+        name: "test".to_string(),
+        // `%OS%` only expands in cmd.exe; bash would print it verbatim.
+        command: "echo os:%OS%:end".to_string(),
+        cwd: dir.path().to_path_buf(),
+        env: Vec::new(),
+        kind: ProcessKind::Service,
+        restart_policy: RestartPolicy::Never,
+        color: None,
+    };
+    let id = orch.add_process(project, spec).await.expect("add process");
+    orch.start_process(id).await.expect("start");
+    let text = wait_for_output(&orch, id, ":end").await;
+    assert!(text.contains("os:Windows_NT:end"), "{text:?}");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
 async fn a_service_runs_in_the_distro_with_its_cwd_and_env() {
     let distro = distro();
     let dir = WslDir::new(&distro, "cwd-env");

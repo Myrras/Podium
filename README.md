@@ -244,8 +244,16 @@ your `.bashrc`/`.profile` PATH setup applies. Terminals open your distro
 shell. **Settings → MCP → install** registers the bridge with the distro's
 `claude`/`auggie`. Clear the field and restart to go back to native Windows.
 
-Limits: it's one global setting (no per-project choice), projects must live in
-that distro, and **Open in Warp** is unchanged.
+**Projects on a Windows drive stay native.** A project opened from `C:\…`
+(or any other drive) runs its services, terminals, agents and git on Windows
+itself, even with a WSL backend set: only projects inside the distro
+(`\\wsl.localhost\…`) run in WSL. So for those, install the agent CLIs on
+Windows as well. The personal assistant and the MCP install always use the
+configured backend.
+
+Limits: the distro is one global setting, **Settings → Agents** reports the
+CLIs found in the distro (not on Windows), and **Open in Warp** is
+unchanged.
 
 ## Things you'd otherwise never find
 

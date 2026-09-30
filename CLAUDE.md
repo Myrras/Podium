@@ -671,13 +671,27 @@ spawn; changing it needs a restart. `platform::wsl()` is the switch:
 `Some(&WslBackend)` in WSL mode, always `None` off Windows (`init_wsl`
 ignores a configured distro there).
 
+**Per project, not global.** Anything rooted in a project asks
+`platform::wsl_for(path)` instead: the backend only when the path lives
+inside a distro (`wsl_path::is_wsl_path` — `\\wsl.localhost\…`, `\\wsl$\…`),
+`None` for a Windows-drive project, which then runs natively (cmd.exe,
+Windows git, Windows `claude`) even in WSL mode. That covers the PTY spawn
+(keyed on `spec.cwd`), `build_launch` (keyed on the project root: quoting and
+the `--mcp-config` spelling), worktree git, and the default terminal command.
+The explicit-backend helpers are the `_in(wsl, …)` variants
+(`login_shell_in`, `quote_arg_in`, `backend_path_in`, `from_backend_path_in`,
+`git_command`); the plain ones use the global `wsl()` and are for
+workspace-wide work only — the assistant, the MCP install and the adapter
+availability probe. The launch gate stays global: a native spawn in WSL mode
+also waits for it, which costs at most the settle delay.
+
 - **Not behind `cfg(windows)`.** Call sites branch at runtime on `wsl()`, so
   macOS/Linux CI compiles, lints and tests the WSL code. Pure helpers take
   the mode as a parameter (`wsl_login_shell`, `worktree_path`,
   `WslBackend::for_tests`) so both modes are unit-testable anywhere; tests
   never call `init_wsl` (it is process-global).
 - **Shell, quoting and probe.** `login_shell()` is `wsl.exe -d <distro> -e bash
-  -lic`; `login_shell_in(cwd)` adds `--cd <linux path>`. `quote_arg` is POSIX
+  -lic`; `login_shell_in(wsl, cwd)` adds `--cd <linux path>`. `quote_arg` is POSIX
   (`quote_posix`), since bash parses the string. `command_exists_query` is
   `command -v`. Agents skip the Windows direct launch in `pty.rs` and take the
   shell path, like Unix.
@@ -736,8 +750,9 @@ ignores a configured distro there).
   One thread, because a burst of concurrent `wsl.exe` starts fails; without
   the variable the run fails instead of passing vacuously, and the localhost
   test skips with a message unless networking is mirrored. It covers
-  cwd/env, argv round-trip, stop, config paths, the localhost reachability
-  prerequisite, worktrees and interop.
+  cwd/env, a Windows-drive project staying native, argv round-trip, stop,
+  config paths, the localhost reachability prerequisite, worktrees and
+  interop.
 
 ### Tauri IPC contract
 

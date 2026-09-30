@@ -108,6 +108,24 @@ pub fn to_windows(distro: &str, path: &str) -> PathBuf {
     PathBuf::from(format!(r"\\{WSL_HOST}\{distro}\{}", segments.join("\\")))
 }
 
+/// Whether `path` lives inside a WSL distro (`\\wsl.localhost\…`,
+/// `\\wsl$\…`, or their verbatim `\\?\UNC\…` forms), as opposed to a
+/// Windows drive or another network share. Any distro counts; [`to_linux`]
+/// still refuses one that is not the backend's.
+pub fn is_wsl_path(path: &Path) -> bool {
+    let Some(raw) = path.to_str() else {
+        return false;
+    };
+    let normalized = raw.replace('/', "\\");
+    let Some(unc) =
+        strip_prefix_ci(&normalized, r"\\?\UNC\").or_else(|| normalized.strip_prefix(r"\\"))
+    else {
+        return false;
+    };
+    let host = unc.split('\\').next().unwrap_or_default();
+    WSL_HOSTS.iter().any(|h| h.eq_ignore_ascii_case(host))
+}
+
 /// `prefix` + `/segment` for every non-empty, non-`.` segment; `/` if none.
 fn join_linux<'a>(prefix: &str, segments: impl Iterator<Item = &'a str>) -> String {
     let mut out = prefix.to_string();
@@ -142,6 +160,27 @@ mod tests {
 
     fn windows(path: &str) -> String {
         to_windows("Ubuntu", path).to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn only_paths_inside_a_distro_are_wsl_paths() {
+        for p in [
+            r"\\wsl.localhost\Ubuntu\home\me",
+            r"\\WSL$\ubuntu",
+            r"\\?\UNC\wsl.localhost\Ubuntu\x",
+            "//wsl.localhost/Ubuntu/home",
+        ] {
+            assert!(is_wsl_path(Path::new(p)), "{p}");
+        }
+        for p in [
+            r"C:\Users\me\app",
+            r"\\?\C:\Users\me",
+            r"\\server\share\app",
+            "/home/me/app",
+            "relative",
+        ] {
+            assert!(!is_wsl_path(Path::new(p)), "{p}");
+        }
     }
 
     #[test]

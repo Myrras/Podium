@@ -36,8 +36,8 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 /// Flush immediately once this many bytes are buffered.
 const BATCH_MAX_BYTES: usize = 64 * 1024;
 
-/// Default command for terminal processes on Unix, and in WSL-backend mode
-/// (where the wrapper is bash inside the distro): replace the wrapper
+/// Default command for terminal processes on Unix, and for a cwd inside the
+/// WSL distro (where the wrapper is bash): replace the wrapper
 /// `$SHELL -lc` with an interactive shell so the user gets prompts, job
 /// control, etc.
 const UNIX_TERMINAL_COMMAND: &str = "exec \"$SHELL\" -i";
@@ -46,8 +46,8 @@ const UNIX_TERMINAL_COMMAND: &str = "exec \"$SHELL\" -i";
 #[cfg(windows)]
 const WINDOWS_TERMINAL_COMMAND: &str = "powershell";
 
-fn terminal_default_command() -> &'static str {
-    if podium_core::platform::wsl().is_some() {
+fn terminal_default_command(cwd: &std::path::Path) -> &'static str {
+    if podium_core::platform::wsl_for(cwd).is_some() {
         return UNIX_TERMINAL_COMMAND;
     }
     #[cfg(unix)]
@@ -116,7 +116,7 @@ pub async fn process_add(
     let command = match spec.command.filter(|c| !c.trim().is_empty()) {
         Some(c) => c,
         None if matches!(spec.kind, ProcessKind::Terminal) => {
-            terminal_default_command().to_string()
+            terminal_default_command(&cwd).to_string()
         }
         None => {
             return Err(IpcError::invalid_input(
