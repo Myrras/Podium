@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **81 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **82 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -78,7 +78,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 81 commands.
+  IPC wrappers over all 82 commands.
 - ✅ CI (`.github/workflows/ci.yml`): a macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build — plus a Windows job (rustfmt, clippy, `cargo test
@@ -730,6 +730,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_list`          | `{ projectId? }`                            | `ProcessInfo[]`   |
 | `process_git_branch`    | `{ processId }`                             | `string \| null`  |
 | `process_report_waiting` | `{ processId }` (agent showing a prompt)   | –                 |
+| `process_activity`      | –                                           | `Record<ProcessId, OutputActivity>` (`{ quietMs, burstMs }` per running process that printed) |
 | `process_rename`        | `{ processId, name }`                       | `ProcessInfo`     |
 | `process_start`         | `{ processId }`                             | –                 |
 | `process_stop`          | `{ processId }`                             | –                 |
@@ -876,13 +877,22 @@ xterm.js instances live **outside React** in `src/lib/terminalRegistry.ts`
 (keyed by processId, reparentable host div) — this survives StrictMode
 double-mounts and keeps scrollback across tab switches. The registry owns
 attach/re-attach (including the `lagged` recovery) and re-themes live
-terminals on theme change. The agent **activity indicator** is a frontend
-heuristic: the registry timestamps incoming output, and `useAgentActivity`
-(`src/lib/useAgentActivity.ts`) polls it (1s) — a running agent with output
-in the last 2.5s shows as "working…" (pulsing dot), otherwise "idle". No
-extra IPC. A quiet screen showing a permission/confirmation prompt or a
+terminals on theme change. The **activity indicator** is derived once a
+second by `agentActivityStore`'s monitor. "Working…" (pulsing dot) comes from
+the backend: `process_activity` reports, per running process, how long ago
+it last printed and how long that burst of output has lasted, read off the
+core's scrollback (`ScrollbackBuffer::output_activity`, bursts split by a 1s
+gap) — so it covers agents whose terminal was never opened here. A process
+reads as working when it printed within the last 2.5s **and** the burst has
+lasted ≥300ms: a lone redraw (Claude Code repainting after the pane is
+fitted, a prompt being drawn) is a burst of ~0ms, while a spinner keeps one
+growing. The previous signal was the frontend's own stream timestamp, which
+did not exist for an unopened terminal and which the attach snapshot and the
+resize repaint both bumped — so every open showed "working…" for a few
+seconds. A quiet screen showing a permission/confirmation prompt or a
 credential request (`sudo` password, ssh passphrase) reads as **"needs
-input"** instead — derived for **every** running process, not just agents, so
+input"** instead — that half still reads the xterm viewport, so it needs an
+opened terminal — derived for **every** running process, not just agents, so
 a terminal stalled on `sudo` surfaces the same way; non-agents only show that
 state ("working…"/"idle" is noise for a plain shell).
 
