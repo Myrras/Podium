@@ -182,7 +182,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   session is captured — for each still-running Claude Code agent it looks in
   `<config>/projects/<sanitized-cwd>/`, where `<config>` is
   `$CLAUDE_CONFIG_DIR` or else `~/.claude` (every non-ASCII-alphanumeric char of
-  the cwd becomes `-`, Claude Code's own scheme) for the `<id>.jsonl` carrying
+  the cwd becomes `-`, Claude Code's own scheme). In WSL-backend mode both are
+  the distro's: `<config>` is asked of the distro's login shell once
+  (`platform::claude_projects_root`, lazily — the `Orchestrator` is built
+  before `init_wsl`) and reached as a `\\wsl.localhost\…` path, and the cwd is
+  sanitized in its Linux spelling (`backend_path`). It looks for the `<id>.jsonl` carrying
   the `{"type":"custom-title","customTitle":"podium-<tag>"}` line Claude Code
   writes for the agent's `-n` name, so agents sharing a cwd each get their own
   session. Only files written since the agent's spawn (minus a few seconds

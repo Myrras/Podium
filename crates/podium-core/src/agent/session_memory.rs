@@ -22,10 +22,14 @@ use crate::error::CoreResult;
 /// character that is not ASCII alphanumeric becomes `-` (verified against real
 /// `~/.claude/projects/` entries, e.g. `/home/x/.local/com.app` →
 /// `-home-x--local-com-app`).
+// The cwd is taken in the backend's spelling: in WSL mode Claude Code sees
+// `/home/me/app` (or `/mnt/c/...`), not the `\\wsl.localhost\...` path Podium
+// holds, and names the directory after that.
 // ponytail: Claude Code truncates very long names (~200 chars) with a hash
 // suffix; such cwds are not handled and simply find no session.
 pub(crate) fn sanitize_cwd(cwd: &Path) -> String {
-    cwd.to_string_lossy()
+    crate::platform::backend_path(cwd)
+        .unwrap_or_else(|_| cwd.to_string_lossy().into_owned())
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()

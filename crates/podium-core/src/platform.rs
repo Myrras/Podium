@@ -553,11 +553,34 @@ fn git_binary() -> &'static str {
 
 /// The directory Claude Code stores all projects' sessions under:
 /// `$CLAUDE_CONFIG_DIR/projects` when that is set (Claude Code honours it),
-/// else `~/.claude/projects`; `None` if neither can be resolved. Read from
-/// the environment directly rather than a shell round-trip — no
-/// PATH/profile involvement, unlike `login_shell()`.
+/// else `~/.claude/projects`; `None` if neither can be resolved. Natively
+/// this is read from Podium's own environment — no shell round-trip. In
+/// WSL-backend mode agents run inside the distro, so their sessions live in
+/// the *distro's* config dir: that is asked of the distro's login shell once
+/// (resolved lazily, so never before [`init_wsl`]) and cached for the run.
 pub fn claude_projects_root() -> Option<std::path::PathBuf> {
-    claude_projects_root_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir())
+    match wsl() {
+        Some(w) => {
+            static WSL_ROOT: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+            WSL_ROOT
+                .get_or_init(|| {
+                    let out =
+                        run_shell_stdout(r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}""#)?;
+                    wsl_claude_projects_root(w.distro(), &out)
+                })
+                .clone()
+        }
+        None => claude_projects_root_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir()),
+    }
+}
+
+/// The distro's Claude config dir as printed by its login shell, as a
+/// Windows path to its `projects` dir. The last non-empty line wins, so a
+/// chatty shell profile cannot end up in the answer; anything but an
+/// absolute Linux path is refused.
+fn wsl_claude_projects_root(distro: &str, stdout: &str) -> Option<std::path::PathBuf> {
+    let dir = parse_networking_mode(stdout).filter(|d| d.starts_with('/'))?;
+    Some(wsl_path::to_windows(distro, &dir).join("projects"))
 }
 
 fn claude_projects_root_from(
@@ -671,6 +694,23 @@ pub(crate) fn parse_windows_argv(cmd: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wsl_claude_projects_root_is_the_distros_config_dir() {
+        assert_eq!(
+            wsl_claude_projects_root("Ubuntu", "Welcome\n/home/me/.claude\n\n"),
+            Some(
+                std::path::PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\.claude")
+                    .join("projects")
+            )
+        );
+        assert_eq!(
+            wsl_claude_projects_root("Ubuntu", "/mnt/c/claude-cfg\n"),
+            Some(std::path::PathBuf::from(r"C:\claude-cfg").join("projects"))
+        );
+        assert_eq!(wsl_claude_projects_root("Ubuntu", ""), None);
+        assert_eq!(wsl_claude_projects_root("Ubuntu", "not a path\n"), None);
+    }
 
     #[test]
     fn claude_projects_root_prefers_claude_config_dir() {

@@ -187,7 +187,9 @@ pub struct Orchestrator {
     /// Agent sessions to resume on the next open of their project, keyed by
     /// root (`AgentSettings.remember_sessions`).
     session_memory: SessionMemoryStore,
-    /// Where Claude Code keeps its session files (`~/.claude/projects`).
+    /// Test override for where Claude Code keeps its session files; `None`
+    /// resolves [`crate::platform::claude_projects_root`] at use time, since
+    /// this struct is built before the WSL backend is known.
     claude_projects_root: Mutex<Option<PathBuf>>,
     /// The workspace-wide personal assistant session (chat panel).
     assistant: AssistantManager,
@@ -218,7 +220,7 @@ impl Orchestrator {
             scratchpads: ScratchpadStore::new(),
             agent_settings: AgentSettingsStore::new(),
             session_memory: SessionMemoryStore::new(),
-            claude_projects_root: Mutex::new(crate::platform::claude_projects_root()),
+            claude_projects_root: Mutex::new(None),
         }
     }
 
@@ -574,6 +576,17 @@ impl Orchestrator {
         *self.claude_projects_root.lock().expect(LOCK_POISONED) = Some(path);
     }
 
+    /// Where Claude Code keeps its session files: the test override, else
+    /// the backend's own (`~/.claude/projects`, or the distro's in WSL mode).
+    fn claude_projects_root(&self) -> Option<PathBuf> {
+        let overridden = self
+            .claude_projects_root
+            .lock()
+            .expect(LOCK_POISONED)
+            .clone();
+        overridden.or_else(crate::platform::claude_projects_root)
+    }
+
     /// A snapshot of the global agent settings.
     pub fn agent_settings(&self) -> AgentSettings {
         self.agent_settings.get()
@@ -743,11 +756,7 @@ impl Orchestrator {
     /// Respawn every agent remembered for `root`, each via `--resume`.
     /// Best-effort per entry; the caller clears the list afterwards.
     async fn restore_remembered_sessions(&self, project_id: ProjectId, root: &Path) {
-        let projects_root = self
-            .claude_projects_root
-            .lock()
-            .expect(LOCK_POISONED)
-            .clone();
+        let projects_root = self.claude_projects_root();
         for entry in self.session_memory.list(root) {
             // Without resume support this would be a fresh agent with no context.
             if !self.adapter_supports_resume(&entry.adapter_id) {
@@ -2253,11 +2262,7 @@ impl Orchestrator {
                 })
                 .collect()
         };
-        let projects_root = self
-            .claude_projects_root
-            .lock()
-            .expect(LOCK_POISONED)
-            .clone();
+        let projects_root = self.claude_projects_root();
         // Only the agent's own title or the id it was resumed with count. A
         // bare "newest file in this cwd" guess would also pick up a `claude`
         // session the user runs themselves in the same repo.
