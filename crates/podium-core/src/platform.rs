@@ -72,23 +72,65 @@ pub fn wsl() -> Option<&'static WslBackend> {
 /// `.zprofile`/`.bash_profile` and `.zshrc`/`.bashrc` PATH/env edits (nvm,
 /// Homebrew shellenv, Docker Desktop alternatives, …) apply — some installers
 /// only add to the interactive-only file. Windows: `%COMSPEC% /C <cmd>`
-/// (defaults to `cmd.exe`).
-pub fn login_shell() -> (String, &'static [&'static str]) {
+/// (defaults to `cmd.exe`). WSL-backend mode: `wsl.exe -d <distro> -e bash
+/// -lic <cmd>`, the same login + interactive idiom inside the distro.
+///
+/// Runs in the distro's default directory in WSL mode; use
+/// [`login_shell_in`] where the command needs a working directory.
+pub fn login_shell() -> (String, Vec<String>) {
+    match wsl() {
+        Some(w) => wsl_login_shell(w, None),
+        None => native_login_shell(),
+    }
+}
+
+/// [`login_shell`] for a command that must run in `cwd`. In WSL mode the
+/// directory is passed to `wsl.exe --cd` as its Linux path (a `cwd` outside
+/// the backend distro is an error); the caller should then give `wsl.exe`
+/// itself a plain local working directory, not the `\\wsl.localhost` one.
+/// Natively this is just [`login_shell`], and the caller sets the process's
+/// working directory as before.
+pub fn login_shell_in(cwd: &std::path::Path) -> CoreResult<(String, Vec<String>)> {
+    match wsl() {
+        Some(w) => {
+            let linux_cwd = wsl_path::to_linux(w.distro(), cwd)?;
+            Ok(wsl_login_shell(w, Some(&linux_cwd)))
+        }
+        None => Ok(native_login_shell()),
+    }
+}
+
+fn native_login_shell() -> (String, Vec<String>) {
     #[cfg(unix)]
     {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        (shell, &["-lic"])
+        (shell, vec!["-lic".to_string()])
     }
     #[cfg(windows)]
     {
         let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-        (shell, &["/C"])
+        (shell, vec!["/C".to_string()])
     }
 }
 
+/// `wsl.exe -d <distro> [--cd <linux_cwd>] -e bash -lic`. `-e` execs bash
+/// directly (no extra default-shell layer), so the command string is parsed
+/// exactly once, by bash.
+fn wsl_login_shell(wsl: &WslBackend, linux_cwd: Option<&str>) -> (String, Vec<String>) {
+    let mut args = vec!["-d".to_string(), wsl.distro().to_string()];
+    if let Some(cwd) = linux_cwd {
+        args.extend(["--cd".to_string(), cwd.to_string()]);
+    }
+    args.extend(["-e", "bash", "-lic"].map(String::from));
+    ("wsl.exe".to_string(), args)
+}
+
 /// A shell command line that exits 0 iff `binary` resolves on `PATH`.
-/// Unix uses `command -v`; Windows uses `where`.
+/// Unix and WSL mode use `command -v`; native Windows uses `where`.
 pub fn command_exists_query(binary: &str) -> String {
+    if wsl().is_some() {
+        return format!("command -v {binary}");
+    }
     #[cfg(unix)]
     {
         format!("command -v {binary}")
@@ -100,20 +142,35 @@ pub fn command_exists_query(binary: &str) -> String {
 }
 
 /// Quote a single argument for inclusion in a command line run through
-/// [`login_shell`]: POSIX single-quote quoting for `$SHELL -lc` on Unix,
-/// Windows argv quoting (the C-runtime backslash/quote escaping rules that
-/// `CommandLineToArgvW` reverses) for `cmd.exe /C` on Windows.
+/// [`login_shell`]: POSIX single-quote quoting for `$SHELL -lc` on Unix and
+/// for bash in WSL-backend mode, Windows argv quoting (the C-runtime
+/// backslash/quote escaping rules that `CommandLineToArgvW` reverses) for
+/// `cmd.exe /C` on native Windows.
 ///
 /// The two are not interchangeable: `cmd.exe` has no concept of POSIX
 /// single-quote grouping, so a POSIX-quoted argument containing a `'` (e.g.
 /// `You're …`) is not treated as one quoted token — `cmd.exe` still splits it
 /// on whitespace, truncating the argument at the first space.
 pub fn quote_arg(arg: &str) -> CoreResult<String> {
+    if wsl().is_some() {
+        return quote_posix(arg);
+    }
+    quote_native(arg)
+}
+
+/// POSIX single-quote quoting, for a command string a POSIX shell parses.
+pub fn quote_posix(arg: &str) -> CoreResult<String> {
+    shlex::try_quote(arg)
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
+}
+
+/// The native shell's quoting: [`quote_posix`] on Unix, argv quoting on
+/// Windows.
+fn quote_native(arg: &str) -> CoreResult<String> {
     #[cfg(unix)]
     {
-        shlex::try_quote(arg)
-            .map(std::borrow::Cow::into_owned)
-            .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
+        quote_posix(arg)
     }
     #[cfg(windows)]
     {
@@ -358,6 +415,63 @@ pub(crate) fn parse_windows_argv(cmd: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ubuntu() -> WslBackend {
+        WslBackend {
+            distro: "Ubuntu".to_string(),
+        }
+    }
+
+    #[test]
+    fn wsl_login_shell_runs_bash_in_the_distro() {
+        let (program, args) = wsl_login_shell(&ubuntu(), None);
+        assert_eq!(program, "wsl.exe");
+        assert_eq!(args, ["-d", "Ubuntu", "-e", "bash", "-lic"]);
+    }
+
+    #[test]
+    fn wsl_login_shell_passes_the_cwd_before_the_command() {
+        let (_, args) = wsl_login_shell(&ubuntu(), Some("/home/me/mijn project"));
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Ubuntu",
+                "--cd",
+                "/home/me/mijn project",
+                "-e",
+                "bash",
+                "-lic"
+            ]
+        );
+    }
+
+    #[test]
+    fn posix_quoting_round_trips_through_a_posix_tokenizer() {
+        // What WSL mode hands bash, on every host OS.
+        for arg in [
+            "You're the assigned agent for to-do 'Fix login bug'",
+            r#"fix the "login" bug; $HOME `id` \ back"#,
+            "multi\nline\nprompt",
+            "",
+        ] {
+            let quoted = quote_posix(arg).unwrap();
+            assert_eq!(
+                shlex::split(&quoted).unwrap(),
+                vec![arg.to_string()],
+                "{arg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_native_backend_is_used_without_init() {
+        // Tests never call init_wsl, so every helper takes the native path.
+        assert!(wsl().is_none());
+        assert_eq!(login_shell(), native_login_shell());
+        let dir = std::env::temp_dir();
+        assert_eq!(login_shell_in(&dir).unwrap(), native_login_shell());
+    }
 
     #[test]
     fn wsl_backend_needs_windows_and_a_distro() {
