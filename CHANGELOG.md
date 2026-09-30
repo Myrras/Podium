@@ -8,6 +8,38 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.0.4] - 2026-09-30
+
+### Fixed
+
+- **The "working…" indicator tells the truth.** Opening a terminal made its
+  agent read "working…" for a few seconds, just from the terminal redrawing
+  itself, and an agent whose terminal you never opened always read "idle". The
+  state now comes from the agent's actual output, whether or not its terminal is
+  open, and a single repaint no longer counts as work.
+
+## [2.0.3] - 2026-09-29
+
+### Fixed
+
+- **No "check what it did" nudge for an agent you stopped.** Stopping an agent
+  (the stop button, or the assistant stopping or respawning it) still made the
+  assistant report it as finished. That report is now kept for agents that exit
+  on their own or crash.
+
+## [2.0.2] - 2026-09-29
+
+### Fixed
+
+- **A long assistant queue no longer hides the chat.** Messages waiting for the
+  current turn grew the pinned list at the bottom of the panel until it covered
+  the whole transcript. The list now tops out at 40% of the window height and
+  scrolls within itself.
+- **Waiting messages are cut off cleanly.** A queued message's preview broke
+  mid-word after a few characters. It now wraps at word boundaries and shows at
+  most three lines, ending in an ellipsis; the edit action still shows the full
+  text.
+
 ## [2.0.1] - 2026-09-22
 
 ### Added
