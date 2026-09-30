@@ -32,6 +32,15 @@ impl WslBackend {
     pub fn distro(&self) -> &str {
         &self.distro
     }
+
+    /// A backend for unit tests of code that takes an `Option<&WslBackend>`
+    /// (the real one is only ever built by [`init_wsl`]).
+    #[cfg(test)]
+    pub(crate) fn for_tests(distro: &str) -> Self {
+        Self {
+            distro: distro.to_string(),
+        }
+    }
 }
 
 static WSL: OnceLock<Option<WslBackend>> = OnceLock::new();
@@ -133,6 +142,15 @@ pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
     match wsl() {
         Some(w) => wsl_path::to_linux(w.distro(), path),
         None => Ok(path.to_string_lossy().into_owned()),
+    }
+}
+
+/// The reverse of [`backend_path`]: a path printed by a backend process (e.g.
+/// git), as a Windows path in WSL-backend mode, unchanged natively.
+pub fn from_backend_path(path: &str) -> std::path::PathBuf {
+    match wsl() {
+        Some(w) => wsl_path::to_windows(w.distro(), path),
+        None => std::path::PathBuf::from(path),
     }
 }
 
@@ -334,14 +352,30 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The `git` binary to invoke directly (bypassing the login shell) for
-/// worktree operations, which can spawn several git calls per action
+/// A [`std::process::Command`] that runs git, for the worktree operations
+/// (args follow, e.g. `-C <root> worktree list`). Natively that is the
+/// [`git_binary`], invoked directly; in WSL-backend mode it is `wsl.exe -d
+/// <distro> -e git` — the distro's own git, run without a shell, so path
+/// arguments must be in the backend's spelling ([`backend_path`]).
+pub fn git_command() -> std::process::Command {
+    match wsl() {
+        Some(w) => {
+            let mut cmd = std::process::Command::new("wsl.exe");
+            cmd.args(["-d", w.distro(), "-e", "git"]);
+            cmd
+        }
+        None => std::process::Command::new(git_binary()),
+    }
+}
+
+/// The native `git` binary to invoke directly (bypassing the login shell)
+/// for worktree operations, which can spawn several git calls per action
 /// (list/create/remove) — a login shell per call is slow on heavy shell
 /// profiles. Resolved once via the login shell's `command -v git` so
 /// shell-profile PATH edits (e.g. a Homebrew git) are still honoured, then
 /// reused directly; falls back to the bare name if resolution fails.
 /// Windows PATH is process-wide, so no shell round-trip is needed there.
-pub fn git_binary() -> &'static str {
+fn git_binary() -> &'static str {
     static GIT_PATH: OnceLock<String> = OnceLock::new();
     GIT_PATH
         .get_or_init(|| {
@@ -494,6 +528,14 @@ mod tests {
                 "{arg:?}"
             );
         }
+    }
+
+    #[test]
+    fn from_backend_path_is_the_path_itself_natively() {
+        assert_eq!(
+            from_backend_path("/home/me/app/.git"),
+            std::path::PathBuf::from("/home/me/app/.git")
+        );
     }
 
     #[test]
