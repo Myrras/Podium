@@ -384,8 +384,14 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   for later** — a small request that can be done now goes into the agent's
   prompt with no to-do at all. Asking is reserved for what it genuinely
   cannot tell; everything else takes the sensible default and reports what it
-  did. All of that is wording, not a gate — pinned by a unit test so a later
-  prompt edit cannot quietly drop it.
+  did. It is also told to stay a **pure orchestrator** (shell/file work and
+  lookups go to `spawn_agent`, never its own Agent-tool subagents, which have
+  no shell here), to keep agent updates to warnings and done-ness, how to stop
+  agents safely (only the project in question; check the output for follow-up
+  work and complete the to-do first), and how to get a peer-refused external
+  write done (a fresh agent carrying the authorisation and `--allowedTools`).
+  All of that is wording, not a gate — pinned by unit tests so a later prompt
+  edit cannot quietly drop it.
 
   It reaches Podium over its **own MCP endpoint** (`/mcp-assistant`), wired in
   via a 0600 `assistant.json` next to the per-agent configs — the whole tool
