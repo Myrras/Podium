@@ -46,6 +46,7 @@ pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;
 pub use process::pty::TermChunk;
+pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 pub use project::ProjectSections;

@@ -75,9 +75,11 @@ on, a request to work inside a **git worktree**, and per-spawn CLI args
 Every agent gets a **session colour** from an 8-hue palette, avoiding colours
 live agents already hold. Its sidebar row and the to-dos it owns are tinted
 the same colour, so you can see at a glance who is on what. The row also
-shows an activity state: **working…** (output in the last 2.5 s), **idle**,
-or **needs input** — the last one is derived for *every* process, so a
-terminal stalled on a `sudo` prompt surfaces the same way.
+shows an activity state: **working…** (sustained output in the last 2.5 s —
+a single redraw does not count, and it works whether or not you ever opened
+the terminal), **idle**, or **needs input** — the last one is read off the
+terminal screen for *every* process, so a terminal stalled on a `sudo`
+prompt surfaces the same way.
 
 ![Spawning an agent from a to-do — both rows pick up the same session colour](docs/media/agent.gif)
 

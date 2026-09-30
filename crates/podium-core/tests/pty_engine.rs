@@ -301,3 +301,19 @@ async fn zshrc_only_env_is_visible_to_spawned_processes() {
     let text = wait_for_output(&orch, process_id, "zshrc_was_sourced").await;
     assert!(text.contains("zshrc_was_sourced"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_activity_lists_running_processes_that_printed() {
+    let (orch, id, _dir) = setup("printf hello; sleep 30").await;
+    assert!(orch.output_activity().is_empty(), "nothing before start");
+
+    orch.start_process(id).await.expect("start");
+    wait_for_output(&orch, id, "hello").await;
+    let activity = orch.output_activity();
+    let mine = activity.get(&id).expect("running process that printed");
+    assert!(mine.quiet_ms < 30_000, "just printed: {mine:?}");
+
+    orch.stop_process(id).await.expect("stop");
+    wait_for_exit(&orch, id).await;
+    assert!(!orch.output_activity().contains_key(&id));
+}

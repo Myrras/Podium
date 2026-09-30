@@ -26,6 +26,7 @@ import type {
   MergeMode,
   NewProcess,
   PollingSettings,
+  OutputActivity,
   ProcessId,
   ProcessInfo,
   ProjectId,
@@ -177,6 +178,15 @@ export function processList(projectId?: ProjectId): Promise<ProcessInfo[]> {
  */
 export function processGitBranch(processId: ProcessId): Promise<string | null> {
   return invoke("process_git_branch", { processId });
+}
+
+/**
+ * Output timing per running process, keyed by process id (a process that
+ * never printed is absent). Polled by the activity monitor — read off the
+ * backend's scrollback, so it covers agents whose terminal was never opened.
+ */
+export function processActivity(): Promise<Record<ProcessId, OutputActivity>> {
+  return invoke("process_activity");
 }
 
 /**

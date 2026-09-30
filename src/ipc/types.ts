@@ -170,6 +170,17 @@ export type ProcessStatus =
 export type RestartPolicy = "never" | "on-crash" | "always";
 
 /** Managed process snapshot (`podium_core::ProcessInfo`). */
+/**
+ * How recently and how steadily a running process has been printing (see
+ * `processActivity`). Ages in milliseconds, so there is no clock to align.
+ */
+export interface OutputActivity {
+  /** Ms since the last chunk of output. */
+  quietMs: number;
+  /** Ms the latest burst of output lasted, first chunk to last. */
+  burstMs: number;
+}
+
 export interface ProcessInfo {
   id: ProcessId;
   projectId: ProjectId;
