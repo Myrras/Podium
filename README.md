@@ -114,8 +114,10 @@ forced); the branch is always kept.
 
 A workspace-wide chat panel backed by a long-lived headless Claude Code
 session with its own MCP endpoint into Podium. It reads and drives everything
-Podium manages, but **never edits code itself** — implementation work goes out
-to a spawned agent.
+Podium manages, but **only orchestrates** — code, shell and file work and the
+lookups you ask for go out to a spawned agent; the one thing it does itself is
+send a message you ask it to send. Its replies stay short: real warnings and
+whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
@@ -265,9 +267,14 @@ last) line, so a multi-line draft still navigates normally.
 **Mouse**
 
 - **Double-click** a project name, process name or to-do title to rename it.
-- **⌘/Ctrl+click** a to-do or scratchpad title to add it to a multi-select;
-  **Shift+click** to extend the range. The selection bar then starts one agent
-  on the whole group.
+- **⌘/Ctrl+click** a to-do or scratchpad title, or an agent/process row, to
+  add it to a multi-select; **Shift+click** to extend the range over a list.
+  Selected rows become chips above the assistant's composer, so your next
+  message to it carries them as context; for to-dos and scratchpads the
+  selection bar also starts one agent on the whole group. Selecting *text*
+  anywhere — a detail pane, a terminal — does the same. Opening an item
+  deliberately does not select it, and each chip has an × to drop it from the
+  message.
 - **⌘/Ctrl+click** a spawn button to pick the adapter instead of using the
   default.
 - **Drag** the project header grip to reorder projects.

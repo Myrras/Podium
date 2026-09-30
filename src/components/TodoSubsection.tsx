@@ -19,6 +19,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectId, TodoId, TodoInfo } from "../ipc/types";
+import {
+  addSelectedItems,
+  clearSelectedItems,
+  toggleSelectedItem,
+  useSelectionStore,
+} from "../lib/selection";
 import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
@@ -168,25 +174,25 @@ export function TodoSubsection({
   const [archiveOpen, setArchiveOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Multi-select state: the chosen ids and the anchor row for Shift+range.
-  const [selected, setSelected] = useState<Set<TodoId>>(new Set());
+  // Multi-select lives in the shared selection store — the assistant
+  // composer shows the same rows as context chips. Only the Shift+range
+  // anchor stays local; nothing outside this list cares about it.
+  const allSelected = useSelectionStore((s) => s.items);
+  const selected = useMemo(
+    () =>
+      new Set(
+        allSelected
+          .filter((i) => i.kind === "todo" && i.projectId === projectId)
+          .map((i) => i.id),
+      ),
+    [allSelected, projectId],
+  );
   const anchorRef = useRef<TodoId | null>(null);
 
   // Initial pull; later changes arrive via the `todo:changed` refresh.
   useEffect(() => {
     void refresh(projectId);
   }, [projectId, refresh]);
-
-  // Drop ids that no longer exist (a to-do was removed or completed away),
-  // so the selection and its count never reference stale rows.
-  useEffect(() => {
-    setSelected((prev) => {
-      if (prev.size === 0) return prev;
-      const live = new Set(todos.map((t) => t.id));
-      const next = new Set([...prev].filter((id) => live.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [todos]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
   // Assigned to-dos can't be part of a selection (they're owned already).
@@ -245,12 +251,7 @@ export function TodoSubsection({
       return;
     }
     if (e.metaKey || e.ctrlKey) {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(todoId)) next.delete(todoId);
-        else next.add(todoId);
-        return next;
-      });
+      toggleSelectedItem({ kind: "todo", projectId, id: todoId });
       anchorRef.current = todoId;
       return;
     }
@@ -259,13 +260,13 @@ export function TodoSubsection({
       const to = todos.findIndex((t) => t.id === todoId);
       if (from !== -1 && to !== -1) {
         const [lo, hi] = from <= to ? [from, to] : [to, from];
-        setSelected((prev) => {
-          const next = new Set(prev);
-          // Skip assigned rows — they can't join a selection.
-          for (let i = lo; i <= hi; i++)
-            if (!todos[i].assignedAgent) next.add(todos[i].id);
-          return next;
-        });
+        addSelectedItems(
+          todos
+            // Skip assigned rows — they can't join a selection.
+            .slice(lo, hi + 1)
+            .filter((t) => !t.assignedAgent)
+            .map((t) => ({ kind: "todo" as const, projectId, id: t.id })),
+        );
         return;
       }
     }
@@ -282,7 +283,7 @@ export function TodoSubsection({
     } else {
       void spawnAgent(projectId, { todoIds: selectedIds });
     }
-    setSelected(new Set());
+    clearSelectedItems("todo", projectId);
     anchorRef.current = null;
   };
 
@@ -372,7 +373,7 @@ export function TodoSubsection({
             aria-label="Clear selection"
             title="Clear selection"
             onClick={() => {
-              setSelected(new Set());
+              clearSelectedItems("todo", projectId);
               anchorRef.current = null;
             }}
           >

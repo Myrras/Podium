@@ -25,6 +25,7 @@ import {
 } from "../ipc/commands";
 import type { ProcessId, TermEvent } from "../ipc/types";
 import { logWarning } from "./log";
+import { setSelectedText } from "./selection";
 import { base64ToBytes, encodeInput } from "./termProtocol";
 
 export interface TerminalOptions {
@@ -108,6 +109,9 @@ export function acquireTerminal(
     theme: options.theme,
   });
   terminal.onData((data) => writeInput(processId, data));
+  // A terminal renders to a canvas, so its selection never reaches the
+  // document — push it to the assistant's context tracker by hand.
+  terminal.onSelectionChange(() => setSelectedText(terminal.getSelection()));
 
   entries.set(processId, {
     terminal,

@@ -38,8 +38,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // Native OS notifications (e.g. when an agent stalls needing input).
         .plugin(tauri_plugin_notification::init())
-        // Persist window size/position across runs.
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        // Persist window size/position across runs. Decorations excluded: its
+        // on_window_ready restore runs after our own setup hook (see below)
+        // and, with default StateFlags, would reassert the native title bar
+        // on every launch — confirmed by a persisted `"decorated": true` in
+        // .window-state.json overriding our fix every time.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
+                .build(),
+        )
         // Opens to-do links and markdown links in the OS default browser.
         .plugin(tauri_plugin_opener::init())
         // Logging sinks: stdout (dev), the per-OS log directory (support), and
