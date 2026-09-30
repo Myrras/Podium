@@ -2833,7 +2833,7 @@ mod tests {
         let legacy_root = std::fs::canonicalize(dir.path()).unwrap();
         let orch = Orchestrator::new();
         orch.todos
-            .add(ProjectId::new(), &legacy_root, "pre-existing todo")
+            .add(ProjectId::new(), &legacy_root, "pre-existing todo", None)
             .unwrap();
         orch.scratchpads
             .add(ProjectId::new(), &legacy_root, "tester")

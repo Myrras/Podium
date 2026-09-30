@@ -36,7 +36,9 @@ pub type ExitCallback = Box<dyn FnOnce(Option<i32>) + Send>;
 /// consistent with the scrollback contents.
 pub struct PtyProcess {
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    // Shared with the reader thread on Windows, which answers ConPTY's
+    // startup cursor-position query through it (see `CursorHandshake`).
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     // Windows stop() terminates the child through this handle (no process
     // groups); Unix stops the whole group via killpg and never touches it.
     #[cfg(windows)]
@@ -154,18 +156,46 @@ impl PtyProcess {
             .master
             .try_clone_reader()
             .map_err(|e| CoreError::Pty(e.to_string()))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| CoreError::Pty(e.to_string()))?;
+        let writer = Arc::new(Mutex::new(
+            pair.master
+                .take_writer()
+                .map_err(|e| CoreError::Pty(e.to_string()))?,
+        ));
+        #[cfg(windows)]
+        let reply_writer = Arc::clone(&writer);
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            #[cfg(windows)]
+            let mut handshake = CursorHandshake::new();
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        // Bytes held back as a possible split query: the
+                        // stream ended, so they were output after all.
+                        #[cfg(windows)]
+                        {
+                            let rest = handshake.take_pending();
+                            if !rest.is_empty() {
+                                let mut sb = scrollback.lock().expect(LOCK_POISONED);
+                                let seq = sb.append(&rest);
+                                let _ = chunk_tx.send(TermChunk { seq, bytes: rest });
+                            }
+                        }
+                        break;
+                    }
                     Ok(n) => {
-                        let bytes = buf[..n].to_vec();
+                        #[allow(unused_mut)] // only mutated on Windows
+                        let mut bytes = buf[..n].to_vec();
+                        #[cfg(windows)]
+                        if handshake.strip(&mut bytes) {
+                            let mut w = reply_writer.lock().expect(LOCK_POISONED);
+                            let _ = w.write_all(CURSOR_POSITION_REPLY);
+                            let _ = w.flush();
+                        }
+                        if bytes.is_empty() {
+                            continue;
+                        }
                         // Append + broadcast under one lock: seq order stays
                         // consistent for attach() snapshots.
                         let mut sb = scrollback.lock().expect(LOCK_POISONED);
@@ -188,7 +218,7 @@ impl PtyProcess {
 
         Ok(Self {
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            writer,
             #[cfg(windows)]
             killer: Mutex::new(killer),
             pid,
@@ -249,5 +279,163 @@ impl PtyProcess {
     #[cfg(windows)]
     pub fn stop(&self) {
         let _ = self.killer.lock().expect(LOCK_POISONED).kill();
+    }
+}
+
+/// ConPTY's startup cursor-position query (DSR 6).
+#[cfg(any(windows, test))]
+const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
+/// Reply for a fresh pseudoconsole: cursor at row 1, column 1.
+#[cfg(windows)]
+const CURSOR_POSITION_REPLY: &[u8] = b"\x1b[1;1R";
+/// How far into a spawn's output the startup query may appear. Past this,
+/// a query is the program's own and is left for the terminal to answer.
+#[cfg(any(windows, test))]
+const HANDSHAKE_WINDOW: usize = 256;
+
+/// Answers ConPTY's startup handshake on the backend's behalf.
+///
+/// portable-pty opens the pseudoconsole with `PSEUDOCONSOLE_INHERIT_CURSOR`,
+/// so ConPTY emits `ESC[6n` first and holds the child until it gets a
+/// cursor-position reply. The frontend's xterm.js would answer, but only once
+/// someone opens that terminal — until then an `auto_start` service, a
+/// background agent or a supervised restart would sit blocked. So the reader
+/// thread answers the first query itself and strips it from the output (so
+/// xterm doesn't answer it a second time when it replays the scrollback).
+/// Unix PTYs never send it.
+#[cfg(any(windows, test))]
+struct CursorHandshake {
+    /// Bytes of the stream read so far.
+    seen: usize,
+    done: bool,
+    /// The tail of the previous chunk, held back because it is the start of
+    /// a query that may finish in the next read (`ESC` | `[6n`).
+    pending: Vec<u8>,
+}
+
+#[cfg(any(windows, test))]
+impl CursorHandshake {
+    fn new() -> Self {
+        Self {
+            seen: 0,
+            done: false,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Removes the startup query from `bytes` if this chunk carries it;
+    /// returns whether it did (the caller then sends the reply). While the
+    /// query is still expected, a chunk ending in a partial query keeps that
+    /// tail back and prepends it to the next one, so a query split across
+    /// two reads is still found.
+    fn strip(&mut self, bytes: &mut Vec<u8>) -> bool {
+        if self.done {
+            return false;
+        }
+        // Stream offset of the first byte of what gets searched.
+        let start = self.seen - self.pending.len();
+        self.seen += bytes.len();
+        if !self.pending.is_empty() {
+            let mut joined = std::mem::take(&mut self.pending);
+            joined.extend_from_slice(bytes);
+            *bytes = joined;
+        }
+        let window = HANDSHAKE_WINDOW.saturating_sub(start);
+        let found = bytes
+            .windows(CURSOR_POSITION_QUERY.len())
+            .position(|w| w == CURSOR_POSITION_QUERY)
+            .filter(|&at| at < window);
+        if let Some(at) = found {
+            bytes.drain(at..at + CURSOR_POSITION_QUERY.len());
+            self.done = true;
+            return true;
+        }
+        if start + bytes.len() >= HANDSHAKE_WINDOW {
+            self.done = true;
+            return false;
+        }
+        if let Some(k) = (1..CURSOR_POSITION_QUERY.len())
+            .rev()
+            .find(|&k| bytes.ends_with(&CURSOR_POSITION_QUERY[..k]))
+        {
+            self.pending = bytes.split_off(bytes.len() - k);
+        }
+        false
+    }
+
+    /// Whatever [`Self::strip`] is still holding back, for when the stream
+    /// ends before the next read.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn take_pending(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_query_is_stripped_once() {
+        let mut hs = CursorHandshake::new();
+        let mut first = b"\x1b[?9001h\x1b[6n".to_vec();
+        assert!(hs.strip(&mut first));
+        assert_eq!(first, b"\x1b[?9001h");
+
+        // A later query is the program's own: left for the terminal.
+        let mut later = b"\x1b[6n".to_vec();
+        assert!(!hs.strip(&mut later));
+        assert_eq!(later, b"\x1b[6n");
+    }
+
+    #[test]
+    fn query_in_a_later_chunk_within_the_window_is_stripped() {
+        let mut hs = CursorHandshake::new();
+        let mut init = b"\x1b[?25l".to_vec();
+        assert!(!hs.strip(&mut init));
+        let mut chunk = b"\x1b[6n\x1b[?25h".to_vec();
+        assert!(hs.strip(&mut chunk));
+        assert_eq!(chunk, b"\x1b[?25h");
+    }
+
+    #[test]
+    fn query_split_across_two_reads_is_stripped() {
+        let mut hs = CursorHandshake::new();
+        let mut first = b"\x1b[?25l\x1b".to_vec();
+        assert!(!hs.strip(&mut first));
+        assert_eq!(first, b"\x1b[?25l", "the partial query is held back");
+        let mut second = b"[6nhello".to_vec();
+        assert!(hs.strip(&mut second));
+        assert_eq!(second, b"hello");
+    }
+
+    #[test]
+    fn held_back_bytes_that_are_not_a_query_come_through() {
+        let mut hs = CursorHandshake::new();
+        let mut first = b"a\x1b[".to_vec();
+        assert!(!hs.strip(&mut first));
+        assert_eq!(first, b"a");
+        let mut second = b"31mred".to_vec();
+        assert!(!hs.strip(&mut second));
+        assert_eq!(second, b"\x1b[31mred");
+    }
+
+    #[test]
+    fn held_back_bytes_are_returned_when_the_stream_ends() {
+        let mut hs = CursorHandshake::new();
+        let mut last = b"bye\x1b[6".to_vec();
+        assert!(!hs.strip(&mut last));
+        assert_eq!(last, b"bye");
+        assert_eq!(hs.take_pending(), b"\x1b[6");
+    }
+
+    #[test]
+    fn query_past_the_window_is_left_alone() {
+        let mut hs = CursorHandshake::new();
+        let mut output = vec![b'x'; HANDSHAKE_WINDOW];
+        assert!(!hs.strip(&mut output));
+        let mut query = CURSOR_POSITION_QUERY.to_vec();
+        assert!(!hs.strip(&mut query));
+        assert_eq!(query, CURSOR_POSITION_QUERY);
     }
 }
