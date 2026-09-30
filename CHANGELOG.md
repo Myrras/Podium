@@ -8,6 +8,19 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.1.2] - 2026-09-30
+
+### Changed
+
+- **The assistant only orchestrates, and keeps it short.** Shell and file work
+  and the lookups you ask for now go to a spawned agent instead of the
+  assistant's own tool calls; the one thing it still does itself is send a
+  message you ask it to send. Agent updates are limited to real warnings and
+  whether agents are done. Before stopping a finished agent it checks for
+  follow-up work you typed and completes its to-do, and "stop the agents" only
+  stops the project you are talking about. These used to depend on the
+  assistant's memory file; they are now built in.
+
 ## [2.1.1] - 2026-09-30
 
 ### Added
