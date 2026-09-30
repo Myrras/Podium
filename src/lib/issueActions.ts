@@ -60,8 +60,9 @@ export const prRef = (number: number, provider: IssueProvider) =>
 export const issueAgentName = (i: BoardItem, ref: string) =>
   `${ref} ${i.title}`;
 
+/** Link only: the agent fetches the details itself, so no body/comments ride along. */
 export const issueAgentPrompt = (i: BoardItem) =>
-  `Work on ${i.kind === "pr" ? "pull request" : "issue"} ${i.url}\n\n# ${i.title}\n\n${i.body}`.trimEnd();
+  `Work on ${i.kind === "pr" ? "pull request" : "issue"} ${i.url}`;
 
 /** Inline text per board error kind; unknown kinds fall back to the (Podium-owned) message. */
 export function boardErrorText(error: IpcError): string {

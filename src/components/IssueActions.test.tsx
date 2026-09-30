@@ -129,9 +129,8 @@ describe("IssueActions", () => {
     const prompt = screen.getByLabelText(
       "Initial prompt (optional)",
     ) as HTMLTextAreaElement;
-    expect(prompt.value).toBe(
-      `Work on issue ${issue.url}\n\n# Fix the widget\n\nBody text`,
-    );
+    // Link only: the agent fetches the body itself over MCP.
+    expect(prompt.value).toBe(`Work on issue ${issue.url}`);
   });
 
   it("prefills a merge request with its own reference and wording", async () => {
@@ -154,7 +153,7 @@ describe("IssueActions", () => {
           "Initial prompt (optional)",
         ) as HTMLTextAreaElement
       ).value,
-    ).toMatch(/^Work on pull request https:\/\/git\.example\.test/);
+    ).toMatch(/^Work on pull request https:\/\/git\.example\.test\S*$/);
   });
 
   it("unassigns me only when I am an assignee", async () => {
