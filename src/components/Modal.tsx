@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { MOTION, usePresence } from "../lib/motion";
 import { CloseIcon } from "./icons";
@@ -51,7 +52,9 @@ export function Modal({
 
   if (!mounted) return null;
 
-  return (
+  // Portal to <body>: a caller inside a transformed/overflow-clipped ancestor
+  // (a Git board column) would otherwise clip or re-anchor `position: fixed`.
+  return createPortal(
     <div
       className={styles.overlay}
       data-state={state}
@@ -84,6 +87,7 @@ export function Modal({
         <div className={styles.body}>{children}</div>
         {footer && <footer className={styles.footer}>{footer}</footer>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
