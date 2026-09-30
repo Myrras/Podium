@@ -169,11 +169,22 @@ impl Watcher {
         else {
             return;
         };
-        let ProcessStatus::Exited { code, crashed, .. } = status else {
+        let ProcessStatus::Exited {
+            code,
+            crashed,
+            stopped,
+            ..
+        } = status
+        else {
             return;
         };
         // A dead agent cannot be waiting on input any more.
         self.waiting.remove(&process_id);
+        // Someone asked for this stop (the user, or the assistant itself via
+        // `stop_process`/`respawn_agent`); "check what it did" would be noise.
+        if stopped {
+            return;
+        }
         let Some(process) = find_agent(orchestrator, process_id) else {
             return;
         };
