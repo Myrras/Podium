@@ -159,8 +159,10 @@ demand; a failed refresh keeps the last board with the error inline.
 
 A workspace-wide chat panel backed by a long-lived headless Claude Code
 session with its own MCP endpoint into Podium. It reads and drives everything
-Podium manages, but **never edits code itself** — implementation work goes out
-to a spawned agent.
+Podium manages, but **only orchestrates** — code, shell and file work and the
+lookups you ask for go out to a spawned agent; the one thing it does itself is
+send a message you ask it to send. Its replies stay short: real warnings and
+whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
