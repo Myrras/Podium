@@ -11,6 +11,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AdapterInfo,
   AgentSettingsDto,
+  BackendSettingsDto,
   AgentSpawnOptions,
   Attachment,
   AutonomyMode,
@@ -247,6 +248,23 @@ export function agentSpawn(
     worktree: options.worktree ?? null,
     worktreeName: options.worktreeName ?? null,
     args: options.args ?? null,
+  });
+}
+
+/** Saved backend settings plus the backend this run uses (Windows WSL mode). */
+export function backendSettingsGet(): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_get");
+}
+
+/**
+ * Save the WSL distro to run everything in from the next launch on. Blank =
+ * run natively. Returns the refreshed settings.
+ */
+export function backendSettingsSetWslDistro(
+  distro: string,
+): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_set_wsl_distro", {
+    distro: distro.trim() || null,
   });
 }
 
