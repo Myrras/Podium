@@ -1276,7 +1276,13 @@ impl AssistantManager {
         // installed by nvm/homebrew resolves even when Podium was started
         // from Finder with a bare PATH. `exec` replaces the shell, so the
         // child we hold IS the CLI — killing it needs no process group.
-        let (shell, prefix) = crate::platform::login_shell();
+        // In WSL-backend mode the CLI runs inside the distro, so its working
+        // directory rides along as `wsl.exe --cd` (natively this is just the
+        // login shell, and `current_dir` below does the job).
+        let (shell, prefix) = match &config.cwd {
+            Some(cwd) => crate::platform::login_shell_in(cwd)?,
+            None => crate::platform::login_shell(),
+        };
         // Its own endpoint, not the agents' one: that is what puts the
         // assistant's tool calls through the autonomy gate. The user's own MCP
         // servers (mail, Slack, …) stay available — this config only adds to
@@ -1287,7 +1293,7 @@ impl AssistantManager {
             .map(|path| {
                 Ok::<String, CoreError>(format!(
                     " --mcp-config {}",
-                    crate::platform::quote_arg(&path.to_string_lossy())?
+                    crate::platform::quote_arg(&crate::platform::backend_path(&path)?)?
                 ))
             })
             .transpose()?
@@ -1858,7 +1864,12 @@ fn turn_content(text: &str, attachments: &[Attachment]) -> serde_json::Value {
                 }));
             }
             Attachment::Path { path } => {
-                full_text.push_str(&format!("\n\n[Attached file: {path}]"));
+                // The assistant reads the file itself, so name it the way its
+                // process sees it (a Linux path in WSL-backend mode); a path
+                // it cannot map is passed on as-is.
+                let shown =
+                    crate::platform::backend_path(Path::new(path)).unwrap_or_else(|_| path.clone());
+                full_text.push_str(&format!("\n\n[Attached file: {shown}]"));
             }
             Attachment::Text { name, text: inline } => {
                 full_text.push_str(&format!("\n\n[Attached: {name}]\n{inline}"));
