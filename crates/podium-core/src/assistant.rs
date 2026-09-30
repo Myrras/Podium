@@ -2927,11 +2927,22 @@ mod tests {
         );
     }
 
+    /// An absolute attachment path on this platform. `/abs/...` has no drive on
+    /// Windows, where `Path::is_absolute` (and so `resolve_attachments`) would
+    /// reject it.
+    fn abs(name: &str) -> String {
+        if cfg!(windows) {
+            format!(r"C:\abs\{name}")
+        } else {
+            format!("/abs/{name}")
+        }
+    }
+
     #[test]
     fn more_than_five_attachments_are_refused_naming_each_one() {
         let attachments = (0..7)
             .map(|i| Attachment::Path {
-                path: format!("/abs/f{i}.txt"),
+                path: abs(&format!("f{i}.txt")),
             })
             .collect::<Vec<_>>();
         let (accepted, notices) = resolve_attachments(attachments);
@@ -2950,14 +2961,14 @@ mod tests {
                 data: BASE64.encode(vec![0u8; MAX_IMAGE_BYTES + 1]),
             },
             Attachment::Path {
-                path: "/abs/notes.txt".to_string(),
+                path: abs("notes.txt"),
             },
         ];
         let (accepted, notices) = resolve_attachments(attachments);
         assert_eq!(
             accepted,
             vec![Attachment::Path {
-                path: "/abs/notes.txt".to_string()
+                path: abs("notes.txt")
             }]
         );
         assert_eq!(notices.len(), 1);
@@ -3110,13 +3121,13 @@ mod tests {
     #[test]
     fn a_non_image_path_passes_through_unchanged() {
         let (accepted, notices) = resolve_attachments(vec![Attachment::Path {
-            path: "/abs/report.pdf".to_string(),
+            path: abs("report.pdf"),
         }]);
         assert!(notices.is_empty(), "{notices:?}");
         assert_eq!(
             accepted,
             vec![Attachment::Path {
-                path: "/abs/report.pdf".to_string()
+                path: abs("report.pdf")
             }]
         );
     }
