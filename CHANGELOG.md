@@ -8,6 +8,16 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.0.4] - 2026-09-30
+
+### Fixed
+
+- **The "working…" indicator tells the truth.** Opening a terminal made its
+  agent read "working…" for a few seconds, just from the terminal redrawing
+  itself, and an agent whose terminal you never opened always read "idle". The
+  state now comes from the agent's actual output, whether or not its terminal is
+  open, and a single repaint no longer counts as work.
+
 ## [2.0.3] - 2026-09-29
 
 ### Fixed
