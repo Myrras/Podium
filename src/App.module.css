@@ -57,6 +57,12 @@
   app-region: no-drag;
 }
 
+/* macOS: .brandCentered is out of the flex flow, leaving this cluster as the
+   only child — space-between would then park it at the leading edge. */
+.titlebarMac .titlebarRight {
+  margin-left: auto;
+}
+
 .settingsBtn {
   width: 44px;
   height: 100%;
