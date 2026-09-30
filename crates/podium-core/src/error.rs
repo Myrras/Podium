@@ -61,6 +61,9 @@ pub enum CoreError {
     #[error("queued message not found: it was already delivered, removed, or lost when the session ended")]
     QueuedMessageNotFound,
 
+    #[error("response not found: it was already marked as read or answered")]
+    ResponseNotFound,
+
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
 

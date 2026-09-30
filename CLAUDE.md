@@ -53,10 +53,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 31 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 32 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **79 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **82 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -69,11 +69,12 @@ them in sync when you add a command or MCP tool.
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible, resizable right-side
-  assistant chat panel (replayed transcript, action + proposal cards,
+  assistant chat panel (replayed transcript, a Responses list pinned above it,
+  action + proposal cards,
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 79 commands.
+  IPC wrappers over all 82 commands.
 - ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build.
@@ -106,8 +107,9 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 32 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
@@ -192,7 +194,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `report_to_assistant` (a finished or blocked agent handing the assistant a
   short summary of its own work, routed to `Orchestrator::assistant_nudge` so
   it gets the same live-or-queued delivery, cap and proactivity switch as any
-  other nudge), and `verify_sender` (see _Cross-session messaging_).
+  other nudge), `verify_sender` (see _Cross-session messaging_), and
+  `add_response` (the assistant filing a Responses item — see _Personal
+  assistant_; refused on the agent route).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -343,7 +347,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
   `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
-  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered`) published
+  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered` /
+  `responsesChanged`) published
   on the `EventBus` and forwarded to the webview as `assistant:event`.
   Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
@@ -504,6 +509,32 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   reply on its own task, so appending afterwards let a fast reply land
   *above* the message it answers, and a restart replayed the conversation out
   of order. It is idempotent, since a failed write re-queues the same item.
+
+  **Responses** (`responses.rs`) are the short "needs you" / "FYI" points the
+  assistant files, one per agent or to-do update, via the `add_response` MCP
+  tool — the identity prompt asks for it (pinned by a unit test); the detail
+  stays in its chat reply. One workspace-wide list, newest first, persisted in
+  `assistant-responses.json` (atomic writes, like `todos.json`) so items
+  survive a restart *and* the blank conversation every launch starts with —
+  they are the user's to clear. Agent, project and to-do names (and the
+  agent's colour) are resolved when the item is added, so an item about an
+  exited agent still reads right. A newer item with the same `processId` or
+  `todoId` replaces the open one; an item with neither key never replaces
+  anything. `add_response` is refused on the agent route (the list is the
+  assistant's to curate) and classified read-only, so the gate never parks
+  it as a proposal. Every change publishes a full `responsesChanged`
+  snapshot, never recorded in the transcript. The user either ticks an item
+  (`assistant_response_dismiss`, it is just removed) or replies
+  (`assistant_response_reply`): the reply is an ordinary user turn through
+  `send`'s path (`AssistantManager::send_reply`, so it queues like any
+  message) carrying a `ReplyTo { label, question }`. The session sees it as
+  `[Reply to your Responses item — <label>: "<item text>"]` + the reply, the
+  transcript stores it as a `reply` row (`"<label>\n<reply>"`), and a waiting
+  reply exposes `replyTo` (the label) on `QueuedMessage` and on
+  `queueItemDelivered`; editing a waiting reply changes only its text. The
+  item is removed only after the send succeeded (sent or queued), so a failed
+  send leaves it to try again. The label is the non-empty parts of agent ·
+  project · to-do · source, or `Responses item`.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so
@@ -715,6 +746,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_queue_send_now` | `{ id }` (waiting user message)          | –                 |
 | `assistant_queue_remove` | `{ id }`                                   | –                 |
 | `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
+| `assistant_responses_list` | –                                        | `ResponseItem[]` (newest first) |
+| `assistant_response_dismiss` | `{ id }` (unknown id: `responseNotFound`) | –              |
+| `assistant_response_reply` | `{ id, text }`                           | `bool` — as `assistant_send` |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:

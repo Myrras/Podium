@@ -78,6 +78,7 @@ use crate::agent::McpConnectInfo;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{PendingId, ProjectId, ProposalId};
+use crate::responses::ResponseItem;
 
 /// Tools the assistant is never allowed to run: it delegates implementation
 /// work to spawned agents instead of touching the filesystem itself.
@@ -122,7 +123,13 @@ now — decide, unblock an agent, look at something broken — end it with \
 ACTION_REQUIRED on a line of its own. That is what reaches them on the \
 desktop when the panel is not in front of them, so leave it off anything \
 that merely keeps them posted; an agent that simply finished is news, not a \
-task. If something the user wants cannot be \
+task. For every agent or to-do update, also call add_response once with \
+just its essential point — kind needsYou when the user has to decide or act, \
+fyi when it is only worth knowing — and keep the detail in your chat reply. A \
+newer item about the same agent or to-do replaces the open one, so simply \
+file one per update. The user answers an item from that list; such a message \
+arrives prefixed [Reply to your Responses item — …] naming the item it \
+answers. If something the user wants cannot be \
 done with the tools available, say so and ask rather than quietly doing \
 something else. Every conversation starts empty — the \
 memory below is your only continuity between days, so keep it current: call \
@@ -180,6 +187,10 @@ const READ_ONLY_TOOLS: &[&str] = &[
     // all: the assistant would have to act on the message before hearing
     // back. Read-only in every mode.
     "verify_sender",
+    // Changes nothing but the user's own Responses list, and only the
+    // assistant can call it. A card asking whether it may tell the user
+    // something would be the very noise the list exists to cut.
+    "add_response",
 ];
 
 /// Tools that stop, archive or remove something. These are what
@@ -439,10 +450,22 @@ struct PendingInput {
     kind: PendingKind,
     text: String,
     attachments: Vec<Attachment>,
+    /// The Responses item this user message answers, if any. Kept apart from
+    /// `text` so editing a waiting reply only changes what the user wrote.
+    reply_to: Option<ReplyTo>,
     /// Whether this item's own transcript row is already written. A write
     /// that failed re-queues the item, and the retry must not append it a
     /// second time.
     recorded: bool,
+}
+
+/// Which Responses item a user message answers: its label (how the user
+/// named it) and its text (what the assistant said), so the assistant can
+/// tell what the short reply is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyTo {
+    pub label: String,
+    pub question: String,
 }
 
 /// UI-facing snapshot of one waiting item.
@@ -453,6 +476,8 @@ pub struct QueuedMessage {
     pub kind: PendingKind,
     pub text: String,
     pub attachments: Vec<AttachmentInfo>,
+    /// The label of the Responses item this message answers, if any.
+    pub reply_to: Option<String>,
 }
 
 impl From<&PendingInput> for QueuedMessage {
@@ -462,6 +487,7 @@ impl From<&PendingInput> for QueuedMessage {
             kind: p.kind,
             text: p.text.clone(),
             attachments: p.attachments.iter().map(AttachmentInfo::from).collect(),
+            reply_to: p.reply_to.as_ref().map(|r| r.label.clone()),
         }
     }
 }
@@ -544,8 +570,16 @@ pub enum AssistantEvent {
     /// its own turn. Unlike the very first, immediately-delivered message
     /// (which the caller already shows), nothing else announces this one
     /// starting, so the UI needs it to promote the waiting row into the
-    /// ordinary log.
-    QueueItemDelivered { text: String },
+    /// ordinary log. `reply_to` is the label of the Responses item it
+    /// answers, if any, so the row renders as a reply.
+    QueueItemDelivered {
+        text: String,
+        reply_to: Option<String>,
+    },
+    /// The Responses list changed (an item was added, marked as read or
+    /// answered). The whole list, newest first — a snapshot like
+    /// [`AssistantEvent::QueueChanged`]. Not conversation, so never recorded.
+    ResponsesChanged { items: Vec<ResponseItem> },
 }
 
 /// Who spoke in one persisted transcript row. A subset of the live event
@@ -564,6 +598,9 @@ pub enum TranscriptRole {
     /// instruction, not a user-facing notice). Kept distinct from `Notice`
     /// so a replayed row renders the same muted way a live nudge does.
     Nudge,
+    /// The user's answer to a Responses item. `text` is the item's label on
+    /// the first line, then the reply.
+    Reply,
 }
 
 /// One persisted chat row, replayed into the panel after a restart.
@@ -930,6 +967,29 @@ impl AssistantManager {
         attachments: Vec<Attachment>,
         mcp: Option<McpConnectInfo>,
     ) -> CoreResult<bool> {
+        self.send_user(text, attachments, None, mcp).await
+    }
+
+    /// Send the user's answer to a Responses item: an ordinary user turn in
+    /// every respect (spawns, queues, returns delivered-or-queued like
+    /// [`send`](Self::send)), except that it carries `reply_to`, which rides
+    /// along in front of the text so the assistant knows what it answers.
+    pub async fn send_reply(
+        &self,
+        text: &str,
+        reply_to: ReplyTo,
+        mcp: Option<McpConnectInfo>,
+    ) -> CoreResult<bool> {
+        self.send_user(text, Vec::new(), Some(reply_to), mcp).await
+    }
+
+    async fn send_user(
+        &self,
+        text: &str,
+        attachments: Vec<Attachment>,
+        reply_to: Option<ReplyTo>,
+        mcp: Option<McpConnectInfo>,
+    ) -> CoreResult<bool> {
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -947,6 +1007,7 @@ impl AssistantManager {
             kind: PendingKind::User,
             text: text.to_string(),
             attachments,
+            reply_to,
             recorded: false,
         };
         Ok(deliver_or_queue(&mut state, item, &self.store, &self.events).await)
@@ -1046,6 +1107,7 @@ impl AssistantManager {
         self.events.publish(PodiumEvent::AssistantEvent {
             event: AssistantEvent::QueueItemDelivered {
                 text: item.text.clone(),
+                reply_to: item.reply_to.as_ref().map(|r| r.label.clone()),
             },
         });
         deliver_bypassing_queue(&mut state, item, &self.store, &self.events).await;
@@ -1210,6 +1272,7 @@ impl AssistantManager {
             kind,
             text,
             attachments: Vec::new(),
+            reply_to: None,
             recorded: false,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
@@ -1232,6 +1295,7 @@ impl AssistantManager {
             kind: PendingKind::Notice,
             text: text.to_string(),
             attachments: Vec::new(),
+            reply_to: None,
             recorded: false,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
@@ -1494,7 +1558,7 @@ async fn deliver_bypassing_queue(
 ) {
     if let Some(session) = state.session.as_mut() {
         record_before_write(store, &mut item);
-        match write_turn(session, &item.text, &item.attachments).await {
+        match write_turn(session, &item).await {
             Ok(()) => {
                 state.in_flight = true;
                 state.turn_from_user |= item.kind == PendingKind::User;
@@ -1526,7 +1590,7 @@ async fn deliver_or_queue(
     if !state.in_flight && state.pending.is_empty() {
         if let Some(session) = state.session.as_mut() {
             record_before_write(store, &mut item);
-            match write_turn(session, &item.text, &item.attachments).await {
+            match write_turn(session, &item).await {
                 Ok(()) => {
                     state.in_flight = true;
                     state.turn_from_user |= item.kind == PendingKind::User;
@@ -1609,7 +1673,7 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
         }
     }
     record_before_write(store, &mut item);
-    match write_turn(session, &item.text, &item.attachments).await {
+    match write_turn(session, &item).await {
         Ok(()) => {
             state.in_flight = true;
             state.turn_from_user |= item.kind == PendingKind::User;
@@ -1626,6 +1690,7 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
                 events.publish(PodiumEvent::AssistantEvent {
                     event: AssistantEvent::QueueItemDelivered {
                         text: item.text.clone(),
+                        reply_to: item.reply_to.as_ref().map(|r| r.label.clone()),
                     },
                 });
             }
@@ -1649,7 +1714,10 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
 /// a re-queued item is not appended twice.
 fn record_before_write(store: &AssistantStore, item: &mut PendingInput) {
     if item.kind == PendingKind::User && !item.recorded {
-        store.append(TranscriptRole::User, item.text.clone());
+        match &item.reply_to {
+            None => store.append(TranscriptRole::User, item.text.clone()),
+            Some(r) => store.append(TranscriptRole::Reply, format!("{}\n{}", r.label, item.text)),
+        }
         item.recorded = true;
     }
 }
@@ -1821,14 +1889,11 @@ fn tool_result_text(content: Option<&serde_json::Value>) -> String {
 }
 
 /// Write one turn as a `stream-json` user message.
-async fn write_turn(
-    session: &mut Session,
-    text: &str,
-    attachments: &[Attachment],
-) -> CoreResult<()> {
+async fn write_turn(session: &mut Session, item: &PendingInput) -> CoreResult<()> {
+    let content = turn_content(&wire_text(item), &item.attachments);
     let line = serde_json::json!({
         "type": "user",
-        "message": { "role": "user", "content": turn_content(text, attachments) },
+        "message": { "role": "user", "content": content },
     });
     session
         .stdin
@@ -1836,6 +1901,19 @@ async fn write_turn(
         .await?;
     session.stdin.flush().await?;
     Ok(())
+}
+
+/// The text the session actually sees for `item`. A reply to a Responses
+/// item is typically a word or two ("yes, ship it"), meaningless without the
+/// item it answers — so that rides along in front of it.
+fn wire_text(item: &PendingInput) -> String {
+    match &item.reply_to {
+        None => item.text.clone(),
+        Some(r) => format!(
+            "[Reply to your Responses item — {}: \"{}\"]\n\n{}",
+            r.label, r.question, item.text
+        ),
+    }
 }
 
 /// Build one turn's `content` array: the text block first (a `Path` or
@@ -2069,7 +2147,7 @@ fn outcome_notice(tool: &str, outcome: Option<Result<String, String>>) -> String
 }
 
 /// Clip `text` to at most `max` characters (never mid-`char`).
-fn truncate(text: &str, max: usize) -> String {
+pub(crate) fn truncate(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         None => text.to_string(),
         Some((cut, _)) => format!("{}…", &text[..cut]),
@@ -2099,6 +2177,7 @@ mod tests {
             kind: PendingKind::User,
             text: "what is open?".to_string(),
             attachments: Vec::new(),
+            reply_to: None,
             recorded: false,
         };
 
@@ -2121,6 +2200,7 @@ mod tests {
             kind: PendingKind::Nudge,
             text: "[Podium] an agent finished".to_string(),
             attachments: Vec::new(),
+            reply_to: None,
             recorded: false,
         };
 
@@ -2660,6 +2740,7 @@ mod tests {
             kind: PendingKind::Nudge,
             text: text.to_string(),
             attachments: Vec::new(),
+            reply_to: None,
             recorded: false,
         };
         deliver_or_queue(&mut state, item, &manager.store, &manager.events).await;
@@ -2707,9 +2788,93 @@ mod tests {
             kind,
             text: text.to_string(),
             attachments: Vec::new(),
+            reply_to: None,
             recorded: false,
         });
         id
+    }
+
+    fn reply(text: &str) -> PendingInput {
+        PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::User,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            reply_to: Some(ReplyTo {
+                label: "checkout-fix · Webshop".to_string(),
+                question: "Merge the PR now or wait for review?".to_string(),
+            }),
+            recorded: false,
+        }
+    }
+
+    #[test]
+    fn a_reply_tells_the_session_which_item_it_answers() {
+        assert_eq!(
+            wire_text(&reply("merge it")),
+            "[Reply to your Responses item — checkout-fix · Webshop: \"Merge the PR now or \
+             wait for review?\"]\n\nmerge it"
+        );
+        let plain = PendingInput {
+            reply_to: None,
+            ..reply("merge it")
+        };
+        assert_eq!(wire_text(&plain), "merge it");
+    }
+
+    #[test]
+    fn a_reply_is_recorded_as_a_reply_row_led_by_its_label() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        record_before_write(&store, &mut reply("merge it"));
+        let rows: Vec<(TranscriptRole, String)> = store
+            .transcript()
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(
+                TranscriptRole::Reply,
+                "checkout-fix · Webshop\nmerge it".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_waiting_reply_shows_what_it_answers_and_keeps_it_through_an_edit() {
+        let manager = AssistantManager::new(EventBus::new());
+        let item = reply("merge it");
+        let id = item.id;
+        manager.state.lock().await.pending.push_back(item);
+
+        manager
+            .edit_pending(id, "wait for review")
+            .await
+            .expect("edit");
+
+        let state = manager.state.lock().await;
+        let queued = QueuedMessage::from(&state.pending[0]);
+        assert_eq!(queued.text, "wait for review");
+        assert_eq!(queued.reply_to.as_deref(), Some("checkout-fix · Webshop"));
+        assert_eq!(
+            state.pending[0]
+                .reply_to
+                .as_ref()
+                .map(|r| r.question.as_str()),
+            Some("Merge the PR now or wait for review?")
+        );
+    }
+
+    /// Nothing but the prompt makes the assistant file Responses items, so pin
+    /// the instructions that carry it.
+    #[test]
+    fn the_identity_asks_for_one_response_per_update() {
+        assert!(IDENTITY_PROMPT.contains("add_response"));
+        assert!(IDENTITY_PROMPT.contains("needsYou"));
+        assert!(IDENTITY_PROMPT.contains("fyi"));
+        assert!(IDENTITY_PROMPT.contains("replaces the open one"));
+        assert!(IDENTITY_PROMPT.contains("[Reply to your Responses item"));
     }
 
     #[tokio::test]

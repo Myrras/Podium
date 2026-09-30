@@ -396,7 +396,12 @@ export type AssistantEvent =
    * the sender itself), nothing else announces this one starting, so the UI
    * promotes its waiting row into the ordinary log.
    */
-  | { type: "queueItemDelivered"; text: string };
+  | { type: "queueItemDelivered"; text: string; replyTo: string | null }
+  /**
+   * The Responses list changed (an item added, superseded, ticked or
+   * replied to). Carries the whole list, newest first — a snapshot.
+   */
+  | { type: "responsesChanged"; items: ResponseItem[] };
 
 /**
  * Whether a queued item can be edited or withdrawn before delivery. Only a
@@ -438,10 +443,47 @@ export interface QueuedMessage {
   kind: PendingKind;
   text: string;
   attachments: AttachmentInfo[];
+  /** The Responses item label this message answers, if it is a reply. */
+  replyTo: string | null;
 }
 
 /** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */
-export type TranscriptRole = "user" | "assistant" | "tool" | "notice" | "nudge";
+export type TranscriptRole =
+  | "user"
+  | "assistant"
+  | "tool"
+  | "notice"
+  | "nudge"
+  /** A reply to a Responses item; `text` is `"<label>\n<reply text>"`. */
+  | "reply";
+
+/** Whether a Responses item wants the user (`podium_core::ResponseKind`). */
+export type ResponseKind = "needsYou" | "fyi";
+
+/**
+ * One item in the assistant's Responses list (`podium_core::ResponseItem`):
+ * the essential point of an agent update, filed by the assistant itself.
+ * Names are resolved when the item is added, so they outlive the agent.
+ */
+export interface ResponseItem {
+  id: string;
+  kind: ResponseKind;
+  text: string;
+  /** Project display name. */
+  project: string | null;
+  /** Agent session name. */
+  agent: string | null;
+  /** The agent's session colour. */
+  agentColor: string | null;
+  /** To-do text, truncated. */
+  todo: string | null;
+  /** Free label when there is no agent/project, e.g. "Slack". */
+  source: string | null;
+  processId: ProcessId | null;
+  todoId: TodoId | null;
+  /** RFC 3339 timestamp. */
+  createdAt: string;
+}
 
 /**
  * One persisted chat row (`podium_core::TranscriptEntry`), replayed into the

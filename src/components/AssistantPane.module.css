@@ -253,6 +253,42 @@
   font-size: var(--fs-sm);
 }
 
+/* A reply to a Responses item: one line, like the user bubble but compact —
+   the item it answers reads first, muted, and the reply ellipsises. */
+.message[data-role="reply"] {
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+.reply {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.replyIcon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.replyLabel {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+
+.replyText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Podium nudging the assistant, not the user: a quiet aside, not a message —
    no background, small and muted, unlike `[data-role="notice"]` above. */
 .message[data-role="nudge"] {

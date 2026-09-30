@@ -28,6 +28,9 @@ import {
   assistantQueueRemove,
   assistantQueueSendNow,
   assistantResolveProposal,
+  assistantResponseDismiss,
+  assistantResponseReply,
+  assistantResponsesList,
   assistantSend,
   assistantTranscript,
   toIpcError,
@@ -38,6 +41,7 @@ import type {
   AutonomyMode,
   PollingSettings,
   QueuedMessage,
+  ResponseItem,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
 import { useLayoutStore } from "./layoutStore";
@@ -66,7 +70,27 @@ export type ChatRole =
    * `TranscriptRole::Nudge`, distinct from a real notice (e.g. a tool
    * failure), so a replayed nudge renders the same way after a restart.
    */
-  | "nudge";
+  | "nudge"
+  /**
+   * The user's reply to a Responses item. `text` is `"<label>\n<reply>"` —
+   * the first line names the item it answers, the same shape the backend
+   * stores under `TranscriptRole::Reply`, so a replayed reply renders alike.
+   */
+  | "reply";
+
+/**
+ * What a Responses item is about, as one line: the non-empty parts of
+ * agent, project, to-do and source joined with " · ". Mirrors the backend's
+ * own label rule, so an optimistic reply row reads exactly like the one the
+ * transcript replays later.
+ */
+export function responseLabel(item: ResponseItem): string {
+  return (
+    [item.agent, item.project, item.todo, item.source]
+      .filter((part): part is string => !!part)
+      .join(" · ") || "Responses item"
+  );
+}
 
 /** A gated action awaiting (or carrying) the user's decision. */
 export interface ChatProposal {
@@ -128,6 +152,17 @@ interface AssistantState {
    * starts.
    */
   turnReplyText: string | null;
+  /**
+   * The Responses list, newest first — mirrors the backend's persisted list
+   * via `responsesChanged` snapshots.
+   */
+  responses: ResponseItem[];
+  /** Load the Responses list (on mount). */
+  loadResponses: () => Promise<void>;
+  /** Tick a Responses item off. */
+  dismissResponse: (id: string) => Promise<void>;
+  /** Reply to a Responses item; returns whether it was accepted. */
+  replyResponse: (id: string, text: string) => Promise<boolean>;
   /** Replay the persisted transcript into the log (once, on mount). */
   hydrate: () => Promise<void>;
   /** Drop the conversation and start over (memory is kept). */
@@ -201,6 +236,49 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   hydrated: false,
   pending: [],
   turnReplyText: null,
+  responses: [],
+  loadResponses: async () => {
+    try {
+      set({ responses: await assistantResponsesList() });
+    } catch {
+      // An empty list is a fine fallback; the next snapshot corrects it.
+    }
+  },
+  dismissResponse: async (id) => {
+    const previous = get().responses;
+    set({ responses: previous.filter((r) => r.id !== id) });
+    try {
+      await assistantResponseDismiss(id);
+    } catch (e) {
+      set((s) => ({
+        responses: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  replyResponse: async (id, text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const item = get().responses.find((r) => r.id === id);
+    const label = item ? responseLabel(item) : "Responses item";
+    try {
+      // Same delivered-or-queued answer as `send`: a queued reply shows as a
+      // waiting row instead. The item itself leaves via `responsesChanged`.
+      if (await assistantResponseReply(id, trimmed)) {
+        set((s) => ({
+          messages: [...s.messages, message("reply", `${label}\n${trimmed}`)],
+          busy: true,
+          turnReplyText: null,
+        }));
+      }
+      return true;
+    } catch (e) {
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+      return false;
+    }
+  },
   hydrate: async () => {
     // Once per app run: the panel remounts every time it is reopened, and the
     // log it already holds is the same conversation.
@@ -564,8 +642,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           return {
             busy: true,
             turnReplyText: null,
-            messages: [...s.messages, message("user", event.text)],
+            messages: [
+              ...s.messages,
+              event.replyTo
+                ? message("reply", `${event.replyTo}\n${event.text}`)
+                : message("user", event.text),
+            ],
           };
+        case "responsesChanged":
+          return { responses: event.items };
       }
     }),
 }));

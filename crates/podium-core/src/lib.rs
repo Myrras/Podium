@@ -20,6 +20,7 @@ pub mod platform;
 pub mod proactivity;
 pub mod process;
 pub mod project;
+pub mod responses;
 pub mod scratchpad;
 pub mod todo;
 pub mod worktree;
@@ -31,12 +32,13 @@ pub use agent::{
 pub use assignment::AssignedAgent;
 pub use assistant::{
     AssistantConfig, AssistantEvent, AssistantSettings, Attachment, AttachmentInfo, AutonomyMode,
-    PendingKind, ProposalInfo, QueuedMessage, TranscriptEntry, TranscriptRole,
+    PendingKind, ProposalInfo, QueuedMessage, ReplyTo, TranscriptEntry, TranscriptRole,
 };
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
 pub use ids::{
-    CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
+    CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ResponseId, ScratchpadId,
+    TodoId,
 };
 pub use mcp::McpServer;
 pub use orchestrator::{Orchestrator, ProjectInfo};
@@ -45,6 +47,7 @@ pub use process::pty::TermChunk;
 pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
+pub use responses::{ResponseItem, ResponseKind};
 pub use scratchpad::ScratchpadInfo;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
 pub use worktree::WorktreeInfo;

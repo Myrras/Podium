@@ -14,18 +14,19 @@ use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo}
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
-    ProposalInfo, TranscriptEntry,
+    ProposalInfo, ReplyTo, TranscriptEntry,
 };
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
+use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ResponseId, ScratchpadId};
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 use crate::project::{self, ConfiguredProcess};
+use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
@@ -182,6 +183,9 @@ pub struct Orchestrator {
     agent_settings: AgentSettingsStore,
     /// The workspace-wide personal assistant session (chat panel).
     assistant: AssistantManager,
+    /// The assistant's Responses list (survives restarts and new
+    /// conversations).
+    responses: ResponseStore,
 }
 
 impl Default for Orchestrator {
@@ -208,6 +212,7 @@ impl Orchestrator {
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
             agent_settings: AgentSettingsStore::new(),
+            responses: ResponseStore::new(),
         }
     }
 
@@ -233,6 +238,12 @@ impl Orchestrator {
     /// load it. Until this is called, scratchpads are held in memory only.
     pub fn set_scratchpads_path(&self, path: PathBuf) {
         self.scratchpads.set_path(path);
+    }
+
+    /// Point the Responses list at its backing file (app data dir) and load
+    /// it. Until this is called, items are held in memory only.
+    pub fn set_responses_path(&self, path: PathBuf) {
+        self.responses.set_path(path);
     }
 
     /// Point the assistant at its CLI binary, working directory and the dir
@@ -544,6 +555,121 @@ impl Orchestrator {
     pub async fn assistant_interrupt(&self) -> CoreResult<()> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.interrupt(mcp).await
+    }
+
+    /// The assistant's Responses list, newest first.
+    pub fn assistant_responses(&self) -> Vec<ResponseItem> {
+        self.responses.list()
+    }
+
+    /// File one Responses item (the assistant's `add_response`). Agent,
+    /// project and to-do names are resolved now, so the item still reads
+    /// right after the agent exits or the project closes. The project comes
+    /// from `project_id`, else from the agent; a to-do needs one of the two.
+    /// A newer item about the same agent or to-do replaces the open one.
+    pub fn add_assistant_response(
+        &self,
+        kind: ResponseKind,
+        text: &str,
+        process_id: Option<ProcessId>,
+        project_id: Option<ProjectId>,
+        todo_id: Option<TodoId>,
+        source: Option<&str>,
+    ) -> CoreResult<ResponseItem> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "response text must not be blank".to_string(),
+            ));
+        }
+        let process = process_id
+            .map(|id| {
+                self.list_processes(None)
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .ok_or(CoreError::ProcessNotFound)
+            })
+            .transpose()?;
+        let project_id = project_id.or(process.as_ref().map(|p| p.project_id));
+        let project = project_id
+            .map(|id| {
+                self.list_projects()
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .ok_or(CoreError::ProjectNotFound)
+            })
+            .transpose()?;
+        let todo = match (todo_id, &project) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return Err(CoreError::InvalidInput(
+                    "todo_id needs project_id (or process_id)".to_string(),
+                ))
+            }
+            (Some(id), Some(project)) => Some(
+                self.todos
+                    .get(project.id, &project.root, id)
+                    .ok_or(CoreError::TodoNotFound)?,
+            ),
+        };
+        let item = ResponseItem {
+            id: ResponseId::new(),
+            kind,
+            text: text.to_string(),
+            project: project.map(|p| p.name),
+            agent: process.as_ref().map(|p| p.name.clone()),
+            agent_color: process.as_ref().and_then(|p| p.color.clone()),
+            todo: todo.map(|t| crate::assistant::truncate(&t.text, 60)),
+            source: source
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            process_id,
+            todo_id,
+            created_at: Utc::now(),
+        };
+        let items = self.responses.add(item.clone())?;
+        self.publish_responses(items);
+        Ok(item)
+    }
+
+    /// Mark one Responses item as read: it is simply removed.
+    pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
+        self.responses.remove(id)?;
+        self.publish_responses(self.responses.list());
+        Ok(())
+    }
+
+    /// Answer one Responses item: `text` goes to the assistant as the user's
+    /// message, carrying which item it answers, and the item is removed. The
+    /// item goes only once the message is in (sent or queued) — a send that
+    /// fails leaves it there to try again. Returns delivered-or-queued, as
+    /// [`assistant_send`](Self::assistant_send).
+    pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
+        if text.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "reply must not be blank".to_string(),
+            ));
+        }
+        let item = self.responses.get(id)?;
+        let reply_to = ReplyTo {
+            label: item.label(),
+            question: item.text,
+        };
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        let delivered = self.assistant.send_reply(text, reply_to, mcp).await?;
+        // The reply is already on its way, so failing now would only tell the
+        // panel it was not sent. Dismissed meanwhile, or a save that failed,
+        // both leave nothing worth reporting.
+        let _ = self.responses.remove(id);
+        self.publish_responses(self.responses.list());
+        Ok(delivered)
+    }
+
+    fn publish_responses(&self, items: Vec<ResponseItem>) {
+        self.events.publish(PodiumEvent::AssistantEvent {
+            event: crate::assistant::AssistantEvent::ResponsesChanged { items },
+        });
     }
 
     /// Point the global agent settings at their backing file (app data dir)

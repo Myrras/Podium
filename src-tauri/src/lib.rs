@@ -140,6 +140,12 @@ pub fn run() {
             state
                 .orchestrator
                 .set_scratchpads_path(app.path().app_data_dir()?.join("scratchpads.json"));
+            // The assistant's Responses list outlives a restart (and the
+            // blank conversation every launch starts with): items are the
+            // user's to clear.
+            state
+                .orchestrator
+                .set_responses_path(app.path().app_data_dir()?.join("assistant-responses.json"));
             // Global agent settings (command override + default args per
             // adapter, merge mode) persist in the app data dir too.
             state
@@ -246,6 +252,9 @@ pub fn run() {
             commands::assistant::assistant_queue_send_now,
             commands::assistant::assistant_queue_remove,
             commands::assistant::assistant_interrupt,
+            commands::assistant::assistant_responses_list,
+            commands::assistant::assistant_response_dismiss,
+            commands::assistant::assistant_response_reply,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,
             commands::agent::agent_settings_get,

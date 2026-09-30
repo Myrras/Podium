@@ -961,7 +961,8 @@ async fn queued_messages_are_delivered_one_per_turn_in_order() {
     // announced so the UI can promote its waiting row into the ordinary log.
     let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
     assert!(turn2.contains(&AssistantEvent::QueueItemDelivered {
-        text: "second".to_string()
+        text: "second".to_string(),
+        reply_to: None,
     }));
     assert!(turn2.contains(&AssistantEvent::Message {
         text: "echo:second".to_string()
@@ -1012,7 +1013,7 @@ async fn a_message_sent_during_podiums_own_turn_reports_itself_as_queued() {
     let delivered = turn
         .iter()
         .filter(|e| {
-            matches!(e, AssistantEvent::QueueItemDelivered { text } if text == "start the release")
+            matches!(e, AssistantEvent::QueueItemDelivered { text, .. } if text == "start the release")
         })
         .count();
     assert_eq!(delivered, 1, "{turn:?}");
@@ -1613,5 +1614,55 @@ async fn a_zero_interval_turns_the_external_sweep_off() {
         !dir.path().join("argv.txt").exists(),
         "swept with the interval set to 0"
     );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_to_a_responses_item_reaches_the_session_and_clears_the_item() {
+    use podium_core::{ResponseId, ResponseKind};
+
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "Merge the PR now or wait for review?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    // Refused before anything is sent: the item stays.
+    let blank = orch.reply_assistant_response(item.id, "   ").await;
+    assert!(
+        matches!(blank, Err(CoreError::InvalidInput(_))),
+        "{blank:?}"
+    );
+    let unknown = orch
+        .reply_assistant_response(ResponseId::new(), "merge it")
+        .await;
+    assert!(
+        matches!(unknown, Err(CoreError::ResponseNotFound)),
+        "{unknown:?}"
+    );
+    assert_eq!(orch.assistant_responses().len(), 1);
+
+    let delivered = orch
+        .reply_assistant_response(item.id, "merge it")
+        .await
+        .expect("reply");
+    assert!(delivered, "an idle session takes the reply straight away");
+    assert!(orch.assistant_responses().is_empty());
+
+    let lines = recorded_stdin(dir.path(), 1).await;
+    assert_eq!(
+        lines[0].pointer("/message/content/0/text").and_then(|t| t.as_str()),
+        Some("[Reply to your Responses item — GitHub: \"Merge the PR now or wait for review?\"]\n\nmerge it")
+    );
+    let first = &orch.assistant_transcript()[0];
+    assert_eq!(first.role, TranscriptRole::Reply);
+    assert_eq!(first.text, "GitHub\nmerge it");
+
     orch.shutdown().await;
 }

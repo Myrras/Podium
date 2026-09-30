@@ -21,6 +21,7 @@ import type { ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { Markdown } from "./Markdown";
+import { ResponsesSection } from "./ResponsesSection";
 import {
   AssistantIcon,
   AttachIcon,
@@ -30,6 +31,7 @@ import {
   FileAttachmentIcon,
   ImageAttachmentIcon,
   MemoryIcon,
+  ReplyIcon,
   SendIcon,
   StopIcon,
 } from "./icons";
@@ -209,6 +211,7 @@ export function AssistantPane() {
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
   const hydrate = useAssistantStore((s) => s.hydrate);
   const dayStart = useAssistantStore((s) => s.dayStart);
+  const loadResponses = useAssistantStore((s) => s.loadResponses);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const width = useLayoutStore((s) => s.assistantWidth);
   const [draft, setDraft] = useState("");
@@ -230,7 +233,8 @@ export function AssistantPane() {
   useEffect(() => {
     void loadAutonomy();
     void hydrate();
-  }, [loadAutonomy, hydrate]);
+    void loadResponses();
+  }, [loadAutonomy, hydrate, loadResponses]);
 
   // Follow the tail as turns stream in (waiting rows count too — they live
   // at the bottom of the same scroll container).
@@ -404,6 +408,8 @@ export function AssistantPane() {
 
       {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
 
+      <ResponsesSection />
+
       <div className={styles.log} ref={logRef}>
         {messages.length === 0 && pending.length === 0 && (
           <div className={styles.emptyState}>
@@ -430,6 +436,8 @@ export function AssistantPane() {
               actionLabel(m.text)
             ) : m.proposal ? (
               <ProposalCard proposal={m.proposal} />
+            ) : m.role === "reply" ? (
+              <ReplyLine text={m.text} />
             ) : m.role === "nudge" ? (
               // Podium spoke to the *assistant*, not the user: a discreet
               // marker, not the internal instruction text (hover for it).
@@ -675,6 +683,24 @@ function ProposalCard({ proposal }: { proposal: ChatProposal }) {
 }
 
 /**
+ * The user's reply to a Responses item, as one compact line: which item it
+ * answers, then the reply itself (ellipsised; hover for all of it). `text` is
+ * `"<label>\n<reply>"`, the shape the backend stores too.
+ */
+function ReplyLine({ text }: { text: string }) {
+  const newline = text.indexOf("\n");
+  const label = newline < 0 ? "" : text.slice(0, newline);
+  const reply = text.slice(newline + 1);
+  return (
+    <span className={styles.reply} title={reply}>
+      <ReplyIcon className={styles.replyIcon} />
+      <span className={styles.replyLabel}>Re: {label}</span>
+      <span className={styles.replyText}>{reply}</span>
+    </span>
+  );
+}
+
+/**
  * One message waiting for the current turn to end. Only a user message is
  * editable/removable — a nudge or proposal-outcome notice is Podium's own
  * text, shown as-is until it is delivered.
@@ -708,7 +734,12 @@ function PendingRow({ item }: { item: QueuedMessage }) {
           onBlur={save}
         />
       ) : (
-        <span className={styles.pendingText}>{item.text}</span>
+        <span className={styles.pendingText}>
+          {item.replyTo && (
+            <span className={styles.replyLabel}>Re: {item.replyTo} </span>
+          )}
+          {item.text}
+        </span>
       )}
       {item.attachments.length > 0 && (
         <span className={styles.pendingAttachments}>
