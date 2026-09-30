@@ -84,6 +84,7 @@ fn installed_wsl_distros() -> CoreResult<Vec<String>> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
+    crate::platform::hide_console_window(&mut cmd);
     let output = crate::platform::run_gated(&mut cmd)
         .ok()
         .filter(|o| o.status.success())

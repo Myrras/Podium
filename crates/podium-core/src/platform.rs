@@ -14,6 +14,27 @@ use std::time::Duration;
 
 use crate::error::{CoreError, CoreResult};
 
+/// `CREATE_NO_WINDOW`: suppresses the console window Windows otherwise
+/// allocates for a console-subsystem child (git, wsl.exe, cmd.exe, bash)
+/// spawned from a GUI-subsystem process (release-mode Podium has no console
+/// of its own) — without it, every such call flashes a window for its
+/// lifetime. Never touches ConPTY-attached spawns (`process::pty`), which
+/// are already windowless by construction; only plain `Command`/
+/// `tokio::process::Command` calls need it.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Sets [`CREATE_NO_WINDOW`] on Windows; a no-op elsewhere. Apply to every
+/// plain (non-ConPTY) `Command`/`tokio::process::Command` this crate spawns.
+#[cfg(windows)]
+pub fn hide_console_window(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+pub fn hide_console_window(_cmd: &mut std::process::Command) {}
+
 /// WSL-backend mode: on Windows, run everything Podium executes (services,
 /// terminals, agents, the assistant, git) inside this WSL distro instead of
 /// natively. Set once at startup from the persisted backend settings (see
@@ -252,14 +273,13 @@ pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
 /// call from a blocking-friendly context.
 pub fn wsl_networking_mode() -> Option<String> {
     let w = wsl()?;
-    let output = run_gated(
-        std::process::Command::new("wsl.exe")
-            .args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null()),
-    )
-    .ok()?;
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    hide_console_window(&mut cmd);
+    let output = run_gated(&mut cmd).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -453,16 +473,17 @@ fn resolve_in_path(
 /// prints can leak into logs or errors.
 pub fn run_shell_ok(cmd: &str) -> bool {
     let (shell, prefix) = login_shell();
-    run_gated(
-        std::process::Command::new(shell)
-            .args(prefix)
-            .arg(cmd)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()),
-    )
-    .map(|output| output.status.success())
-    .unwrap_or(false)
+    let mut command = std::process::Command::new(shell);
+    command
+        .args(prefix)
+        .arg(cmd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    hide_console_window(&mut command);
+    run_gated(&mut command)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 /// Run `cmd` through the login shell, discarding stderr; returns its stdout
@@ -471,15 +492,15 @@ pub fn run_shell_ok(cmd: &str) -> bool {
 /// JSON listing), not just its exit status.
 pub fn run_shell_stdout(cmd: &str) -> Option<String> {
     let (shell, prefix) = login_shell();
-    let output = run_gated(
-        std::process::Command::new(shell)
-            .args(prefix)
-            .arg(cmd)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null()),
-    )
-    .ok()?;
+    let mut command = std::process::Command::new(shell);
+    command
+        .args(prefix)
+        .arg(cmd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    hide_console_window(&mut command);
+    let output = run_gated(&mut command).ok()?;
     output
         .status
         .success()
@@ -492,14 +513,16 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
 /// <distro> -e git` — the distro's own git, run without a shell, so path
 /// arguments must be in the backend's spelling ([`backend_path`]).
 pub fn git_command() -> std::process::Command {
-    match wsl() {
+    let mut cmd = match wsl() {
         Some(w) => {
             let mut cmd = std::process::Command::new("wsl.exe");
             cmd.args(["-d", w.distro(), "-e", "git"]);
             cmd
         }
         None => std::process::Command::new(git_binary()),
-    }
+    };
+    hide_console_window(&mut cmd);
+    cmd
 }
 
 /// The native `git` binary to invoke directly (bypassing the login shell)
@@ -549,9 +572,12 @@ pub fn open_in_warp(path: &std::path::Path) -> CoreResult<()> {
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(&uri).status();
     #[cfg(windows)]
-    let status = std::process::Command::new("cmd")
-        .args(["/C", "start", "", &uri])
-        .status();
+    let status = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", &uri]);
+        hide_console_window(&mut cmd);
+        cmd.status()
+    };
     #[cfg(all(unix, not(target_os = "macos")))]
     let status = std::process::Command::new("xdg-open").arg(&uri).status();
     match status {
