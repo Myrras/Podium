@@ -603,7 +603,7 @@ impl Orchestrator {
             (None, _) => None,
             (Some(_), None) => {
                 return Err(CoreError::InvalidInput(
-                    "todo_id needs project_id (or process_id)".to_string(),
+                    "todo_id needs project_id (or the process_id of a live agent)".to_string(),
                 ))
             }
             (Some(id), Some(project)) => Some(

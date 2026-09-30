@@ -56,7 +56,9 @@ function ResponseRow({ item }: { item: ResponseItem }) {
   async function send() {
     if (!draft?.trim() || sending) return;
     setSending(true);
-    // Keep the draft on failure: the store already logged why.
+    // Keep the draft when the reply is refused (the store logged why). A send
+    // that fails after the backend took the item off the list remounts the
+    // row and loses it — rare: only a session that cannot spawn gets there.
     const sent = await replyResponse(item.id, draft);
     setSending(false);
     if (sent) setDraft(null);
