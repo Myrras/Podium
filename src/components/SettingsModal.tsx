@@ -1,5 +1,6 @@
 /**
- * App settings dialog with four tabs: General (appearance, terminal), Agents
+ * App settings dialog with four tabs: General (appearance, terminal, and on
+ * Windows the WSL backend), Agents
  * (per-adapter command override + default arguments, plus the argument merge
  * mode), Assistant (autonomy mode, proactive nudges, external polling), and
  * MCP (one-click registration of the stdio bridge with external clients like
@@ -13,12 +14,15 @@ import { useThemeStore, type ThemeMode } from "../state/themeStore";
 import { useSettingsStore } from "../state/settingsStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
+import { isWindows } from "../lib/platform";
 import {
   agentSettingsGet,
   agentSettingsSetAdapter,
   agentSettingsSetDefaultAdapter,
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
+  backendSettingsGet,
+  backendSettingsSetWslDistro,
   mcpClientInstall,
   mcpClientsStatus,
   toIpcError,
@@ -27,6 +31,7 @@ import type {
   AgentAdapterConfig,
   AgentSettingsDto,
   AutonomyMode,
+  BackendSettingsDto,
   McpClientInfo,
   MergeMode,
 } from "../ipc/types";
@@ -827,7 +832,85 @@ function GeneralTab() {
         </div>
       </section>
 
+      {isWindows && <BackendSettings />}
+
       <NotificationsSettings />
     </>
+  );
+}
+
+/**
+ * Windows only: run everything Podium executes inside a WSL distro. Read once
+ * at startup, so a saved change shows a restart hint until the next launch.
+ */
+function BackendSettings() {
+  const [draft, setDraft] = useState("");
+  const [saved, setSaved] = useState<BackendSettingsDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    backendSettingsGet()
+      .then((d) => {
+        if (cancelled) return;
+        setSaved(d);
+        setDraft(d.wslDistro);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(toIpcError(e).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = () => {
+    if (!saved || draft.trim() === saved.wslDistro) return;
+    backendSettingsSetWslDistro(draft)
+      .then((d) => {
+        setSaved(d);
+        setDraft(d.wslDistro);
+        setError(null);
+      })
+      .catch((e) => setError(toIpcError(e).message));
+  };
+
+  const restartNeeded =
+    saved !== null && saved.wslDistro !== saved.activeWslDistro;
+
+  return (
+    <section className={styles.section}>
+      <h3 className={styles.sectionLabel}>Backend</h3>
+      <div className={styles.field}>
+        <label htmlFor="backend-wsl-distro">WSL distro</label>
+        <input
+          id="backend-wsl-distro"
+          type="text"
+          value={draft}
+          placeholder="Windows (default)"
+          disabled={saved === null}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+          }}
+        />
+        <small className={styles.rowHelp}>
+          Run services, terminals, agents and git inside this WSL distro (e.g.{" "}
+          <code>Ubuntu</code>). Leave blank to run natively on Windows. Takes
+          effect after restarting Podium.
+        </small>
+        {restartNeeded && (
+          <small className={styles.rowHelp} role="status">
+            Restart Podium to apply this change.
+          </small>
+        )}
+        {error && (
+          <small className={styles.rowHelp} role="alert">
+            {error}
+          </small>
+        )}
+      </div>
+    </section>
   );
 }

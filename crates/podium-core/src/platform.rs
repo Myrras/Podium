@@ -11,6 +11,58 @@ use std::sync::OnceLock;
 
 use crate::error::{CoreError, CoreResult};
 
+/// WSL-backend mode: on Windows, run everything Podium executes (services,
+/// terminals, agents, the assistant, git) inside this WSL distro instead of
+/// natively. Set once at startup from the persisted backend settings (see
+/// [`crate::backend_settings`]); changing it needs an app restart.
+///
+/// Deliberately not behind `cfg(windows)`: call sites branch at runtime on
+/// [`wsl()`], so every platform compiles, lints and tests that code. Only
+/// [`init_wsl`] is platform-dependent, and it never enables WSL mode off
+/// Windows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WslBackend {
+    distro: String,
+}
+
+impl WslBackend {
+    /// The WSL distro name, as `wsl.exe -d` takes it (e.g. `Ubuntu`).
+    pub fn distro(&self) -> &str {
+        &self.distro
+    }
+}
+
+static WSL: OnceLock<Option<WslBackend>> = OnceLock::new();
+
+/// Decide the backend from the configured distro. Pure, so the decision is
+/// testable on every platform: WSL mode needs Windows and a non-blank distro.
+fn wsl_backend_for(distro: Option<&str>, windows: bool) -> Option<WslBackend> {
+    let distro = distro.map(str::trim).filter(|d| !d.is_empty())?;
+    windows.then(|| WslBackend {
+        distro: distro.to_string(),
+    })
+}
+
+/// Fix the process-wide backend for this run. Call once, at startup, before
+/// anything spawns (the MCP server, the orchestrator reopening projects).
+/// Off Windows a configured distro is ignored (a settings file synced from a
+/// Windows machine must not change macOS behaviour). Later calls are no-ops.
+pub fn init_wsl(distro: Option<&str>) {
+    let backend = wsl_backend_for(distro, cfg!(windows));
+    if backend.is_none() && distro.is_some_and(|d| !d.trim().is_empty()) {
+        tracing::info!("ignoring configured WSL distro: WSL mode is Windows-only");
+    }
+    if WSL.set(backend).is_err() {
+        tracing::warn!("init_wsl called more than once; keeping the first backend");
+    }
+}
+
+/// The active WSL backend, or `None` for the native one (always `None` off
+/// Windows, and before [`init_wsl`] runs).
+pub fn wsl() -> Option<&'static WslBackend> {
+    WSL.get().and_then(Option::as_ref)
+}
+
 /// The login shell plus the args that precede a command *string*, so that
 /// `Command::new(program).args(prefix).arg(cmd)` runs `cmd` through it.
 ///
@@ -304,6 +356,24 @@ pub(crate) fn parse_windows_argv(cmd: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wsl_backend_needs_windows_and_a_distro() {
+        assert_eq!(
+            wsl_backend_for(Some("Ubuntu"), true),
+            Some(WslBackend {
+                distro: "Ubuntu".to_string()
+            })
+        );
+        assert_eq!(
+            wsl_backend_for(Some("  Ubuntu-24.04 "), true).map(|w| w.distro().to_string()),
+            Some("Ubuntu-24.04".to_string())
+        );
+        assert_eq!(wsl_backend_for(None, true), None);
+        assert_eq!(wsl_backend_for(Some("   "), true), None);
+        // Off Windows a configured distro is ignored.
+        assert_eq!(wsl_backend_for(Some("Ubuntu"), false), None);
+    }
 
     #[test]
     fn shell_wraps_a_command_string() {
