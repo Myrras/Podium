@@ -141,6 +141,17 @@ export interface AgentAdapterConfig {
   defaultArgs: string[];
 }
 
+/**
+ * Backend settings (`BackendSettingsDto`, `commands/backend.rs`): the saved
+ * WSL distro and the one this run uses. They differ until the app restarts.
+ */
+export interface BackendSettingsDto {
+  /** Saved WSL distro; empty = run natively. */
+  wslDistro: string;
+  /** WSL distro active in this run; empty = native. */
+  activeWslDistro: string;
+}
+
 /** Global agent settings + adapter catalog (`AgentSettingsDto`). */
 export interface AgentSettingsDto {
   mergeMode: MergeMode;
