@@ -26,6 +26,10 @@ yet set up.)
   supervised restart used to sit blocked until someone opened its terminal,
   because Windows' console layer waits for a reply that only the terminal view
   gave. Podium now answers it itself.
+- **No more console windows flashing up on Windows.** Starting an agent or
+  focusing a terminal briefly popped up an empty console window, because the
+  git and shell calls Podium makes in the background each got a visible
+  window of their own. They now run hidden.
 
 ## [2.0.4] - 2026-09-30
 
