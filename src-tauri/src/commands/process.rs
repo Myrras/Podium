@@ -10,6 +10,7 @@
 //! `Data` batch's `seq` is the seq of its first chunk — the frontend drops
 //! any batch whose `seq` is below the snapshot's to avoid double-writes.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +24,8 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::time::MissedTickBehavior;
 
 use podium_core::{
-    ProcessId, ProcessInfo, ProcessKind, ProcessSpec, ProjectId, RestartPolicy, TermChunk,
+    OutputActivity, ProcessId, ProcessInfo, ProcessKind, ProcessSpec, ProjectId, RestartPolicy,
+    TermChunk,
 };
 
 use crate::error::IpcError;
@@ -158,6 +160,13 @@ pub async fn process_remove(
 #[tauri::command]
 pub fn process_list(state: State<'_, AppState>, project_id: Option<ProjectId>) -> Vec<ProcessInfo> {
     state.orchestrator.list_processes(project_id)
+}
+
+/// How recently and how steadily each running process has been printing;
+/// the frontend's activity monitor polls this once a second.
+#[tauri::command]
+pub fn process_activity(state: State<'_, AppState>) -> HashMap<ProcessId, OutputActivity> {
+    state.orchestrator.output_activity()
 }
 
 /// The UI saw an input prompt on this agent's screen. Fire-and-forget: the
