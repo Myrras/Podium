@@ -7,9 +7,72 @@
 //! `cmd /C`) is written once, not re-derived at each of the PTY-spawn /
 //! adapter-probe / MCP-install call sites.
 
+pub mod wsl_path;
+
 use std::sync::OnceLock;
 
 use crate::error::{CoreError, CoreResult};
+
+/// WSL-backend mode: on Windows, run everything Podium executes (services,
+/// terminals, agents, the assistant, git) inside this WSL distro instead of
+/// natively. Set once at startup from the persisted backend settings (see
+/// [`crate::backend_settings`]); changing it needs an app restart.
+///
+/// Deliberately not behind `cfg(windows)`: call sites branch at runtime on
+/// [`wsl()`], so every platform compiles, lints and tests that code. Only
+/// [`init_wsl`] is platform-dependent, and it never enables WSL mode off
+/// Windows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WslBackend {
+    distro: String,
+}
+
+impl WslBackend {
+    /// The WSL distro name, as `wsl.exe -d` takes it (e.g. `Ubuntu`).
+    pub fn distro(&self) -> &str {
+        &self.distro
+    }
+
+    /// A backend for unit tests of code that takes an `Option<&WslBackend>`
+    /// (the real one is only ever built by [`init_wsl`]).
+    #[cfg(test)]
+    pub(crate) fn for_tests(distro: &str) -> Self {
+        Self {
+            distro: distro.to_string(),
+        }
+    }
+}
+
+static WSL: OnceLock<Option<WslBackend>> = OnceLock::new();
+
+/// Decide the backend from the configured distro. Pure, so the decision is
+/// testable on every platform: WSL mode needs Windows and a non-blank distro.
+fn wsl_backend_for(distro: Option<&str>, windows: bool) -> Option<WslBackend> {
+    let distro = distro.map(str::trim).filter(|d| !d.is_empty())?;
+    windows.then(|| WslBackend {
+        distro: distro.to_string(),
+    })
+}
+
+/// Fix the process-wide backend for this run. Call once, at startup, before
+/// anything spawns (the MCP server, the orchestrator reopening projects).
+/// Off Windows a configured distro is ignored (a settings file synced from a
+/// Windows machine must not change macOS behaviour). Later calls are no-ops.
+pub fn init_wsl(distro: Option<&str>) {
+    let backend = wsl_backend_for(distro, cfg!(windows));
+    if backend.is_none() && distro.is_some_and(|d| !d.trim().is_empty()) {
+        tracing::info!("ignoring configured WSL distro: WSL mode is Windows-only");
+    }
+    if WSL.set(backend).is_err() {
+        tracing::warn!("init_wsl called more than once; keeping the first backend");
+    }
+}
+
+/// The active WSL backend, or `None` for the native one (always `None` off
+/// Windows, and before [`init_wsl`] runs).
+pub fn wsl() -> Option<&'static WslBackend> {
+    WSL.get().and_then(Option::as_ref)
+}
 
 /// The login shell plus the args that precede a command *string*, so that
 /// `Command::new(program).args(prefix).arg(cmd)` runs `cmd` through it.
@@ -18,23 +81,137 @@ use crate::error::{CoreError, CoreResult};
 /// `.zprofile`/`.bash_profile` and `.zshrc`/`.bashrc` PATH/env edits (nvm,
 /// Homebrew shellenv, Docker Desktop alternatives, …) apply — some installers
 /// only add to the interactive-only file. Windows: `%COMSPEC% /C <cmd>`
-/// (defaults to `cmd.exe`).
-pub fn login_shell() -> (String, &'static [&'static str]) {
+/// (defaults to `cmd.exe`). WSL-backend mode: `wsl.exe -d <distro> -e bash
+/// -lic <cmd>`, the same login + interactive idiom inside the distro.
+///
+/// Runs in the distro's default directory in WSL mode; use
+/// [`login_shell_in`] where the command needs a working directory.
+pub fn login_shell() -> (String, Vec<String>) {
+    match wsl() {
+        Some(w) => wsl_login_shell(w, None),
+        None => native_login_shell(),
+    }
+}
+
+/// [`login_shell`] for a command that must run in `cwd`. In WSL mode the
+/// directory is passed to `wsl.exe --cd` as its Linux path (a `cwd` outside
+/// the backend distro is an error); the caller should then give `wsl.exe`
+/// itself a plain local working directory, not the `\\wsl.localhost` one.
+/// Natively this is just [`login_shell`], and the caller sets the process's
+/// working directory as before.
+pub fn login_shell_in(cwd: &std::path::Path) -> CoreResult<(String, Vec<String>)> {
+    match wsl() {
+        Some(w) => {
+            let linux_cwd = wsl_path::to_linux(w.distro(), cwd)?;
+            Ok(wsl_login_shell(w, Some(&linux_cwd)))
+        }
+        None => Ok(native_login_shell()),
+    }
+}
+
+fn native_login_shell() -> (String, Vec<String>) {
     #[cfg(unix)]
     {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        (shell, &["-lic"])
+        (shell, vec!["-lic".to_string()])
     }
     #[cfg(windows)]
     {
         let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-        (shell, &["/C"])
+        (shell, vec!["/C".to_string()])
     }
 }
 
+/// `wsl.exe -d <distro> [--cd <linux_cwd>] -e bash -lic`. `-e` execs bash
+/// directly (no extra default-shell layer), so the command string is parsed
+/// exactly once, by bash.
+fn wsl_login_shell(wsl: &WslBackend, linux_cwd: Option<&str>) -> (String, Vec<String>) {
+    let mut args = vec!["-d".to_string(), wsl.distro().to_string()];
+    if let Some(cwd) = linux_cwd {
+        args.extend(["--cd".to_string(), cwd.to_string()]);
+    }
+    args.extend(["-e", "bash", "-lic"].map(String::from));
+    ("wsl.exe".to_string(), args)
+}
+
+/// `path` spelled the way the backend's processes see it: its Linux path
+/// inside the distro in WSL-backend mode (`C:\Users\…` → `/mnt/c/Users/…`),
+/// the path itself natively. For paths handed to a child as an argument
+/// (config files, rules files) — a `--cd` goes through [`login_shell_in`].
+pub fn backend_path(path: &std::path::Path) -> CoreResult<String> {
+    match wsl() {
+        Some(w) => wsl_path::to_linux(w.distro(), path),
+        None => Ok(path.to_string_lossy().into_owned()),
+    }
+}
+
+/// In WSL-backend mode, the distro's networking mode as `wslinfo
+/// --networking-mode` reports it (`mirrored`, `nat`, …); `None` natively or
+/// when `wslinfo` is unavailable (older WSL). Agents inside WSL reach
+/// Podium's MCP server on `127.0.0.1` only with mirrored networking. Runs
+/// `wslinfo` directly (`wsl.exe -e`, like [`git_command`]), not through the
+/// login shell, so a chatty `.bashrc` cannot end up in the answer. Blocks —
+/// call from a blocking-friendly context.
+pub fn wsl_networking_mode() -> Option<String> {
+    let w = wsl()?;
+    let output = std::process::Command::new("wsl.exe")
+        .args(["-d", w.distro(), "-e", "wslinfo", "--networking-mode"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_networking_mode(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The mode out of `wslinfo --networking-mode` output: its last non-empty
+/// line, trimmed — should anything still print ahead of it.
+fn parse_networking_mode(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+/// The reverse of [`backend_path`]: a path printed by a backend process (e.g.
+/// git), as a Windows path in WSL-backend mode, unchanged natively.
+pub fn from_backend_path(path: &str) -> std::path::PathBuf {
+    match wsl() {
+        Some(w) => wsl_path::to_windows(w.distro(), path),
+        None => std::path::PathBuf::from(path),
+    }
+}
+
+/// `existing` `WSLENV` plus `KEY/u` for each of `keys` not already listed, so
+/// those variables set on the Windows side of `wsl.exe` reach the Linux side
+/// (WSL passes nothing through otherwise). `/u` = only when launching WSL
+/// from Windows; no `/p` path translation — callers translate paths
+/// themselves where a value is one.
+pub fn wslenv_with<'a>(existing: Option<&str>, keys: impl IntoIterator<Item = &'a str>) -> String {
+    let mut entries: Vec<String> = existing
+        .unwrap_or_default()
+        .split(':')
+        .filter(|e| !e.is_empty())
+        .map(str::to_string)
+        .collect();
+    for key in keys {
+        let listed = entries.iter().any(|e| e.split('/').next() == Some(key));
+        if !listed {
+            entries.push(format!("{key}/u"));
+        }
+    }
+    entries.join(":")
+}
+
 /// A shell command line that exits 0 iff `binary` resolves on `PATH`.
-/// Unix uses `command -v`; Windows uses `where`.
+/// Unix and WSL mode use `command -v`; native Windows uses `where`.
 pub fn command_exists_query(binary: &str) -> String {
+    if wsl().is_some() {
+        return format!("command -v {binary}");
+    }
     #[cfg(unix)]
     {
         format!("command -v {binary}")
@@ -46,20 +223,35 @@ pub fn command_exists_query(binary: &str) -> String {
 }
 
 /// Quote a single argument for inclusion in a command line run through
-/// [`login_shell`]: POSIX single-quote quoting for `$SHELL -lc` on Unix,
-/// Windows argv quoting (the C-runtime backslash/quote escaping rules that
-/// `CommandLineToArgvW` reverses) for `cmd.exe /C` on Windows.
+/// [`login_shell`]: POSIX single-quote quoting for `$SHELL -lc` on Unix and
+/// for bash in WSL-backend mode, Windows argv quoting (the C-runtime
+/// backslash/quote escaping rules that `CommandLineToArgvW` reverses) for
+/// `cmd.exe /C` on native Windows.
 ///
 /// The two are not interchangeable: `cmd.exe` has no concept of POSIX
 /// single-quote grouping, so a POSIX-quoted argument containing a `'` (e.g.
 /// `You're …`) is not treated as one quoted token — `cmd.exe` still splits it
 /// on whitespace, truncating the argument at the first space.
 pub fn quote_arg(arg: &str) -> CoreResult<String> {
+    if wsl().is_some() {
+        return quote_posix(arg);
+    }
+    quote_native(arg)
+}
+
+/// POSIX single-quote quoting, for a command string a POSIX shell parses.
+pub fn quote_posix(arg: &str) -> CoreResult<String> {
+    shlex::try_quote(arg)
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
+}
+
+/// The native shell's quoting: [`quote_posix`] on Unix, argv quoting on
+/// Windows.
+fn quote_native(arg: &str) -> CoreResult<String> {
     #[cfg(unix)]
     {
-        shlex::try_quote(arg)
-            .map(std::borrow::Cow::into_owned)
-            .map_err(|e| CoreError::InvalidInput(format!("cannot quote argument: {e}")))
+        quote_posix(arg)
     }
     #[cfg(windows)]
     {
@@ -191,14 +383,30 @@ pub fn run_shell_stdout(cmd: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The `git` binary to invoke directly (bypassing the login shell) for
-/// worktree operations, which can spawn several git calls per action
+/// A [`std::process::Command`] that runs git, for the worktree operations
+/// (args follow, e.g. `-C <root> worktree list`). Natively that is the
+/// [`git_binary`], invoked directly; in WSL-backend mode it is `wsl.exe -d
+/// <distro> -e git` — the distro's own git, run without a shell, so path
+/// arguments must be in the backend's spelling ([`backend_path`]).
+pub fn git_command() -> std::process::Command {
+    match wsl() {
+        Some(w) => {
+            let mut cmd = std::process::Command::new("wsl.exe");
+            cmd.args(["-d", w.distro(), "-e", "git"]);
+            cmd
+        }
+        None => std::process::Command::new(git_binary()),
+    }
+}
+
+/// The native `git` binary to invoke directly (bypassing the login shell)
+/// for worktree operations, which can spawn several git calls per action
 /// (list/create/remove) — a login shell per call is slow on heavy shell
 /// profiles. Resolved once via the login shell's `command -v git` so
 /// shell-profile PATH edits (e.g. a Homebrew git) are still honoured, then
 /// reused directly; falls back to the bare name if resolution fails.
 /// Windows PATH is process-wide, so no shell round-trip is needed there.
-pub fn git_binary() -> &'static str {
+fn git_binary() -> &'static str {
     static GIT_PATH: OnceLock<String> = OnceLock::new();
     GIT_PATH
         .get_or_init(|| {
@@ -352,6 +560,126 @@ mod tests {
             Some(PathBuf::from("home").join(".claude").join("projects"))
         );
         assert_eq!(claude_projects_root_from(None, None), None);
+    }
+
+    #[test]
+    fn networking_mode_is_the_last_non_empty_line() {
+        assert_eq!(
+            parse_networking_mode("mirrored\n").as_deref(),
+            Some("mirrored")
+        );
+        assert_eq!(
+            parse_networking_mode("Welcome to Ubuntu\r\nnat\r\n\r\n").as_deref(),
+            Some("nat")
+        );
+        assert_eq!(parse_networking_mode(" \n"), None);
+    }
+
+    fn ubuntu() -> WslBackend {
+        WslBackend {
+            distro: "Ubuntu".to_string(),
+        }
+    }
+
+    #[test]
+    fn wsl_login_shell_runs_bash_in_the_distro() {
+        let (program, args) = wsl_login_shell(&ubuntu(), None);
+        assert_eq!(program, "wsl.exe");
+        assert_eq!(args, ["-d", "Ubuntu", "-e", "bash", "-lic"]);
+    }
+
+    #[test]
+    fn wsl_login_shell_passes_the_cwd_before_the_command() {
+        let (_, args) = wsl_login_shell(&ubuntu(), Some("/home/me/mijn project"));
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Ubuntu",
+                "--cd",
+                "/home/me/mijn project",
+                "-e",
+                "bash",
+                "-lic"
+            ]
+        );
+    }
+
+    #[test]
+    fn posix_quoting_round_trips_through_a_posix_tokenizer() {
+        // What WSL mode hands bash, on every host OS.
+        for arg in [
+            "You're the assigned agent for to-do 'Fix login bug'",
+            r#"fix the "login" bug; $HOME `id` \ back"#,
+            "multi\nline\nprompt",
+            "",
+        ] {
+            let quoted = quote_posix(arg).unwrap();
+            assert_eq!(
+                shlex::split(&quoted).unwrap(),
+                vec![arg.to_string()],
+                "{arg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_backend_path_is_the_path_itself_natively() {
+        assert_eq!(
+            from_backend_path("/home/me/app/.git"),
+            std::path::PathBuf::from("/home/me/app/.git")
+        );
+    }
+
+    #[test]
+    fn backend_path_is_the_path_itself_natively() {
+        let path = std::env::temp_dir().join("mcp").join("agent.json");
+        assert_eq!(
+            backend_path(&path).unwrap(),
+            path.to_string_lossy().into_owned()
+        );
+    }
+
+    #[test]
+    fn wslenv_appends_each_key_once() {
+        assert_eq!(
+            wslenv_with(None, ["TERM", "PODIUM_PROCESS_ID"]),
+            "TERM/u:PODIUM_PROCESS_ID/u"
+        );
+        // Existing entries (with or without flags) are kept and not repeated.
+        assert_eq!(
+            wslenv_with(Some("USERPROFILE/p:TERM"), ["TERM", "FOO"]),
+            "USERPROFILE/p:TERM:FOO/u"
+        );
+        assert_eq!(wslenv_with(Some(""), ["A", "A"]), "A/u");
+        assert_eq!(wslenv_with(Some("X/up"), []), "X/up");
+    }
+
+    #[test]
+    fn the_native_backend_is_used_without_init() {
+        // Tests never call init_wsl, so every helper takes the native path.
+        assert!(wsl().is_none());
+        assert_eq!(login_shell(), native_login_shell());
+        let dir = std::env::temp_dir();
+        assert_eq!(login_shell_in(&dir).unwrap(), native_login_shell());
+    }
+
+    #[test]
+    fn wsl_backend_needs_windows_and_a_distro() {
+        assert_eq!(
+            wsl_backend_for(Some("Ubuntu"), true),
+            Some(WslBackend {
+                distro: "Ubuntu".to_string()
+            })
+        );
+        assert_eq!(
+            wsl_backend_for(Some("  Ubuntu-24.04 "), true).map(|w| w.distro().to_string()),
+            Some("Ubuntu-24.04".to_string())
+        );
+        assert_eq!(wsl_backend_for(None, true), None);
+        assert_eq!(wsl_backend_for(Some("   "), true), None);
+        // Off Windows a configured distro is ignored.
+        assert_eq!(wsl_backend_for(Some("Ubuntu"), false), None);
     }
 
     #[test]

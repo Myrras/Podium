@@ -12,7 +12,11 @@ lifecycle supervision, and a built-in **MCP server** so agents can inspect
 and orchestrate the very processes Podium manages (including spawning more
 agents). macOS-first, but macOS **and** Windows are built and packaged (the
 PTY layer runs on Windows via ConPTY; process-group stop is Unix-only, Windows
-terminates the ConPTY child directly). Linux is kept in mind, not yet packaged.
+terminates the ConPTY child directly; the PTY reader answers ConPTY's startup
+`ESC[6n` cursor query itself and strips it from the output, since ConPTY holds
+the child until it's answered and xterm.js only exists once a terminal is
+opened — see `CursorHandshake` in `process/pty.rs`). Linux is kept in mind,
+not yet packaged.
 
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id
 > `com.podium.app`.
@@ -56,7 +60,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **80 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **83 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -73,10 +77,11 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 80 commands.
-- ✅ CI (`.github/workflows/ci.yml`): one macOS job — rustfmt, clippy
+  IPC wrappers over all 83 commands.
+- ✅ CI (`.github/workflows/ci.yml`): a macOS job — rustfmt, clippy
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
-  Vitest, production build.
+  Vitest, production build — plus a Windows job (rustfmt, clippy, `cargo test
+  -p podium-core` only) so `cfg(windows)` code is compiled, linted and tested.
 
 ## Tech stack
 
@@ -685,6 +690,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_write`         | `{ processId, dataB64 }`                    | –                 |
 | `process_resize`        | `{ processId, cols, rows }`                 | –                 |
 | `process_attach`        | `{ processId, channel: Channel<TermEvent> }`| –                 |
+| `backend_settings_get`  | –                                           | `BackendSettingsDto` (`{ wslDistro, activeWslDistro }`, empty = native) |
+| `backend_settings_set_wsl_distro` | `{ distro? }` (blank = native; must be installed — checked against `wsl.exe -l -q`; applies on restart) | `BackendSettingsDto` |
+| `backend_wsl_networking_mode` | – (WSL mode only; the app warns when not `mirrored`) | `string \| null` |
 | `adapters_list`         | –                                           | `AdapterInfo[]`   |
 | `agent_spawn`           | `{ projectId, adapterId?, name?, prompt?, todoIds?, scratchpadIds?, worktree?, worktreeName?, args? }` | `ProcessInfo` |
 | `agent_settings_get`    | –                                           | `AgentSettingsDto` |
@@ -907,10 +915,13 @@ uses; the signed recipes deliberately skip it (`--bundles app`).
 
 Core integration tests (`crates/podium-core/tests/`) exercise **real PTYs**
 and a real MCP server on ephemeral ports — they run in plain `cargo test`
-(no Docker, no `#[ignore]`) but need a Unix environment; CI runs on macOS
-for this reason. Frontend tests are Vitest + jsdom + React Testing Library
-(`src/test/setup.ts` registers matchers and cleanup); Tauri APIs are mocked
-per test file.
+(no Docker) on both macOS and Windows. A group of them depend on Unix-only
+commands/shell syntax or process-group semantics that have no Windows
+equivalent; those are `#[cfg(unix)]` (compiled out entirely on Windows) or
+`#[cfg_attr(windows, ignore = "…")]` (compiled and linted, skipped at run
+time) with a comment explaining why. Frontend tests are Vitest + jsdom +
+React Testing Library (`src/test/setup.ts` registers matchers and cleanup);
+Tauri APIs are mocked per test file.
 
 ## Conventions
 
@@ -948,7 +959,10 @@ per test file.
     tests`) and, for PTY/MCP/supervision behaviour, integration tests in
     `crates/podium-core/tests/` (real PTYs/MCP on ephemeral ports, injectable
     timings so they finish in ms). New MCP tools get a `tools/list` +
-    round-trip assertion.
+    round-trip assertion. If a test is unreliable on Windows (a Unix-only
+    command, shell syntax, or process-group semantics), prefer
+    `#[cfg_attr(windows, ignore = "…")]` over `#[cfg(unix)]`: it still
+    compiles and lints on Windows, only skipping at run time.
   - **New Tauri command** → keep it a thin forwarder and cover the logic it
     calls in `podium-core`; extend the IPC contract table in this file.
   - **Frontend component/store** → a Vitest + jsdom + RTL file beside it
@@ -999,17 +1013,22 @@ Conversations that touch no code (questions, exploration) need no branch.
   `tauri.conf.json` and `package.json` (`just version-check` detects drift).
 - **`CHANGELOG.md`** follows _Keep a Changelog_ and lists **only functional
   (user-facing) changes** — the `release` skill adds an entry per release.
-- **CI** (`.github/workflows/ci.yml`): one `macos-latest` job on every PR
-  and push to `main` — rustfmt, clippy `-D warnings`, `cargo test
-  --workspace` (needs real PTYs, hence macOS), then typecheck, ESLint,
-  Vitest, and a production `pnpm build`. A stub `dist/` is created first so
-  `tauri::generate_context!` compiles.
+- **CI** (`.github/workflows/ci.yml`): on every PR and push to `main`, a
+  `macos-latest` job — rustfmt, clippy `-D warnings`, `cargo test
+  --workspace` (real PTYs), then typecheck, ESLint, Vitest, and a production
+  `pnpm build` — and a `windows-latest` job. Both run rustfmt and clippy
+  `-D warnings` over the **whole workspace** (so `cfg(windows)` code in
+  `src-tauri` is linted too); only the test step differs, since the macOS job
+  already covers `--workspace` — Windows runs `cargo test -p podium-core`
+  (ConPTY, minus the Unix-shell-dependent cases). Both stub `dist/` first so
+  `tauri::generate_context!` compiles. About 30 podium-core integration tests
+  spawn Unix-only commands/shell syntax with no ConPTY equivalent and are
+  `#[cfg_attr(windows, ignore)]`; the macOS job still runs them.
 - **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
   Windows, each building natively (cross-compiling Tauri is painful). macOS
   packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
   packages the NSIS `.exe`. Runs on `workflow_dispatch` and any pushed `v*`
-  tag, uploading each OS's installer as an artifact. CI (`ci.yml`) still runs
-  tests on macOS only — they need real Unix PTYs.
+  tag, uploading each OS's installer as an artifact.
 - **Releasing** is done via the **`release` skill** (see _Git workflow_).
   Do **not** create git tags or releases without explicit user approval
   (invoking the skill + its confirmation step is that approval).

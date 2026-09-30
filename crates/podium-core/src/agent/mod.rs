@@ -208,7 +208,9 @@ impl AgentAdapter for CliAdapter {
         if let Some(mcp) = ctx.mcp {
             let path = write_mcp_config(mcp, ctx.process_id)?;
             args.push("--mcp-config".to_string());
-            args.push(crate::platform::quote_arg(&path.to_string_lossy())?);
+            args.push(crate::platform::quote_arg(&crate::platform::backend_path(
+                &path,
+            )?)?);
             // Cross-session messaging: with no explicit inbound setting the
             // CLI decides per message from the two sessions' permission-mode
             // classes, and the assistant (`bypassPermissions`) never matches
@@ -258,7 +260,9 @@ impl AgentAdapter for CliAdapter {
                         &identity_prompt(ctx, peer_messaging),
                     )?;
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&path.to_string_lossy())?);
+                    args.push(crate::platform::quote_arg(&crate::platform::backend_path(
+                        &path,
+                    )?)?);
                 }
                 IdentityDelivery::Unsupported => {}
             }
@@ -539,9 +543,10 @@ mod tests {
     use std::fs;
 
     /// Round-trips a built [`LaunchPlan::command`] back into argv, using
-    /// whichever tokenizer matches the shell `login_shell()` actually runs it
-    /// through on this OS — `shlex` for `$SHELL -lc`, the Windows argv parser
-    /// for `cmd.exe /C`.
+    /// whichever tokenizer matches the shell `login_shell()` runs it through
+    /// natively — `shlex` for `$SHELL -lc`, the Windows argv parser for
+    /// `cmd.exe /C`. Unit tests never enter WSL-backend mode (`init_wsl` is
+    /// process-global); its POSIX quoting is covered in `platform.rs`.
     fn split_command(cmd: &str) -> Vec<String> {
         #[cfg(unix)]
         {

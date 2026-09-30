@@ -3,12 +3,14 @@
 //! `podium/<name>` branch, so an agent's changes never touch the user's
 //! working tree.
 //!
-//! Git is invoked directly via `platform::git_binary()` (a path resolved once
-//! through the login shell, then reused) rather than re-spawning a login
-//! shell on every call — list/create/remove can each fire several git calls,
-//! and a login shell per call is slow on heavy shell profiles. stderr never
-//! reaches a `CoreError` message (it can contain repo paths), but is logged
-//! via `tracing::warn!` on failure so the real cause is diagnosable.
+//! Git is invoked directly via `platform::git_command()` (natively a path
+//! resolved once through the login shell, then reused; in WSL-backend mode
+//! the distro's git via `wsl.exe -e git`, with paths translated both ways)
+//! rather than re-spawning a login shell on every call — list/create/remove
+//! can each fire several git calls, and a login shell per call is slow on
+//! heavy shell profiles. stderr never reaches a `CoreError` message (it can
+//! contain repo paths), but is logged via `tracing::warn!` on failure so the
+//! real cause is diagnosable.
 //! There is no persistence, and `list` has no events (`git worktree list
 //! --porcelain` is the source of truth); `create`/`remove` do emit
 //! `WorktreesChanged` via the orchestrator.
@@ -44,9 +46,17 @@ const MAX_SLUG_LEN: usize = 40;
 /// failure (e.g. "dubious ownership", git missing, wrong cwd) is visible in
 /// the app logs instead of collapsing into a generic error.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(crate::platform::git_binary())
+    let root_arg = match crate::platform::backend_path(root) {
+        Ok(path) => path,
+        Err(e) => {
+            // WSL-backend mode and a root outside the backend distro.
+            tracing::warn!(root = %root.display(), "cannot run git here: {e}");
+            return None;
+        }
+    };
+    let output = crate::platform::git_command()
         .arg("-C")
-        .arg(root)
+        .arg(root_arg)
         .args(args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -120,8 +130,9 @@ fn ensure_excluded(root: &Path) -> CoreResult<()> {
         .ok_or(CoreError::NotAGitRepo)?
         .trim()
         .to_string();
-    let common = if Path::new(&common).is_absolute() {
-        PathBuf::from(common)
+    let common = crate::platform::from_backend_path(&common);
+    let common = if common.is_absolute() {
+        common
     } else {
         root.join(common)
     };
@@ -192,7 +203,7 @@ pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
     ensure_excluded(&root)?;
     let path = dir.join(&candidate);
     std::fs::create_dir_all(&dir)?;
-    let path_str = path.to_string_lossy().into_owned();
+    let path_str = crate::platform::backend_path(&path)?;
     let branch = format!("podium/{candidate}");
     if git(&root, &["worktree", "add", &path_str, "-b", &branch]).is_none() {
         return Err(CoreError::Git(
@@ -224,7 +235,7 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
         let mut branch: Option<String> = None;
         for line in block.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
-                path = Some(PathBuf::from(p));
+                path = worktree_path(crate::platform::wsl(), p, &base);
             } else if let Some(b) = line.strip_prefix("branch ") {
                 branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
             } else if line == "detached" {
@@ -232,9 +243,6 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
             }
         }
         let Some(path) = path else { continue };
-        if !path.starts_with(&base) {
-            continue;
-        }
         let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
         };
@@ -247,6 +255,31 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
     }
     infos.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(infos)
+}
+
+/// A `worktree <p>` path from `git worktree list --porcelain`, as Podium
+/// spells it, if it is a Podium worktree (under `base`). Natively git prints
+/// the path Podium uses. In WSL-backend mode it prints the Linux path, so
+/// the match is made in that spelling and the result rebuilt under `base` —
+/// keeping however the user opened the project (`\\wsl$\…` or
+/// `\\wsl.localhost\…`, any casing), which a plain translation back would
+/// not.
+fn worktree_path(
+    wsl: Option<&crate::platform::WslBackend>,
+    p: &str,
+    base: &Path,
+) -> Option<PathBuf> {
+    let Some(wsl) = wsl else {
+        let path = PathBuf::from(p);
+        return path.starts_with(base).then_some(path);
+    };
+    let base_linux = crate::platform::wsl_path::to_linux(wsl.distro(), base).ok()?;
+    let rel = p.strip_prefix(&base_linux)?.strip_prefix('/')?;
+    Some(
+        rel.split('/')
+            .filter(|s| !s.is_empty())
+            .fold(base.to_path_buf(), |acc, s| acc.join(s)),
+    )
 }
 
 /// Remove the worktree named `name`. A manually deleted directory is pruned
@@ -273,7 +306,7 @@ pub fn remove(root: &Path, name: &str, force: bool) -> CoreResult<()> {
             "worktree",
             "remove",
             "--force",
-            &entry.path.to_string_lossy(),
+            &crate::platform::backend_path(&entry.path)?,
         ],
     )
     .is_none()
@@ -286,6 +319,36 @@ pub fn remove(root: &Path, name: &str, force: bool) -> CoreResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_paths_from_wsl_git_keep_the_projects_spelling() {
+        let wsl = crate::platform::WslBackend::for_tests("Ubuntu");
+        let base = Path::new(r"\\wsl$\ubuntu\home\me\app\.podium\worktrees");
+        assert_eq!(
+            worktree_path(Some(&wsl), "/home/me/app/.podium/worktrees/fix-login", base),
+            Some(base.join("fix-login"))
+        );
+        // The main checkout and anything outside `.podium/worktrees` are not ours.
+        assert_eq!(worktree_path(Some(&wsl), "/home/me/app", base), None);
+        assert_eq!(
+            worktree_path(Some(&wsl), "/home/me/app/.podium/worktrees-other/x", base),
+            None
+        );
+    }
+
+    #[test]
+    fn worktree_paths_natively_are_gits_own() {
+        let base = std::env::temp_dir().join(".podium").join("worktrees");
+        let inside = base.join("fix-login");
+        assert_eq!(
+            worktree_path(None, &inside.to_string_lossy(), &base),
+            Some(inside)
+        );
+        assert_eq!(
+            worktree_path(None, &std::env::temp_dir().to_string_lossy(), &base),
+            None
+        );
+    }
 
     /// A throwaway git repo with one commit, identity pinned so commits
     /// work on machines without global git config.
