@@ -18,6 +18,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectId, ScratchpadId, ScratchpadInfo } from "../ipc/types";
+import {
+  addSelectedItems,
+  clearSelectedItems,
+  toggleSelectedItem,
+  useSelectionStore,
+} from "../lib/selection";
 import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
@@ -137,24 +143,25 @@ export function ScratchpadSubsection({
   const [archiveOpen, setArchiveOpen] = useState(false);
 
   // Multi-select state: the chosen ids and the anchor row for Shift+range.
-  const [selected, setSelected] = useState<Set<ScratchpadId>>(new Set());
+  // Multi-select lives in the shared selection store — the assistant
+  // composer shows the same rows as context chips. Only the Shift+range
+  // anchor stays local; nothing outside this list cares about it.
+  const allSelected = useSelectionStore((s) => s.items);
+  const selected = useMemo(
+    () =>
+      new Set(
+        allSelected
+          .filter((i) => i.kind === "scratchpad" && i.projectId === projectId)
+          .map((i) => i.id),
+      ),
+    [allSelected, projectId],
+  );
   const anchorRef = useRef<ScratchpadId | null>(null);
 
   // Initial pull; later changes arrive via the `scratchpad:changed` refresh.
   useEffect(() => {
     void refresh(projectId);
   }, [projectId, refresh]);
-
-  // Drop ids that no longer exist (a scratchpad was removed/archived away),
-  // so the selection and its count never reference stale rows.
-  useEffect(() => {
-    setSelected((prev) => {
-      if (prev.size === 0) return prev;
-      const live = new Set(scratchpads.map((sp) => sp.id));
-      const next = new Set([...prev].filter((id) => live.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [scratchpads]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
   const selectedIds = useMemo(
@@ -177,12 +184,7 @@ export function ScratchpadSubsection({
     scratchpadId: ScratchpadId,
   ) => {
     if (e.metaKey || e.ctrlKey) {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(scratchpadId)) next.delete(scratchpadId);
-        else next.add(scratchpadId);
-        return next;
-      });
+      toggleSelectedItem({ kind: "scratchpad", projectId, id: scratchpadId });
       anchorRef.current = scratchpadId;
       return;
     }
@@ -191,11 +193,13 @@ export function ScratchpadSubsection({
       const to = scratchpads.findIndex((sp) => sp.id === scratchpadId);
       if (from !== -1 && to !== -1) {
         const [lo, hi] = from <= to ? [from, to] : [to, from];
-        setSelected((prev) => {
-          const next = new Set(prev);
-          for (let i = lo; i <= hi; i++) next.add(scratchpads[i].id);
-          return next;
-        });
+        addSelectedItems(
+          scratchpads.slice(lo, hi + 1).map((sp) => ({
+            kind: "scratchpad" as const,
+            projectId,
+            id: sp.id,
+          })),
+        );
         return;
       }
     }
@@ -214,7 +218,7 @@ export function ScratchpadSubsection({
     // A group has no single sensible name — leave it blank so the agent names
     // the session itself once it has read them all.
     onPickAgent(projectId, selectedIds, "");
-    setSelected(new Set());
+    clearSelectedItems("scratchpad", projectId);
     anchorRef.current = null;
   };
 
@@ -278,7 +282,7 @@ export function ScratchpadSubsection({
             aria-label="Clear selection"
             title="Clear selection"
             onClick={() => {
-              setSelected(new Set());
+              clearSelectedItems("scratchpad", projectId);
               anchorRef.current = null;
             }}
           >

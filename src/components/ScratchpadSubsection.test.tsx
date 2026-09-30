@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { ScratchpadInfo } from "../ipc/types";
 import { useProjectStore } from "../state/projectStore";
+import { useSelectionStore } from "../lib/selection";
 import { useScratchpadStore } from "../state/scratchpadStore";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 
@@ -79,6 +80,7 @@ describe("ScratchpadSubsection", () => {
   beforeEach(() => {
     useScratchpadStore.setState(initialScratchpad, true);
     useProjectStore.setState(initialProject, true);
+    useSelectionStore.setState({ text: "", items: [] });
   });
 
   it("renders_scratchpad_list_for_project", () => {
