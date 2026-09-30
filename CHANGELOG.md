@@ -8,6 +8,17 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.2.0] - 2026-09-30
+
+### Added
+
+- **Agents can pick up where they left off after a restart.** A new setting,
+  Settings → Agents → Remember agent sessions (off by default), remembers
+  each running Claude Code agent's conversation when you quit Podium and
+  resumes it the next time that project opens. Only sessions Podium itself
+  started are resumed, never a `claude` session you ran yourself in the same
+  folder. Auggie agents are not resumed.
+
 ## [2.0.4] - 2026-09-30
 
 ### Fixed
