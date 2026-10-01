@@ -344,44 +344,51 @@ function ProjectGroup({
             <ErrorIcon size={13} />
           </span>
         )}
+        {/* Hover actions overlay the end of the name instead of reserving
+            their width, so a long name keeps the row at rest. Hidden while
+            renaming so they never cover the input. */}
         {!editing && (
-          <button
-            type="button"
-            className={styles.projectAction}
-            aria-label={`Rename ${project.name}`}
-            title="Rename"
-            onClick={(e) => {
-              e.stopPropagation();
-              startEditing();
-            }}
-          >
-            <EditIcon size={12} />
-          </button>
+          <div className={styles.projectActions}>
+            <div className={styles.projectActionsInner}>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Rename ${project.name}`}
+                title="Rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startEditing();
+                }}
+              >
+                <EditIcon size={12} />
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Reload podium.yml for ${project.name}`}
+                title="Reload podium.yml"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void reloadProjectConfig(project.id);
+                }}
+              >
+                <RestartIcon size={12} />
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Remove ${project.name} from sidebar`}
+                title="Remove from sidebar"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void closeProject(project.id);
+                }}
+              >
+                <CloseIcon size={12} />
+              </button>
+            </div>
+          </div>
         )}
-        <button
-          type="button"
-          className={styles.projectAction}
-          aria-label={`Reload podium.yml for ${project.name}`}
-          title="Reload podium.yml"
-          onClick={(e) => {
-            e.stopPropagation();
-            void reloadProjectConfig(project.id);
-          }}
-        >
-          <RestartIcon size={12} />
-        </button>
-        <button
-          type="button"
-          className={styles.projectAction}
-          aria-label={`Remove ${project.name} from sidebar`}
-          title="Remove from sidebar"
-          onClick={(e) => {
-            e.stopPropagation();
-            void closeProject(project.id);
-          }}
-        >
-          <CloseIcon size={12} />
-        </button>
       </div>
       <div
         className={`${styles.groupBody}${isCollapsed ? ` ${styles.groupBodyCollapsed}` : ""}`}

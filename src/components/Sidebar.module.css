@@ -173,10 +173,46 @@
 }
 
 /*
- * Project row actions (rename / reload / remove). Hidden at rest so the
- * sidebar reads as project names only; the slot stays reserved (opacity,
- * not display) so revealing them never reflows the row.
+ * Project row actions (rename / reload / remove). The container is a
+ * zero-width anchor in the row; the strip inside hangs off its right edge
+ * and overlays the end of the name on hover, so at rest the name gets the
+ * full width and revealing the actions never reflows the row. The opaque
+ * fade masks the name text underneath. New project actions go inside the
+ * strip, so they never cost the name any width either.
  */
+.projectActions {
+  position: relative;
+  align-self: stretch;
+  width: 0;
+  flex-shrink: 0;
+  /* Cancel the row's gap on this zero-width item so it costs no space. */
+  margin-left: calc(-1 * var(--sp-2));
+}
+
+.projectActionsInner {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  padding-left: var(--sp-4);
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--surface-hover) var(--sp-4)
+  );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.projectHeader:hover .projectActionsInner,
+.projectHeader:focus-within .projectActionsInner {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .projectAction {
   display: flex;
   align-items: center;
@@ -190,18 +226,9 @@
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
-  opacity: 0;
-  pointer-events: none;
   transition:
     background var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out),
-    opacity var(--dur-1) var(--ease-out);
-}
-
-.projectHeader:hover .projectAction,
-.projectHeader:focus-within .projectAction {
-  opacity: 1;
-  pointer-events: auto;
+    color var(--dur-1) var(--ease-out);
 }
 
 .projectAction:hover {
