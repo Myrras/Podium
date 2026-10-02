@@ -127,7 +127,8 @@ describe("GitBoard", () => {
     expect(column("In review").getByText("Fix 8")).toBeTruthy();
     expect(column("Done (14d)").getByText("Shipped")).toBeTruthy();
     expect(screen.getByLabelText("PRs counts").textContent).toBe(
-      "PRs: 5 open · 1,200 merged",
+      // Formatted in the user's own locale ("1,200" / "1.200").
+      `PRs: 5 open · ${(1200).toLocaleString()} merged`,
     );
     // Mine hides the author; All shows it.
     expect(screen.queryByText("sam")).toBeNull();
