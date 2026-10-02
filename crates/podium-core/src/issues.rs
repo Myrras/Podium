@@ -568,12 +568,12 @@ fn parse_gh_counts(json: &str) -> CoreResult<PrCounts> {
 /// The token of a specific `gh` account on `host`. `gh` already holds it, so
 /// this only picks which one — Podium never stores it.
 fn gh_account_token(gh: &str, host: &str, account: &str) -> CoreResult<String> {
-    let output = Command::new(gh)
-        .args(["auth", "token", "--hostname", host, "--user", account])
+    let mut cmd = Command::new(gh);
+    cmd.args(["auth", "token", "--hostname", host, "--user", account])
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| CoreError::IssuesGhUnavailable)?;
+        .stderr(Stdio::null());
+    crate::platform::hide_console_window(&mut cmd);
+    let output = cmd.output().map_err(|_| CoreError::IssuesGhUnavailable)?;
     let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !output.status.success() || token.is_empty() {
         return Err(CoreError::IssuesGhUnavailable);
@@ -596,6 +596,9 @@ fn run_gh_scoped(
 ) -> Result<String, (CoreError, bool)> {
     let mut cmd = Command::new(gh);
     cmd.args(args).stdin(Stdio::null());
+    // Seven of these per board, per project, on every refresh: without it
+    // each one flashes a console window on Windows.
+    crate::platform::hide_console_window(&mut cmd);
     if let Some(token) = token {
         let var = if host == "github.com" {
             "GH_TOKEN"
