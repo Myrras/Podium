@@ -97,13 +97,41 @@ async fn http_post_inner(
         .await
         .expect("timely response")
         .expect("read response");
-    let text = String::from_utf8_lossy(&response).into_owned();
+    let text = dechunk(&String::from_utf8_lossy(&response));
     let status = text
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .expect("status line");
     (status, text)
+}
+
+/// Decode a chunked-encoded body in place, so a payload that spans several
+/// chunks reads as one (the chunk-size lines would otherwise land inside it).
+fn dechunk(raw: &str) -> String {
+    let Some((head, body)) = raw.split_once("\r\n\r\n") else {
+        return raw.to_string();
+    };
+    if !head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        return raw.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some((size, tail)) = rest.split_once("\r\n") {
+        let Ok(n) = usize::from_str_radix(size.trim(), 16) else {
+            break;
+        };
+        if n == 0 || tail.len() < n {
+            out.push_str(&tail[..n.min(tail.len())]);
+            break;
+        }
+        out.push_str(&tail[..n]);
+        rest = tail[n..].strip_prefix("\r\n").unwrap_or(&tail[n..]);
+    }
+    format!("{head}\r\n\r\n{out}")
 }
 
 /// Pull the `Mcp-Session-Id` response header out of a raw HTTP response

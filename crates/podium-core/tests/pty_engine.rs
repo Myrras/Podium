@@ -319,6 +319,7 @@ async fn zshrc_only_env_is_visible_to_spawned_processes() {
     assert!(text.contains("zshrc_was_sourced"));
 }
 
+#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
 #[tokio::test(flavor = "multi_thread")]
 async fn output_activity_lists_running_processes_that_printed() {
     let (orch, id, _dir) = setup("printf hello; sleep 30").await;
