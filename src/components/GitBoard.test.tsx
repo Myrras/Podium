@@ -92,10 +92,24 @@ function seed(p: Partial<ProjectBoard>) {
 
 const column = (name: string) => within(screen.getByRole("region", { name }));
 
+/** One setup, so the board is fetched (no setup = nothing is fetched). */
+const CONFIGURED = {
+  setups: [
+    {
+      id: "s1",
+      name: "GitHub",
+      provider: "github" as const,
+      url: "https://github.com",
+      tokenSet: false,
+    },
+  ],
+  projects: {},
+};
+
 beforeEach(() => {
   vi.mocked(issuesBoard).mockClear();
   vi.mocked(openExternalLink).mockClear();
-  useIssueStore.setState({ byProject: {}, overview: null }, false);
+  useIssueStore.setState({ byProject: {}, overview: CONFIGURED }, false);
   useLayoutStore.setState({ openBoard: { projectId: P } });
   useProjectStore.setState({
     projects: [{ id: P, root: "/work/widgets" } as ProjectInfo],

@@ -67,6 +67,8 @@ export const issueAgentPrompt = (i: BoardItem) =>
 /** Inline text per board error kind; unknown kinds fall back to the (Podium-owned) message. */
 export function boardErrorText(error: IpcError): string {
   switch (error.kind) {
+    case "issuesNotConfigured":
+      return "No Git board is set up yet. Add one in Settings → Issues.";
     case "issuesNoRemote":
       return "No GitHub or GitLab remote found.";
     case "issuesGhUnavailable":

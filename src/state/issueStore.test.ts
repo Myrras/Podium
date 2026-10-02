@@ -4,6 +4,7 @@ vi.mock("../ipc/commands", () => ({
   issuesBoard: vi.fn(),
   issuesBoardCached: vi.fn(),
   issuesBoardMove: vi.fn(),
+  issuesSettingsGet: vi.fn(),
   toIpcError: (e: unknown) => e as { kind: string; message: string },
 }));
 
@@ -13,8 +14,9 @@ import {
   issuesBoard,
   issuesBoardCached,
   issuesBoardMove,
+  issuesSettingsGet,
 } from "../ipc/commands";
-import type { Board } from "../ipc/types";
+import type { Board, IssuesOverview } from "../ipc/types";
 import { toastError } from "./toastStore";
 import {
   ISSUE_FOCUS_STALE_MS,
@@ -25,7 +27,22 @@ import {
 const listMock = vi.mocked(issuesBoard);
 const cachedMock = vi.mocked(issuesBoardCached);
 const moveMock = vi.mocked(issuesBoardMove);
+const settingsMock = vi.mocked(issuesSettingsGet);
 const P = "proj-1";
+
+const CONFIGURED: IssuesOverview = {
+  setups: [
+    {
+      id: "s1",
+      name: "GitHub",
+      provider: "github",
+      url: "https://github.com",
+      tokenSet: false,
+    },
+  ],
+  projects: {},
+};
+const UNCONFIGURED: IssuesOverview = { setups: [], projects: {} };
 
 function board(...numbers: number[]): Board {
   return {
@@ -60,11 +77,38 @@ beforeEach(() => {
   cachedMock.mockReset().mockResolvedValue(null);
   moveMock.mockReset();
   vi.mocked(toastError).mockClear();
-  useIssueStore.setState({ byProject: {} }, false);
+  settingsMock.mockReset();
+  useIssueStore.setState({ byProject: {}, overview: CONFIGURED }, false);
 });
 afterEach(() => vi.useRealTimers());
 
 describe("issueStore", () => {
+  it("never asks the backend for a board while no setup exists", async () => {
+    useIssueStore.setState({ overview: UNCONFIGURED });
+    await useIssueStore.getState().refresh(P);
+    expect(listMock).not.toHaveBeenCalled();
+    expect(useIssueStore.getState().byProject[P]).toMatchObject({
+      board: null,
+      loading: false,
+      error: { kind: "issuesNotConfigured" },
+    });
+  });
+
+  it("loads the setups first when they are not known yet", async () => {
+    useIssueStore.setState({ overview: null });
+    settingsMock.mockResolvedValue(UNCONFIGURED);
+    await useIssueStore.getState().refresh(P);
+    expect(settingsMock).toHaveBeenCalledTimes(1);
+    expect(listMock).not.toHaveBeenCalled();
+
+    // Adding a setup refetches the shown project, now for real.
+    listMock.mockResolvedValue(board(3));
+    useIssueStore.getState().setOverview(CONFIGURED);
+    await vi.waitFor(() =>
+      expect(useIssueStore.getState().byProject[P].board).toEqual(board(3)),
+    );
+  });
+
   it("dedupes a refresh while one is in flight", async () => {
     let resolve!: (v: Board) => void;
     listMock.mockReturnValue(new Promise((r) => (resolve = r)));

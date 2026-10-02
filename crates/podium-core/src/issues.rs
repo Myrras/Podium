@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread::ScopedJoinHandle;
 
 use chrono::{DateTime, Utc};
@@ -568,12 +568,13 @@ fn parse_gh_counts(json: &str) -> CoreResult<PrCounts> {
 /// The token of a specific `gh` account on `host`. `gh` already holds it, so
 /// this only picks which one — Podium never stores it.
 fn gh_account_token(gh: &str, host: &str, account: &str) -> CoreResult<String> {
-    let mut cmd = Command::new(gh);
+    let mut cmd = crate::platform::gh_command(gh);
     cmd.args(["auth", "token", "--hostname", host, "--user", account])
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    crate::platform::hide_console_window(&mut cmd);
-    let output = cmd.output().map_err(|_| CoreError::IssuesGhUnavailable)?;
+    let output =
+        crate::platform::run_gated(&mut cmd).map_err(|_| CoreError::IssuesGhUnavailable)?;
     let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !output.status.success() || token.is_empty() {
         return Err(CoreError::IssuesGhUnavailable);
@@ -594,20 +595,20 @@ fn run_gh_scoped(
     token: Option<&str>,
     args: &[&str],
 ) -> Result<String, (CoreError, bool)> {
-    let mut cmd = Command::new(gh);
-    cmd.args(args).stdin(Stdio::null());
-    // Seven of these per board, per project, on every refresh: without it
-    // each one flashes a console window on Windows.
-    crate::platform::hide_console_window(&mut cmd);
+    let mut cmd = crate::platform::gh_command(gh);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(token) = token {
         let var = if host == "github.com" {
             "GH_TOKEN"
         } else {
             "GH_ENTERPRISE_TOKEN"
         };
-        cmd.env(var, token);
+        crate::platform::backend_env(&mut cmd, var, token);
     }
-    let output = cmd.output().map_err(|e| {
+    let output = crate::platform::run_gated(&mut cmd).map_err(|e| {
         (
             match e.kind() {
                 std::io::ErrorKind::NotFound => CoreError::IssuesGhUnavailable,
@@ -1476,16 +1477,17 @@ fn parse_gl_approvals(json: &str) -> HashMap<u64, Approvals> {
 }
 
 /// The setup that serves `remote_host`: the project's `selected` one (which
-/// must be for that host), else the first configured for it. `Ok(None)` means
-/// github.com with nothing configured — the active `gh` account, zero-config.
+/// must be for that host), else the first configured for it. There is no
+/// zero-config fallback: a board is only fetched once a setup exists, so
+/// Podium never shells out to `gh` for a user who never asked for a board.
 fn pick<'a>(
     remote_host: &str,
     setups: &'a [IssueSetup],
     selected: Option<&'a IssueSetup>,
-) -> CoreResult<Option<&'a IssueSetup>> {
+) -> CoreResult<&'a IssueSetup> {
     if let Some(setup) = selected {
         return if url_host(&setup.url) == remote_host {
-            Ok(Some(setup))
+            Ok(setup)
         } else {
             Err(CoreError::IssuesHostMismatch {
                 setup: setup.name.clone(),
@@ -1493,10 +1495,19 @@ fn pick<'a>(
             })
         };
     }
-    match setups.iter().find(|s| url_host(&s.url) == remote_host) {
-        Some(setup) => Ok(Some(setup)),
-        None if remote_host == "github.com" => Ok(None),
-        None => Err(CoreError::IssuesUnsupportedHost),
+    setups
+        .iter()
+        .find(|s| url_host(&s.url) == remote_host)
+        .ok_or(CoreError::IssuesUnsupportedHost)
+}
+
+/// Refuse before anything is spawned (not even the `git remote` lookup) when
+/// Settings → Issues has no setup at all.
+fn require_setup(setups: &[IssueSetup]) -> CoreResult<()> {
+    if setups.is_empty() {
+        Err(CoreError::IssuesNotConfigured)
+    } else {
+        Ok(())
     }
 }
 
@@ -1526,16 +1537,17 @@ pub fn board(
     mine: bool,
     cached: Option<&Board>,
 ) -> CoreResult<Board> {
+    require_setup(setups)?;
     let (host, path) = detect(root)?;
     let setup = pick(&host, setups, selected)?;
     let since = Utc::now() - chrono::Duration::days(DONE_DAYS);
     match setup {
-        Some(IssueSetup {
+        IssueSetup {
             provider: IssueProvider::Gitlab,
             id,
             url,
             ..
-        }) => {
+        } => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
             fetch_gitlab(
@@ -1549,7 +1561,7 @@ pub fn board(
         }
         _ => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
-            let account = setup.and_then(|s| s.account.as_deref());
+            let account = setup.account.as_deref();
             fetch_github(gh, &host, &path, account, mine, since)
         }
     }
@@ -1858,22 +1870,23 @@ pub fn move_item(
     item: &BoardItem,
     to: &str,
 ) -> CoreResult<Option<Vec<String>>> {
+    require_setup(setups)?;
     let (host, path) = detect(root)?;
     let setup = pick(&host, setups, selected)?;
     match setup {
-        Some(IssueSetup {
+        IssueSetup {
             provider: IssueProvider::Gitlab,
             id,
             url,
             ..
-        }) => {
+        } => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
             move_gitlab(url, &path, &token, board, item, to).map(Some)
         }
         _ => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
-            let account = setup.and_then(|s| s.account.as_deref());
+            let account = setup.account.as_deref();
             move_github(gh, &host, &path, account, board, item, to)?;
             Ok(None)
         }
@@ -1995,21 +2008,22 @@ pub fn unassign_item(
     item: &BoardItem,
     me: &str,
 ) -> CoreResult<()> {
+    require_setup(setups)?;
     let (host, path) = detect(root)?;
     match pick(&host, setups, selected)? {
-        Some(IssueSetup {
+        IssueSetup {
             provider: IssueProvider::Gitlab,
             id,
             url,
             ..
-        }) => {
+        } => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
             unassign_gitlab(url, &path, &token, item, me)
         }
         setup => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
-            let account = setup.and_then(|s| s.account.as_deref());
+            let account = setup.account.as_deref();
             unassign_github(gh, &host, &path, account, item, me)
         }
     }
@@ -2246,20 +2260,38 @@ mod tests {
         let gh2 = setup("gh2", IssueProvider::Github, "https://github.com");
         let setups = vec![gl.clone(), gh2.clone()];
 
-        // Zero-config github.com, and unknown hosts.
-        assert_eq!(pick("github.com", &[], None).unwrap(), None);
+        // No zero-config github.com any more, and unknown hosts.
+        assert!(matches!(
+            pick("github.com", std::slice::from_ref(&gl), None),
+            Err(CoreError::IssuesUnsupportedHost)
+        ));
         assert!(matches!(
             pick("other.test", &setups, None),
             Err(CoreError::IssuesUnsupportedHost)
         ));
         // Auto: first setup whose host matches.
-        assert_eq!(pick("git.example.test", &setups, None).unwrap(), Some(&gl));
-        assert_eq!(pick("github.com", &setups, None).unwrap(), Some(&gh2));
+        assert_eq!(pick("git.example.test", &setups, None).unwrap(), &gl);
+        assert_eq!(pick("github.com", &setups, None).unwrap(), &gh2);
         // An explicit pick wins, but must be for the remote's host.
-        assert_eq!(pick("github.com", &setups, Some(&gh2)).unwrap(), Some(&gh2));
+        assert_eq!(pick("github.com", &setups, Some(&gh2)).unwrap(), &gh2);
         assert!(matches!(
             pick("github.com", &setups, Some(&gl)),
             Err(CoreError::IssuesHostMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn no_setup_refuses_before_spawning_anything() {
+        // Not a git repo: reaching `detect` would fail with IssuesNoRemote.
+        let dir = tempfile::tempdir().unwrap();
+        let item = item(ItemKind::Issue, 1, "open");
+        assert!(matches!(
+            board(dir.path(), &[], None, true, None),
+            Err(CoreError::IssuesNotConfigured)
+        ));
+        assert!(matches!(
+            unassign_item(dir.path(), &[], None, &item, "someone"),
+            Err(CoreError::IssuesNotConfigured)
         ));
     }
 

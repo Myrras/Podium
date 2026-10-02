@@ -29,10 +29,13 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
   useEffect(() => startAutoRefresh(projectId), [projectId, startAutoRefresh]);
   useEffect(() => void loadOverview(), [loadOverview]);
 
+  // Not set up is a state, not a failure: no warning dot on every project.
+  const error =
+    entry?.error?.kind === "issuesNotConfigured" ? null : entry?.error;
   const items = entry?.board?.items ?? [];
   const open = items.filter((i) => i.column !== "done").length;
-  const title = entry?.error
-    ? `Git board — ${boardErrorText(entry.error)}`
+  const title = error
+    ? `Git board — ${boardErrorText(error)}`
     : entry?.board
       ? `Git board — ${open} open`
       : "Git board";
@@ -42,7 +45,7 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
       type="button"
       className={styles.gitButton}
       data-open={isOpen ? "true" : undefined}
-      data-error={entry?.error ? "true" : undefined}
+      data-error={error ? "true" : undefined}
       aria-label={title}
       title={title}
       onClick={(e) => {
@@ -52,7 +55,7 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
       }}
     >
       <BoardIcon size={12} />
-      {entry?.board && !entry.error && open > 0 && (
+      {entry?.board && !error && open > 0 && (
         <span aria-hidden>{open}</span>
       )}
     </button>

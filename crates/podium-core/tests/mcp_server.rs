@@ -2868,7 +2868,8 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
         column: column.to_string(),
     };
 
-    // Nothing cached: a move is refused, and a non-git project has no board.
+    // Nothing cached: a move is refused, and with no setup in Settings →
+    // Issues there is no board at all (nothing is fetched).
     let err = tools
         .move_board_item(Parameters(mv("issue", 1, "done")))
         .await
@@ -2877,8 +2878,8 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
     let err = tools
         .get_board(Parameters(get(false)))
         .await
-        .expect_err("no remote");
-    assert!(err.message.contains("remote"), "{err:?}");
+        .expect_err("no setup");
+    assert!(err.message.contains("No Git board is set up"), "{err:?}");
 
     // Seed the on-disk cache for this project (fictitious board).
     let root = orch.list_projects()[0].root.clone();
@@ -2931,7 +2932,7 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
         }))
         .await
         .expect_err("mine scope not cached");
-    assert!(err.message.contains("remote"), "{err:?}");
+    assert!(err.message.contains("No Git board is set up"), "{err:?}");
 
     // Refusals happen before anything remote is touched.
     for (kind, number, column, want) in [

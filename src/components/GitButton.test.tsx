@@ -34,9 +34,23 @@ const card = (column: string, number: number): BoardItem => ({
   approvals: null,
 });
 
+/** One setup, so the board is fetched (no setup = nothing is fetched). */
+const CONFIGURED = {
+  setups: [
+    {
+      id: "s1",
+      name: "GitHub",
+      provider: "github" as const,
+      url: "https://github.com",
+      tokenSet: false,
+    },
+  ],
+  projects: {},
+};
+
 beforeEach(() => {
   vi.mocked(issuesBoard).mockClear();
-  useIssueStore.setState({ byProject: {}, overview: null }, false);
+  useIssueStore.setState({ byProject: {}, overview: CONFIGURED }, false);
   useLayoutStore.setState({ openBoard: null });
   useProjectStore.setState({ activeProjectId: null });
 });
@@ -99,5 +113,18 @@ describe("GitButton", () => {
     );
     expect(btn.getAttribute("data-error")).toBe("true");
     expect(btn.textContent).toBe("");
+  });
+
+  it("fetches nothing and shows no warning while no setup exists", async () => {
+    useIssueStore.setState({ overview: { setups: [], projects: {} } });
+    render(<GitButton projectId={P} />);
+    await waitFor(() =>
+      expect(useIssueStore.getState().byProject[P]?.error?.kind).toBe(
+        "issuesNotConfigured",
+      ),
+    );
+    expect(issuesBoard).not.toHaveBeenCalled();
+    const button = screen.getByRole("button", { name: "Git board" });
+    expect(button).not.toHaveAttribute("data-error");
   });
 });

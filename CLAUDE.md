@@ -409,10 +409,20 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   without TLS; `https` when omitted). A project can pin one setup from the
   board's picker (`issues.projects`, project root → setup id, app-side);
   otherwise `pick` takes the first setup whose host matches the remote, and a
-  pinned setup for another host is `IssuesHostMismatch`. github.com with no
-  setup still works zero-config. GitHub goes through the user's own `gh` login
+  pinned setup for another host is `IssuesHostMismatch`. There is **no
+  zero-config**: with no setup at all `board`/`move_item`/`unassign_item`
+  fail with `IssuesNotConfigured` before spawning anything (not even the `git
+  remote` lookup), and `issueStore.refresh` does not even call the backend
+  then (the Git button shows no warning dot for it) — so a user who never set
+  up a board never pays for `git`/`gh` calls on every refresh; github.com
+  without a matching setup is `IssuesUnsupportedHost` like any other host.
+  GitHub goes through the user's own `gh` login
   (`gh issue|pr list --repo host/owner/repo --search …`, `gh api graphql`,
-  binary resolved once by `platform::gh_binary()`); a setup's `account` picks a
+  binary resolved once by `platform::gh_binary()` and run via
+  `platform::gh_command()` + `run_gated` — in WSL-backend mode the distro's
+  `gh` (`wsl.exe -e <path>`, `GH_TOKEN` passed through `WSLENV` by
+  `platform::backend_env`), so probe and call never use different `gh`
+  logins); a setup's `account` picks a
   logged-in `gh` account via `gh auth token --user`, handed to those `gh` calls
   as `GH_TOKEN` — Podium stores no GitHub token. Self-hosted GitLab is fetched
   from the setup's URL (`/api/v4/projects/:path/{issues,merge_requests}`,
@@ -424,7 +434,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `com.podium.app.gitlab`, account = setup id); `issues_settings_get` reports
   just `tokenSet`, the token is never returned over IPC, logged, or put in an
   error, and the Settings field is never prefilled. Failures are typed
-  (`IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
+  (`IssuesNotConfigured` / `IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
   `IssuesHostMismatch` / `IssuesGitlabNotConfigured` / `IssuesGitlabAuth` /
   `IssuesFetch`, the last also for rate limits) and never carry `gh`/`git`
   stderr or a GitLab response body; the setup kinds link the board to Settings
@@ -870,8 +880,8 @@ ignores a configured distro there).
   every non-ConPTY Windows spawn in this crate uses it (`run_shell_ok`,
   `run_shell_stdout`, `git_command`, the WSL networking check and distro
   listing, the assistant's CLI child — a tokio `Command`, via `as_std_mut()`
-  — Warp's `cmd /C start`, and the Git board's `gh` calls in `issues.rs`,
-  several per project on every board refresh). ConPTY-attached spawns (`process::pty`) are already windowless
+  — Warp's `cmd /C start`, and the Git board's `gh` calls via
+  `gh_command`, several per project on every board refresh). ConPTY-attached spawns (`process::pty`) are already windowless
   and need nothing. New code that spawns a plain `Command` on Windows must
   use it too.
 - **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the

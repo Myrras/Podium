@@ -149,10 +149,12 @@ mentions (`Onderdeel van #N`), so sub-issue MRs show on the parent. The
 last board is kept on disk, so it appears at once, and agents can read and
 move cards through the MCP tools.
 
-GitHub works through your own `gh` login, zero-config for github.com.
-Self-hosted GitLab (and GitHub Enterprise, or a second `gh` account) needs a
-setup in Settings → Issues; a GitLab token lives only in the OS keychain. The
-board refreshes every 5 minutes, on window focus after a minute, and on
+The board stays off until you add a setup in Settings → Issues: before
+that Podium fetches nothing (no `git`/`gh` calls in the background) and the
+board just points you to Settings. GitHub works through your own `gh` login
+(a setup can pick which `gh` account); self-hosted GitLab needs its token,
+which lives only in the OS keychain. In WSL-backend mode the distro's `gh`
+and its login are used. The board refreshes every 5 minutes, on window focus after a minute, and on
 demand; a failed refresh keeps the last board with the error inline.
 
 ### The personal assistant

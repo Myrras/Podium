@@ -64,6 +64,9 @@ pub enum CoreError {
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
 
+    #[error("No Git board is set up: add one in Settings → Issues.")]
+    IssuesNotConfigured,
+
     #[error("No GitHub or GitLab remote found.")]
     IssuesNoRemote,
 

@@ -4,6 +4,9 @@
  * last board and only records the error, which the board shows inline (no
  * toasts).
  *
+ * Nothing is fetched while Settings → Issues has no setup: `refresh` then
+ * records `issuesNotConfigured` without calling the backend.
+ *
  * Refresh strategy lives here, not in the backend: `startAutoRefresh` (called
  * while the project's Git tab is mounted) first shows the backend's cached
  * board, fetches at once only when that is missing or older than the poll
@@ -44,6 +47,12 @@ export interface ProjectBoard {
   /** Only the user's own issues/PRs (default) or everything in the repo. */
   mine: boolean;
 }
+
+/** Same kind and text as the backend's `IssuesNotConfigured`. */
+export const NOT_CONFIGURED: IpcError = {
+  kind: "issuesNotConfigured",
+  message: "No Git board is set up: add one in Settings → Issues.",
+};
 
 const EMPTY: ProjectBoard = {
   board: null,
@@ -130,6 +139,20 @@ export const useIssueStore = create<IssueState>((set, get) => {
       if (current.loading) return;
       const { mine } = current;
       patch(projectId, { loading: true });
+      if (!get().overview) await get().loadOverview();
+      const { overview } = get();
+      // No setup in Settings → Issues: do not ask the backend at all, so
+      // nothing shells out (git, gh) for a board nobody set up. An
+      // unreadable overview is not proof of that, so the backend decides.
+      if (overview && overview.setups.length === 0) {
+        patch(projectId, {
+          board: null,
+          error: NOT_CONFIGURED,
+          loading: false,
+          fetchedAt: Date.now(),
+        });
+        return;
+      }
       try {
         const board = await issuesBoard(projectId, mine);
         patch(projectId, {

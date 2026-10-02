@@ -81,6 +81,7 @@ const cssColor = (c: string) => (c.startsWith("#") ? c : `var(--board-${c})`);
 
 /** Errors with nothing to retry: the remote or CLI setup has to change first. */
 const SETUP_ERRORS = new Set([
+  "issuesNotConfigured",
   "issuesNoRemote",
   "issuesGhUnavailable",
   "issuesUnsupportedHost",
@@ -91,6 +92,7 @@ const SETUP_ERRORS = new Set([
 
 /** Failures the user fixes in Settings → Issues. */
 const SETTINGS_ERRORS = new Set([
+  "issuesNotConfigured",
   "issuesGhUnavailable",
   "issuesUnsupportedHost",
   "issuesHostMismatch",
