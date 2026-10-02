@@ -144,7 +144,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
       // No setup in Settings → Issues: do not ask the backend at all, so
       // nothing shells out (git, gh) for a board nobody set up. An
       // unreadable overview is not proof of that, so the backend decides.
-      if (overview && overview.setups.length === 0) {
+      if (overview?.setups?.length === 0) {
         patch(projectId, {
           board: null,
           error: NOT_CONFIGURED,
