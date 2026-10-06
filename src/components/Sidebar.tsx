@@ -30,6 +30,7 @@ import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSettingsStore } from "../state/settingsStore";
+import { type ThemeMode, useThemeStore } from "../state/themeStore";
 import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
@@ -182,6 +183,41 @@ function ProjectGroup({
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Badge colour: `colorDraft` follows the picker while it is open (the
+  // `input` event) so the badge recolours instantly, and only the native
+  // `change` event — the picker committing — is persisted. Persisting every
+  // `input` meant a workspace.json write plus a full project refresh per
+  // drag step.
+  const [colorDraft, setColorDraft] = useState<string | null>(null);
+  const colorInputRef = useRef<HTMLInputElement>(null);
+  const badgeColor = colorDraft ?? project.color;
+  const themeMode = useThemeStore((s) => s.mode);
+  // An uncoloured badge follows the theme's accent, so the picker opens on
+  // that rather than on one theme's hard-coded hex.
+  const accentHex = themeAccentHex(themeMode);
+
+  useEffect(() => {
+    const el = colorInputRef.current;
+    if (!el) return;
+    const commit = () => {
+      const next = el.value;
+      if (next === project.color) {
+        setColorDraft(null);
+        return;
+      }
+      // Keep showing the draft until the store has the saved colour, so the
+      // badge does not flash back to the old one in between.
+      void setProjectColor(project.id, next).finally(() => setColorDraft(null));
+    };
+    el.addEventListener("change", commit);
+    return () => el.removeEventListener("change", commit);
+  }, [project.id, project.color, setProjectColor]);
+
+  const resetColor = () => {
+    setColorDraft(null);
+    if (project.color) void setProjectColor(project.id, null);
+  };
+
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
@@ -263,20 +299,12 @@ function ProjectGroup({
         onDrop();
       }}
     >
-      <div
-        className={styles.projectHeader}
-        role="button"
-        tabIndex={0}
-        aria-expanded={!isCollapsed}
-        aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${project.name}`}
-        onClick={toggleGroup}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            toggleGroup();
-          }
-        }}
-      >
+      {/* The header row is a plain mouse target; the caret is the real,
+          focusable toggle. Making the whole row role="button" nested the
+          badge picker and the action buttons inside a button, which screen
+          readers flatten to just its label, and its Enter/Space handler
+          swallowed Space meant for the picker. */}
+      <div className={styles.projectHeader} onClick={toggleGroup}>
         <span
           className={styles.dragHandle}
           role="img"
@@ -293,34 +321,57 @@ function ProjectGroup({
         >
           <GripIcon size={13} />
         </span>
-        <span
-          className={styles.caretWrap}
-          data-open={!isCollapsed ? "true" : undefined}
+        <button
+          type="button"
+          className={styles.caretButton}
+          aria-expanded={!isCollapsed}
+          aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${project.name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleGroup();
+          }}
         >
-          <CaretIcon />
-        </span>
+          <span
+            className={styles.caretWrap}
+            data-open={!isCollapsed ? "true" : undefined}
+          >
+            <CaretIcon />
+          </span>
+        </button>
         <label
           className={styles.projectBadge}
-          title="Change colour"
-          style={
+          title={
             project.color
-              ? {
-                  background: project.color,
-                  color: readableOn(project.color),
-                }
+              ? "Change colour (right-click to reset)"
+              : "Change colour"
+          }
+          style={
+            badgeColor
+              ? { background: badgeColor, color: readableOn(badgeColor) }
               : undefined
           }
           onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            resetColor();
+          }}
         >
           <span aria-hidden>{project.iconInitials}</span>
-          {/* ponytail: persists on every input event; debounce if a platform's
-              picker streams values while dragging and disk writes show up. */}
           <input
+            ref={colorInputRef}
             type="color"
             className={styles.badgeColorInput}
             aria-label={`Change colour of ${project.name}`}
-            value={project.color ?? "#4493f8"}
-            onChange={(e) => void setProjectColor(project.id, e.target.value)}
+            aria-keyshortcuts={project.color ? "Delete" : undefined}
+            value={badgeColor ?? accentHex}
+            onChange={(e) => setColorDraft(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                resetColor();
+              }
+            }}
           />
         </label>
         {editing ? (
@@ -602,6 +653,24 @@ export function Sidebar() {
 }
 
 /** Black or white initials, whichever reads better on a `#rrggbb` badge. */
+const accentByTheme = new Map<ThemeMode, string>();
+
+/**
+ * The active theme's `--accent` as `#rrggbb`, what a colour input takes.
+ * Read from the CSS tokens (once per theme) rather than duplicated here.
+ */
+function themeAccentHex(mode: ThemeMode): string {
+  const cached = accentByTheme.get(mode);
+  if (cached) return cached;
+  const accent = getComputedStyle(document.documentElement)
+    .getPropertyValue("--accent")
+    .trim()
+    .toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(accent)) return "#000000";
+  accentByTheme.set(mode, accent);
+  return accent;
+}
+
 function readableOn(hex: string): string {
   const n = parseInt(hex.slice(1), 16);
   const luma = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);

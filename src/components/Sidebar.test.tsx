@@ -87,7 +87,7 @@ describe("Sidebar project header", () => {
     expect(handle).toHaveAttribute("draggable", "true");
   });
 
-  it("recolours the project badge from its colour picker", () => {
+  it("recolours the badge while picking and persists only on commit", () => {
     const setProjectColor = vi.fn(() => Promise.resolve());
     useProjectStore.setState({
       projects: [project({ color: "#3e63dd" })],
@@ -96,10 +96,63 @@ describe("Sidebar project header", () => {
     render(<Sidebar />);
 
     const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
     expect(picker).toHaveValue("#3e63dd");
-    fireEvent.change(picker, { target: { value: "#e5484d" } });
 
+    // Dragging in the native picker fires `input` events: the badge follows,
+    // but nothing is saved yet.
+    fireEvent.input(picker, { target: { value: "#30a46c" } });
+    expect(badge).toHaveStyle({ background: "#30a46c" });
+    expect(setProjectColor).not.toHaveBeenCalled();
+
+    // The picker committing fires the native `change` event: saved once.
+    fireEvent.change(picker, { target: { value: "#e5484d" } });
+    expect(setProjectColor).toHaveBeenCalledTimes(1);
     expect(setProjectColor).toHaveBeenCalledWith("proj-1", "#e5484d");
+  });
+
+  it("resets a picked colour from a right-click or the Delete key", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    fireEvent.contextMenu(picker);
+    expect(setProjectColor).toHaveBeenLastCalledWith("proj-1", null);
+
+    fireEvent.keyDown(picker, { key: "Delete" });
+    expect(setProjectColor).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reset a badge that has no colour of its own", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({ projects: [project()], setProjectColor });
+    render(<Sidebar />);
+
+    fireEvent.contextMenu(screen.getByLabelText("Change colour of Webshop"));
+    expect(setProjectColor).not.toHaveBeenCalled();
+  });
+
+  it("collapses the group from its caret button, not from keys on the picker", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    const caret = screen.getByRole("button", { name: "Collapse Webshop" });
+    expect(caret).toHaveAttribute("aria-expanded", "true");
+
+    // Space on the focused picker belongs to the picker.
+    fireEvent.keyDown(screen.getByLabelText("Change colour of Webshop"), {
+      key: " ",
+    });
+    expect(caret).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(caret);
+    expect(
+      screen.getByRole("button", { name: "Expand Webshop" }),
+    ).toHaveAttribute("aria-expanded", "false");
   });
 
   it("reorders projects when a project is dropped onto another", () => {
@@ -116,7 +169,8 @@ describe("Sidebar project header", () => {
     const [firstHandle, secondHandle] = screen.getAllByRole("img", {
       name: /Drag to reorder/,
     });
-    const secondGroup = secondHandle.closest('[role="button"]')!
+    // handle → header row → project group.
+    const secondGroup = secondHandle.parentElement!
       .parentElement as HTMLElement;
 
     // jsdom's DragEvent has no real DataTransfer; the handler writes to it.

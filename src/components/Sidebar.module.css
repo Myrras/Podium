@@ -61,6 +61,25 @@
   background: var(--surface-hover);
 }
 
+/* The caret's button: the header's keyboard-reachable expand/collapse
+   toggle. The icon inside rotates, not the button, so the global
+   button:active press transform cannot fight the rotation. */
+.caretButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.caretButton:hover:not(:disabled) {
+  background: none;
+}
+
 /* The caret icon wrapper rotates 90° when the group is expanded. */
 .caretWrap {
   display: flex;
@@ -366,6 +385,13 @@
 
 /* Invisible native colour input covering the badge: clicking the badge opens
    the platform picker, and it stays keyboard-focusable. */
+/* The picker input is invisible over the badge, so its keyboard focus is
+   drawn on the badge itself. */
+.projectBadge:has(.badgeColorInput:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .badgeColorInput {
   position: absolute;
   inset: 0;
