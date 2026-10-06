@@ -552,47 +552,57 @@ fn git_binary() -> &'static str {
         .as_str()
 }
 
-/// The directory Claude Code stores all projects' sessions under:
-/// `$CLAUDE_CONFIG_DIR/projects` when that is set (Claude Code honours it),
-/// else `~/.claude/projects`; `None` if neither can be resolved. Natively
-/// this is read from Podium's own environment — no shell round-trip. In
-/// WSL-backend mode agents run inside the distro, so their sessions live in
-/// the *distro's* config dir: that is asked of the distro's login shell once
-/// (resolved lazily, so never before [`init_wsl`]) and cached for the run.
-pub fn claude_projects_root() -> Option<std::path::PathBuf> {
+/// Claude Code's config dir: `$CLAUDE_CONFIG_DIR` when that is set (Claude
+/// Code honours it), else `~/.claude`; `None` if neither can be resolved. It
+/// holds `projects/` (every session's transcript) and `sessions/` (one small
+/// file per live CLI process). Natively this is read from Podium's own
+/// environment — no shell round-trip. In WSL-backend mode agents run inside
+/// the distro, so their sessions live in the *distro's* config dir: that is
+/// asked of the distro's login shell once (resolved lazily, so never before
+/// [`init_wsl`]) and cached for the run.
+pub fn claude_config_dir() -> Option<std::path::PathBuf> {
     match wsl() {
-        Some(w) => {
-            static WSL_ROOT: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-            WSL_ROOT
-                .get_or_init(|| {
-                    let out =
-                        run_shell_stdout(r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}""#)?;
-                    wsl_claude_projects_root(w.distro(), &out)
-                })
-                .clone()
-        }
-        None => claude_projects_root_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir()),
+        Some(w) => WSL_CLAUDE_CONFIG_DIR
+            .get_or_init(|| {
+                let out =
+                    run_shell_stdout(r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}""#)?;
+                wsl_claude_config_dir(w.distro(), &out)
+            })
+            .clone(),
+        None => claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir()),
     }
 }
 
-/// The distro's Claude config dir as printed by its login shell, as a
-/// Windows path to its `projects` dir. The last non-empty line wins, so a
-/// chatty shell profile cannot end up in the answer; anything but an
-/// absolute Linux path is refused.
-fn wsl_claude_projects_root(distro: &str, stdout: &str) -> Option<std::path::PathBuf> {
-    let dir = last_non_empty_line(stdout).filter(|d| d.starts_with('/'))?;
-    Some(wsl_path::to_windows(distro, &dir).join("projects"))
+/// [`claude_config_dir`] without ever starting a process: in WSL-backend mode
+/// only the cached answer, `None` until something resolved it. For the app's
+/// exit path, where a `wsl.exe` start that hangs would stall the quit —
+/// callers warm the cache earlier with [`claude_config_dir`] off that path.
+pub fn claude_config_dir_if_resolved() -> Option<std::path::PathBuf> {
+    match wsl() {
+        Some(_) => WSL_CLAUDE_CONFIG_DIR.get().cloned().flatten(),
+        None => claude_config_dir(),
+    }
 }
 
-fn claude_projects_root_from(
+static WSL_CLAUDE_CONFIG_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+
+/// The distro's Claude config dir as printed by its login shell, as a
+/// Windows path. The last non-empty line wins, so a chatty shell profile
+/// cannot end up in the answer; anything but an absolute Linux path is
+/// refused.
+fn wsl_claude_config_dir(distro: &str, stdout: &str) -> Option<std::path::PathBuf> {
+    let dir = last_non_empty_line(stdout).filter(|d| d.starts_with('/'))?;
+    Some(wsl_path::to_windows(distro, &dir))
+}
+
+fn claude_config_dir_from(
     config_dir: Option<std::ffi::OsString>,
     home: Option<std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
-    let config = match config_dir.filter(|d| !d.is_empty()) {
-        Some(dir) => std::path::PathBuf::from(dir),
-        None => home?.join(".claude"),
-    };
-    Some(config.join("projects"))
+    match config_dir.filter(|d| !d.is_empty()) {
+        Some(dir) => Some(std::path::PathBuf::from(dir)),
+        None => Some(home?.join(".claude")),
+    }
 }
 
 #[cfg(unix)]
@@ -697,39 +707,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wsl_claude_projects_root_is_the_distros_config_dir() {
+    fn wsl_claude_config_dir_is_the_distros() {
         assert_eq!(
-            wsl_claude_projects_root("Ubuntu", "Welcome\n/home/me/.claude\n\n"),
-            Some(
-                std::path::PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\.claude")
-                    .join("projects")
-            )
+            wsl_claude_config_dir("Ubuntu", "Welcome\n/home/me/.claude\n\n"),
+            Some(std::path::PathBuf::from(
+                r"\\wsl.localhost\Ubuntu\home\me\.claude"
+            ))
         );
         assert_eq!(
-            wsl_claude_projects_root("Ubuntu", "/mnt/c/claude-cfg\n"),
-            Some(std::path::PathBuf::from(r"C:\claude-cfg").join("projects"))
+            wsl_claude_config_dir("Ubuntu", "/mnt/c/claude-cfg\n"),
+            Some(std::path::PathBuf::from(r"C:\claude-cfg"))
         );
-        assert_eq!(wsl_claude_projects_root("Ubuntu", ""), None);
-        assert_eq!(wsl_claude_projects_root("Ubuntu", "not a path\n"), None);
+        assert_eq!(wsl_claude_config_dir("Ubuntu", ""), None);
+        assert_eq!(wsl_claude_config_dir("Ubuntu", "not a path\n"), None);
     }
 
     #[test]
-    fn claude_projects_root_prefers_claude_config_dir() {
+    fn claude_config_dir_prefers_the_env_override() {
         use std::path::PathBuf;
         let home = Some(PathBuf::from("home"));
         assert_eq!(
-            claude_projects_root_from(Some("cfg".into()), home.clone()),
-            Some(PathBuf::from("cfg").join("projects"))
+            claude_config_dir_from(Some("cfg".into()), home.clone()),
+            Some(PathBuf::from("cfg"))
         );
         assert_eq!(
-            claude_projects_root_from(Some("".into()), home.clone()),
-            Some(PathBuf::from("home").join(".claude").join("projects"))
+            claude_config_dir_from(Some("".into()), home.clone()),
+            Some(PathBuf::from("home").join(".claude"))
         );
         assert_eq!(
-            claude_projects_root_from(None, home),
-            Some(PathBuf::from("home").join(".claude").join("projects"))
+            claude_config_dir_from(None, home),
+            Some(PathBuf::from("home").join(".claude"))
         );
-        assert_eq!(claude_projects_root_from(None, None), None);
+        assert_eq!(claude_config_dir_from(None, None), None);
     }
 
     #[test]

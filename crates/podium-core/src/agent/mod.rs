@@ -100,6 +100,14 @@ pub trait AgentAdapter: Send + Sync {
         false
     }
 
+    /// The CLI session name the launch from `ctx` runs under — Podium's
+    /// `podium-<tag>` stamp, or the user's own `-n`/`--name` from the args
+    /// when they set one — so the session can be found again by name.
+    /// `None` when the session goes unnamed.
+    fn session_name(&self, _ctx: &AgentLaunchCtx) -> Option<String> {
+        None
+    }
+
     /// Whether the binary resolves on the user's login-shell `PATH`. Probed
     /// via the login shell (`command -v <binary>` on Unix, `where` on Windows)
     /// so shell-profile PATH edits (nvm, homebrew, …) are honoured; output is
@@ -192,6 +200,16 @@ impl AgentAdapter for CliAdapter {
         self.resume_flag.is_some()
     }
 
+    fn session_name(&self, ctx: &AgentLaunchCtx) -> Option<String> {
+        let flag = self.name_flag?;
+        // Mirrors `build_launch`: a name in the args wins, and Podium only
+        // stamps its own alongside the MCP wiring.
+        user_session_name(ctx.extra_args, flag).or_else(|| {
+            ctx.mcp
+                .map(|_| peer_session_name(&peer_tag(&ctx.process_id.to_string())))
+        })
+    }
+
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
         let bin = ctx.command_override.unwrap_or(self.binary);
         let mut args: Vec<String> = vec![crate::platform::quote_arg(bin)?];
@@ -275,6 +293,22 @@ impl AgentAdapter for CliAdapter {
             ],
         })
     }
+}
+
+/// The session name the user set in `args` themselves: the value after `flag`
+/// (`-n`) or `--name`, or a `--name=<value>`. The last one wins, as it does
+/// for the CLI.
+fn user_session_name(args: &[String], flag: &str) -> Option<String> {
+    let mut found = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == flag || a == "--name" {
+            found = it.next().cloned();
+        } else if let Some(v) = a.strip_prefix("--name=") {
+            found = Some(v.to_string());
+        }
+    }
+    found.filter(|n| !n.is_empty())
 }
 
 /// Inbound cross-session-messaging setting handed to every Podium-spawned
@@ -721,6 +755,67 @@ mod tests {
     #[test]
     fn auggie_has_no_resume_flag() {
         assert_eq!(AUGGIE.resume_flag, None);
+    }
+
+    #[test]
+    fn session_name_is_podiums_stamp_or_the_users_own() {
+        let mcp = McpConnectInfo {
+            url: "http://127.0.0.1:1/".to_string(),
+            token: "t".to_string(),
+            config_dir: PathBuf::from("/unused"),
+        };
+        let process_id = ProcessId::new();
+        let stamp = peer_session_name(&peer_tag(&process_id.to_string()));
+        let name_with = |args: &[String], mcp: Option<&McpConnectInfo>| {
+            CLAUDE_CODE.session_name(&AgentLaunchCtx {
+                project_id: ProjectId::new(),
+                process_id,
+                project_root: Path::new("/tmp/project"),
+                prompt: None,
+                extra_args: args,
+                command_override: None,
+                mcp,
+                named: true,
+                worktree: false,
+                worktree_name: None,
+                suggest_worktree: false,
+                resume_session_id: None,
+            })
+        };
+        let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(name_with(&[], Some(&mcp)), Some(stamp));
+        // Without the MCP wiring Podium stamps nothing.
+        assert_eq!(name_with(&[], None), None);
+        assert_eq!(
+            name_with(&s(&["-n", "mine"]), Some(&mcp)).as_deref(),
+            Some("mine")
+        );
+        assert_eq!(
+            name_with(&s(&["--name", "mine"]), None).as_deref(),
+            Some("mine")
+        );
+        assert_eq!(
+            name_with(&s(&["--name=a", "--model", "opus", "-n", "b"]), None).as_deref(),
+            Some("b")
+        );
+        // Auggie names no sessions.
+        assert_eq!(
+            AUGGIE.session_name(&AgentLaunchCtx {
+                project_id: ProjectId::new(),
+                process_id,
+                project_root: Path::new("/tmp/project"),
+                prompt: None,
+                extra_args: &[],
+                command_override: None,
+                mcp: Some(&mcp),
+                named: true,
+                worktree: false,
+                worktree_name: None,
+                suggest_worktree: false,
+                resume_session_id: None,
+            }),
+            None
+        );
     }
 
     #[test]
