@@ -202,11 +202,12 @@ impl Drop for WslLaunchGuard {
 }
 
 /// Whether `cmd` starts `wsl.exe`, i.e. whether it needs the launch gate.
+/// The program's base name is split off by hand on both separators, since
+/// `Path` only knows `\` on Windows and this is tested everywhere.
 fn launches_wsl(cmd: &std::process::Command) -> bool {
-    std::path::Path::new(cmd.get_program())
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.eq_ignore_ascii_case("wsl.exe") || n.eq_ignore_ascii_case("wsl"))
+    let program = cmd.get_program().to_string_lossy();
+    let name = program.rsplit(['/', '\\']).next().unwrap_or_default();
+    name.eq_ignore_ascii_case("wsl.exe") || name.eq_ignore_ascii_case("wsl")
 }
 
 /// Take the WSL launch gate for a launch (WSL-backend mode); `None`
