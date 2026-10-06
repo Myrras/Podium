@@ -524,7 +524,7 @@ function AgentsTab() {
         />
         <SettingToggle
           label="Remember agent sessions"
-          help="When on, a running Claude Code agent's conversation resumes automatically the next time its project opens (Claude Code only)."
+          help="When on, a running Claude Code agent's conversation resumes automatically the next time its project opens, still owning its to-dos and on the same model (Claude Code only). Turning it off forgets what was remembered."
           value={data.rememberSessions}
           onChange={(enabled) => {
             setData({ ...data, rememberSessions: enabled });

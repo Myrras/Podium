@@ -196,30 +196,49 @@ one lock acquisition, atomically, before the async `podium.yml` load.
 - **Agent session memory** (`agent/session_memory.rs`, setting
   `remember_sessions` in `agents.json`, default off): `session_memory.json`,
   keyed by project root. `Orchestrator::shutdown()` is the only place a
-  session is captured — for each still-running Claude Code agent it looks in
-  `<config>/projects/<sanitized-cwd>/`, where `<config>` is
-  `$CLAUDE_CONFIG_DIR` or else `~/.claude` (every non-ASCII-alphanumeric char of
-  the cwd becomes `-`, Claude Code's own scheme). In WSL-backend mode both are
-  the distro's: `<config>` is asked of the distro's login shell once
-  (`platform::claude_projects_root`, lazily — the `Orchestrator` is built
-  before `init_wsl`) and reached as a `\\wsl.localhost\…` path, and the cwd is
-  sanitized in its Linux spelling (`backend_path`). It looks for the `<id>.jsonl` carrying
-  the `{"type":"custom-title","customTitle":"podium-<tag>"}` line Claude Code
-  writes for the agent's `-n` name, so agents sharing a cwd each get their own
-  session. Only files written since the agent's spawn (minus a few seconds
-  of slack for coarse mtimes) are read, since session files can be large
-  and this runs at exit. Without a title match it falls back to the id the
-  agent was resumed with; otherwise nothing is remembered — deliberately no
-  "newest file in the cwd" guess, which would adopt a `claude` session the
-  user runs themselves in the same repo. Only hyphenated UUIDs
-  (`Uuid::try_parse`) are accepted, at capture and again at
-  restore (the file is user-writable, and `--resume -x` would read as a
-  flag). The next fresh `open_project` on that root passes each remembered id
-  to its adapter as `--resume` when `remember_sessions` is on, skipping ids
-  whose jsonl Claude Code has since pruned; the remembered list for that root
-  is always cleared on open, on or off. The MCP server is started
-  synchronously in `setup` so a restored agent never spawns before the MCP
-  connect info (and with it `-n`) is set.
+  session is captured. Each still-running Claude Code agent is matched by its
+  CLI **session name** (`ManagedProcess.session_name`, from
+  `AgentAdapter::session_name`: Podium's `-n podium-<tag>` stamp, or the
+  user's own `-n`/`--name` from the args), looked up under Claude Code's
+  config dir `<config>` = `$CLAUDE_CONFIG_DIR` or else `~/.claude`, in order:
+  1. `<config>/sessions/<pid>.json` — Claude Code's registry of *live* CLI
+     processes, mapping the name to the **current** `sessionId`. It follows
+     `/clear`, which starts a new session in a new, untitled transcript
+     (verified against real files); a few hundred bytes per file.
+  2. `<config>/projects/<sanitized-cwd>/<id>.jsonl` carrying the
+     `{"type":"custom-title","customTitle":"<name>"}` line (every
+     non-ASCII-alphanumeric char of the cwd becomes `-`, Claude Code's own
+     scheme) — the fallback for a CLI without the registry. Only files written
+     since the agent's spawn (minus a few seconds of slack for coarse mtimes)
+     are read, line by line and only up to the title.
+  3. The id the agent was itself resumed with.
+
+  Otherwise nothing is remembered, with a warning in the log — deliberately
+  no "newest file in the cwd" guess, which would adopt a `claude` session
+  the user runs themselves in the same repo. An unnamed agent (no MCP server
+  at spawn) therefore only keeps a resumed id. Two agents resolving to one
+  session (a shared user `--name`) are remembered once. Each entry also
+  carries the to-dos/scratchpads the agent owned and its per-spawn
+  `args_override`, and all entries go out in one write. In WSL-backend mode
+  `<config>` is the distro's, asked of its login shell once
+  (`platform::claude_config_dir`) and reached as a `\\wsl.localhost\…` path,
+  and the cwd is sanitized in its Linux spelling (`backend_path`). Because
+  capture runs on the exit path it never starts a process: it uses
+  `claude_config_dir_if_resolved`, and the lookup is warmed earlier — on
+  project open with the setting on, and in the background when it is turned
+  on. Only hyphenated UUIDs (`Uuid::try_parse`) are accepted, at capture and
+  again at restore (the file is user-writable, and `--resume -x` would read
+  as a flag). The next fresh `open_project` on that root respawns each
+  remembered agent with `--resume` when `remember_sessions` is on — on the
+  same args, then re-assigned the to-dos/scratchpads that still exist, are
+  not done/archived and nobody else claimed (re-assigned, not handed over: a
+  composed prompt would land in the resumed conversation as a new message).
+  It skips ids whose jsonl Claude Code has since pruned and entries older
+  than 14 days (`session_memory::MAX_AGE`, for a project that kept failing
+  to open). The remembered list for that root is always cleared on open, on
+  or off, and turning the setting off clears every root. The MCP server is
+  started synchronously in `setup` so a restored agent never spawns before
+  the MCP connect info (and with it `-n`) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
