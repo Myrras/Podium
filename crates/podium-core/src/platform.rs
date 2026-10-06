@@ -283,12 +283,13 @@ pub fn wsl_networking_mode() -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    parse_networking_mode(&String::from_utf8_lossy(&output.stdout))
+    last_non_empty_line(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// The mode out of `wslinfo --networking-mode` output: its last non-empty
-/// line, trimmed — should anything still print ahead of it.
-fn parse_networking_mode(stdout: &str) -> Option<String> {
+/// The last non-empty line of a command's output, trimmed: the answer when
+/// something (a chatty shell profile, a banner) may print ahead of it. Used
+/// for `wslinfo --networking-mode` and the distro's Claude config dir.
+fn last_non_empty_line(stdout: &str) -> Option<String> {
     stdout
         .lines()
         .map(str::trim)
@@ -579,7 +580,7 @@ pub fn claude_projects_root() -> Option<std::path::PathBuf> {
 /// chatty shell profile cannot end up in the answer; anything but an
 /// absolute Linux path is refused.
 fn wsl_claude_projects_root(distro: &str, stdout: &str) -> Option<std::path::PathBuf> {
-    let dir = parse_networking_mode(stdout).filter(|d| d.starts_with('/'))?;
+    let dir = last_non_empty_line(stdout).filter(|d| d.starts_with('/'))?;
     Some(wsl_path::to_windows(distro, &dir).join("projects"))
 }
 
@@ -732,16 +733,16 @@ mod tests {
     }
 
     #[test]
-    fn networking_mode_is_the_last_non_empty_line() {
+    fn last_non_empty_line_skips_anything_printed_ahead() {
         assert_eq!(
-            parse_networking_mode("mirrored\n").as_deref(),
+            last_non_empty_line("mirrored\n").as_deref(),
             Some("mirrored")
         );
         assert_eq!(
-            parse_networking_mode("Welcome to Ubuntu\r\nnat\r\n\r\n").as_deref(),
+            last_non_empty_line("Welcome to Ubuntu\r\nnat\r\n\r\n").as_deref(),
             Some("nat")
         );
-        assert_eq!(parse_networking_mode(" \n"), None);
+        assert_eq!(last_non_empty_line(" \n"), None);
     }
 
     fn ubuntu() -> WslBackend {
