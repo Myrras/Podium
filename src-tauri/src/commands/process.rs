@@ -36,8 +36,8 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 /// Flush immediately once this many bytes are buffered.
 const BATCH_MAX_BYTES: usize = 64 * 1024;
 
-/// Default command for terminal processes on Unix, and for a cwd inside the
-/// WSL distro (where the wrapper is bash): replace the wrapper
+/// Default command for terminal processes on Unix, and for a project on the
+/// WSL backend (where the wrapper is bash): replace the wrapper
 /// `$SHELL -lc` with an interactive shell so the user gets prompts, job
 /// control, etc.
 const UNIX_TERMINAL_COMMAND: &str = "exec \"$SHELL\" -i";
@@ -46,8 +46,10 @@ const UNIX_TERMINAL_COMMAND: &str = "exec \"$SHELL\" -i";
 #[cfg(windows)]
 const WINDOWS_TERMINAL_COMMAND: &str = "powershell";
 
-fn terminal_default_command(cwd: &std::path::Path) -> &'static str {
-    if podium_core::platform::wsl_for(cwd).is_some() {
+/// `in_wsl`: the project runs on the WSL backend (WSL-backend mode, and not
+/// a natively-run Windows-drive project — see `ProjectInfo::native_in_wsl_mode`).
+fn terminal_default_command(in_wsl: bool) -> &'static str {
+    if in_wsl {
         return UNIX_TERMINAL_COMMAND;
     }
     #[cfg(unix)]
@@ -104,19 +106,20 @@ pub async fn process_add(
     if spec.name.trim().is_empty() {
         return Err(IpcError::invalid_input("process name must not be empty"));
     }
-    let root = state
+    let project = state
         .orchestrator
         .list_projects()
         .into_iter()
         .find(|p| p.id == project_id)
-        .ok_or(podium_core::CoreError::ProjectNotFound)?
-        .root;
+        .ok_or(podium_core::CoreError::ProjectNotFound)?;
+    let in_wsl = podium_core::platform::wsl().is_some() && !project.native_in_wsl_mode;
+    let root = project.root;
     // Core's guard: rejects absolute paths and traversal out of the root.
     let cwd = podium_core::project::resolve_cwd(&root, spec.cwd.as_deref())?;
     let command = match spec.command.filter(|c| !c.trim().is_empty()) {
         Some(c) => c,
         None if matches!(spec.kind, ProcessKind::Terminal) => {
-            terminal_default_command(&cwd).to_string()
+            terminal_default_command(in_wsl).to_string()
         }
         None => {
             return Err(IpcError::invalid_input(

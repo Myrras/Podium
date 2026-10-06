@@ -23,6 +23,12 @@ pub struct BackendSettings {
     /// `None` = the native backend.
     #[serde(default)]
     pub wsl_distro: Option<String>,
+    /// Opt-in, WSL-backend mode only: run a project on a Windows drive
+    /// (`C:\…`) natively — cmd.exe, Windows git, Windows `claude` — instead
+    /// of in the distro via `/mnt/c`. Off by default, so a drive project
+    /// keeps running exactly as it did; see [`crate::platform::wsl_for`].
+    #[serde(default)]
+    pub native_drive_projects: bool,
 }
 
 impl BackendSettings {
@@ -180,6 +186,7 @@ mod tests {
             &path,
             BackendSettings {
                 wsl_distro: Some("Anything".to_string()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -194,6 +201,7 @@ mod tests {
             &path,
             BackendSettings {
                 wsl_distro: Some("  ".to_string()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -233,23 +241,38 @@ mod tests {
             &path,
             BackendSettings {
                 wsl_distro: Some("  Ubuntu ".to_string()),
+                native_drive_projects: true,
             },
         )
         .unwrap();
         assert_eq!(written.wsl_distro.as_deref(), Some("Ubuntu"));
+        assert!(written.native_drive_projects);
         assert_eq!(load(&path), written);
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("\"wslDistro\""));
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"wslDistro\""), "{raw}");
+        assert!(raw.contains("\"nativeDriveProjects\": true"), "{raw}");
 
         let cleared = save(
             &path,
             BackendSettings {
                 wsl_distro: Some("   ".to_string()),
+                ..Default::default()
             },
         )
         .unwrap();
         assert_eq!(cleared.wsl_distro, None);
         assert_eq!(load(&path).wsl_distro, None);
+    }
+
+    #[test]
+    fn drive_projects_stay_in_the_distro_by_default() {
+        // A `backend.json` written before the opt-in existed keeps every
+        // project in the distro.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("backend.json");
+        std::fs::write(&path, r#"{ "wslDistro": "Ubuntu" }"#).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.wsl_distro.as_deref(), Some("Ubuntu"));
+        assert!(!loaded.native_drive_projects);
     }
 }

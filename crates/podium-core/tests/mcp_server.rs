@@ -734,7 +734,7 @@ impl AgentAdapter for FakeAgentAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }
@@ -1349,7 +1349,7 @@ impl AgentAdapter for PromptEchoAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }
@@ -1845,7 +1845,7 @@ impl AgentAdapter for EchoAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }
@@ -1874,7 +1874,7 @@ impl AgentAdapter for BetaAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }

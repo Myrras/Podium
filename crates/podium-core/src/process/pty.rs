@@ -9,6 +9,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
 use crate::error::{CoreError, CoreResult};
+use crate::platform::WslBackend;
 use crate::process::scrollback::ScrollbackBuffer;
 #[cfg(windows)]
 use crate::process::ProcessKind;
@@ -72,16 +73,14 @@ impl PtyProcess {
     /// `podium.yml` or the user's chosen shell, which still needs a real
     /// shell (`cmd.exe` on Windows) to interpret.
     ///
-    /// For a project inside the WSL distro (see
+    /// On the WSL backend (`wsl`, the project's — see
     /// [`crate::platform::wsl_for`]) there is no `cmd.exe` layer: the string
-    /// goes to bash inside the distro (`wsl.exe … -e bash -lic <string>`), already
-    /// POSIX-quoted by `build_launch`, exactly like Unix — so agents take the
-    /// shell path too.
+    /// goes to bash inside the distro (`wsl.exe … -e bash -lic <string>`),
+    /// already POSIX-quoted by `build_launch` for that same backend, exactly
+    /// like Unix — so agents take the shell path too.
     #[cfg(windows)]
-    fn build_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
-        if crate::platform::wsl_for(&spec.cwd).is_none()
-            && matches!(spec.kind, ProcessKind::Agent { .. })
-        {
+    fn build_command(spec: &ProcessSpec, wsl: Option<&WslBackend>) -> CoreResult<CommandBuilder> {
+        if wsl.is_none() && matches!(spec.kind, ProcessKind::Agent { .. }) {
             let mut tokens = crate::platform::parse_windows_argv(&spec.command).into_iter();
             let program = tokens
                 .next()
@@ -100,20 +99,19 @@ impl PtyProcess {
             }
             return Ok(cmd);
         }
-        Self::shell_command(spec)
+        Self::shell_command(spec, wsl)
     }
 
     #[cfg(unix)]
-    fn build_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
-        Self::shell_command(spec)
+    fn build_command(spec: &ProcessSpec, wsl: Option<&WslBackend>) -> CoreResult<CommandBuilder> {
+        Self::shell_command(spec, wsl)
     }
 
-    /// `spec.command` through the login shell of `spec.cwd`'s backend. Inside
-    /// the WSL distro the working directory rides along as `wsl.exe --cd` (see
+    /// `spec.command` through the login shell of backend `wsl`. In the WSL
+    /// distro the working directory rides along as `wsl.exe --cd` (see
     /// [`crate::platform::login_shell_in`]).
-    fn shell_command(spec: &ProcessSpec) -> CoreResult<CommandBuilder> {
-        let (shell, prefix) =
-            crate::platform::login_shell_in(crate::platform::wsl_for(&spec.cwd), &spec.cwd)?;
+    fn shell_command(spec: &ProcessSpec, wsl: Option<&WslBackend>) -> CoreResult<CommandBuilder> {
+        let (shell, prefix) = crate::platform::login_shell_in(wsl, &spec.cwd)?;
         let mut cmd = CommandBuilder::new(shell);
         for arg in prefix {
             cmd.arg(arg);
@@ -122,15 +120,18 @@ impl PtyProcess {
         Ok(cmd)
     }
 
-    /// Spawn `spec` in a new PTY. In WSL-backend mode the caller must hold
-    /// the WSL launch gate (`launch_gate`, from
-    /// [`crate::platform::wsl_launch_guard`]) across this call and drop it
+    /// Spawn `spec` in a new PTY on backend `wsl` — the project's, decided
+    /// once when it opened ([`crate::platform::wsl_for`]), so a launch plan
+    /// quoted for one shell is never run by another. On the WSL backend the
+    /// caller must hold the WSL launch gate (`launch_gate`, from
+    /// [`crate::platform::wsl_launch_guard_for`]) across this call and drop it
     /// only once it returns — by then the reader thread is running and can
     /// answer ConPTY's startup query. It is taken by reference, not dropped
     /// here, so the caller can take it before any lock of its own and release
     /// it (with its settle sleep) after that lock, never while holding it.
     pub fn spawn(
         spec: &ProcessSpec,
+        wsl: Option<&WslBackend>,
         _launch_gate: Option<&crate::platform::WslLaunchGuard>,
         size: Option<(u16, u16)>,
         scrollback: Arc<Mutex<ScrollbackBuffer>>,
@@ -147,12 +148,12 @@ impl PtyProcess {
             })
             .map_err(|e| CoreError::Pty(e.to_string()))?;
 
-        let mut cmd = Self::build_command(spec)?;
+        let mut cmd = Self::build_command(spec, wsl)?;
         for (key, value) in &spec.env {
             cmd.env(key, value);
         }
         cmd.env("TERM", "xterm-256color");
-        if crate::platform::wsl_for(&spec.cwd).is_some() {
+        if wsl.is_some() {
             // The real cwd went to `wsl.exe --cd`; `wsl.exe` itself gets a
             // plain local directory (it starts in a distro-default dir when
             // handed a `\\wsl.localhost` one). And environment variables only

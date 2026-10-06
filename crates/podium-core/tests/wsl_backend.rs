@@ -25,7 +25,9 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 fn distro() -> String {
     let distro = std::env::var("PODIUM_TEST_WSL_DISTRO")
         .expect("set PODIUM_TEST_WSL_DISTRO to an installed distro (e.g. Ubuntu)");
-    podium_core::platform::init_wsl(Some(&distro));
+    // The default: Windows-drive projects run in the distro too (the
+    // `nativeDriveProjects` opt-in is covered by `wsl_native_drives.rs`).
+    podium_core::platform::init_wsl(Some(&distro), false);
     distro
 }
 
@@ -120,7 +122,7 @@ fn networking_mode(distro: &str) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a WSL distro: set PODIUM_TEST_WSL_DISTRO, run with --ignored"]
-async fn a_project_on_a_windows_drive_runs_natively() {
+async fn a_project_on_a_windows_drive_runs_in_the_distro_by_default() {
     distro();
     let dir = tempfile::tempdir().expect("temp dir");
     let orch = Orchestrator::new();
@@ -130,8 +132,8 @@ async fn a_project_on_a_windows_drive_runs_natively() {
         .expect("open project");
     let spec = ProcessSpec {
         name: "test".to_string(),
-        // `%OS%` only expands in cmd.exe; bash would print it verbatim.
-        command: "echo os:%OS%:end".to_string(),
+        // Without the opt-in a drive project runs in the distro, via /mnt.
+        command: r#"printf 'os:%s:end' "$(uname -s)""#.to_string(),
         cwd: dir.path().to_path_buf(),
         env: Vec::new(),
         kind: ProcessKind::Service,
@@ -141,7 +143,8 @@ async fn a_project_on_a_windows_drive_runs_natively() {
     let id = orch.add_process(project, spec).await.expect("add process");
     orch.start_process(id).await.expect("start");
     let text = wait_for_output(&orch, id, ":end").await;
-    assert!(text.contains("os:Windows_NT:end"), "{text:?}");
+    assert!(text.contains("os:Linux:end"), "{text:?}");
+    assert!(!orch.list_projects()[0].native_in_wsl_mode);
     orch.shutdown().await;
 }
 
@@ -322,18 +325,22 @@ async fn worktrees_are_created_listed_and_removed_with_wsl_git() {
     wsl_git(&distro, &repo, &["add", "."]);
     wsl_git(&distro, &repo, &["commit", "-q", "-m", "initial"]);
 
-    let created = podium_core::worktree::create(&dir.windows, "Fix login").expect("create");
+    let created =
+        podium_core::worktree::create(podium_core::platform::wsl(), &dir.windows, "Fix login")
+            .expect("create");
     assert_eq!(created.branch, "podium/fix-login");
     assert!(created.path.is_dir(), "{:?} not a directory", created.path);
     // The branch exists in the distro's repo.
     let branches = wsl_git(&distro, &repo, &["branch", "--list", "podium/*"]);
     assert!(branches.contains("podium/fix-login"), "{branches:?}");
     assert_eq!(
-        podium_core::worktree::current_branch(&created.path).as_deref(),
+        podium_core::worktree::current_branch(podium_core::platform::wsl(), &created.path)
+            .as_deref(),
         Some("podium/fix-login")
     );
 
-    let listed = podium_core::worktree::list(&dir.windows).expect("list");
+    let listed =
+        podium_core::worktree::list(podium_core::platform::wsl(), &dir.windows).expect("list");
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0].name, "fix-login");
     assert_eq!(listed[0].path, created.path);
@@ -355,10 +362,18 @@ async fn worktrees_are_created_listed_and_removed_with_wsl_git() {
     );
     orch.shutdown().await;
 
-    podium_core::worktree::remove(&dir.windows, "fix-login", false).expect("remove");
-    assert!(podium_core::worktree::list(&dir.windows)
-        .unwrap()
-        .is_empty());
+    podium_core::worktree::remove(
+        podium_core::platform::wsl(),
+        &dir.windows,
+        "fix-login",
+        false,
+    )
+    .expect("remove");
+    assert!(
+        podium_core::worktree::list(podium_core::platform::wsl(), &dir.windows)
+            .unwrap()
+            .is_empty()
+    );
     assert!(!created.path.exists());
 }
 
@@ -427,7 +442,11 @@ async fn a_startup_burst_of_wsl_launches_all_succeed() {
                     &podium_core::platform::command_exists_query("bash"),
                 ),
                 1 => podium_core::platform::run_shell_stdout("printf ok").as_deref() == Some("ok"),
-                _ => podium_core::worktree::current_branch(&repo).as_deref() == Some("main"),
+                _ => {
+                    podium_core::worktree::current_branch(podium_core::platform::wsl(), &repo)
+                        .as_deref()
+                        == Some("main")
+                }
             })
         })
         .collect();
