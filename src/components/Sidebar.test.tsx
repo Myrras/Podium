@@ -92,6 +92,28 @@ describe("Sidebar project header", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps the podium.yml error icon outside the slot the hover actions overlay", () => {
+    // The strip is clipped to the name's slot (CSS-only, not asserted here),
+    // so the error icon — whose tooltip is the only place the error text
+    // shows — must sit after that slot, not inside it.
+    useProjectStore.setState({
+      projects: [project({ configError: "unknown field `procesess`" })],
+    });
+    render(<Sidebar />);
+
+    const rename = screen.getByRole("button", { name: "Rename Webshop" });
+    const name = screen.getByText("Webshop");
+    const error = screen.getByRole("img", { name: "podium.yml error" });
+    const slot = name.parentElement!;
+
+    expect(slot).toContainElement(rename);
+    expect(slot).not.toContainElement(error);
+    expect(
+      slot.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(error).toHaveAttribute("title", "unknown field `procesess`");
+  });
+
   it("keeps the drag handle draggable in the DOM regardless of hover state", () => {
     // jsdom never evaluates :hover, so this asserts the element the CSS
     // reveals on hover is present and draggable at rest — the actual

@@ -301,55 +301,47 @@ function ProjectGroup({
         <span className={styles.projectBadge} aria-hidden>
           {project.iconInitials}
         </span>
-        {editing ? (
-          <input
-            ref={inputRef}
-            className={styles.projectNameInput}
-            value={draft}
-            aria-label={`Rename ${project.name}`}
-            placeholder={project.name}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitRename();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelRename();
-              }
-            }}
-          />
-        ) : (
-          <span
-            className={styles.projectName}
-            title={project.root}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              startEditing();
-            }}
-          >
-            {project.name}
-          </span>
-        )}
-        {project.configError && (
-          <span
-            className={styles.configError}
-            role="img"
-            aria-label="podium.yml error"
-            title={project.configError}
-          >
-            <ErrorIcon size={13} />
-          </span>
-        )}
-        {/* Hover actions overlay the end of the name instead of reserving
-            their width, so a long name keeps the row at rest. Hidden while
-            renaming so they never cover the input. */}
-        {!editing && (
-          <div className={styles.projectActions}>
-            <div className={styles.projectActionsInner}>
+        {/* The name and its hover actions share one slot: the actions
+            overlay the end of the name instead of reserving their width,
+            and stay inside the slot so they never cover the caret, the
+            badge or the podium.yml error icon. */}
+        <div className={styles.nameSlot}>
+          {editing ? (
+            <input
+              ref={inputRef}
+              className={styles.projectNameInput}
+              value={draft}
+              aria-label={`Rename ${project.name}`}
+              placeholder={project.name}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+            />
+          ) : (
+            <span
+              className={styles.projectName}
+              title={project.root}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEditing();
+              }}
+            >
+              {project.name}
+            </span>
+          )}
+          {/* Hidden while renaming so they never cover the input. */}
+          {!editing && (
+            <div className={styles.projectActions}>
               <button
                 type="button"
                 className={styles.projectAction}
@@ -387,7 +379,17 @@ function ProjectGroup({
                 <CloseIcon size={12} />
               </button>
             </div>
-          </div>
+          )}
+        </div>
+        {project.configError && (
+          <span
+            className={styles.configError}
+            role="img"
+            aria-label="podium.yml error"
+            title={project.configError}
+          >
+            <ErrorIcon size={13} />
+          </span>
         )}
       </div>
       <div
