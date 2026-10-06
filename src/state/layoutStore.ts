@@ -95,6 +95,26 @@ export function sectionKey(root: string, section: Section): string {
   return `${root}\n${section}`;
 }
 
+/**
+ * `sections` of `root` collapsed or expanded. Expanding deletes the key rather
+ * than storing `false` (expanded is the default), so the persisted map only
+ * ever holds what is actually collapsed.
+ */
+function withSections(
+  current: Record<string, boolean>,
+  root: string,
+  sections: readonly Section[],
+  collapsed: boolean,
+): Record<string, boolean> {
+  const next = { ...current };
+  for (const section of sections) {
+    const key = sectionKey(root, section);
+    if (collapsed) next[key] = true;
+    else delete next[key];
+  }
+  return next;
+}
+
 /** The to-do currently filling the work area (opened from the sidebar). */
 export interface OpenTodo {
   projectId: ProjectId;
@@ -131,6 +151,11 @@ export interface LayoutState extends LayoutPersisted {
   ) => void;
   /** Collapse or expand every subsection of a project at once (persisted). */
   setAllSectionsCollapsed: (root: string, collapsed: boolean) => void;
+  /**
+   * Drop a project's persisted collapse state (its group and subsections)
+   * once it leaves the sidebar, so `podium.layout` does not keep growing.
+   */
+  forgetProject: (root: string) => void;
   /** Show or hide the assistant chat panel (persisted). */
   setAssistantOpen: (open: boolean) => void;
   /** Resize the assistant chat panel (persisted, clamped). */
@@ -171,21 +196,38 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     },
     setSectionCollapsed: (root, section, collapsed) => {
       const s = get();
-      const collapsedSections = {
-        ...s.collapsedSections,
-        [sectionKey(root, section)]: collapsed,
-      };
+      const collapsedSections = withSections(
+        s.collapsedSections,
+        root,
+        [section],
+        collapsed,
+      );
       persist({ ...persistable(s), collapsedSections });
       set({ collapsedSections });
     },
     setAllSectionsCollapsed: (root, collapsed) => {
       const s = get();
-      const collapsedSections = { ...s.collapsedSections };
-      for (const section of SECTIONS) {
-        collapsedSections[sectionKey(root, section)] = collapsed;
-      }
+      const collapsedSections = withSections(
+        s.collapsedSections,
+        root,
+        SECTIONS,
+        collapsed,
+      );
       persist({ ...persistable(s), collapsedSections });
       set({ collapsedSections });
+    },
+    forgetProject: (root) => {
+      const s = get();
+      const collapsedSections = withSections(
+        s.collapsedSections,
+        root,
+        SECTIONS,
+        false,
+      );
+      const collapsedProjects = { ...s.collapsedProjects };
+      delete collapsedProjects[root];
+      persist({ ...persistable(s), collapsedSections, collapsedProjects });
+      set({ collapsedSections, collapsedProjects });
     },
     setAssistantOpen: (assistantOpen) => {
       persist({ ...persistable(get()), assistantOpen });
