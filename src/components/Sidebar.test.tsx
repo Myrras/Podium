@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The stores pull in the IPC layer; jsdom has no Tauri bridge.
 vi.mock("@tauri-apps/api/core", () => ({
@@ -15,6 +15,7 @@ import type { ProcessInfo, ProjectInfo, WorktreeInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
+import { useSettingsStore } from "../state/settingsStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { Sidebar } from "./Sidebar";
 
@@ -31,6 +32,7 @@ function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
     iconInitials: "WS",
     configError: null,
     renamed: false,
+    nativeInWslMode: false,
     ...overrides,
   };
 }
@@ -129,5 +131,38 @@ describe("Sidebar project header", () => {
     // empty hint instead of listing it a second time.
     await screen.findByText("worktree-shell");
     expect(screen.getByText("No terminals yet.")).toBeInTheDocument();
+  });
+
+  describe("new terminal shell", () => {
+    const initialSettings = useSettingsStore.getState();
+    afterEach(() => useSettingsStore.setState(initialSettings, true));
+
+    async function addTerminalIn(p: ProjectInfo) {
+      useSettingsStore.setState({
+        terminal: { ...initialSettings.terminal, shell: "zsh" },
+      });
+      useProjectStore.setState({ projects: [p] });
+      render(<Sidebar />);
+      fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("process_add", expect.anything()),
+      );
+      const call = vi
+        .mocked(invoke)
+        .mock.calls.find(([cmd]) => cmd === "process_add");
+      return (call?.[1] as { spec: { command?: string } }).spec;
+    }
+
+    it("launches the configured shell", async () => {
+      const spec = await addTerminalIn(project());
+      expect(spec.command).toBe("zsh");
+    });
+
+    it("leaves it out for a Windows-drive project running natively in WSL mode", async () => {
+      // The setting names the distro's shell; `cmd /C zsh` would fail, so
+      // the backend's native default (PowerShell) opens instead.
+      const spec = await addTerminalIn(project({ nativeInWslMode: true }));
+      expect(spec.command).toBeUndefined();
+    });
   });
 });

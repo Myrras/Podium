@@ -216,8 +216,12 @@ function ProjectGroup({
 
   const addTerminal = async () => {
     setActiveProject(project.id);
-    // Blank = backend platform default ($SHELL -i / PowerShell).
-    const shell = useSettingsStore.getState().terminal.shell.trim();
+    // Blank = backend platform default ($SHELL -i / PowerShell). In WSL mode
+    // the setting is the distro's shell, so a Windows-drive project running
+    // natively (opt-in) gets the native default instead of e.g. `cmd /C zsh`.
+    const shell = project.nativeInWslMode
+      ? ""
+      : useSettingsStore.getState().terminal.shell.trim();
     const info = await addProcess(project.id, {
       name: `Terminal ${terminals.length + 1}`,
       kind: "terminal",
