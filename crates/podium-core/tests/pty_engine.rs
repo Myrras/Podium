@@ -319,7 +319,11 @@ async fn zshrc_only_env_is_visible_to_spawned_processes() {
     assert!(text.contains("zshrc_was_sourced"));
 }
 
-#[cfg_attr(windows, ignore = "`sleep` has no cmd.exe equivalent")]
+// Same POSIX-only line shape as `printf_hello_exits_cleanly`, plus `sleep`.
+#[cfg_attr(
+    windows,
+    ignore = "printf/`;` are POSIX-only; cmd.exe can't run this line"
+)]
 #[tokio::test(flavor = "multi_thread")]
 async fn output_activity_lists_running_processes_that_printed() {
     let (orch, id, _dir) = setup("printf hello; sleep 30").await;
