@@ -792,23 +792,40 @@ impl Orchestrator {
         id: ProjectId,
         color: Option<String>,
     ) -> CoreResult<ProjectInfo> {
-        let color = color
-            .map(|c| c.trim().to_lowercase())
-            .filter(|c| !c.is_empty());
-        if let Some(c) = &color {
-            let hex = c.strip_prefix('#').unwrap_or("");
-            if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
-                return Err(CoreError::InvalidInput(format!(
-                    "project colour must be #rrggbb, got {c:?}"
-                )));
-            }
-        }
+        let color = normalize_project_color(color)?;
         let info = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             let handle = inner
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
+            handle.color = color;
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Re-apply a project's persisted overrides (display name, badge colour)
+    /// after `open_project`, publishing one `ProjectUpdated` for both rather
+    /// than one per override. `None` leaves that override unset. A stored
+    /// colour that is not `#rrggbb` (a hand-edited `workspace.json`) is
+    /// refused like any other, and the name is then not applied either.
+    pub fn restore_project_overrides(
+        &self,
+        id: ProjectId,
+        name: Option<String>,
+        color: Option<String>,
+    ) -> CoreResult<ProjectInfo> {
+        let color = normalize_project_color(color)?;
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
             handle.color = color;
             handle.info(id)
         };
@@ -2126,6 +2143,23 @@ impl Orchestrator {
     }
 }
 
+/// Trim and lowercase a project badge colour; blank means "none". Anything
+/// but `#rrggbb` is refused, since the value lands in a CSS property.
+fn normalize_project_color(color: Option<String>) -> CoreResult<Option<String>> {
+    let color = color
+        .map(|c| c.trim().to_lowercase())
+        .filter(|c| !c.is_empty());
+    if let Some(c) = &color {
+        let hex = c.strip_prefix('#').unwrap_or("");
+        if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(CoreError::InvalidInput(format!(
+                "project colour must be #rrggbb, got {c:?}"
+            )));
+        }
+    }
+    Ok(color)
+}
+
 /// Insert config-defined processes; returns (added, auto-start subset).
 fn insert_configured(
     inner: &mut Inner,
@@ -2960,6 +2994,34 @@ mod tests {
 
         let cleared = orch.set_project_color(id, Some("  ".to_string())).unwrap();
         assert_eq!(cleared.color, None);
+    }
+
+    #[tokio::test]
+    async fn restore_project_overrides_applies_both_in_one_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let info = orch
+            .restore_project_overrides(id, Some("Webshop".into()), Some("#E5484D".into()))
+            .unwrap();
+        assert_eq!(info.name, "Webshop");
+        assert_eq!(info.color.as_deref(), Some("#e5484d"));
+
+        let mut updates = 0;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, PodiumEvent::ProjectUpdated { project_id } if project_id == id) {
+                updates += 1;
+            }
+        }
+        assert_eq!(updates, 1, "one ProjectUpdated for name + colour");
+
+        assert!(
+            orch.restore_project_overrides(id, None, Some("red".into()))
+                .is_err(),
+            "a hand-edited, invalid colour is refused"
+        );
     }
 
     #[tokio::test]
