@@ -108,6 +108,8 @@ function ScratchpadRow({
 
 interface ScratchpadSubsectionProps {
   projectId: ProjectId;
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
   /** Open the scratchpad detail pane (hosted by the app work area). */
   onOpenScratchpad: (projectId: ProjectId, scratchpadId: ScratchpadId) => void;
   /**
@@ -124,6 +126,7 @@ interface ScratchpadSubsectionProps {
 
 export function ScratchpadSubsection({
   projectId,
+  projectRoot,
   onOpenScratchpad,
   onPickAgent,
 }: ScratchpadSubsectionProps) {
@@ -225,7 +228,7 @@ export function ScratchpadSubsection({
   };
 
   const [collapsed, setCollapsed] = useSectionCollapsed(
-    projectId,
+    projectRoot,
     "scratchpads",
   );
 
@@ -264,7 +267,7 @@ export function ScratchpadSubsection({
           <AddIcon size={13} />
         </button>
       </div>
-      {scratchpads.length > 0 ? (
+      {collapsed ? null : scratchpads.length > 0 ? (
         <div className={styles.rows}>
           {scratchpads.map((sp) => (
             <ScratchpadRow
@@ -283,6 +286,8 @@ export function ScratchpadSubsection({
       ) : (
         <div className={sidebarStyles.placeholder}>No scratchpads yet.</div>
       )}
+      {/* Stays visible while collapsed: the selection outlives the fold, so
+          its "Start agent" / Clear actions must too. */}
       {selectedIds.length >= 2 && (
         <div className={styles.selectionBar}>
           <button

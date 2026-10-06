@@ -74,6 +74,7 @@ function renderSubsection(
   render(
     <WorktreeSubsection
       projectId={PROJECT}
+      projectRoot="/fake/root"
       terminals={terminals}
       onOpenCommands={onOpenCommands}
     />,
@@ -93,6 +94,7 @@ describe("WorktreeSubsection", () => {
     const { container } = render(
       <WorktreeSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         terminals={[]}
         onOpenCommands={vi.fn()}
       />,

@@ -40,7 +40,10 @@ import {
   RunIcon,
   TerminalIcon,
 } from "./icons";
-import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import {
+  useSectionCollapsed,
+  useWaitingCount,
+} from "../lib/useSectionCollapsed";
 import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
@@ -51,6 +54,8 @@ const NO_WORKTREES: WorktreeInfo[] = [];
 
 interface WorktreeSubsectionProps {
   projectId: ProjectId;
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
   /** All terminal processes for the project; nested per worktree by `p.worktree`. */
   terminals: ProcessInfo[];
   /** Open the Commands modal targeted at this worktree. */
@@ -59,6 +64,7 @@ interface WorktreeSubsectionProps {
 
 export function WorktreeSubsection({
   projectId,
+  projectRoot,
   terminals,
   onOpenCommands,
 }: WorktreeSubsectionProps) {
@@ -80,7 +86,16 @@ export function WorktreeSubsection({
     void refresh(projectId);
   }, [projectId, refresh]);
 
-  const [collapsed, setCollapsed] = useSectionCollapsed(projectId, "worktrees");
+  const [collapsed, setCollapsed] = useSectionCollapsed(
+    projectRoot,
+    "worktrees",
+  );
+  // Terminals nested under a worktree row hide with it when collapsed.
+  const waiting = useWaitingCount(
+    terminals
+      .filter((p) => p.worktree != null && p.status.state === "running")
+      .map((p) => p.id),
+  );
 
   if (worktrees.length === 0) return null;
 
@@ -135,89 +150,92 @@ export function WorktreeSubsection({
           title="Worktrees"
           Icon={BranchIcon}
           count={worktrees.length}
+          waiting={waiting}
           collapsed={collapsed}
           onToggle={() => setCollapsed(!collapsed)}
         />
       </div>
-      <div className={styles.rows}>
-        {worktrees.map((wt) => {
-          const busy = processes.some(
-            (p) => p.worktree === wt.name && isActive(p.status),
-          );
-          const nested = terminals.filter((p) => p.worktree === wt.name);
-          return (
-            <div key={wt.name}>
-              <div className={styles.row}>
-                <div className={styles.rowMain}>
-                  <BranchIcon size={13} className={ownStyles.branchIcon} />
-                  <span className={styles.text} title={wt.branch}>
-                    {wt.name}
-                  </span>
-                  <button
-                    type="button"
-                    className={styles.action}
-                    aria-label={`Open terminal in ${wt.name}`}
-                    title="Open terminal here"
-                    onClick={() => void openTerminal(wt)}
-                  >
-                    <TerminalIcon size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.action}
-                    aria-label={`Open ${wt.name} in Warp`}
-                    title="Open in Warp"
-                    onClick={() =>
-                      worktreeOpenInWarp(projectId, wt.name).catch(
-                        (e: unknown) =>
-                          toastError(
-                            "Could not open Warp",
-                            toIpcError(e).message,
-                          ),
-                      )
-                    }
-                  >
-                    <ExternalLinkIcon size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.action}
-                    aria-label={`Commands for ${wt.name}`}
-                    title="Commands"
-                    onClick={() => onOpenCommands(wt)}
-                  >
-                    <RunIcon size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.remove} ${ownStyles.removeBtn}`}
-                    aria-label={`Delete worktree ${wt.name}`}
-                    title={
-                      busy
-                        ? "A process is still running in this worktree"
-                        : removing === wt.name
-                          ? "Removing…"
-                          : "Delete worktree"
-                    }
-                    data-busy={removing === wt.name || undefined}
-                    disabled={busy || removing !== null}
-                    onClick={() => void removeWorktree(wt)}
-                  >
-                    <DeleteIcon size={13} />
-                  </button>
+      {!collapsed && (
+        <div className={styles.rows}>
+          {worktrees.map((wt) => {
+            const busy = processes.some(
+              (p) => p.worktree === wt.name && isActive(p.status),
+            );
+            const nested = terminals.filter((p) => p.worktree === wt.name);
+            return (
+              <div key={wt.name}>
+                <div className={styles.row}>
+                  <div className={styles.rowMain}>
+                    <BranchIcon size={13} className={ownStyles.branchIcon} />
+                    <span className={styles.text} title={wt.branch}>
+                      {wt.name}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.action}
+                      aria-label={`Open terminal in ${wt.name}`}
+                      title="Open terminal here"
+                      onClick={() => void openTerminal(wt)}
+                    >
+                      <TerminalIcon size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.action}
+                      aria-label={`Open ${wt.name} in Warp`}
+                      title="Open in Warp"
+                      onClick={() =>
+                        worktreeOpenInWarp(projectId, wt.name).catch(
+                          (e: unknown) =>
+                            toastError(
+                              "Could not open Warp",
+                              toIpcError(e).message,
+                            ),
+                        )
+                      }
+                    >
+                      <ExternalLinkIcon size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.action}
+                      aria-label={`Commands for ${wt.name}`}
+                      title="Commands"
+                      onClick={() => onOpenCommands(wt)}
+                    >
+                      <RunIcon size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.remove} ${ownStyles.removeBtn}`}
+                      aria-label={`Delete worktree ${wt.name}`}
+                      title={
+                        busy
+                          ? "A process is still running in this worktree"
+                          : removing === wt.name
+                            ? "Removing…"
+                            : "Delete worktree"
+                      }
+                      data-busy={removing === wt.name || undefined}
+                      disabled={busy || removing !== null}
+                      onClick={() => void removeWorktree(wt)}
+                    >
+                      <DeleteIcon size={13} />
+                    </button>
+                  </div>
                 </div>
+                {nested.length > 0 && (
+                  <div className={ownStyles.nested}>
+                    {nested.map((p) => (
+                      <ProcessRow key={p.id} process={p} />
+                    ))}
+                  </div>
+                )}
               </div>
-              {nested.length > 0 && (
-                <div className={ownStyles.nested}>
-                  {nested.map((p) => (
-                    <ProcessRow key={p.id} process={p} />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

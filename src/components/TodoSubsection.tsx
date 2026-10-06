@@ -143,6 +143,8 @@ function TodoRow({
 
 interface TodoSubsectionProps {
   projectId: ProjectId;
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
   /** Open the to-do detail dialog (hosted by the sidebar). */
   onOpenTodo: (projectId: ProjectId, todoId: TodoId) => void;
   /**
@@ -159,6 +161,7 @@ interface TodoSubsectionProps {
 
 export function TodoSubsection({
   projectId,
+  projectRoot,
   onOpenTodo,
   onPickAgent,
 }: TodoSubsectionProps) {
@@ -289,7 +292,7 @@ export function TodoSubsection({
     anchorRef.current = null;
   };
 
-  const [collapsed, setCollapsed] = useSectionCollapsed(projectId, "todos");
+  const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, "todos");
 
   return (
     <div
@@ -329,7 +332,7 @@ export function TodoSubsection({
           <AddIcon size={13} />
         </button>
       </div>
-      {todos.length > 0 || adding ? (
+      {collapsed ? null : todos.length > 0 || adding ? (
         <div className={styles.rows}>
           {todos.map((todo) => (
             <TodoRow
@@ -371,6 +374,8 @@ export function TodoSubsection({
       ) : (
         <div className={sidebarStyles.placeholder}>No to-dos yet.</div>
       )}
+      {/* Stays visible while collapsed: the selection outlives the fold, so
+          its "Start agent" / Clear actions must too. */}
       {selectedIds.length >= 2 && (
         <div className={styles.selectionBar}>
           <button

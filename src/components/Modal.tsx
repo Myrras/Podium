@@ -54,7 +54,6 @@ export function Modal({
   return (
     <div
       className={styles.overlay}
-      data-modal
       data-state={state}
       role="presentation"
       onMouseDown={(e) => {

@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ProcessInfo, ProjectInfo, WorktreeInfo } from "../ipc/types";
+import { useAgentActivityStore } from "../state/agentActivityStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
@@ -22,6 +23,7 @@ const initialProject = useProjectStore.getState();
 const initialLayout = useLayoutStore.getState();
 const initialProcess = useProcessStore.getState();
 const initialWorktree = useWorktreeStore.getState();
+const initialActivity = useAgentActivityStore.getState();
 
 function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
   return {
@@ -68,6 +70,7 @@ describe("Sidebar project header", () => {
     useLayoutStore.setState(initialLayout, true);
     useProcessStore.setState(initialProcess, true);
     useWorktreeStore.setState(initialWorktree, true);
+    useAgentActivityStore.setState(initialActivity, true);
     vi.mocked(invoke)
       .mockReset()
       .mockImplementation(() => Promise.resolve([]));
@@ -138,20 +141,45 @@ describe("Sidebar project header", () => {
     });
     render(<Sidebar />);
 
-    const toggle = screen.getByRole("button", { name: "Collapse Terminals" });
-    fireEvent.click(toggle);
-
-    const expand = screen.getByRole("button", { name: "Expand Terminals" });
-    expect(expand).toHaveAttribute("aria-expanded", "false");
-    expect(expand).toHaveTextContent("Terminals (2)");
-    expect(expand.closest("[data-collapsed]")).toHaveAttribute(
-      "data-collapsed",
-      "true",
+    fireEvent.click(
+      screen.getByRole("button", { name: "Terminals", expanded: true }),
     );
+
+    // The count is part of the accessible name, not only of the visible text.
+    const toggle = screen.getByRole("button", { name: "Terminals (2)" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The rows are unmounted, not merely hidden.
+    expect(screen.queryByText("shell")).not.toBeInTheDocument();
     // Persisted per project root, so it survives a restart.
     expect(
       useLayoutStore.getState().collapsedSections["/fake/webshop\nterminals"],
     ).toBe(true);
+
+    fireEvent.click(toggle);
+    expect(screen.getByText("shell")).toBeInTheDocument();
+    // Expanding drops the key instead of storing `false`.
+    expect(useLayoutStore.getState().collapsedSections).toEqual({});
+  });
+
+  it("flags a collapsed subsection whose hidden row needs input", () => {
+    useProjectStore.setState({ projects: [project()] });
+    useProcessStore.setState({
+      processes: [terminal("t1", "shell", null), terminal("t2", "logs", null)],
+    });
+    useAgentActivityStore.setState({ activity: { t2: "waiting" } });
+    render(<Sidebar />);
+
+    // Expanded, the row itself shows it; the header stays quiet.
+    expect(
+      screen.queryByRole("img", { name: /needs your input/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Terminals", expanded: true }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Terminals (2) 1 needs your input" }),
+    ).toHaveAttribute("aria-expanded", "false");
   });
 
   it("collapses and expands every subsection from the project header", () => {
@@ -163,7 +191,7 @@ describe("Sidebar project header", () => {
     );
     for (const title of ["To-dos", "Agents", "Terminals", "Scratchpads"]) {
       expect(
-        screen.getByRole("button", { name: `Expand ${title}` }),
+        screen.getByRole("button", { name: title, expanded: false }),
       ).toBeInTheDocument();
     }
 
@@ -171,7 +199,25 @@ describe("Sidebar project header", () => {
       screen.getByRole("button", { name: "Expand all sections of Webshop" }),
     );
     expect(
-      screen.getByRole("button", { name: "Collapse To-dos" }),
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
+    ).toBeInTheDocument();
+    expect(useLayoutStore.getState().collapsedSections).toEqual({});
+  });
+
+  it("offers Expand all once every visible subsection is collapsed by hand", () => {
+    // No services and no worktrees: Processes and Worktrees are not rendered,
+    // so they must not keep the button on "Collapse all".
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    for (const title of ["To-dos", "Agents", "Terminals", "Scratchpads"]) {
+      fireEvent.click(
+        screen.getByRole("button", { name: title, expanded: true }),
+      );
+    }
+
+    expect(
+      screen.getByRole("button", { name: "Expand all sections of Webshop" }),
     ).toBeInTheDocument();
   });
 
@@ -179,11 +225,13 @@ describe("Sidebar project header", () => {
     useProjectStore.setState({ projects: [project()] });
     render(<Sidebar />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse To-dos" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "New to-do" }));
 
     expect(
-      screen.getByRole("button", { name: "Collapse To-dos" }),
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("New to-do text")).toBeInTheDocument();
   });

@@ -1,6 +1,7 @@
 /**
  * Collapsible title of a sidebar subsection (To-dos, Agents, …): caret, icon,
- * title and — while collapsed — how many rows it hides. State comes from
+ * title and — while collapsed — how many rows it hides, plus a "needs input"
+ * dot when one of those hidden rows is waiting on the user. State comes from
  * `useSectionCollapsed`.
  */
 
@@ -13,6 +14,8 @@ interface SectionTitleProps {
   title: string;
   Icon: ComponentType<{ className?: string }>;
   count: number;
+  /** Hidden rows waiting on the user; only surfaced while collapsed. */
+  waiting?: number;
   collapsed: boolean;
   onToggle: () => void;
 }
@@ -21,15 +24,19 @@ export function SectionTitle({
   title,
   Icon,
   count,
+  waiting = 0,
   collapsed,
   onToggle,
 }: SectionTitleProps) {
+  const needsInput = collapsed && waiting > 0;
+  // No aria-label: the visible text ("Terminals (2)") is the accessible name,
+  // so a screen reader hears the count too; `aria-expanded` carries the state.
   return (
     <button
       type="button"
       className={styles.sectionToggle}
       aria-expanded={!collapsed}
-      aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
+      title={`${collapsed ? "Expand" : "Collapse"} ${title}`}
       onClick={onToggle}
     >
       <span
@@ -45,6 +52,14 @@ export function SectionTitle({
           <span className={styles.sectionCount}> ({count})</span>
         )}
       </span>
+      {needsInput && (
+        <span
+          className={styles.sectionWaiting}
+          role="img"
+          aria-label={`${waiting} need${waiting === 1 ? "s" : ""} your input`}
+          title={`${waiting} need${waiting === 1 ? "s" : ""} your input`}
+        />
+      )}
     </button>
   );
 }

@@ -283,17 +283,39 @@
   cursor: pointer;
 }
 
-.sectionToggle:hover {
+/* The global `button:hover:not(:disabled)` / `button:active:not(:disabled)`
+ * (0,2,1) would paint a full-width hover bar and shrink the title on press;
+ * matching their pseudo-classes outranks them, so the title only recolours. */
+.sectionToggle:hover:not(:disabled) {
+  background: none;
   color: var(--text-muted);
+}
+
+.sectionToggle:active:not(:disabled) {
+  transform: none;
 }
 
 .sectionCount {
   font-weight: 400;
 }
 
-/* A collapsed subsection shows only its header; modals it owns stay usable. */
-.subsection[data-collapsed="true"] > :not(.sectionHeader):not([data-modal]) {
-  display: none;
+/* A collapsed subsection with a hidden row waiting on the user: the same blue
+ * pulsing dot a row shows for "needs input", so it is not lost behind the
+ * count. Opacity-only animation, neutralised by the reduced-motion guard. */
+.sectionWaiting {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: sectionWaitingPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes sectionWaitingPulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .panelIcon {
