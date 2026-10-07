@@ -73,16 +73,7 @@ pub fn backend_settings_set_wsl_distro(
     app: AppHandle,
     distro: Option<String>,
 ) -> Result<BackendSettingsDto, IpcError> {
-    let path = backend_path(&app)?;
-    // Load first: the other settings in the file must survive this write.
-    let current = backend_settings::load(&path);
-    let saved = backend_settings::save_checked(
-        &path,
-        BackendSettings {
-            wsl_distro: distro,
-            ..current
-        },
-    )?;
+    let saved = backend_settings::set_wsl_distro(&backend_path(&app)?, distro)?;
     Ok(to_dto(saved))
 }
 
@@ -94,14 +85,6 @@ pub fn backend_settings_set_native_drive_projects(
     app: AppHandle,
     enabled: bool,
 ) -> Result<BackendSettingsDto, IpcError> {
-    let path = backend_path(&app)?;
-    let current = backend_settings::load(&path);
-    let saved = backend_settings::save(
-        &path,
-        BackendSettings {
-            native_drive_projects: enabled,
-            ..current
-        },
-    )?;
+    let saved = backend_settings::set_native_drive_projects(&backend_path(&app)?, enabled)?;
     Ok(to_dto(saved))
 }
