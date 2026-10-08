@@ -11,6 +11,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AdapterInfo,
   AgentSettingsDto,
+  BackendSettingsDto,
   AgentSpawnOptions,
   Attachment,
   AutonomyMode,
@@ -227,9 +228,14 @@ export function processResize(
 // Agents
 // ---------------------------------------------------------------------------
 
-/** List the supported agent adapters (probes binary availability). */
-export function adaptersList(): Promise<AdapterInfo[]> {
-  return invoke("adapters_list");
+/**
+ * List the supported agent adapters, probing binary availability on the
+ * backend an agent in `projectId` would run on (the configured backend when
+ * omitted — in WSL mode a natively-run Windows-drive project finds the
+ * Windows CLIs, a distro project the distro's).
+ */
+export function adaptersList(projectId?: ProjectId): Promise<AdapterInfo[]> {
+  return invoke("adapters_list", { projectId: projectId ?? null });
 }
 
 /** Spawn (add + immediately start) an agent in a project. */
@@ -248,6 +254,41 @@ export function agentSpawn(
     worktreeName: options.worktreeName ?? null,
     args: options.args ?? null,
   });
+}
+
+/** Saved backend settings plus the backend this run uses (Windows WSL mode). */
+export function backendSettingsGet(): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_get");
+}
+
+/**
+ * WSL-backend mode only: the distro's networking mode (`mirrored`, `nat`, …),
+ * or `null` natively / when WSL can't tell.
+ */
+export function backendWslNetworkingMode(): Promise<string | null> {
+  return invoke("backend_wsl_networking_mode");
+}
+
+/**
+ * Save the WSL distro to run everything in from the next launch on. Blank =
+ * run natively. Returns the refreshed settings.
+ */
+export function backendSettingsSetWslDistro(
+  distro: string,
+): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_set_wsl_distro", {
+    distro: distro.trim() || null,
+  });
+}
+
+/**
+ * Save the WSL-mode opt-in that runs Windows-drive projects natively instead
+ * of in the distro. Applies on the next launch. Returns the refreshed settings.
+ */
+export function backendSettingsSetNativeDriveProjects(
+  enabled: boolean,
+): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_set_native_drive_projects", { enabled });
 }
 
 /** Global agent settings (command override + default args) + adapter catalog. */

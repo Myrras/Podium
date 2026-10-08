@@ -21,6 +21,7 @@ use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
 use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
+use crate::platform::WslBackend;
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
@@ -58,6 +59,11 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// True only in WSL-backend mode, for a Windows-drive project that runs
+    /// natively because of the `nativeDriveProjects` opt-in. The terminal
+    /// shell setting is meant for the backend's shell, so the UI leaves it
+    /// out for these and lets the native default (PowerShell) open instead.
+    pub native_in_wsl_mode: bool,
 }
 
 struct ProjectHandle {
@@ -72,6 +78,11 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// The backend this project runs on, decided once at open from its root
+    /// ([`crate::platform::wsl_for`]) and used for everything in it — agent
+    /// launch quoting, the PTY spawn, the launch gate, worktree git, the
+    /// adapter probe — so one project can never mix backends.
+    wsl: Option<&'static WslBackend>,
 }
 
 impl ProjectHandle {
@@ -87,6 +98,7 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            native_in_wsl_mode: crate::platform::wsl().is_some() && self.wsl.is_none(),
         }
     }
 }
@@ -652,6 +664,7 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        wsl: crate::platform::wsl_for(&path),
                     },
                 );
                 inner.order.push(id);
@@ -806,6 +819,16 @@ impl Orchestrator {
             .iter()
             .filter_map(|id| inner.projects.get(id).map(|p| p.info(*id)))
             .collect()
+    }
+
+    /// Root path of an open project plus the backend it runs on.
+    fn project_root_and_backend(
+        &self,
+        id: ProjectId,
+    ) -> CoreResult<(PathBuf, Option<&'static WslBackend>)> {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        let handle = inner.projects.get(&id).ok_or(CoreError::ProjectNotFound)?;
+        Ok((handle.root.clone(), handle.wsl))
     }
 
     /// Root path of an open project (to-dos are keyed by it).
@@ -1446,10 +1469,15 @@ impl Orchestrator {
     }
 
     /// List the agent adapters this orchestrator can spawn. Probes each
-    /// adapter's binary on the login-shell `PATH`, which shells out — call
-    /// from a blocking-friendly context.
-    pub fn list_adapters(&self) -> Vec<AdapterInfo> {
-        self.adapters.infos()
+    /// adapter's binary on the login-shell `PATH` of the backend the agent
+    /// would run on — `project_id`'s, or the configured one when `None`
+    /// (Settings) — which shells out: call from a blocking-friendly context.
+    pub fn list_adapters(&self, project_id: Option<ProjectId>) -> CoreResult<Vec<AdapterInfo>> {
+        let wsl = match project_id {
+            Some(id) => self.project_root_and_backend(id)?.1,
+            None => crate::platform::wsl(),
+        };
+        Ok(self.adapters.infos(wsl))
     }
 
     /// Add and immediately start an agent process in `project_id`.
@@ -1485,7 +1513,7 @@ impl Orchestrator {
         worktree_name: Option<String>,
         args_override: Option<Vec<String>>,
     ) -> CoreResult<ProcessId> {
-        let (root, agents, existing_names, session_color) = {
+        let (root, wsl, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             let handle = inner
                 .projects
@@ -1501,7 +1529,13 @@ impl Orchestrator {
                 .map(|p| p.spec.name.clone())
                 .collect();
             let color = pick_session_color(&inner, project_id);
-            (handle.root.clone(), handle.agents.clone(), names, color)
+            (
+                handle.root.clone(),
+                handle.wsl,
+                handle.agents.clone(),
+                names,
+                color,
+            )
         };
         // Adapter precedence: an explicit choice, then the project's pinned
         // `agents.default_adapter`, then the global Settings → Agents default,
@@ -1611,6 +1645,7 @@ impl Orchestrator {
             project_id,
             process_id,
             project_root: &root,
+            wsl,
             prompt: final_prompt.as_deref(),
             extra_args: &merged_args,
             command_override,
@@ -1715,8 +1750,8 @@ impl Orchestrator {
     /// ones an active process runs in. Shells out to git — call from a
     /// blocking-friendly context.
     pub fn list_worktrees(&self, project_id: ProjectId) -> CoreResult<Vec<WorktreeInfo>> {
-        let root = self.project_root(project_id)?;
-        let mut infos = crate::worktree::list(&root)?;
+        let (root, wsl) = self.project_root_and_backend(project_id)?;
+        let mut infos = crate::worktree::list(wsl, &root)?;
         let inner = self.inner.lock().expect(LOCK_POISONED);
         for info in &mut infos {
             info.in_use = inner.processes.values().any(|p| {
@@ -1746,25 +1781,23 @@ impl Orchestrator {
     /// the focused-process header. Shells out to git — call from a
     /// blocking-friendly context.
     pub fn process_git_branch(&self, id: ProcessId) -> CoreResult<Option<String>> {
-        let cwd = {
+        let (cwd, wsl) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
-            inner
-                .processes
-                .get(&id)
-                .ok_or(CoreError::ProcessNotFound)?
-                .spec
-                .cwd
-                .clone()
+            let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            (
+                proc.spec.cwd.clone(),
+                project_backend(&inner, proc.project_id),
+            )
         };
-        Ok(crate::worktree::current_branch(&cwd))
+        Ok(crate::worktree::current_branch(wsl, &cwd))
     }
 
     /// Create a Podium-managed git worktree in the project (name slugified
     /// and de-duplicated). Shells out to git — call from a blocking-friendly
     /// context. Emits `WorktreesChanged` for the project.
     pub fn create_worktree(&self, project_id: ProjectId, name: &str) -> CoreResult<WorktreeInfo> {
-        let root = self.project_root(project_id)?;
-        let info = crate::worktree::create(&root, name)?;
+        let (root, wsl) = self.project_root_and_backend(project_id)?;
+        let info = crate::worktree::create(wsl, &root, name)?;
         self.events
             .publish(PodiumEvent::WorktreesChanged { project_id });
         Ok(info)
@@ -1780,7 +1813,7 @@ impl Orchestrator {
         name: &str,
         force: bool,
     ) -> CoreResult<()> {
-        let root = self.project_root(project_id)?;
+        let (root, wsl) = self.project_root_and_backend(project_id)?;
         let in_use = self
             .list_worktrees(project_id)?
             .iter()
@@ -1788,7 +1821,7 @@ impl Orchestrator {
         if in_use {
             return Err(CoreError::WorktreeInUse);
         }
-        crate::worktree::remove(&root, name, force)?;
+        crate::worktree::remove(wsl, &root, name, force)?;
         self.events
             .publish(PodiumEvent::WorktreesChanged { project_id });
         Ok(())
@@ -2441,6 +2474,12 @@ fn next_free_name(base: &str, existing: &HashSet<String>) -> String {
     }
 }
 
+/// The backend `project_id` runs on (see [`ProjectHandle::wsl`]); `None`
+/// natively, or once the project is gone.
+fn project_backend(inner: &Inner, project_id: ProjectId) -> Option<&'static WslBackend> {
+    inner.projects.get(&project_id).and_then(|p| p.wsl)
+}
+
 fn insert_process(
     inner: &mut Inner,
     id: ProcessId,
@@ -2478,6 +2517,20 @@ fn do_start(
     id: ProcessId,
     manual: bool,
 ) -> CoreResult<()> {
+    // The project's backend, read under a short lock of its own: the gate
+    // below depends on it, and must be taken before `inner`.
+    let wsl = {
+        let guard = inner.lock().expect(LOCK_POISONED);
+        let proc = guard.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+        project_backend(&guard, proc.project_id)
+    };
+    // On the WSL backend, one `wsl.exe` start at a time — a native launch
+    // (a Windows-drive project with `nativeDriveProjects`) skips the gate,
+    // so it never waits behind a slow distro start. Taken *before* `inner`
+    // and declared first so it drops last: waiting for the gate — and its
+    // settle sleep on drop — must never happen under `inner`, which every
+    // command (sync ones on the main thread included) needs.
+    let launch_gate = crate::platform::wsl_launch_guard_for(wsl);
     let mut guard = inner.lock().expect(LOCK_POISONED);
     // An agent that lost its colour on exit gets a fresh one, picked exactly
     // as at spawn (it is not active, so its old colour is free again too).
@@ -2506,6 +2559,8 @@ fn do_start(
     let project_id = proc.project_id;
     let pty = PtyProcess::spawn(
         &proc.spec,
+        wsl,
+        launch_gate.as_ref(),
         None,
         Arc::clone(&proc.scrollback),
         proc.chunk_tx.clone(),
@@ -2908,7 +2963,7 @@ mod tests {
         let legacy_root = std::fs::canonicalize(dir.path()).unwrap();
         let orch = Orchestrator::new();
         orch.todos
-            .add(ProjectId::new(), &legacy_root, "pre-existing todo")
+            .add(ProjectId::new(), &legacy_root, "pre-existing todo", None)
             .unwrap();
         orch.scratchpads
             .add(ProjectId::new(), &legacy_root, "tester")

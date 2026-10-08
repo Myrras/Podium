@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import type { TodoInfo } from "../ipc/types";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
+import { useSelectionStore } from "../lib/selection";
 import { useTodoStore } from "../state/todoStore";
 import { TodoSubsection } from "./TodoSubsection";
 
@@ -74,6 +75,7 @@ describe("TodoSubsection multi-select", () => {
     useTodoStore.setState(initialTodo, true);
     useProcessStore.setState(initialProcess, true);
     useProjectStore.setState(initialProject, true);
+    useSelectionStore.setState({ text: "", items: [] });
   });
 
   it("marks a Cmd/Ctrl-clicked row multiselect, not open", () => {
@@ -211,6 +213,7 @@ describe("TodoSubsection spawn button", () => {
     useTodoStore.setState(initialTodo, true);
     useProcessStore.setState(initialProcess, true);
     useProjectStore.setState(initialProject, true);
+    useSelectionStore.setState({ text: "", items: [] });
   });
 
   it("spawns the default agent on a plain click", () => {
@@ -306,6 +309,7 @@ describe("TodoSubsection assigned to-dos", () => {
     useTodoStore.setState(initialTodo, true);
     useProcessStore.setState(initialProcess, true);
     useProjectStore.setState(initialProject, true);
+    useSelectionStore.setState({ text: "", items: [] });
   });
 
   it("hides the spawn button and tints the row with the session colour", () => {

@@ -56,7 +56,9 @@ export function ScratchpadAgentModal({
     // Fetch the catalog and the configured default together so the dropdown
     // lands on the user's default agent (Settings → Agents), not just the
     // first available one.
-    Promise.all([adaptersList(), agentSettingsGet()])
+    // Probed on this project's backend: in WSL mode a natively-run
+    // Windows-drive project and a distro project find different CLIs.
+    Promise.all([adaptersList(projectId ?? undefined), agentSettingsGet()])
       .then(([list, settings]) => {
         if (cancelled) return;
         setAdapters(list);
@@ -75,7 +77,7 @@ export function ScratchpadAgentModal({
     return () => {
       cancelled = true;
     };
-  }, [open, initialName]);
+  }, [open, initialName, projectId]);
 
   const selected = adapters?.find((a) => a.id === adapterId) ?? null;
   const canStart = !busy && projectId !== null && selected?.available === true;

@@ -8,6 +8,65 @@ Internal refactors, tooling, and chores are intentionally omitted. (Automated
 changelog generation from Conventional Commits via git-cliff is planned but not
 yet set up.)
 
+## [2.1.2] - 2026-09-30
+
+### Changed
+
+- **The assistant only orchestrates, and keeps it short.** Shell and file work
+  and the lookups you ask for now go to a spawned agent instead of the
+  assistant's own tool calls; the one thing it still does itself is send a
+  message you ask it to send. Agent updates are limited to real warnings and
+  whether agents are done. Before stopping a finished agent it checks for
+  follow-up work you typed and completes its to-do, and "stop the agents" only
+  stops the project you are talking about. These used to depend on the
+  assistant's memory file; they are now built in.
+
+## [2.1.1] - 2026-09-30
+
+### Added
+
+- **What you have selected is handed to the assistant.** ⌘/Ctrl+click any
+  number of to-dos, scratchpads or agents — or select text anywhere, including
+  in a terminal — and each appears as a chip above the assistant's composer.
+  Your next message carries them along, so you can ask "what's left on these?"
+  instead of pasting ids or re-explaining which items you mean. Merely opening
+  an item does not send it: reading a to-do should not put it in your next
+  message. Each chip has an × if you'd rather not send it, and a selection you
+  make inside the chat panel itself is left alone.
+
+## [2.1.0] - 2026-09-30
+
+### Added
+
+- **Run everything inside WSL on Windows.** Settings → General → Backend takes
+  a WSL distro name; after a restart, services, terminals, agents, the
+  personal assistant, git worktrees and the MCP install all run inside that
+  distro, with projects opened from `\\wsl.localhost\<distro>\…`. Podium
+  itself stays a native Windows app. It needs WSL's mirrored networking, and
+  warns at startup when that is off.
+
+### Changed
+
+- **One title bar on macOS.** The window's native title bar is gone: the
+  traffic lights now sit in Podium's own header strip, with the logo centered
+  and the header still draggable. Native fullscreen and the menu bar are
+  unchanged.
+
+### Fixed
+
+- **Background processes on Windows no longer wait for their terminal to be
+  opened.** An `auto_start` service, an agent started from a to-do, or a
+  supervised restart used to sit blocked until someone opened its terminal,
+  because Windows' console layer waits for a reply that only the terminal view
+  gave. Podium now answers it itself.
+- **No more console windows flashing up on Windows.** Starting an agent or
+  focusing a terminal briefly popped up an empty console window, because the
+  git and shell calls Podium makes in the background each got a visible
+  window of their own. They now run hidden.
+- **No more double title bar on Windows.** The native Windows title bar sat
+  on top of Podium's own, each with its own minimize/maximize/close buttons.
+  Only Podium's remains, and it keeps working with Aero Snap.
+
 ## [2.0.4] - 2026-09-30
 
 ### Fixed

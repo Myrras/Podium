@@ -117,8 +117,10 @@ forced); the branch is always kept.
 
 A workspace-wide chat panel backed by a long-lived headless Claude Code
 session with its own MCP endpoint into Podium. It reads and drives everything
-Podium manages, but **never edits code itself** — implementation work goes out
-to a spawned agent.
+Podium manages, but **only orchestrates** — code, shell and file work and the
+lookups you ask for go out to a spawned agent; the one thing it does itself is
+send a message you ask it to send. Its replies stay short: real warnings and
+whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
@@ -159,6 +161,8 @@ through the stdio bridge (see below).
 - **Node.js** + **pnpm**
 - An agent CLI on your `PATH` if you want to spawn agents — e.g. `claude`
   ([Claude Code](https://docs.claude.com/en/docs/claude-code))
+- Optional, on Windows: a WSL 2 distro, to run everything inside WSL (see
+  [Windows with a WSL backend](#windows-with-a-wsl-backend))
 
 ## Build & run
 
@@ -203,10 +207,66 @@ you added by hand alone.
 
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file) |
+| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree"             |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
+
+## Windows with a WSL backend
+
+On Windows, Podium itself runs natively, but it can run **everything it
+executes** inside a WSL distro: services from `podium.yml`, terminals,
+agents, the personal assistant, git and worktrees, and the MCP install. Your
+projects then live in the Linux filesystem, where builds and git are fast
+and your Linux toolchain applies.
+
+**Prerequisite: mirrored networking.** Agents in WSL reach Podium's MCP server
+on `127.0.0.1`, which only works with WSL's mirrored networking. Add this to
+`%UserProfile%\.wslconfig`, then run `wsl --shutdown`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Podium checks this at startup in WSL mode and shows a warning if it's off.
+
+**Turn it on.**
+
+1. Install the agent CLIs you use (e.g. `claude`) **inside the distro**. In
+   WSL mode Podium looks for them there, not on Windows.
+2. In **Settings → General → Backend**, enter the distro name (for example
+   `Ubuntu`; `wsl -l -q` lists yours).
+3. Restart Podium. The backend is fixed at startup; the field shows a restart
+   hint until you do.
+4. Open projects by their WSL path, e.g.
+   `\\wsl.localhost\Ubuntu\home\you\webshop`.
+
+Commands in `podium.yml` then run through `bash -lic` inside the distro, so
+your `.bashrc`/`.profile` PATH setup applies. Terminals open your distro
+shell. **Settings → MCP → install** registers the bridge with the distro's
+`claude`/`auggie`. Clear the field and restart to go back to native Windows.
+
+**Projects on a Windows drive.** By default a project opened from `C:\…`
+(or any other drive) runs in the distro too, through `/mnt/c/…`. If you would
+rather keep those on Windows, turn on **Run Windows-drive projects natively**
+under the distro field (it appears once a distro is set) and restart: a
+drive project then runs its services, terminals, agents and git on Windows
+itself (cmd.exe, Windows git, the Windows `claude`), while projects inside the
+distro (`\\wsl.localhost\…`) keep running in WSL. With it on:
+
+- install the agent CLIs on Windows as well — the **New agent** dialog
+  checks for them where that project's agents will actually run;
+- new terminals in a drive project open PowerShell, whatever the **Shell**
+  setting says (that setting is for the distro's shell);
+- `podium.yml` commands in a drive project are `cmd.exe` syntax, not bash.
+
+The personal assistant and the MCP install always use the configured
+backend.
+
+Limits: the distro is one global setting, **Settings → Agents** reports the
+CLIs found in the configured backend (the distro), and **Open in Warp** is
+unchanged.
 
 ## Things you'd otherwise never find
 
@@ -228,9 +288,14 @@ last) line, so a multi-line draft still navigates normally.
 **Mouse**
 
 - **Double-click** a project name, process name or to-do title to rename it.
-- **⌘/Ctrl+click** a to-do or scratchpad title to add it to a multi-select;
-  **Shift+click** to extend the range. The selection bar then starts one agent
-  on the whole group.
+- **⌘/Ctrl+click** a to-do or scratchpad title, or an agent/process row, to
+  add it to a multi-select; **Shift+click** to extend the range over a list.
+  Selected rows become chips above the assistant's composer, so your next
+  message to it carries them as context; for to-dos and scratchpads the
+  selection bar also starts one agent on the whole group. Selecting *text*
+  anywhere — a detail pane, a terminal — does the same. Opening an item
+  deliberately does not select it, and each chip has an × to drop it from the
+  message.
 - **⌘/Ctrl+click** a spawn button to pick the adapter instead of using the
   default.
 - **Drag** the project header grip to reorder projects.

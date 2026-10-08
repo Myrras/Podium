@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ProcessInfo } from "../ipc/types";
 import { activityLabel, isActive } from "../lib/processStatus";
+import { toggleSelectedItem, useSelectionStore } from "../lib/selection";
 import { useAgentActivity, useAgentShells } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
 import { AgentScratchpadList } from "./AgentScratchpadList";
@@ -30,6 +31,11 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
 
   const active = isActive(process.status);
   const selected = activeProcessId === process.id;
+  // Cmd/Ctrl+click picks the row as assistant context instead of opening it,
+  // matching how to-do and scratchpad rows are selected.
+  const inContext = useSelectionStore((s) =>
+    s.items.some((i) => i.kind === "process" && i.id === process.id),
+  );
   const isAgent = process.kind.kind === "agent";
   // Services come from `podium.yml`, so their name is owned by the config.
   const renamable = isAgent || process.kind.kind === "terminal";
@@ -71,6 +77,7 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
       <div
         className={styles.row}
         data-selected={selected ? "true" : undefined}
+        data-multiselect={inContext ? "true" : undefined}
         data-session={isAgent && process.color ? "true" : undefined}
         style={
           process.color
@@ -79,7 +86,17 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
         }
         role="button"
         tabIndex={0}
-        onClick={() => setActiveProcess(process.id)}
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey) {
+            toggleSelectedItem({
+              kind: "process",
+              projectId: process.projectId,
+              id: process.id,
+            });
+            return;
+          }
+          setActiveProcess(process.id);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
