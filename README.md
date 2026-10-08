@@ -139,8 +139,9 @@ whether agents are done, no recap of what they did.
   it messages that agent instead of starting a new one; the agent pushes its
   own branch (`git push -u origin HEAD`), opens its PR/MR in the same
   repository (`gh pr create` / `glab mr create`) and reports back with the
-  link. Spawned agents may do both without a prompt. Force, delete, tag,
-  mirror and main/master pushes, pushes to another URL and PRs/MRs against
+  link; an agent on main or master pushes nothing and says so. Spawned
+  agents may do both without a prompt. Force, delete, tag, mirror and
+  explicit main/master pushes, pushes to another URL and PRs/MRs against
   another repository are blocked in their plain spellings — a push written
   another way (`git -C … push`, an alias) falls back to the normal prompt.
   Passing your own `--settings` in an agent's args turns this off for that

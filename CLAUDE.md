@@ -248,7 +248,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   / `ListAgents`. Two things make that work, both set per session so the
   user's own `~/.claude/settings.json` is never touched:
   - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
-    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    (`agent::peer_inbound_settings`). Without it the CLI decides per message
     from the two sessions' permission-mode classes, and the assistant
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
@@ -262,11 +262,13 @@ one lock acquisition, atomically, before the async `podium.yml` load.
     (deny beats allow) block force, `+refspec`, delete, mirror/prune/all,
     `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
     pushes, URL/`@` destinations, main/master as the destination and any
-    quoting or `$`/backtick expansion in a push, plus `-R`/`--repo` on
+    quoting or `$`/backtick/brace expansion in a push, plus `-R`/`--repo` on
     `gh`/`glab`, wherever the flag sits (mid-pattern `*`; long git options
     cut to their shortest unambiguous prefix). They match command text only:
-    `git -C … push`, aliases, some flag clusters and an implicit push of a
-    checked-out main slip past (see the code comment). The test's matcher
+    `git -C … push`, aliases, some flag clusters, an explicit push to another
+    non-main branch (`HEAD:develop`) and an implicit push of a checked-out
+    main slip past (see the code comment); the identity prompt has the agent
+    check it is not on main/master before pushing. The test's matcher
     mirrors CLI 2.1.292 — re-check it on a CLI upgrade. With the user's own
     `--settings` (either form) none of this applies, and the identity
     prompt drops the go-ahead.
