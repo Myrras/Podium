@@ -401,6 +401,25 @@ struct GhUser {
 #[derive(Deserialize)]
 struct GhRef {
     number: u64,
+    /// Absent in old `gh` output; then the ref is taken as this repo's.
+    #[serde(default)]
+    repository: Option<GhRepo>,
+}
+
+#[derive(Deserialize)]
+struct GhRepo {
+    name: String,
+    owner: GhUser,
+}
+
+impl GhRef {
+    /// Whether the ref points into `owner_repo` (`owner/name`, any case):
+    /// "Fixes other/repo#5" is not this repo's #5.
+    fn in_repo(&self, owner_repo: &str) -> bool {
+        self.repository.as_ref().is_none_or(|r| {
+            format!("{}/{}", r.owner.login, r.name).eq_ignore_ascii_case(owner_repo)
+        })
+    }
 }
 
 impl GhItem {
@@ -508,13 +527,23 @@ fn parse_gh_project(json: &str, owner_repo: &str) -> Option<GhProject> {
 /// Status column would read as open, and moving it would skip the reopen.
 /// Without a project, the default placement (linked PR, label, draft) applies.
 fn assemble_github(
+    owner_repo: &str,
     open_issues: &str,
     closed_issues: &str,
     open_prs: &str,
     merged_prs: &str,
     project: Option<&GhProject>,
 ) -> CoreResult<Vec<BoardItem>> {
-    let open_prs = parse_gh(open_prs)?;
+    // Closing refs into other repos say nothing about this board's issues.
+    let parse_prs = |json: &str| -> CoreResult<Vec<GhItem>> {
+        let mut prs = parse_gh(json)?;
+        for p in &mut prs {
+            p.closing_issues_references
+                .retain(|r| r.in_repo(owner_repo));
+        }
+        Ok(prs)
+    };
+    let open_prs = parse_prs(open_prs)?;
     let linked: HashSet<u64> = open_prs
         .iter()
         .flat_map(|p| p.closing_issues_references.iter().map(|r| r.number))
@@ -551,7 +580,7 @@ fn assemble_github(
         closing.push(gh_closing(&p, false));
         items.push(p.into_item(ItemKind::Pr, &column));
     }
-    for p in parse_gh(merged_prs)? {
+    for p in parse_prs(merged_prs)? {
         closing.push(gh_closing(&p, true));
         items.push(p.into_item(ItemKind::Pr, "done"));
     }
@@ -785,6 +814,7 @@ pub fn fetch_github(
         Err(_) => (None, None),
     };
     let items = assemble_github(
+        owner_repo,
         &open_issues?,
         &closed_issues?,
         &open_prs?,
@@ -851,8 +881,9 @@ pub struct IssuesOverview {
     pub projects: std::collections::BTreeMap<std::path::PathBuf, String>,
 }
 
-/// Reduce user input to `scheme://host[:port]`: the scheme is kept (default
-/// `https`), the host lowercased, any path dropped. `None` when no host is left.
+/// Reduce user input to `scheme://host[:port][/path]`: the scheme is kept
+/// (default `https`), the host lowercased, the path kept minus a trailing
+/// slash (a GitLab under `/gitlab`). `None` when no host is left.
 pub fn normalize_url(input: &str) -> Option<String> {
     let s = input.trim();
     let (scheme, rest) = match s.split_once("://") {
@@ -862,9 +893,12 @@ pub fn normalize_url(input: &str) -> Option<String> {
     if scheme != "http" && scheme != "https" {
         return None;
     }
-    let host = rest.split('/').next().unwrap_or("").trim();
-    (!host.is_empty() && !host.contains(char::is_whitespace))
-        .then(|| format!("{scheme}://{}", host.to_ascii_lowercase()))
+    // The path stays (a GitLab served under `https://host/gitlab`); only a
+    // trailing slash goes, since API paths are appended to it.
+    let rest = rest.trim_end_matches('/');
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    (!host.is_empty() && !rest.contains(char::is_whitespace))
+        .then(|| format!("{scheme}://{}{path}", host.to_ascii_lowercase()))
 }
 
 /// The bare hostname of a normalized setup URL (port dropped, as
@@ -1210,9 +1244,20 @@ fn gitlab_send(
 
 /// One HTTP client for every GitLab call: a board fetch fires a dozen-plus
 /// requests in parallel, and each `Client::new()` builds its own connection
-/// pool and TLS config (and, blocking, its own runtime thread).
+/// pool and TLS config (and, blocking, its own runtime thread). It never
+/// follows a redirect: the `PRIVATE-TOKEN` header would go along, to whatever
+/// host the redirect names. A 3xx becomes [`GITLAB_REDIRECT`] instead.
 static GITLAB_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
-    std::sync::LazyLock::new(reqwest::blocking::Client::new);
+    std::sync::LazyLock::new(|| {
+        reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            // Same failure mode as `Client::new()`: no TLS backend at all.
+            .expect("GitLab HTTP client")
+    });
+
+const GITLAB_REDIRECT: &str =
+    "GitLab redirected the request; check the setup's URL (https, host and path)";
 
 /// One GitLab API GET: the body plus the `X-Total` header.
 fn gitlab_get(base: &str, token: &str, path: &str) -> CoreResult<(String, Option<u64>)> {
@@ -1235,6 +1280,7 @@ fn gitlab_get(base: &str, token: &str, path: &str) -> CoreResult<(String, Option
                 .map_err(|_| CoreError::IssuesFetch("could not read GitLab's response".into()))?;
             Ok((body, total))
         }
+        300..=399 => Err(CoreError::IssuesFetch(GITLAB_REDIRECT.to_string())),
         401 | 403 => Err(CoreError::IssuesGitlabAuth),
         429 => Err(CoreError::IssuesFetch(
             "GitLab rate limit reached, try again later".to_string(),
@@ -1389,6 +1435,12 @@ fn with_related_mrs(
         .map(|i| i.iid)
         .filter(|n| !linked.contains(n))
         .collect();
+    // The board's own project, as its issues name it: `related_merge_requests`
+    // also returns MRs of other projects (forks, cross-project mentions), whose
+    // `!iid`s are another number space.
+    let project_id = values(open_issues)?
+        .iter()
+        .find_map(|i| i["project_id"].as_u64());
     if unlinked.is_empty() {
         return Ok((open_mrs, merged_mrs));
     }
@@ -1415,7 +1467,9 @@ fn with_related_mrs(
     for (n, mrs) in related {
         for v in mrs {
             let Some(m) = item(&v) else { continue };
-            if known.contains(&m.iid) || !gl_closing(&m, project_path).contains(&n) {
+            let other_project = project_id.is_some_and(|id| v["project_id"].as_u64() != Some(id));
+            if other_project || known.contains(&m.iid) || !gl_closing(&m, project_path).contains(&n)
+            {
                 continue;
             }
             known.insert(m.iid);
@@ -1692,6 +1746,7 @@ fn gitlab_put(
     .map_err(|e| CoreError::IssuesMove(format!("Could not reach GitLab ({e}).")))?;
     match response.status().as_u16() {
         200 => Ok(()),
+        300..=399 => Err(CoreError::IssuesMove(format!("{GITLAB_REDIRECT}."))),
         401 | 403 => Err(CoreError::IssuesGitlabAuth),
         429 => refused("GitLab rate limit reached, try again later."),
         _ => refused(failed),
@@ -1818,16 +1873,19 @@ pub fn move_github(
         }
         run(&args.iter().map(String::as_str).collect::<Vec<_>>())
     };
-    if item.kind == ItemKind::Issue && item.column == "done" {
-        run(&["issue", "reopen", &number, "--repo", &repo])?;
-    }
+    let reopen = item.kind == ItemKind::Issue && item.column == "done";
     if to == "done" {
         run(&["issue", "close", &number, "--repo", &repo])?;
         return Ok(());
     }
     if board.source.is_none() {
+        if reopen {
+            run(&["issue", "reopen", &number, "--repo", &repo])?;
+        }
         return Ok(());
     }
+    // Look the card up before reopening: a missing project or scope then
+    // refuses the move with the issue still closed, as the board shows it.
     let (owner, name) = owner_repo.split_once('/').unwrap_or((owner_repo, ""));
     let found = graphql(
         GH_MOVE_LOOKUP,
@@ -1836,9 +1894,28 @@ pub fn move_github(
     let Some(ids) = parse_gh_move_lookup(&found) else {
         return refused("Could not find this card in your GitHub Project.");
     };
+    if reopen {
+        run(&["issue", "reopen", &number, "--repo", &repo])?;
+    }
+    let result = set_github_status(graphql, &ids, to);
+    if result.is_err() && reopen {
+        // The board puts the card back in Done on a failed move: make that
+        // true again (best effort; the move's own error is what is reported).
+        let _ = run(&["issue", "close", &number, "--repo", &repo]);
+    }
+    result
+}
+
+/// The Project half of a GitHub move: set the Status option (adding the card
+/// to the project first when it is not on it), or clear it for `open`/`review`.
+fn set_github_status(
+    graphql: impl Fn(&str, &[(&str, &str)]) -> CoreResult<String>,
+    ids: &GhMoveIds,
+    to: &str,
+) -> CoreResult<()> {
     match to.strip_prefix("status:") {
         Some(option) => {
-            let item_id = match ids.item {
+            let item_id = match ids.item.clone() {
                 Some(id) => id,
                 None => {
                     let added = graphql(
@@ -1863,12 +1940,12 @@ pub fn move_github(
             )?;
         }
         None => {
-            if let Some(item_id) = ids.item {
+            if let Some(item_id) = &ids.item {
                 graphql(
                     GH_CLEAR_STATUS,
                     &[
                         ("project", &ids.project),
-                        ("item", &item_id),
+                        ("item", item_id),
                         ("field", &ids.field),
                     ],
                 )?;
@@ -2123,7 +2200,8 @@ mod tests {
         ]"#;
         let merged =
             r#"[{"number":19,"title":"Done","url":"u19","updatedAt":"2026-09-21T10:00:00Z"}]"#;
-        let items = assemble_github(open_issues, closed, open_prs, merged, None).unwrap();
+        let items =
+            assemble_github("acme/widgets", open_issues, closed, open_prs, merged, None).unwrap();
         let col = |n: u64, k: ItemKind| {
             items
                 .iter()
@@ -2150,7 +2228,7 @@ mod tests {
         assert_eq!(seven.labels, vec!["bug"]);
         assert_eq!(seven.author, "sam");
         assert!(matches!(
-            assemble_github("not json", "[]", "[]", "[]", None),
+            assemble_github("acme/widgets", "not json", "[]", "[]", "[]", None),
             Err(CoreError::IssuesFetch(_))
         ));
     }
@@ -2178,8 +2256,12 @@ mod tests {
                 Some("https://git.example.test"),
             ),
             (
-                "  http://git.example.test/group/proj ",
-                Some("http://git.example.test"),
+                "  http://git.example.test/gitlab/ ",
+                Some("http://git.example.test/gitlab"),
+            ),
+            (
+                "https://Git.Example.test/GitLab",
+                Some("https://git.example.test/GitLab"),
             ),
             ("HTTP://git.example.test", Some("http://git.example.test")),
             (
@@ -2196,6 +2278,10 @@ mod tests {
         }
         assert_eq!(url_host("http://git.example.test:8080"), "git.example.test");
         assert_eq!(url_host("https://github.com"), "github.com");
+        assert_eq!(
+            url_host("https://git.example.test/gitlab"),
+            "git.example.test"
+        );
     }
 
     #[test]
@@ -2419,16 +2505,19 @@ mod tests {
                 let body = if req.starts_with("GET /api/v4/user ") {
                     r#"{"id":5,"username":"fixture-me"}"#
                 } else if req.contains("/issues?state=opened") {
-                    r#"[{"iid":12,"title":"mine","web_url":"u12"}]"#
+                    r#"[{"iid":12,"title":"mine","web_url":"u12","project_id":1}]"#
                 } else if req.contains("/issues?state=closed") {
                     r#"[{"iid":13,"title":"closed","web_url":"u13",
                         "closed_at":"2026-09-29T11:00:00Z"}]"#
                 } else if req.contains("/issues/12/related_merge_requests") {
-                    // A colleague's merged MR on the `issue/12` branch, and one
-                    // that only mentions the issue.
-                    r#"[{"iid":40,"title":"fix - #12","web_url":"u40","state":"merged",
+                    // A fork's MR on the same branch name, a colleague's merged
+                    // MR on the `issue/12` branch, and one that only mentions
+                    // the issue.
+                    r#"[{"iid":39,"title":"a fork's fix","web_url":"u39","state":"opened",
+                        "source_branch":"issue/12","project_id":2},
+                       {"iid":40,"title":"fix - #12","web_url":"u40","state":"merged",
                         "source_branch":"issue/12","merged_at":"2026-09-29T11:00:00Z",
-                        "author":{"username":"kim"}},
+                        "author":{"username":"kim"},"project_id":1},
                        {"iid":41,"title":"see #12","web_url":"u41","state":"opened",
                         "source_branch":"other"}]"#
                 } else {
@@ -2443,7 +2532,11 @@ mod tests {
             }
         });
         let board = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap();
-        assert_eq!(board.items.len(), 2, "no stray card for the mention");
+        assert_eq!(
+            board.items.len(),
+            2,
+            "no stray card for the mention or fork"
+        );
         let board = Board {
             items: board.items.into_iter().filter(|i| i.number == 12).collect(),
             ..board
@@ -2484,8 +2577,37 @@ mod tests {
     }
 
     #[test]
+    fn gitlab_never_follows_a_redirect_with_the_token() {
+        use std::io::{Read, Write};
+        // The redirect target: records anything that reaches it.
+        let thief = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        thief.set_nonblocking(true).unwrap();
+        let thief_url = format!("http://{}/steal", thief.local_addr().unwrap());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                let mut sock = sock.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).unwrap();
+                let reply = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {thief_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                sock.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let err = gitlab_get(&base, "fixture-token", "/api/v4/projects/a%2Fb/issues").unwrap_err();
+        assert!(err.to_string().contains("redirected"), "{err}");
+        assert!(thief.accept().is_err(), "the redirect was followed");
+        let err = gitlab_put(&base, "fixture-token", "/x", &[], "failed").unwrap_err();
+        assert!(err.to_string().contains("redirected"), "{err}");
+        assert!(thief.accept().is_err(), "the redirect was followed");
+    }
+
+    #[test]
     fn serializes_camel_case() {
         let items = assemble_github(
+            "acme/widgets",
             r#"[{"number":1,"title":"t","url":"u","updatedAt":"x"}]"#,
             "[]",
             r#"[{"number":2,"title":"p","url":"u2","isDraft":false,"updatedAt":"y"}]"#,
@@ -2611,6 +2733,7 @@ mod tests {
         assert_eq!(p.options[1].id, "status:o2");
         assert_eq!(p.options[1].color.as_deref(), Some("blue"));
         let items = assemble_github(
+            "acme/widgets",
             r#"[{"number":7,"title":"a","url":"u"},{"number":8,"title":"b","url":"u"},
                 {"number":9,"title":"stale option","url":"u"}]"#,
             r#"[{"number":3,"title":"closed but placed","url":"u"},
@@ -3076,6 +3199,7 @@ mod tests {
     #[test]
     fn github_folds_linked_prs_into_their_issue() {
         let items = assemble_github(
+            "acme/widgets",
             r#"[{"number":7,"title":"a","url":"u7"},{"number":8,"title":"b","url":"u8"}]"#,
             "[]",
             r#"[{"number":20,"title":"fix 7 and 8","url":"u20","isDraft":true,
@@ -3083,17 +3207,26 @@ mod tests {
                  "latestReviews":[{"author":{"login":"kim"},"state":"APPROVED"},
                                   {"author":{"login":"sam"},"state":"CHANGES_REQUESTED"}]},
                 {"number":21,"title":"off board","url":"u21",
-                 "closingIssuesReferences":[{"number":99}]}]"#,
+                 "closingIssuesReferences":[{"number":99}]},
+                {"number":22,"title":"fixes another repo's #8","url":"u22",
+                 "closingIssuesReferences":[{"number":8,
+                   "repository":{"name":"other","owner":{"login":"acme"}}}]},
+                {"number":23,"title":"fixes #8, spelled out","url":"u23",
+                 "closingIssuesReferences":[{"number":8,
+                   "repository":{"name":"Widgets","owner":{"login":"ACME"}}}]}]"#,
             r#"[{"number":19,"title":"merged","url":"u19","closingIssuesReferences":[{"number":7}]}]"#,
             None,
         )
         .unwrap();
         let numbers: Vec<_> = items.iter().map(|i| (i.kind, i.number)).collect();
-        // #20 and #19 are folded away; #21 links an issue not on the board.
-        assert_eq!(items.len(), 3, "{numbers:?}");
-        assert!(items
-            .iter()
-            .any(|i| i.kind == ItemKind::Pr && i.number == 21));
+        // #20, #19 and #23 are folded away; #21 links an issue not on the
+        // board, #22 one in another repo.
+        assert_eq!(items.len(), 4, "{numbers:?}");
+        for n in [21, 22] {
+            assert!(items
+                .iter()
+                .any(|i| i.kind == ItemKind::Pr && i.number == n));
+        }
         let issue = |n| {
             items
                 .iter()
@@ -3106,8 +3239,8 @@ mod tests {
             .map(|l| (l.number, l.draft, l.merged))
             .collect();
         assert_eq!(linked, [(20, true, false), (19, false, true)]);
-        assert_eq!(issue(8).linked.len(), 1);
-        assert_eq!(issue(8).linked[0].url, "u20");
+        let linked8: Vec<_> = issue(8).linked.iter().map(|l| l.url.as_str()).collect();
+        assert_eq!(linked8, ["u20", "u23"]);
         // The default placement still counts the open PR.
         assert_eq!(issue(7).column, "inProgress");
         let v = serde_json::to_value(issue(8)).unwrap();
@@ -3393,13 +3526,35 @@ echo "[{\"number\":1,\"title\":\"$1 $6 ${GH_TOKEN:-none} $4\",\"url\":\"u\",\"bo
                 ["issue close 7 --repo github.com/acme/widgets"]
             );
 
-            // Out of Done: reopen first, then the Status.
+            // Out of Done: look the card up, reopen, then the Status.
             std::fs::remove_file(&log).unwrap();
             let (gh, log) = mover(dir.path(), LOOKUP_ON, "");
             go(&gh, &b, 1, "status:o2").unwrap();
             let c = calls(&log);
-            assert_eq!(c[0], "issue reopen 8 --repo github.com/acme/widgets");
+            assert!(c[0].contains("issueOrPullRequest"), "{c:?}");
+            assert_eq!(c[1], "issue reopen 8 --repo github.com/acme/widgets");
             assert!(c[2].contains("updateProjectV2ItemFieldValue"));
+
+            // The lookup fails: the issue is never reopened.
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(dir.path(), "{}", "");
+            assert!(go(&gh, &b, 1, "status:o2").is_err());
+            assert!(!calls(&log).iter().any(|c| c.contains("reopen")));
+
+            // Setting the Status fails after the reopen: closed again.
+            std::fs::remove_file(&log).unwrap();
+            let (gh, log) = mover(
+                dir.path(),
+                LOOKUP_ON,
+                "case \"$*\" in *updateProjectV2ItemFieldValue*) exit 1;; esac",
+            );
+            assert!(go(&gh, &b, 1, "status:o2").is_err());
+            let c = calls(&log);
+            assert_eq!(c[1], "issue reopen 8 --repo github.com/acme/widgets");
+            assert_eq!(
+                c.last().unwrap(),
+                "issue close 8 --repo github.com/acme/widgets"
+            );
 
             // Default board: reopen is the whole move.
             let mut d = b.clone();

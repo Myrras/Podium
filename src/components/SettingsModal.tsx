@@ -468,6 +468,25 @@ function IssuesTab() {
       .finally(() => setBusy(false));
   };
 
+  // A blank token deletes the stored one (the backend's rule for `""`).
+  const clearToken = (d: IssueSetupDraft) => {
+    setBusy(true);
+    issuesSetupSave({
+      id: d.id,
+      name: d.name,
+      provider: d.provider,
+      url: d.url,
+      token: "",
+    })
+      .then((o) => {
+        setOverview(o);
+        setDraft({ ...d, token: "", tokenSet: false });
+        toastSuccess("Token cleared");
+      })
+      .catch((e) => toastError(toIpcError(e).message))
+      .finally(() => setBusy(false));
+  };
+
   const remove = (id: string) =>
     issuesSetupRemove(id)
       .then(setOverview)
@@ -581,6 +600,15 @@ function IssuesTab() {
                 }
                 onChange={(e) => setDraft({ ...draft, token: e.target.value })}
               />
+              {draft.id && draft.tokenSet && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => clearToken(draft)}
+                >
+                  Clear token
+                </button>
+              )}
             </div>
           )}
           <div className={styles.editActions}>

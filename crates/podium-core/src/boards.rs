@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CoreError, CoreResult};
+use crate::error::CoreResult;
 use crate::issues::{movable, Board, ItemKind};
 
 const LOCK_POISONED: &str = "board store lock poisoned";
@@ -53,10 +53,23 @@ struct Inner {
     /// fetch of that project that started before one cannot overwrite it with
     /// the pre-edit board. In memory only: a restart has no fetch in flight.
     edits: HashMap<String, u64>,
+    /// Numbers each snapshot taken for disk, so a slower older write can
+    /// never land over a newer one (see [`BoardStore::write`]).
+    saves: u64,
+}
+
+/// The store serialised under its lock, written to disk after it is released.
+struct Snapshot {
+    path: PathBuf,
+    json: String,
+    seq: u64,
 }
 
 pub(crate) struct BoardStore {
     inner: Mutex<Inner>,
+    /// Serialises the disk writes and remembers the newest one written; held
+    /// only while writing, never together with `inner`'s lock.
+    written: Mutex<u64>,
 }
 
 impl BoardStore {
@@ -66,7 +79,9 @@ impl BoardStore {
                 path: None,
                 boards: BoardMap::new(),
                 edits: HashMap::new(),
+                saves: 0,
             }),
+            written: Mutex::new(0),
         }
     }
 
@@ -107,7 +122,9 @@ impl BoardStore {
             fetched_at: Utc::now(),
         };
         *inner.boards.entry(key).or_default().scope(mine) = Some(cached.clone());
-        let _ = save(&inner);
+        let snapshot = snapshot(&mut inner);
+        drop(inner);
+        self.write(snapshot);
         Some(cached)
     }
 
@@ -143,7 +160,9 @@ impl BoardStore {
                 }
             }
         }
-        let _ = save(&inner);
+        let snapshot = snapshot(&mut inner);
+        drop(inner);
+        self.write(snapshot);
     }
 
     /// After a successful unassign: drop `me` from the item's assignees in
@@ -175,7 +194,26 @@ impl BoardStore {
                 item.assignees.retain(|a| a != me);
             }
         }
-        let _ = save(&inner);
+        let snapshot = snapshot(&mut inner);
+        drop(inner);
+        self.write(snapshot);
+    }
+}
+
+impl BoardStore {
+    /// Best-effort atomic write (temp file, then rename) of a snapshot, unless
+    /// a newer one already made it to disk.
+    fn write(&self, snapshot: Option<Snapshot>) {
+        let Some(snapshot) = snapshot else { return };
+        let mut written = self.written.lock().expect(LOCK_POISONED);
+        if snapshot.seq <= *written {
+            return;
+        }
+        if let Err(e) = write_atomic(&snapshot.path, &snapshot.json) {
+            tracing::warn!("could not save the board cache: {e}");
+            return;
+        }
+        *written = snapshot.seq;
     }
 }
 
@@ -193,16 +231,24 @@ fn load(path: &Path) -> BoardMap {
     })
 }
 
+/// The store as JSON for disk (taken under the lock); `None` when it is
+/// in-memory only or does not encode.
+fn snapshot(inner: &mut Inner) -> Option<Snapshot> {
+    let path = inner.path.clone()?;
+    let json = serde_json::to_string(&inner.boards).ok()?;
+    inner.saves += 1;
+    Some(Snapshot {
+        path,
+        json,
+        seq: inner.saves,
+    })
+}
+
 /// Atomic write: temp file, then rename over the old one.
-fn save(inner: &Inner) -> CoreResult<()> {
-    let Some(path) = &inner.path else {
-        return Ok(());
-    };
+fn write_atomic(path: &Path, json: &str) -> CoreResult<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_string(&inner.boards)
-        .map_err(|e| CoreError::InvalidInput(format!("failed to encode boards: {e}")))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json)?;
     std::fs::rename(&tmp, path)?;
@@ -333,6 +379,25 @@ mod tests {
         let before = store.edits(&root);
         store.apply_unassign(&root, ItemKind::Pr, 2, "sam");
         assert!(store.put(&root, false, board(), before).is_none());
+    }
+
+    #[test]
+    fn an_older_snapshot_never_lands_over_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boards.json");
+        let root = PathBuf::from("/tmp/fixture-project");
+        let store = BoardStore::new();
+        store.set_path(path.clone());
+        let older = {
+            let mut inner = store.inner.lock().unwrap();
+            snapshot(&mut inner)
+        };
+        // A later change is written first; the older write then arrives.
+        store.put(&root, true, board(), 0).unwrap();
+        store.write(older);
+        let again = BoardStore::new();
+        again.set_path(path);
+        assert!(again.get(&root, true).is_some(), "the newer write stands");
     }
 
     #[test]

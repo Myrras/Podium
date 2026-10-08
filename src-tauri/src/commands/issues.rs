@@ -27,17 +27,15 @@ pub async fn issues_board(
     .await
 }
 
-/// The last fetched board of this scope, without touching the network.
+/// The last fetched board of this scope, without touching the network. Off
+/// the main thread: it waits on the board store's lock.
 #[tauri::command]
-pub fn issues_board_cached(
+pub async fn issues_board_cached(
     state: State<'_, AppState>,
     project_id: ProjectId,
     mine: bool,
 ) -> Result<Option<CachedBoard>, IpcError> {
-    state
-        .orchestrator
-        .cached_issue_board(project_id, mine)
-        .map_err(IpcError::from)
+    blocking(state, move |o| o.cached_issue_board(project_id, mine)).await
 }
 
 /// Move a card to another column on the platform (validated against the

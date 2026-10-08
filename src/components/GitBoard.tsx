@@ -123,11 +123,25 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
   const [dragging, setDragging] = useState<BoardItem | null>(null);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
 
-  // The webview has no find bar of its own, so Cmd/Ctrl+F is the board's.
+  // The webview has no find bar of its own, so Cmd/Ctrl+F is the board's —
+  // except while typing somewhere else (a terminal, the assistant composer),
+  // which keeps its own keys.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+      const el = document.activeElement;
+      const typingElsewhere =
+        el instanceof HTMLElement &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable) &&
+        !boardRef.current?.contains(el);
+      if (
+        !typingElsewhere &&
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "f"
+      ) {
         e.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();
@@ -159,7 +173,7 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
     : "";
 
   return (
-    <div className={styles.board}>
+    <div ref={boardRef} className={styles.board}>
       <div className={styles.header}>
         <BoardIcon className={styles.kindIcon} />
         <span className={styles.title}>Git</span>

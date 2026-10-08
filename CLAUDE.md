@@ -409,8 +409,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   (ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
   (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
   { id, name, provider: github|gitlab, url, account? }`, `url` normalized to
-  `scheme://host[:port]` with the scheme **kept** (`http://` for an instance
-  without TLS; `https` when omitted). A project can pin one setup from the
+  `scheme://host[:port][/path]` with the scheme **kept** (`http://` for an
+  instance without TLS; `https` when omitted) and the path kept minus a
+  trailing slash (a GitLab under `/gitlab`). GitLab calls never follow a
+  redirect (the token header would go along to the new host); a 3xx is a
+  "check the setup's URL" error. A project can pin one setup from the
   board's picker (`issues.projects`, project root → setup id, app-side);
   otherwise `pick` takes the first setup whose host matches the remote, and a
   pinned setup for another host is `IssuesHostMismatch`. There is **no
@@ -451,7 +454,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `startAutoRefresh` (mounted with the Git button, so its "N open" —
   every card not in `done` — tooltip stays live) fetches immediately, every 5 min, and on window focus
   when the last attempt is over 60 s old; errors show inline, never as a
-  toast. A card click opens a read-only drawer (`IssueDetailPane`) beside the
+  toast. Those automatic fetches share one pace across projects — starts at
+  least 15 s apart (`AUTO_FETCH_SPACING_MS`), since a GitHub board costs ~6
+  of GitHub's 30 searches a minute — while a refresh the user asks for skips
+  it. A setups change during a fetch reruns it once that fetch is done. A card click opens a read-only drawer (`IssueDetailPane`) beside the
   columns; browser, "start agent" (`NewAgentModal` prefilled via
   `initialPrompt`) and "turn into to-do" (`todoAdd` → `todoUpdate` →
   `todoAddLink`, hidden while an active to-do already links the URL) are card
@@ -459,7 +465,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
 
   **Cache** (`boards.rs`, `BoardStore`, like `TodoStore`): `Orchestrator::
   issue_board` stores every successful board in one `boards.json` (app data
-  dir, atomic writes, keyed by project root, per scope `mine`/`all`) as a
+  dir, atomic writes — serialised under the store lock, written after it is
+  released, an older snapshot never over a newer one — keyed by project
+  root, per scope `mine`/`all`) as a
   `CachedBoard { board, fetchedAt }`; `cached_issue_board` /
   `issues_board_cached` read it without network, so the UI paints at once. The
   cache also keeps **columns stable**: when GitLab's `/boards` request *fails*

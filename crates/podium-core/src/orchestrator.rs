@@ -1966,6 +1966,16 @@ impl Orchestrator {
             crate::issues::gitlab_token_set(&setup.id, &token)?;
         }
         let mut issues = self.agent_settings().issues;
+        // Turned from GitLab into GitHub: its token has no use any more.
+        let was_gitlab = issues
+            .setups
+            .iter()
+            .any(|s| s.id == setup.id && s.provider == crate::IssueProvider::Gitlab);
+        if github && was_gitlab {
+            if let Err(e) = crate::issues::gitlab_token_set(&setup.id, "") {
+                tracing::warn!("could not delete a GitLab token no longer in use: {e}");
+            }
+        }
         match issues.setups.iter_mut().find(|s| s.id == setup.id) {
             Some(existing) => *existing = setup,
             None => issues.setups.push(setup),

@@ -154,7 +154,9 @@ that Podium fetches nothing (no `git`/`gh` calls in the background) and the
 board just points you to Settings. GitHub works through your own `gh` login
 (a setup can pick which `gh` account), github.com included; self-hosted
 GitLab needs a personal access token with the `api` scope (moving cards and
-unassigning write to GitLab), which lives only in the OS keychain. In WSL-backend mode the distro's `gh`
+unassigning write to GitLab), which lives only in the OS keychain (editing the
+setup offers **Clear token**). A GitLab served under a path
+(`https://host/gitlab`) keeps that path in the setup URL. In WSL-backend mode the distro's `gh`
 and its login are used. The board refreshes every 5 minutes, on window focus after a minute, and on
 demand; a failed refresh keeps the last board with the error inline.
 

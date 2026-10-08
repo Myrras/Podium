@@ -89,8 +89,15 @@ interface IssueState {
   loadOverview: () => Promise<void>;
   /** Apply a changed overview and refetch every shown project with it. */
   setOverview: (overview: IssuesOverview) => void;
-  /** Fetch now; a no-op while this project already has one in flight. */
-  refresh: (projectId: ProjectId) => Promise<void>;
+  /**
+   * Fetch now; a no-op while this project already has one in flight, unless
+   * `rerun` (the setups changed): then it runs once more after that one.
+   * `auto` (poll, focus, mount) waits for its slot in the shared pacing.
+   */
+  refresh: (
+    projectId: ProjectId,
+    opts?: { rerun?: boolean; auto?: boolean },
+  ) => Promise<void>;
   /**
    * Show the backend's cached board for the current scope (no network).
    * Resolves to its fetch time in ms, or null when there is none.
@@ -111,6 +118,33 @@ interface IssueState {
   /** Event applier for `project:closed`. */
   dropProject: (projectId: ProjectId) => void;
 }
+
+/**
+ * Automatic board fetches (poll, focus, mount) of all projects start at least
+ * this far apart. One GitHub board costs ~6 search queries and GitHub allows
+ * 30 a minute, so a focus refreshing six projects at once ran out; 15 s keeps
+ * it at ~24 a minute. A refresh the user asks for skips the queue.
+ */
+// ponytail: one global pace for GitHub and GitLab alike; per-provider pacing
+// if GitLab boards ever feel slow behind it.
+export const AUTO_FETCH_SPACING_MS = 15_000;
+let nextAutoFetch = 0;
+/** Claims the next slot; a promise to wait for, or null when it is now. */
+const autoFetchSlot = (): Promise<void> | null => {
+  const now = Date.now();
+  const at = Math.max(now, nextAutoFetch);
+  nextAutoFetch = at + AUTO_FETCH_SPACING_MS;
+  return at > now
+    ? new Promise((resolve) => setTimeout(resolve, at - now))
+    : null;
+};
+/** Tests only: forget the pacing between tests. */
+export const resetAutoFetchPacing = () => {
+  nextAutoFetch = 0;
+};
+
+/** Projects whose in-flight fetch must be followed by one more (`rerun`). */
+const rerunAfterFetch = new Set<ProjectId>();
 
 export const useIssueStore = create<IssueState>((set, get) => {
   const patch = (projectId: ProjectId, p: Partial<ProjectBoard>) =>
@@ -138,17 +172,26 @@ export const useIssueStore = create<IssueState>((set, get) => {
     setOverview: (overview) => {
       set({ overview });
       for (const projectId of Object.keys(get().byProject)) {
-        void get().refresh(projectId);
+        void get().refresh(projectId, { rerun: true });
       }
     },
 
-    refresh: async (projectId) => {
+    refresh: async (projectId, opts) => {
       const current = get().byProject[projectId] ?? EMPTY;
-      if (current.loading) return;
+      if (current.loading) {
+        // A setup/token change must not wait for the next poll: run once more
+        // when the fetch in flight is done.
+        if (opts?.rerun) rerunAfterFetch.add(projectId);
+        return;
+      }
       const { mine } = current;
       patch(projectId, { loading: true });
       if (!get().overview) await get().loadOverview();
       const { overview } = get();
+      // The scope was switched mid-fetch: that answer is for the old one, so
+      // it must not land on the new scope's board; refetch instead.
+      const switched = () =>
+        (get().byProject[projectId]?.mine ?? true) !== mine;
       // No setup in Settings → Issues: do not ask the backend at all, so
       // nothing shells out (git, gh) for a board nobody set up. An
       // unreadable overview is not proof of that, so the backend decides.
@@ -159,29 +202,32 @@ export const useIssueStore = create<IssueState>((set, get) => {
           loading: false,
           fetchedAt: Date.now(),
         });
-        return;
+      } else {
+        try {
+          const slot = opts?.auto ? autoFetchSlot() : null;
+          if (slot) await slot;
+          const board = await issuesBoard(projectId, mine);
+          patch(
+            projectId,
+            switched()
+              ? { loading: false }
+              : { board, error: null, loading: false, fetchedAt: Date.now() },
+          );
+        } catch (e: unknown) {
+          patch(
+            projectId,
+            switched()
+              ? { loading: false }
+              : {
+                  error: toIpcError(e),
+                  loading: false,
+                  fetchedAt: Date.now(),
+                },
+          );
+        }
       }
-      // The scope was switched mid-fetch: that answer is for the old one, so
-      // it must not land on the new scope's board; refetch instead.
-      const switched = () =>
-        (get().byProject[projectId]?.mine ?? true) !== mine;
-      try {
-        const board = await issuesBoard(projectId, mine);
-        patch(
-          projectId,
-          switched()
-            ? { loading: false }
-            : { board, error: null, loading: false, fetchedAt: Date.now() },
-        );
-      } catch (e: unknown) {
-        patch(
-          projectId,
-          switched()
-            ? { loading: false }
-            : { error: toIpcError(e), loading: false, fetchedAt: Date.now() },
-        );
-      }
-      if (switched()) {
+      const again = rerunAfterFetch.delete(projectId);
+      if (switched() || again) {
         await get().refresh(projectId);
       }
     },
@@ -246,13 +292,18 @@ export const useIssueStore = create<IssueState>((set, get) => {
         .hydrate(projectId)
         .then((at) => {
           if (at === null || Date.now() - at > ISSUE_POLL_MS) {
-            void refresh(projectId);
+            void refresh(projectId, { auto: true });
           }
         });
-      const timer = setInterval(() => void refresh(projectId), ISSUE_POLL_MS);
+      const timer = setInterval(
+        () => void refresh(projectId, { auto: true }),
+        ISSUE_POLL_MS,
+      );
       const onFocus = () => {
         const at = get().byProject[projectId]?.fetchedAt ?? 0;
-        if (Date.now() - at > ISSUE_FOCUS_STALE_MS) void refresh(projectId);
+        if (Date.now() - at > ISSUE_FOCUS_STALE_MS) {
+          void refresh(projectId, { auto: true });
+        }
       };
       window.addEventListener("focus", onFocus);
       return () => {

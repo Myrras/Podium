@@ -402,6 +402,21 @@ describe("SettingsModal — Issues tab", () => {
     );
   });
 
+  it("clears a GitLab setup's stored token", async () => {
+    await openIssuesTab();
+    fireEvent.click(screen.getByText("Edit"));
+    fireEvent.click(screen.getByText("Clear token"));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("issues_setup_save", {
+        id: "s1",
+        name: "Work GitLab",
+        provider: "gitlab",
+        url: "http://git.example.test",
+        token: "",
+      }),
+    );
+  });
+
   it("removes a setup", async () => {
     await openIssuesTab();
     fireEvent.click(screen.getByLabelText("Remove Work GitLab"));

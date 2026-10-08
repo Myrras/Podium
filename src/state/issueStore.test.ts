@@ -20,8 +20,10 @@ import type { Board, IssuesOverview } from "../ipc/types";
 import { toastError } from "./toastStore";
 import {
   ISSUE_FOCUS_STALE_MS,
+  AUTO_FETCH_SPACING_MS,
   ISSUE_POLL_MS,
   moveTargets,
+  resetAutoFetchPacing,
   useIssueStore,
 } from "./issueStore";
 
@@ -79,6 +81,7 @@ beforeEach(() => {
   moveMock.mockReset();
   vi.mocked(toastError).mockClear();
   settingsMock.mockReset();
+  resetAutoFetchPacing();
   useIssueStore.setState({ byProject: {}, overview: CONFIGURED }, false);
 });
 afterEach(() => vi.useRealTimers());
@@ -124,6 +127,35 @@ describe("issueStore", () => {
       loading: false,
       error: null,
     });
+  });
+
+  it("auto-refresh: projects fetch one pacing slot apart, a manual refresh at once", async () => {
+    listMock.mockResolvedValue(board(1));
+    const stops = ["a", "b", "c"].map((p) =>
+      useIssueStore.getState().startAutoRefresh(p),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
+    expect(listMock).toHaveBeenCalledTimes(2);
+    await useIssueStore.getState().refresh("d");
+    expect(listMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b", "d", "c"]);
+    stops.forEach((stop) => stop());
+  });
+
+  it("a setup change mid-fetch refetches once that fetch is done", async () => {
+    let resolve!: (v: Board) => void;
+    listMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    listMock.mockResolvedValue(board(2));
+    const first = useIssueStore.getState().refresh(P);
+    useIssueStore.getState().setOverview(CONFIGURED);
+    expect(listMock).toHaveBeenCalledTimes(1);
+    resolve(board(1));
+    await first;
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(useIssueStore.getState().byProject[P].board).toEqual(board(2));
   });
 
   it("keeps the stale list on error and clears the error on success", async () => {

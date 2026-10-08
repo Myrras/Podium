@@ -1,4 +1,5 @@
 import {
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -426,5 +427,21 @@ describe("GitBoard", () => {
     expect(column("Done (14d)").getByText("Other thing")).toBeTruthy();
     fireEvent.keyDown(search, { key: "Escape" });
     expect(column("Open").getByText("Fix widget")).toBeTruthy();
+  });
+
+  it("leaves Cmd+F alone while typing in an input outside the board", () => {
+    seed({ board: githubBoard });
+    render(
+      <>
+        <textarea aria-label="Elsewhere" />
+        <GitBoard projectId={P} />
+      </>,
+    );
+    const elsewhere = screen.getByLabelText("Elsewhere");
+    elsewhere.focus();
+    const ev = createEvent.keyDown(elsewhere, { key: "f", metaKey: true });
+    fireEvent(elsewhere, ev);
+    expect(document.activeElement).toBe(elsewhere);
+    expect(ev.defaultPrevented).toBe(false);
   });
 });
