@@ -10,6 +10,20 @@ when it merges.
 
 ## [Unreleased]
 
+### Changed
+
+- **Restarting a stopped agent picks up its own conversation.** A Claude Code
+  agent you stop and start again resumes the session it was in, instead of
+  starting over with its original prompt. If Claude Code no longer has that
+  conversation, the agent starts a fresh one rather than failing to start.
+- **A stopped agent gives up its session colour.** Its row and its to-dos turn
+  neutral grey while it is stopped, and it gets a colour again when you
+  restart it.
+- **A stopped agent's to-dos can be picked up again.** They stay linked to it,
+  so a restart carries on where it left off, but they get their "start an
+  agent" button back and can be multi-selected again — starting a new agent
+  on one hands it to that agent.
+
 ## [2.1.3] - 2026-10-08
 
 ### Changed
