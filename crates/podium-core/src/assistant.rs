@@ -1371,7 +1371,7 @@ impl AssistantManager {
         // directory rides along as `wsl.exe --cd` (natively this is just the
         // login shell, and `current_dir` below does the job).
         let (shell, prefix) = match &config.cwd {
-            Some(cwd) => crate::platform::login_shell_in(cwd)?,
+            Some(cwd) => crate::platform::login_shell_in(crate::platform::wsl(), cwd)?,
             None => crate::platform::login_shell(),
         };
         // Its own endpoint, not the agents' one: that is what puts the
