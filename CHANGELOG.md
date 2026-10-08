@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-08
+
 ### Added
 
 - **A Responses list in the assistant panel.** When an agent reports back, the
