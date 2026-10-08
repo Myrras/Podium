@@ -63,6 +63,9 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`;
+    /// `None` keeps the theme accent.
+    pub color: Option<String>,
     /// True only in WSL-backend mode, for a Windows-drive project that runs
     /// natively because of the `nativeDriveProjects` opt-in. The terminal
     /// shell setting is meant for the backend's shell, so the UI leaves it
@@ -82,6 +85,8 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`.
+    color: Option<String>,
     /// The backend this project runs on, decided once at open from its root
     /// ([`crate::platform::wsl_for`]) and used for everything in it — agent
     /// launch quoting, the PTY spawn, the launch gate, worktree git, the
@@ -102,6 +107,7 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            color: self.color.clone(),
             native_in_wsl_mode: crate::platform::wsl().is_some() && self.wsl.is_none(),
         }
     }
@@ -804,6 +810,7 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        color: None,
                         wsl: crate::platform::wsl_for(&path),
                     },
                 );
@@ -927,7 +934,59 @@ impl Orchestrator {
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
-            handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.name_override = normalize_project_name(name);
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set or clear a project's badge colour. `None` or blank clears it; anything
+    /// but a `#rrggbb` hex is refused, since the value lands in a CSS property.
+    pub fn set_project_color(
+        &self,
+        id: ProjectId,
+        color: Option<String>,
+    ) -> CoreResult<ProjectInfo> {
+        let color = normalize_project_color(color)?;
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.color = color;
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Re-apply a project's persisted overrides (display name, badge colour)
+    /// after `open_project`, publishing one `ProjectUpdated` for both rather
+    /// than one per override. `None` leaves that override unset. A stored
+    /// colour that is not `#rrggbb` (a hand-edited `workspace.json`) is
+    /// dropped (and logged) so the name still applies.
+    pub fn restore_project_overrides(
+        &self,
+        id: ProjectId,
+        name: Option<String>,
+        color: Option<String>,
+    ) -> CoreResult<ProjectInfo> {
+        let color = normalize_project_color(color).unwrap_or_else(|e| {
+            tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
+            None
+        });
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.name_override = normalize_project_name(name);
+            handle.color = color;
             handle.info(id)
         };
         self.events
@@ -2264,6 +2323,28 @@ impl Orchestrator {
     }
 }
 
+/// Trim a project display name; blank means "none".
+pub fn normalize_project_name(name: Option<String>) -> Option<String> {
+    name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
+}
+
+/// Trim and lowercase a project badge colour; blank means "none". Anything
+/// but `#rrggbb` is refused, since the value lands in a CSS property.
+fn normalize_project_color(color: Option<String>) -> CoreResult<Option<String>> {
+    let color = color
+        .map(|c| c.trim().to_lowercase())
+        .filter(|c| !c.is_empty());
+    if let Some(c) = &color {
+        let hex = c.strip_prefix('#').unwrap_or("");
+        if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(CoreError::InvalidInput(format!(
+                "project colour must be #rrggbb, got {c:?}"
+            )));
+        }
+    }
+    Ok(color)
+}
+
 /// Insert config-defined processes; returns (added, auto-start subset).
 fn insert_configured(
     inner: &mut Inner,
@@ -3082,6 +3163,66 @@ mod tests {
         let cleared = orch.rename_project(id, Some("   ".to_string())).unwrap();
         assert_eq!(cleared.name, original.name);
         assert_eq!(cleared.icon_initials, original.icon_initials);
+    }
+
+    #[tokio::test]
+    async fn project_color_sets_validates_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        let info = orch
+            .set_project_color(id, Some(" #3E63DD ".to_string()))
+            .unwrap();
+        assert_eq!(info.color.as_deref(), Some("#3e63dd"));
+
+        for bad in ["red", "#12345", "#1234567", "#gggggg", "3e63dd"] {
+            assert!(
+                orch.set_project_color(id, Some(bad.to_string())).is_err(),
+                "{bad}"
+            );
+        }
+        let still = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(
+            still.color.as_deref(),
+            Some("#3e63dd"),
+            "a refused value keeps the old one"
+        );
+
+        let cleared = orch.set_project_color(id, Some("  ".to_string())).unwrap();
+        assert_eq!(cleared.color, None);
+    }
+
+    #[tokio::test]
+    async fn restore_project_overrides_applies_both_in_one_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let info = orch
+            .restore_project_overrides(id, Some("Webshop".into()), Some("#E5484D".into()))
+            .unwrap();
+        assert_eq!(info.name, "Webshop");
+        assert_eq!(info.color.as_deref(), Some("#e5484d"));
+
+        let mut updates = 0;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, PodiumEvent::ProjectUpdated { project_id } if project_id == id) {
+                updates += 1;
+            }
+        }
+        assert_eq!(updates, 1, "one ProjectUpdated for name + colour");
+
+        let info = orch
+            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()))
+            .unwrap();
+        assert_eq!(info.name, "Shop", "a bad stored colour keeps the name");
+        assert_eq!(info.color, None);
     }
 
     #[tokio::test]

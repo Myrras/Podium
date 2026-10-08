@@ -37,6 +37,8 @@ import {
   ScratchpadIcon,
 } from "./icons";
 import { ScratchpadArchiveModal } from "./ScratchpadArchiveModal";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 
@@ -106,6 +108,8 @@ function ScratchpadRow({
 
 interface ScratchpadSubsectionProps {
   projectId: ProjectId;
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
   /** Open the scratchpad detail pane (hosted by the app work area). */
   onOpenScratchpad: (projectId: ProjectId, scratchpadId: ScratchpadId) => void;
   /**
@@ -122,6 +126,7 @@ interface ScratchpadSubsectionProps {
 
 export function ScratchpadSubsection({
   projectId,
+  projectRoot,
   onOpenScratchpad,
   onPickAgent,
 }: ScratchpadSubsectionProps) {
@@ -222,11 +227,24 @@ export function ScratchpadSubsection({
     anchorRef.current = null;
   };
 
+  const [collapsed, setCollapsed] = useSectionCollapsed(
+    projectRoot,
+    "scratchpads",
+  );
+
   return (
-    <div className={sidebarStyles.subsection}>
+    <div
+      className={sidebarStyles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={sidebarStyles.sectionHeader}>
-        <ScratchpadIcon className={sidebarStyles.panelIcon} />
-        <span className={sidebarStyles.panelTitle}>Scratchpads</span>
+        <SectionTitle
+          title="Scratchpads"
+          Icon={ScratchpadIcon}
+          count={scratchpads.length}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
         <button
           type="button"
           className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
@@ -241,12 +259,15 @@ export function ScratchpadSubsection({
           className={sidebarStyles.addBtn}
           aria-label="New scratchpad"
           title="New scratchpad"
-          onClick={() => void addAndOpen()}
+          onClick={() => {
+            setCollapsed(false);
+            void addAndOpen();
+          }}
         >
           <AddIcon size={13} />
         </button>
       </div>
-      {scratchpads.length > 0 ? (
+      {collapsed ? null : scratchpads.length > 0 ? (
         <div className={styles.rows}>
           {scratchpads.map((sp) => (
             <ScratchpadRow
@@ -265,6 +286,8 @@ export function ScratchpadSubsection({
       ) : (
         <div className={sidebarStyles.placeholder}>No scratchpads yet.</div>
       )}
+      {/* Stays visible while collapsed: the selection outlives the fold, so
+          its "Start agent" / Clear actions must too. */}
       {selectedIds.length >= 2 && (
         <div className={styles.selectionBar}>
           <button
