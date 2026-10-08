@@ -2852,7 +2852,7 @@ dependencies = [
 
 [[package]]
 name = "podium"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "podium-core"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
