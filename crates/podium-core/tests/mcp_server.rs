@@ -2925,7 +2925,8 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     let adapter = Arc::new(ResumableAdapter {
         stored: std::sync::atomic::AtomicBool::new(false),
     });
-    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()]));
+    let orch =
+        Arc::new(Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()])));
     let project_id = orch
         .open_project(dir.path().to_path_buf())
         .await
@@ -2963,6 +2964,7 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     wait_for_launch(&orch, agent, "launch-first").await;
     let first = process(&orch).color.expect("a live agent has a colour");
     assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
+    assert!(todo_owner(&orch).expect("owned").active);
 
     // Stopped: the colour goes from the agent and its to-do, the link stays.
     orch.stop_process(agent).await.expect("stop");
@@ -2971,6 +2973,17 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     let owner = todo_owner(&orch).expect("the to-do is still linked");
     assert_eq!(owner.process_id, agent);
     assert_eq!(owner.color, None);
+    assert!(!owner.active, "a stopped agent no longer owns the to-do");
+    // …and the MCP listing says so, so an agent reading it knows too.
+    let listed = PodiumTools::new(Arc::clone(&orch))
+        .list_todos(Parameters(ListTodosParams {
+            project_id: project_id.to_string(),
+            todo_id: None,
+        }))
+        .await
+        .expect("list_todos");
+    let listed = first_text(&listed);
+    assert!(listed.contains("\"active\": false"), "{listed:?}");
 
     // A second live agent takes the first colour, so the restart has to pick
     // a new one — the same way a spawn does.
@@ -3035,6 +3048,28 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
         .expect("spawn claimer");
     orch.assign_todo(project_id, todo.id, claimer)
         .expect("a stopped owner can be taken over");
+
+    // Spawning on a to-do whose owner has stopped hands it to the new agent.
+    orch.stop_process(claimer).await.expect("stop claimer");
+    wait_for_exit(&orch, claimer).await;
+    assert!(!todo_owner(&orch).expect("still linked").active);
+    let successor = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn on the to-do");
+    let owner = todo_owner(&orch).expect("owned");
+    assert_eq!(owner.process_id, successor);
+    assert!(owner.active);
 
     orch.shutdown().await;
 }

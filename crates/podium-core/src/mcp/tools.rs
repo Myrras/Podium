@@ -543,8 +543,11 @@ impl PodiumTools {
 
     #[tool(
         description = "List a project's to-do items (id, text, description, done, \
-                       links, commentCount, …). Comment bodies are left out — pass \
-                       todo_id to read one to-do in full, comments included."
+                       links, commentCount, assignedAgent, …). Comment bodies are left \
+                       out — pass todo_id to read one to-do in full, comments included. \
+                       assignedAgent.active is false when the agent it is linked to has \
+                       stopped: it no longer owns the to-do, so another agent may be \
+                       put on it."
     )]
     pub async fn list_todos(
         &self,

@@ -60,6 +60,11 @@ interface TodoRowProps {
   onArchive: () => void;
 }
 
+/** Whether a running agent owns the to-do. A stopped owner keeps its link
+ * (tinted grey) but no longer blocks spawning on it or selecting it. */
+const ownedByLiveAgent = (todo: TodoInfo) =>
+  todo.assignedAgent?.active === true;
+
 /** One to-do: a checkbox, a click-to-open title, and hover actions. */
 function TodoRow({
   todo,
@@ -114,9 +119,9 @@ function TodoRow({
             </span>
           )}
         </button>
-        {/* Once assigned, a to-do is owned by one session — no spawning a
-            second agent on it. */}
-        {!assigned && (
+        {/* While its agent runs, a to-do is owned by that one session — no
+            spawning a second agent on it. */}
+        {!ownedByLiveAgent(todo) && (
           <button
             type="button"
             className={styles.action}
@@ -198,11 +203,11 @@ export function TodoSubsection({
   }, [projectId, refresh]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
-  // Assigned to-dos can't be part of a selection (they're owned already).
+  // To-dos a running agent owns can't be part of a selection.
   const selectedIds = useMemo(
     () =>
       todos
-        .filter((t) => selected.has(t.id) && !t.assignedAgent)
+        .filter((t) => selected.has(t.id) && !ownedByLiveAgent(t))
         .map((t) => t.id),
     [todos, selected],
   );
@@ -247,9 +252,10 @@ export function TodoSubsection({
   // selection (and its anchor) intact — clearing is done via the selection
   // bar's clear button or by toggling rows off.
   const activateTodo = (e: React.MouseEvent, todoId: TodoId) => {
-    // An assigned to-do is owned by a session — no multi-select on it; any
-    // click just opens it.
-    if (todos.find((t) => t.id === todoId)?.assignedAgent) {
+    // A to-do a running agent owns is that session's — no multi-select on
+    // it; any click just opens it.
+    const clicked = todos.find((t) => t.id === todoId);
+    if (clicked && ownedByLiveAgent(clicked)) {
       onOpenTodo(projectId, todoId);
       return;
     }
@@ -265,9 +271,9 @@ export function TodoSubsection({
         const [lo, hi] = from <= to ? [from, to] : [to, from];
         addSelectedItems(
           todos
-            // Skip assigned rows — they can't join a selection.
+            // Skip owned rows — they can't join a selection.
             .slice(lo, hi + 1)
-            .filter((t) => !t.assignedAgent)
+            .filter((t) => !ownedByLiveAgent(t))
             .map((t) => ({ kind: "todo" as const, projectId, id: t.id })),
         );
         return;

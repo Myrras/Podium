@@ -288,7 +288,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   it. An agent that **exits** keeps its to-do/scratchpad links (only removing
   the process drops them) but loses its colour (`spec.color` cleared in the
   exit handler, to-do row tinted neutral grey); the next start (`do_start`)
-  picks a fresh one with the same `pick_session_color` a spawn uses.
+  picks a fresh one with the same `pick_session_color` a spawn uses. A link
+  to an exited agent no longer counts as **owning**: `AssignedAgent.active`
+  (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
+  `false`, the row gets its spawn button back and can join a multi-select
+  again, and spawning on it (or `assign_todo`) hands it to the new agent.
   **Restart resumes the session**: Claude Code agents launch with
   `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
   (`RestartCommands`) holds the two commands a manual start of an exited

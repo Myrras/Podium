@@ -2233,6 +2233,7 @@ fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
         process_id,
         name: p.spec.name.clone(),
         color: p.spec.color.clone(),
+        active: p.is_active(),
     })
 }
 
@@ -2247,6 +2248,7 @@ fn scratchpad_assigned_agent_of(
         process_id,
         name: p.spec.name.clone(),
         color: p.spec.color.clone(),
+        active: p.is_active(),
     })
 }
 

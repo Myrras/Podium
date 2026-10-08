@@ -274,8 +274,12 @@ export interface AssignedAgent {
   /** The agent's display name, for showing without a process lookup. */
   name: string;
   /** The session's subtle UI colour (hex), so the item can be tinted to match
-   * the agent that owns it; `null` in legacy/edge cases. */
+   * the agent that owns it; `null` once the agent exited. */
   color: string | null;
+  /** Whether the agent is running. An exited agent keeps the link (a restart
+   * picks the work back up) but no longer owns the item: another agent may
+   * be put on it, which takes it over. */
+  active: boolean;
 }
 
 /**
