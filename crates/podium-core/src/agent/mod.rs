@@ -1235,6 +1235,22 @@ mod tests {
         );
         // Within the slack for a CLI stamping its start a bit early.
         assert_eq!(record(4242, ms(started) - 1_000, None), Some(id.clone()));
+        // Spawned long ago (a laptop that slept since): a record stamped
+        // after that spawn still counts, however old it is now.
+        let long_ago = started - std::time::Duration::from_secs(3 * 24 * 3600);
+        let slept = LiveProcess {
+            started: long_ago,
+            ..cli.clone()
+        };
+        fs::write(
+            sessions.join("4242.json"),
+            format!(
+                r#"{{"pid":4242,"sessionId":"{id}","startedAt":{}}}"#,
+                ms(long_ago) + 1_000
+            ),
+        )
+        .expect("write");
+        assert_eq!(claude_live_session_in(dir.path(), &slept), Some(id.clone()));
         // A stale record from an earlier process that had this pid.
         assert_eq!(record(4242, ms(started) - 60_000, None), None);
         // Another pid inside the file, or another directory.

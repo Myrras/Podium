@@ -141,6 +141,10 @@ struct ManagedProcess {
     restart: RestartState,
     /// When the current incarnation started, for backoff reset.
     started_at: Option<Instant>,
+    /// The same moment on the wall clock, for matching the CLI's own record
+    /// of its start ([`live_probe`]): an `Instant` does not count the time a
+    /// laptop sleeps, so it cannot be turned back into one.
+    started_wall: Option<std::time::SystemTime>,
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
@@ -3486,6 +3490,7 @@ fn insert_process(
             from_config,
             restart: RestartState::default(),
             started_at: None,
+            started_wall: None,
             waiting_since: None,
             spawn_args: None,
             spawn_worktree: false,
@@ -3582,6 +3587,7 @@ fn do_start(
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
     proc.started_at = Some(Instant::now());
+    proc.started_wall = Some(std::time::SystemTime::now());
     // Only now that the launch is running does its session become current.
     if let (Some(r), Some(session)) = (relaunch, proc.session.as_mut()) {
         session.resume_failed &= r.session_id == session.id;
@@ -3650,10 +3656,7 @@ struct LiveProbe {
 /// and a running PTY.
 fn live_probe(inner: &Inner, id: ProcessId) -> Option<LiveProbe> {
     let p = inner.processes.get(&id)?;
-    let (pty, session, started) = (p.pty.as_ref()?, p.session.as_ref()?, p.started_at?);
-    let started = std::time::SystemTime::now()
-        .checked_sub(started.elapsed())
-        .unwrap_or(std::time::UNIX_EPOCH);
+    let (pty, session, started) = (p.pty.as_ref()?, p.session.as_ref()?, p.started_wall?);
     Some(LiveProbe {
         id,
         cli: LiveProcess {
@@ -3701,8 +3704,10 @@ async fn read_live_sessions(probes: Vec<LiveProbe>) -> Vec<(LiveProbe, String)> 
         .collect();
     let mut followed = Vec::new();
     for read in reads {
-        if let Ok(Ok((probe, Some(live)))) = tokio::time::timeout_at(deadline, read).await {
-            followed.push((probe, live));
+        match tokio::time::timeout_at(deadline, read).await {
+            Ok(Ok((probe, Some(live)))) => followed.push((probe, live)),
+            Ok(_) => {}
+            Err(_) => tracing::debug!("a CLI's live session read timed out; keeping its id"),
         }
     }
     followed
@@ -3768,6 +3773,9 @@ fn make_exit_handler(
     Box::new(move |code| {
         // A crash or kill can leave the CLI's record of a `/clear` behind (a
         // clean exit removes it). Read on this wait thread, outside the lock.
+        // ponytail: no deadline here, unlike a stop or the capture: a hung
+        // file system holds back only this one agent's `Exited`. Add one if
+        // that is ever seen.
         let probe = live_probe(&inner.lock().expect(LOCK_POISONED), id);
         let followed = probe.and_then(|probe| read_live_session(&probe).map(|live| (probe, live)));
         let restart = {
@@ -4708,6 +4716,8 @@ mod tests {
         /// A record answered for any pid (a run that exits too soon to look
         /// its pid up).
         live_any: Mutex<Option<(String, bool)>>,
+        /// How long reading the record takes (a slow file system).
+        live_delay: Mutex<Duration>,
     }
 
     impl MemoryAdapter {
@@ -4721,6 +4731,7 @@ mod tests {
                 release: Mutex::new(None),
                 live: Mutex::new(HashMap::new()),
                 live_any: Mutex::new(None),
+                live_delay: Mutex::new(Duration::ZERO),
             })
         }
 
@@ -4782,6 +4793,7 @@ mod tests {
         }
 
         fn live_session(&self, cli: &LiveProcess, _wsl: Option<&WslBackend>) -> Option<String> {
+            std::thread::sleep(*self.live_delay.lock().unwrap());
             let found = self.live.lock().unwrap().get(&cli.pid).cloned();
             let (id, outlives_exit) = found.or_else(|| self.live_any.lock().unwrap().clone())?;
             // Like Claude Code: gone once the process is.
@@ -5548,6 +5560,111 @@ mod tests {
         assert_eq!(id, SESS_2);
         assert!(!resumed);
         assert!(!resume_failed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn the_probe_takes_the_spawn_time_from_the_wall_clock() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let orch = memory_orch(data.path(), MemoryAdapter::new(false));
+        let id = orch
+            .open_project(project.path().to_path_buf())
+            .await
+            .unwrap();
+        let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
+        // Spawned three days ago by the wall clock, as after a laptop slept
+        // through them — which the monotonic `started_at` never counted.
+        let spawned = std::time::SystemTime::now() - Duration::from_secs(3 * 24 * 3600);
+        let probe = {
+            let mut inner = orch.inner.lock().unwrap();
+            inner.processes.get_mut(&agent).unwrap().started_wall = Some(spawned);
+            live_probe(&inner, agent).unwrap()
+        };
+        assert_eq!(probe.cli.started, spawned);
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_live_session_is_applied_only_to_the_run_and_session_it_was_read_for() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let orch = memory_orch(data.path(), MemoryAdapter::new(false));
+        let id = orch
+            .open_project(project.path().to_path_buf())
+            .await
+            .unwrap();
+        let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
+        let own = agent.to_string();
+        let session_id = |orch: &Orchestrator| {
+            orch.inner.lock().unwrap().processes[&agent]
+                .session
+                .as_ref()
+                .unwrap()
+                .id
+                .clone()
+        };
+        let probe = {
+            let mut inner = orch.inner.lock().unwrap();
+            let probe = live_probe(&inner, agent).unwrap();
+            // Another run since the read (a different pid): untouched.
+            let other_run = LiveProbe {
+                cli: LiveProcess {
+                    pid: probe.cli.pid + 1,
+                    ..probe.cli.clone()
+                },
+                ..live_probe(&inner, agent).unwrap()
+            };
+            apply_live_session(&mut inner, &other_run, SESS_2.to_string());
+            probe
+        };
+        assert_eq!(session_id(&orch), own);
+        // The session moved on since the read: untouched.
+        {
+            let mut inner = orch.inner.lock().unwrap();
+            let p = inner.processes.get_mut(&agent).unwrap();
+            p.session.as_mut().unwrap().id = SESS_3.to_string();
+            apply_live_session(&mut inner, &probe, SESS_2.to_string());
+        }
+        assert_eq!(session_id(&orch), SESS_3);
+        // The same run on the same session: moved.
+        {
+            let mut inner = orch.inner.lock().unwrap();
+            let probe = live_probe(&inner, agent).unwrap();
+            apply_live_session(&mut inner, &probe, SESS_2.to_string());
+        }
+        assert_eq!(session_id(&orch), SESS_2);
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_slow_live_session_read_is_given_up_on_in_time() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        let id = orch
+            .open_project(project.path().to_path_buf())
+            .await
+            .unwrap();
+        let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
+        adapter.store(SESS_2);
+        adapter
+            .live
+            .lock()
+            .unwrap()
+            .insert(pid_of(&orch, agent), (SESS_2.to_string(), true));
+        *adapter.live_delay.lock().unwrap() = Duration::from_secs(3);
+        let probe = live_probe(&orch.inner.lock().unwrap(), agent).unwrap();
+        let began = Instant::now();
+        let followed = read_live_sessions(vec![probe]).await;
+        assert!(followed.is_empty(), "not followed");
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "gave up after {:?}",
+            began.elapsed()
+        );
+        *adapter.live_delay.lock().unwrap() = Duration::ZERO;
+        orch.shutdown().await;
     }
 
     /// The real Claude Code adapter: an agent whose own args pick the

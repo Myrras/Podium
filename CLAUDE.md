@@ -440,27 +440,31 @@ atomically, before the async `podium.yml` load.
   conversation. `AgentAdapter::live_session` reads Claude Code's live
   registry, `<config>/sessions/<pid>.json`, for the PTY child (`LiveProcess`:
   pid, spawn time, cwd) and trusts the record only when its own `pid` matches,
-  its `startedAt` is no earlier than the spawn (less 5 s of slack) and its
-  `cwd`, when present, is the agent's — so a stale record from a reused pid is
-  ignored. The PTY child is the CLI only when the login shell execs it: a lone
-  command, which zsh and bash do (verified against a running Podium); not
-  behind a wrapper `command_override`, a shell function or fish, nor on native
-  Windows (`cmd.exe` is the child) or WSL (Podium holds `wsl.exe`'s pid) —
-  there `live_session` finds nothing (or answers `None` outright) and the
-  agent keeps the pre-clear id. `read_live_session` takes the new id only when
-  it is a valid UUID other than the current one *and* `session_exists` finds
-  it (a cleared conversation not yet written to would only make the next start
-  fresh); there is no newest-file guess. The read happens outside the lock:
-  `live_probe` collects pid, spawn time, cwd, adapter, backend and the current
-  id under it, and `apply_live_session` moves the session under it again only
-  if the same run (pid) is still on the same id, clearing
-  `resumed`/`resume_failed`. It is asked while the CLI is still there: in
-  `stop_process` before the signal (a clean exit removes the record), in the
-  exit handler on the wait thread, after the resume-failure check (a crash or
-  kill leaves the record behind), and in the shutdown capture — stop and
-  capture read off the runtime, all agents at once, giving up after
-  `LIVE_SESSION_TIMEOUT` (200 ms). An agent that exits cleanly on its own
-  (`/exit`) therefore resumes its pre-clear conversation.
+  its `startedAt` is no earlier than the spawn (less 5 s of slack; the spawn
+  time is `ManagedProcess.started_wall`, a wall-clock stamp, since an
+  `Instant` does not count a laptop's sleep) and its `cwd`, when present, is
+  the agent's — so a stale record from a reused pid is ignored. The PTY child
+  is the CLI only when the login shell execs it: a lone command, which zsh and
+  bash do (verified against a running Podium); not behind a wrapper
+  `command_override`, a shell function or fish, nor on native Windows
+  (`cmd.exe` is the child) or WSL (Podium holds `wsl.exe`'s pid) — there
+  `live_session` finds nothing (or answers `None` outright) and the agent
+  keeps the pre-clear id. `read_live_session` takes the new id only when it is
+  a valid UUID other than the current one, and only once Claude Code has
+  stored the new conversation (`session_exists`; one not yet written to would
+  only make the next start fresh); there is no newest-file guess. The read
+  happens outside the lock: `live_probe` collects pid, spawn time, cwd,
+  adapter, backend and the current id under it, and `apply_live_session` moves
+  the session under it again only if the same run (pid) is still on the same
+  id, clearing `resumed`/`resume_failed`. It is asked while the CLI is still
+  there: in `stop_process` before the signal (a clean exit removes the
+  record), in the exit handler on the wait thread, after the resume-failure
+  check (a crash or kill leaves the record behind), and in the shutdown
+  capture — stop and capture read off the runtime, all agents at once, giving
+  up after `LIVE_SESSION_TIMEOUT` (200 ms): a read over 200 ms is skipped
+  (logged at debug) and the id kept. The exit handler has no such deadline — a
+  hung file system holds back only that agent's `Exited`. An agent that exits
+  cleanly on its own (`/exit`) therefore resumes its pre-clear conversation.
   A session flag the user put in `extra_args` (`--session-id`, `--resume`,
   `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
   all of it. The same `AgentSession` is what _Agent session memory_ carries
