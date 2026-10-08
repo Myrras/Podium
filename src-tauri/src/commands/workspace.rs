@@ -156,7 +156,7 @@ fn update_entry(
 /// Set (or clear) the display-name override for `path`; a blank name clears
 /// it.
 fn set_entry_name(entries: &mut Vec<WorkspaceEntry>, path: &Path, name: Option<String>) {
-    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let name = podium_core::normalize_project_name(name);
     update_entry(entries, path, |e| e.name = name);
 }
 

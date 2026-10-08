@@ -437,8 +437,6 @@
   color: var(--text);
 }
 
-/* Invisible native colour input covering the badge: clicking the badge opens
-   the platform picker, and it stays keyboard-focusable. */
 /* The picker input is invisible over the badge, so its keyboard focus is
    drawn on the badge itself. */
 .projectBadge:has(.badgeColorInput:focus-visible) {
@@ -446,6 +444,8 @@
   outline-offset: 1px;
 }
 
+/* Invisible native colour input covering the badge: clicking the badge opens
+   the platform picker, and it stays keyboard-focusable. */
 .badgeColorInput {
   position: absolute;
   inset: 0;

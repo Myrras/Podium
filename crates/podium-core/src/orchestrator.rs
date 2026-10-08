@@ -790,7 +790,7 @@ impl Orchestrator {
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
-            handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.name_override = normalize_project_name(name);
             handle.info(id)
         };
         self.events
@@ -824,21 +824,24 @@ impl Orchestrator {
     /// after `open_project`, publishing one `ProjectUpdated` for both rather
     /// than one per override. `None` leaves that override unset. A stored
     /// colour that is not `#rrggbb` (a hand-edited `workspace.json`) is
-    /// refused like any other, and the name is then not applied either.
+    /// dropped (and logged) so the name still applies.
     pub fn restore_project_overrides(
         &self,
         id: ProjectId,
         name: Option<String>,
         color: Option<String>,
     ) -> CoreResult<ProjectInfo> {
-        let color = normalize_project_color(color)?;
+        let color = normalize_project_color(color).unwrap_or_else(|e| {
+            tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
+            None
+        });
         let info = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             let handle = inner
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
-            handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.name_override = normalize_project_name(name);
             handle.color = color;
             handle.info(id)
         };
@@ -2176,6 +2179,11 @@ impl Orchestrator {
     }
 }
 
+/// Trim a project display name; blank means "none".
+pub fn normalize_project_name(name: Option<String>) -> Option<String> {
+    name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
+}
+
 /// Trim and lowercase a project badge colour; blank means "none". Anything
 /// but `#rrggbb` is refused, since the value lands in a CSS property.
 fn normalize_project_color(color: Option<String>) -> CoreResult<Option<String>> {
@@ -3066,11 +3074,11 @@ mod tests {
         }
         assert_eq!(updates, 1, "one ProjectUpdated for name + colour");
 
-        assert!(
-            orch.restore_project_overrides(id, None, Some("red".into()))
-                .is_err(),
-            "a hand-edited, invalid colour is refused"
-        );
+        let info = orch
+            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()))
+            .unwrap();
+        assert_eq!(info.name, "Shop", "a bad stored colour keeps the name");
+        assert_eq!(info.color, None);
     }
 
     #[tokio::test]

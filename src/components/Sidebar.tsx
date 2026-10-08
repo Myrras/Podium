@@ -190,6 +190,7 @@ function ProjectGroup({
   // drag step.
   const [colorDraft, setColorDraft] = useState<string | null>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
+  const saving = useRef(0);
   const badgeColor = colorDraft ?? project.color;
   const themeMode = useThemeStore((s) => s.mode);
   // An uncoloured badge follows the theme's accent, so the picker opens on
@@ -207,10 +208,24 @@ function ProjectGroup({
       }
       // Keep showing the draft until the store has the saved colour, so the
       // badge does not flash back to the old one in between.
-      void setProjectColor(project.id, next).finally(() => setColorDraft(null));
+      // Only clear it if the user has not moved on to a newer draft meanwhile.
+      saving.current += 1;
+      void setProjectColor(project.id, next).finally(() => {
+        saving.current -= 1;
+        setColorDraft((d) => (d === next ? null : d));
+      });
+    };
+    // A picker dismissed without a `change` must not leave its draft on the badge.
+    // (A blur during a pending save keeps the draft; the save clears it.)
+    const discard = () => {
+      if (!saving.current) setColorDraft(null);
     };
     el.addEventListener("change", commit);
-    return () => el.removeEventListener("change", commit);
+    el.addEventListener("blur", discard);
+    return () => {
+      el.removeEventListener("change", commit);
+      el.removeEventListener("blur", discard);
+    };
   }, [project.id, project.color, setProjectColor]);
 
   const resetColor = () => {
@@ -661,7 +676,7 @@ export function Sidebar() {
   );
 }
 
-/** Black or white initials, whichever reads better on a `#rrggbb` badge. */
+/** Resolved `--accent` per theme; the CSS lookup is not free. */
 const accentByTheme = new Map<ThemeMode, string>();
 
 /**
@@ -675,11 +690,12 @@ function themeAccentHex(mode: ThemeMode): string {
     .getPropertyValue("--accent")
     .trim()
     .toLowerCase();
-  if (!/^#[0-9a-f]{6}$/.test(accent)) return "#000000";
-  accentByTheme.set(mode, accent);
-  return accent;
+  const hex = /^#[0-9a-f]{6}$/.test(accent) ? accent : "#000000";
+  accentByTheme.set(mode, hex);
+  return hex;
 }
 
+/** Black or white initials, whichever reads better on a `#rrggbb` badge. */
 function readableOn(hex: string): string {
   const n = parseInt(hex.slice(1), 16);
   const luma = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);

@@ -25,12 +25,12 @@ One window, three columns:
 ### Projects
 
 Open a folder and it stays. The sidebar is a **persistent workspace**: every
-open project is remembered and re-opened at launch. Projects can be
-**renamed** (double-click the name), **recoloured** (click the initials badge
-to pick a colour; right-click it to go back to the theme's accent) and **reordered** (drag the grip in the project header) —
-all survive a restart. A project whose folder has moved is
-never silently dropped; its error toast offers "Remove from workspace"
-instead.
+open project is remembered and re-opened at launch. Projects can be **renamed**
+(double-click the name), **recoloured** (click the initials badge to pick a
+colour; right-click it to go back to the theme's accent) and **reordered** (drag
+the grip in the project header) — all survive a restart. A project whose folder
+has moved is never silently dropped; its error toast offers "Remove from
+workspace" instead.
 
 Each project also gets an **Open in Warp** action and a **Commands** modal
 that lists the `just` recipes it finds in the project's `justfile` alongside

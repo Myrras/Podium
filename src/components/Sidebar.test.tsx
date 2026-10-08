@@ -154,6 +154,45 @@ describe("Sidebar project header", () => {
     expect(setProjectColor).toHaveBeenCalledWith("proj-1", "#e5484d");
   });
 
+  it("drops an unsaved picked colour when the picker blurs", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    fireEvent.input(picker, { target: { value: "#30a46c" } });
+    expect(badge).toHaveStyle({ background: "#30a46c" });
+
+    fireEvent.blur(picker);
+    expect(badge).toHaveStyle({ background: "#3e63dd" });
+    expect(setProjectColor).not.toHaveBeenCalled();
+  });
+
+  it("keeps a newer draft when an earlier save finishes", async () => {
+    let finish!: () => void;
+    const setProjectColor = vi.fn(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    fireEvent.change(picker, { target: { value: "#e5484d" } });
+    fireEvent.input(picker, { target: { value: "#30a46c" } });
+    finish();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(badge).toHaveStyle({ background: "#30a46c" });
+  });
+
   it("resets a picked colour from a right-click or the Delete key", () => {
     const setProjectColor = vi.fn(() => Promise.resolve());
     useProjectStore.setState({
