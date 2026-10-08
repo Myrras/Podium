@@ -100,6 +100,8 @@ them in sync when you add a command or MCP tool.
   `-D warnings`, `cargo test --workspace` (real PTYs), typecheck, ESLint,
   Vitest, production build — plus a Windows job (rustfmt, clippy, `cargo test
   -p podium-core` only) so `cfg(windows)` code is compiled, linted and tested.
+  A PR-only `changelog` job requires an `## [Unreleased]` entry, and a
+  `release` job turns every merge to `main` into a tagged GitHub Release.
 
 ## Tech stack
 
@@ -123,6 +125,7 @@ podium/
 ├─ Cargo.toml                  # [workspace]; [workspace.package] version is the source of truth
 ├─ justfile                    # dev/build/check/test/lint/format/version recipes
 ├─ scripts/sync-version.sh     # propagates the version to tauri.conf.json + package.json
+├─ scripts/{next-version,changelog}.sh  # CI release helpers (+ *.test.sh)
 ├─ crates/podium-core/src/
 │  ├─ orchestrator.rs          # Orchestrator — THE public entry point (all mutation goes through it)
 │  ├─ project.rs               # project open/reload, cwd resolution (traversal-guarded)
@@ -1034,7 +1037,7 @@ just test           # cargo test --workspace + frontend vitest
 just test-core      # podium-core tests only
 just lint           # clippy -D warnings + eslint
 just format         # rustfmt + prettier
-just version 0.2.0  # bump + sync version across all manifests
+just version 0.2.0  # bump + sync version across all manifests (emergencies only; CI bumps on merge)
 just version-check  # verify versions are in sync
 ```
 
@@ -1133,8 +1136,8 @@ Tauri APIs are mocked per test file.
 
 The repo is on GitHub (`RobbieMinderhoud/Podium`); use the **`gh` CLI** for PRs.
 **Every code change goes through a branch → PR** — do not commit straight to
-`main`. `main` stays releasable; each change merges via a PR and is eventually
-released (see _Versioning & CI_). We do **not** open a GitHub issue per change:
+`main`. `main` stays releasable; every merged PR is released automatically
+(see _Versioning & CI_). We do **not** open a GitHub issue per change:
 the PR is the unit of work (title + body capture the what and why).
 Conversations that touch no code (questions, exploration) need no branch.
 
@@ -1144,11 +1147,13 @@ Conversations that touch no code (questions, exploration) need no branch.
    imperative (Keep-a-Changelog voice). Per the global rule, **never add a
    `Co-Authored-By` trailer** (a `commit-msg` hook also strips Anthropic ones).
 3. **PR** — `gh pr create --base main --fill` (or with an explicit title/body).
-   `ci.yml` runs on the PR and must be green.
-4. **Merge + release** — cut the release with the **`release` skill**
-   (`.claude/skills/release/SKILL.md`): it folds the CHANGELOG entry + version
-   bump into the feature PR, then (with explicit approval) squash-merges and
-   tags. Pushing a `v*` tag triggers the macOS bundle build.
+   The PR must add its entry under `## [Unreleased]` in `CHANGELOG.md` (CI
+   fails without one). `ci.yml` runs on the PR and must be green.
+4. **Merge = release** — merging a PR to `main` is the release; nobody
+   bumps the version or tags by hand. Before merging, set a `minor` or `major`
+   label if the change warrants more than a patch (`gh pr edit N --add-label
+   minor`). Merge with `gh pr merge N --squash`; the branch auto-deletes. Get
+   explicit user confirmation first, because merging publishes a release.
 
 ## Versioning & CI
 
@@ -1156,7 +1161,10 @@ Conversations that touch no code (questions, exploration) need no branch.
   the single source of truth; `scripts/sync-version.sh` propagates it to
   `tauri.conf.json` and `package.json` (`just version-check` detects drift).
 - **`CHANGELOG.md`** follows _Keep a Changelog_ and lists **only functional
-  (user-facing) changes** — the `release` skill adds an entry per release.
+  (user-facing) changes**. Every PR adds its entry under `## [Unreleased]`;
+  the PR-only `changelog` job in `ci.yml` fails unless the PR touches
+  `CHANGELOG.md` and that section holds at least one `- ` entry
+  (`scripts/changelog.sh unreleased`).
 - **CI** (`.github/workflows/ci.yml`): on every PR and push to `main`, a
   `macos-latest` job — rustfmt, clippy `-D warnings`, `cargo test
   --workspace` (real PTYs), then typecheck, ESLint, Vitest, and a production
@@ -1171,13 +1179,27 @@ Conversations that touch no code (questions, exploration) need no branch.
 - **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
   Windows, each building natively (cross-compiling Tauri is painful). macOS
   packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
-  packages the NSIS `.exe`. Runs on `workflow_dispatch` and any pushed `v*`
-  tag, uploading each OS's installer as an artifact.
-- **Releasing** is done via the **`release` skill** (see _Git workflow_).
-  Do **not** create git tags or releases without explicit user approval
-  (invoking the skill + its confirmation step is that approval).
-- **Not yet set up:** Conventional Commits, git-cliff changelog automation,
-  signed/notarized releases.
+  packages the NSIS `.exe`. Runs on `workflow_dispatch`, pushes to `main` and
+  any pushed `v*` tag, uploading each OS's installer as an artifact; on a tag
+  ref it also attaches the `.dmg`/`.exe` to that tag's GitHub Release.
+- **Releasing is automatic: every merge to `main` is a release.** The
+  `release` job in `ci.yml` runs after the test jobs on each push to `main`
+  (its own non-cancelling `release` concurrency group, and the workflow never
+  cancels runs on `main`, so no merge is left without a version). It checks
+  out `main` itself, not the pushed sha, so a queued second run sees the
+  first one's bump; an empty `## [Unreleased]` means already released, and
+  it exits. Otherwise: the version is the latest `v*` tag bumped by
+  `scripts/next-version.sh` — **patch by default**, `minor`/`major` when the
+  merged PR carries that label (`major` wins). It renames `## [Unreleased]`
+  to `## [X.Y.Z] - date` (`scripts/changelog.sh release`), runs
+  `sync-version.sh --set` and `cargo update --workspace` (Cargo.lock), commits
+  `Release vX.Y.Z` to `main` as `github-actions[bot]`, pushes it with the
+  annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release with the
+  section as notes, and dispatches `build.yml` on the tag (a `GITHUB_TOKEN`
+  push triggers no workflows — that also prevents a loop). **Never bump the
+  version or create a tag by hand**; `just version` is for emergencies only.
+  The script tests (`scripts/*.test.sh`) run in the `changelog` job.
+- **Not yet set up:** signed/notarized releases.
 
 ## Roadmap
 
