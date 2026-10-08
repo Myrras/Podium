@@ -467,7 +467,9 @@ atomically, before the async `podium.yml` load.
   manual refresh still runs and the queued one lapses; closing the project
   drops it, and a project stuck on a local error (no remote, unsupported
   host, …) takes no slot, except on a setups change, which paces every shown
-  project. A setups change during a fetch reruns it once that fetch is done. A card click opens a read-only drawer (`IssueDetailPane`) beside the
+  project. A setups change during a fetch reruns it once that fetch is done,
+  and a section shown again refetches when its cache predates the last setups
+  change. A card click opens a read-only drawer (`IssueDetailPane`) beside the
   columns; browser, "start agent" (`NewAgentModal` prefilled via
   `initialPrompt`) and "turn into to-do" (`todoAdd` → `todoUpdate` →
   `todoAddLink`, hidden while an active to-do already links the URL) are card

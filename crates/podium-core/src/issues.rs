@@ -913,10 +913,13 @@ pub fn normalize_url(input: &str) -> Option<String> {
     };
     let rest = rest.trim_end_matches('/');
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    // A `:` leaves a port, digits only (an IPv6 `[::1]` has colons inside).
+    // A `:` leaves a port: digits only (`parse` alone would take `+80`),
+    // 1..=65535 (an IPv6 `[::1]` has colons inside).
     if let Some(i) = host.rfind(':').filter(|&i| !host[i..].contains(']')) {
         let port = &host[i + 1..];
-        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        let valid =
+            port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok_and(|p| p != 0);
+        if !valid {
             return None;
         }
     }
@@ -2343,6 +2346,12 @@ mod tests {
             ("https://me:pa/ss@git.example.test", None),
             ("https://git.example.test:abc", None),
             ("https://git.example.test:", None),
+            ("https://git.example.test:99999", None),
+            ("https://git.example.test:0", None),
+            ("https://git.example.test:+80", None),
+            ("https://[::1]:8443/g", Some("https://[::1]:8443/g")),
+            ("https://[::1]", Some("https://[::1]")),
+            ("https://[::1]:", None),
             (
                 "https://git.example.test:8443/gitlab",
                 Some("https://git.example.test:8443/gitlab"),
