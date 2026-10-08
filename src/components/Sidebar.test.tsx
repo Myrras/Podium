@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ProcessInfo, ProjectInfo, WorktreeInfo } from "../ipc/types";
+import { useAgentActivityStore } from "../state/agentActivityStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
@@ -23,6 +24,7 @@ const initialProject = useProjectStore.getState();
 const initialLayout = useLayoutStore.getState();
 const initialProcess = useProcessStore.getState();
 const initialWorktree = useWorktreeStore.getState();
+const initialActivity = useAgentActivityStore.getState();
 
 function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
   return {
@@ -39,6 +41,7 @@ function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
       scratchpads: true,
       issues: false,
     },
+    color: null,
     nativeInWslMode: false,
     ...overrides,
   };
@@ -77,6 +80,7 @@ describe("Sidebar project header", () => {
     useLayoutStore.setState(initialLayout, true);
     useProcessStore.setState(initialProcess, true);
     useWorktreeStore.setState(initialWorktree, true);
+    useAgentActivityStore.setState(initialActivity, true);
     vi.mocked(invoke)
       .mockReset()
       .mockImplementation(() => Promise.resolve([]));
@@ -248,6 +252,126 @@ describe("Sidebar project header", () => {
     expect(handle).toHaveAttribute("draggable", "true");
   });
 
+  it("recolours the badge while picking and persists only on commit", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    expect(picker).toHaveValue("#3e63dd");
+
+    // Dragging in the native picker fires `input` events: the badge follows,
+    // but nothing is saved yet.
+    fireEvent.input(picker, { target: { value: "#30a46c" } });
+    expect(badge).toHaveStyle({ background: "#30a46c" });
+    expect(setProjectColor).not.toHaveBeenCalled();
+
+    // The picker committing fires the native `change` event: saved once.
+    fireEvent.change(picker, { target: { value: "#e5484d" } });
+    expect(setProjectColor).toHaveBeenCalledTimes(1);
+    expect(setProjectColor).toHaveBeenCalledWith("proj-1", "#e5484d");
+  });
+
+  it("drops an unsaved picked colour when the picker blurs", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    fireEvent.input(picker, { target: { value: "#30a46c" } });
+    expect(badge).toHaveStyle({ background: "#30a46c" });
+
+    fireEvent.blur(picker);
+    expect(badge).toHaveStyle({ background: "#3e63dd" });
+    expect(setProjectColor).not.toHaveBeenCalled();
+  });
+
+  it("keeps a newer draft when an earlier save finishes", async () => {
+    let finish!: () => void;
+    const setProjectColor = vi.fn(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    fireEvent.change(picker, { target: { value: "#e5484d" } });
+    fireEvent.input(picker, { target: { value: "#30a46c" } });
+    finish();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(badge).toHaveStyle({ background: "#30a46c" });
+  });
+
+  it("picks black or white initials by contrast", () => {
+    useProjectStore.setState({
+      projects: [project({ color: "#e5484d" })],
+      setProjectColor: vi.fn(() => Promise.resolve()),
+    });
+    render(<Sidebar />);
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    expect(badge).toHaveStyle({ color: "#000" });
+    fireEvent.input(picker, { target: { value: "#1a1a2e" } });
+    expect(badge).toHaveStyle({ color: "#fff" });
+  });
+
+  it("resets a picked colour from a right-click or the Delete key", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({
+      projects: [project({ color: "#3e63dd" })],
+      setProjectColor,
+    });
+    render(<Sidebar />);
+
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    fireEvent.contextMenu(picker);
+    expect(setProjectColor).toHaveBeenLastCalledWith("proj-1", null);
+
+    fireEvent.keyDown(picker, { key: "Delete" });
+    expect(setProjectColor).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reset a badge that has no colour of its own", () => {
+    const setProjectColor = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({ projects: [project()], setProjectColor });
+    render(<Sidebar />);
+
+    fireEvent.contextMenu(screen.getByLabelText("Change colour of Webshop"));
+    expect(setProjectColor).not.toHaveBeenCalled();
+  });
+
+  it("collapses the group from its caret button, not from keys on the picker", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    const caret = screen.getByRole("button", { name: "Collapse Webshop" });
+    expect(caret).toHaveAttribute("aria-expanded", "true");
+
+    // Space on the focused picker belongs to the picker.
+    fireEvent.keyDown(screen.getByLabelText("Change colour of Webshop"), {
+      key: " ",
+    });
+    expect(caret).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(caret);
+    expect(
+      screen.getByRole("button", { name: "Expand Webshop" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("reorders projects when a project is dropped onto another", () => {
     const reorderProjects = vi.fn(() => Promise.resolve());
     useProjectStore.setState({
@@ -262,7 +386,8 @@ describe("Sidebar project header", () => {
     const [firstHandle, secondHandle] = screen.getAllByRole("img", {
       name: /Drag to reorder/,
     });
-    const secondGroup = secondHandle.closest('[role="button"]')!
+    // handle → header row → project group.
+    const secondGroup = secondHandle.parentElement!
       .parentElement as HTMLElement;
 
     // jsdom's DragEvent has no real DataTransfer; the handler writes to it.
@@ -291,6 +416,108 @@ describe("Sidebar project header", () => {
     // empty hint instead of listing it a second time.
     await screen.findByText("worktree-shell");
     expect(screen.getByText("No terminals yet.")).toBeInTheDocument();
+  });
+
+  it("collapses one subsection to its header with a row count", () => {
+    useProjectStore.setState({ projects: [project()] });
+    useProcessStore.setState({
+      processes: [terminal("t1", "shell", null), terminal("t2", "logs", null)],
+    });
+    render(<Sidebar />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Terminals", expanded: true }),
+    );
+
+    // The count is part of the accessible name, not only of the visible text.
+    const toggle = screen.getByRole("button", { name: "Terminals (2)" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The rows are unmounted, not merely hidden.
+    expect(screen.queryByText("shell")).not.toBeInTheDocument();
+    // Persisted per project root, so it survives a restart.
+    expect(
+      useLayoutStore.getState().collapsedSections["/fake/webshop\nterminals"],
+    ).toBe(true);
+
+    fireEvent.click(toggle);
+    expect(screen.getByText("shell")).toBeInTheDocument();
+    // Expanding drops the key instead of storing `false`.
+    expect(useLayoutStore.getState().collapsedSections).toEqual({});
+  });
+
+  it("flags a collapsed subsection whose hidden row needs input", () => {
+    useProjectStore.setState({ projects: [project()] });
+    useProcessStore.setState({
+      processes: [terminal("t1", "shell", null), terminal("t2", "logs", null)],
+    });
+    useAgentActivityStore.setState({ activity: { t2: "waiting" } });
+    render(<Sidebar />);
+
+    // Expanded, the row itself shows it; the header stays quiet.
+    expect(
+      screen.queryByRole("img", { name: /needs your input/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Terminals", expanded: true }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Terminals (2) 1 needs your input" }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("collapses and expands every subsection from the project header", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse all sections of Webshop" }),
+    );
+    for (const title of ["To-dos", "Agents", "Terminals", "Scratchpads"]) {
+      expect(
+        screen.getByRole("button", { name: title, expanded: false }),
+      ).toBeInTheDocument();
+    }
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand all sections of Webshop" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
+    ).toBeInTheDocument();
+    expect(useLayoutStore.getState().collapsedSections).toEqual({});
+  });
+
+  it("offers Expand all once every visible subsection is collapsed by hand", () => {
+    // No services and no worktrees: Processes and Worktrees are not rendered,
+    // so they must not keep the button on "Collapse all".
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    for (const title of ["To-dos", "Agents", "Terminals", "Scratchpads"]) {
+      fireEvent.click(
+        screen.getByRole("button", { name: title, expanded: true }),
+      );
+    }
+
+    expect(
+      screen.getByRole("button", { name: "Expand all sections of Webshop" }),
+    ).toBeInTheDocument();
+  });
+
+  it("expands a collapsed subsection when its add button is used", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "New to-do" }));
+
+    expect(
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("New to-do text")).toBeInTheDocument();
   });
 
   describe("new terminal shell", () => {

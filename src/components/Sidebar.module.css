@@ -61,6 +61,25 @@
   background: var(--surface-hover);
 }
 
+/* The caret's button: the header's keyboard-reachable expand/collapse
+   toggle. The icon inside rotates, not the button, so the global
+   button:active press transform cannot fight the rotation. */
+.caretButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.caretButton:hover:not(:disabled) {
+  background: none;
+}
+
 /* The caret icon wrapper rotates 90° when the group is expanded. */
 .caretWrap {
   display: flex;
@@ -75,6 +94,8 @@
 
 /* Square initials badge for a project (from podium.yml or derived). */
 .projectBadge {
+  position: relative;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -367,6 +388,59 @@
   user-select: none;
 }
 
+/* Caret + icon + title: the click target that collapses the subsection. */
+.sectionToggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The global `button:hover:not(:disabled)` / `button:active:not(:disabled)`
+ * (0,2,1) would paint a full-width hover bar and shrink the title on press;
+ * matching their pseudo-classes outranks them, so the title only recolours. */
+.sectionToggle:hover:not(:disabled) {
+  background: none;
+  color: var(--text-muted);
+}
+
+.sectionToggle:active:not(:disabled) {
+  transform: none;
+}
+
+.sectionCount {
+  font-weight: 400;
+}
+
+/* A collapsed subsection with a hidden row waiting on the user: the same blue
+ * pulsing dot a row shows for "needs input", so it is not lost behind the
+ * count. Opacity-only animation, neutralised by the reduced-motion guard. */
+.sectionWaiting {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: sectionWaitingPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes sectionWaitingPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .panelIcon {
   color: var(--text-faint);
   flex-shrink: 0;
@@ -514,4 +588,24 @@
   border-radius: 50%;
   background: var(--warning);
   box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* The picker input is invisible over the badge, so its keyboard focus is
+   drawn on the badge itself. */
+.projectBadge:has(.badgeColorInput:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Invisible native colour input covering the badge: clicking the badge opens
+   the platform picker, and it stays keyboard-focusable. */
+.badgeColorInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
 }

@@ -136,6 +136,8 @@ export interface ProjectInfo {
   renamed: boolean;
   /** Which optional sidebar sections are shown. */
   sections: ProjectSections;
+  /** User-picked badge colour (`#rrggbb`); null keeps the theme accent. */
+  color: string | null;
   /**
    * WSL-backend mode only: this Windows-drive project runs natively (the
    * `nativeDriveProjects` opt-in), so the terminal-shell setting — meant for

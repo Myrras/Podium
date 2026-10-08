@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the IPC command layer so the store talks to fixtures, not Tauri.
 vi.mock("../ipc/commands", () => ({
+  projectClose: vi.fn(() => Promise.resolve()),
   projectOpen: vi.fn(),
   projectList: vi.fn(() => Promise.resolve([])),
   projectRename: vi.fn(),
+  projectSetColor: vi.fn(),
   projectReorder: vi.fn(),
   recentsList: vi.fn(() => Promise.resolve([])),
   workspaceList: vi.fn(),
@@ -31,9 +33,11 @@ import {
   projectOpen,
   projectRename,
   projectReorder,
+  projectSetColor,
   workspaceList,
   workspaceRemove,
 } from "../ipc/commands";
+import { useLayoutStore } from "./layoutStore";
 import { toastError } from "./toastStore";
 import { reorderIds, useProjectStore } from "./projectStore";
 
@@ -41,6 +45,7 @@ const projectOpenMock = vi.mocked(projectOpen);
 const projectListMock = vi.mocked(projectList);
 const projectRenameMock = vi.mocked(projectRename);
 const projectReorderMock = vi.mocked(projectReorder);
+const projectSetColorMock = vi.mocked(projectSetColor);
 const workspaceListMock = vi.mocked(workspaceList);
 const workspaceRemoveMock = vi.mocked(workspaceRemove);
 const toastErrorMock = vi.mocked(toastError);
@@ -61,6 +66,7 @@ function project(id: string, name = id): ProjectInfo {
       scratchpads: true,
       issues: false,
     },
+    color: null,
     nativeInWslMode: false,
   };
 }
@@ -124,6 +130,7 @@ describe("projectStore.restoreWorkspace", () => {
           scratchpads: true,
           issues: false,
         },
+        color: null,
         nativeInWslMode: false,
       }),
     );
@@ -186,6 +193,28 @@ describe("projectStore.renameProject", () => {
   });
 });
 
+describe("projectStore.setProjectColor", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useProjectStore.setState(
+      { projects: [project("a")], activeProjectId: null, recents: [] },
+      false,
+    );
+  });
+
+  it("replaces the project with the recoloured snapshot", async () => {
+    projectSetColorMock.mockResolvedValue({
+      ...project("a"),
+      color: "#3e63dd",
+    });
+
+    await useProjectStore.getState().setProjectColor("a", "#3e63dd");
+
+    expect(projectSetColorMock).toHaveBeenCalledWith("a", "#3e63dd");
+    expect(useProjectStore.getState().projects[0].color).toBe("#3e63dd");
+  });
+});
+
 describe("projectStore.reorderProjects", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -220,5 +249,24 @@ describe("projectStore.reorderProjects", () => {
 
     const ids = useProjectStore.getState().projects.map((p) => p.id);
     expect(ids).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("projectStore.closeProject", () => {
+  it("forgets the closed project's collapse state, keeping the others", async () => {
+    useProjectStore.setState({
+      projects: [project("a"), project("b")],
+      activeProjectId: "a",
+    });
+    const layout = useLayoutStore.getState();
+    layout.setAllSectionsCollapsed("/projects/a", true);
+    layout.setSectionCollapsed("/projects/b", "todos", true);
+    layout.toggleProjectCollapsed("/projects/a");
+
+    await useProjectStore.getState().closeProject("a");
+
+    const { collapsedSections, collapsedProjects } = useLayoutStore.getState();
+    expect(collapsedSections).toEqual({ "/projects/b\ntodos": true });
+    expect(collapsedProjects).toEqual({});
   });
 });

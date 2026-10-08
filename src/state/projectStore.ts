@@ -9,6 +9,7 @@ import {
   projectList,
   projectOpen,
   projectRename,
+  projectSetColor,
   projectReorder,
   projectSetSections,
   recentsList,
@@ -23,6 +24,7 @@ import type {
   ProjectSections,
   RecentProject,
 } from "../ipc/types";
+import { useLayoutStore } from "./layoutStore";
 import { toastError, useToastStore } from "./toastStore";
 
 /**
@@ -70,6 +72,7 @@ interface ProjectState {
   reloadProjectConfig: (id: ProjectId) => Promise<void>;
   /** Rename a project; a blank/null name reverts to the folder/config name. */
   renameProject: (id: ProjectId, name: string | null) => Promise<void>;
+  setProjectColor: (id: ProjectId, color: string | null) => Promise<void>;
   /**
    * Show/hide the project's optional sidebar sections (data is untouched).
    * `changed` is merged into the *latest* sections, applied at once, then
@@ -201,6 +204,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       toastError("Could not close project", toIpcError(e).message);
       return;
     }
+    // Closing removes it from the workspace for good; its collapse state goes
+    // with it (a failed open, by contrast, keeps it — see `restoreWorkspace`).
+    const root = get().projects.find((p) => p.id === id)?.root;
+    if (root !== undefined) useLayoutStore.getState().forgetProject(root);
     set((s) => {
       const projects = s.projects.filter((p) => p.id !== id);
       return {
@@ -249,6 +256,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     } catch (e) {
       toastError("Could not update sections", toIpcError(e).message);
       void get().refresh();
+    }
+  },
+
+  setProjectColor: async (id, color) => {
+    try {
+      const project = await projectSetColor(id, color);
+      set((s) => ({
+        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
+      }));
+    } catch (e) {
+      toastError("Could not change project colour", toIpcError(e).message);
     }
   },
 

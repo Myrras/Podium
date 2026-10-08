@@ -105,6 +105,14 @@ export function projectSetSections(
   return invoke("project_set_sections", { projectId, sections });
 }
 
+/** Set a project's badge colour (`#rrggbb`); null clears it. */
+export function projectSetColor(
+  projectId: ProjectId,
+  color: string | null,
+): Promise<ProjectInfo> {
+  return invoke("project_set_color", { projectId, color });
+}
+
 /**
  * Reorder the sidebar project list to match `ordered` (project ids in the
  * desired order). Returns the projects in the new order.
