@@ -1,9 +1,8 @@
-// @ts-expect-error no @types/node here; Vitest itself runs in Node
-import { readFileSync } from "node:fs";
-
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import css from "./AssistantPane.module.css?raw";
 
 // The file picker is a Tauri plugin: mocked so the picker button resolves
 // to fixture paths instead of opening a real dialog.
@@ -389,14 +388,7 @@ describe("AssistantPane", () => {
     // `flex-shrink: 0` its automatic min-height is 0 and a long transcript
     // squeezes it to nothing, hiding every waiting message.
     it("never lets the transcript squeeze the tail away", () => {
-      // `css: false` stubs even a `?raw` stylesheet import, so read the file.
-      // Relative to the project root, Vitest's cwd (under jsdom
-      // `import.meta.url` is not a file: URL, so it can't anchor the path).
-      const css: string = readFileSync(
-        "src/components/AssistantPane.module.css",
-        "utf8",
-      );
-      const tail = /(?:^|\n)\.tail \{([^}]*)\}/.exec(css)?.[1] ?? "";
+      const tail = /(?:^|\n)\.tail\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
       expect(tail).toMatch(/overflow-y:\s*auto/);
       expect(tail).toMatch(/flex-shrink:\s*0/);
     });
