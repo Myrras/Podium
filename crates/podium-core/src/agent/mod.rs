@@ -328,7 +328,7 @@ impl AgentAdapter for CliAdapter {
         // resume the conversation. Skipped when the user's own args already
         // choose a session — theirs wins, as with `--settings`/`-n`.
         let user_picks_session = ctx.extra_args.iter().any(|a| user_picks_session(a));
-        let prompt = ctx.prompt.map(&quote).transpose()?;
+        let prompt = ctx.prompt.map(quote).transpose()?;
         let tail = args.join(" ");
         let restart =
             self.session_flags
