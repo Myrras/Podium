@@ -561,8 +561,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   refusing it. Agent and project names are capped at 40 chars, the to-do at
   60, the source at 40. A newer item with the same `processId` or
   `todoId` replaces the open one — except that an FYI never replaces an
-  open "needs you" (both stay); an item with neither key never replaces
-  anything. `add_response` is disabled in the agent route's tool router, so
+  open "needs you" (both stay), and an item about an agent is only replaced
+  by another agent's item (the same agent, or one on the same to-do, as
+  after `respawn_agent`), never by an agent-less one such as the sweep's; an
+  item with neither key never replaces anything. `add_response` is disabled in the agent route's tool router, so
   it is neither listed nor runnable there (the list is the assistant's to
   curate) — a guard against a confused agent, not a security
   boundary: both routes share one bearer token, so an agent that deliberately
@@ -574,8 +576,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   the lingering-to-do sweep each to-do's and project's id) so the assistant
   can pass them as the supersede key. Every change publishes a full
   `responsesChanged` snapshot, never recorded in the transcript; nor is the
-  `add_response` call itself — neither the transcript nor the chat shows an
-  action row for it, since the list already shows its result. The user either ticks an item
+  `add_response` call itself — `parse_stream_line` drops the exact
+  `mcp__podium__add_response` tool event, so neither the transcript nor the
+  chat shows an action row for it (the list already shows its result). The user either ticks an item
   (`assistant_response_dismiss`, it is just removed) or replies
   (`assistant_response_reply`): the reply is an ordinary user turn through
   `send`'s path (`AssistantManager::send_reply`, so it queues like any
@@ -589,8 +592,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   item is taken off the list before the send (so a double submit cannot send
   twice) and put back if the send fails — or if a queued reply never goes
   out: dropped by the queue cap, withdrawn by the user
-  (`assistant_queue_remove`), or lost with the session (new conversation,
-  crash, shutdown — also named in the undelivered notice). That is why the
+  (`assistant_queue_remove`), or lost with the session (new conversation or
+  crash, both also named in the undelivered notice; at app shutdown
+  `AssistantManager::shutdown` restores them itself before killing the
+  child, since nothing after it is sure to run). That is why the
   `ResponseStore` lives on the `AssistantStore`: the queue code needs it.
   `restore` skips an item a newer one has since replaced and keeps the
   100-item cap.
@@ -598,12 +603,15 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   the changes happened, and a write that fails leaves the list (and the
   published snapshot) unchanged. The label is the non-empty parts of agent ·
   project · to-do · source, or `Responses item`; it is computed in Rust
-  (`ResponseItem::label`) and serialized as `label`, so the frontend never
-  re-derives it. The panel's `loadResponses` drops its result when a
-  snapshot landed while it was in flight, and a half-typed reply is filed
-  under the item's agent and to-do too, so it carries over to the item that
-  replaces its row (cleared as a whole, so it cannot resurface on a later
-  item); the reply box takes focus only when its Reply button is clicked.
+  (`ResponseItem::label`) and added as `label` only at the wire boundary
+  (`LabelledResponse`, used by `assistant_responses_list`, the
+  `responsesChanged` event and `add_response`'s answer) — never written to
+  `assistant-responses.json` — so the frontend never re-derives it. The panel's `loadResponses` drops its result when a
+  snapshot landed while it was in flight. A half-typed reply is filed under
+  its item's id; when that item is replaced, the draft moves to the newest
+  item that replaced it (the backend's rule mirrored in `supersedes`), so
+  two items side by side never share one. The reply box takes focus only
+  when its Reply button is clicked.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so

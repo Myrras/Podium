@@ -14,21 +14,53 @@ import { CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
 import styles from "./ResponsesSection.module.css";
 
 /**
- * What a reply draft is filed under: the item's agent and to-do as well as
- * its own id, so a newer item about the same agent or to-do — which replaces
- * this row — picks up a half-typed reply instead of dropping it.
+ * A half-typed reply, filed under the item it answers — plus what it takes
+ * to tell which newer item replaced that one, so the draft can follow it.
  */
 interface Draft {
-  keys: string[];
+  itemId: string;
+  kind: ResponseItem["kind"];
+  processId: string | null;
+  todoId: string | null;
+  createdAt: string;
   text: string;
 }
 
-function draftKeys(item: ResponseItem): string[] {
-  return [
-    item.processId && `p:${item.processId}`,
-    item.todoId && `t:${item.todoId}`,
-    `i:${item.id}`,
-  ].filter((k): k is string => !!k);
+/**
+ * Whether `newer` replaced the item `old` was filed under — the backend's
+ * own rule (`ResponseItem::superseded_by`): same agent or same to-do, but an
+ * FYI never replaces a "needs you", and an agent's item only goes to another
+ * agent's item.
+ */
+function supersedes(newer: ResponseItem, old: Draft): boolean {
+  if (Date.parse(newer.createdAt) <= Date.parse(old.createdAt)) return false;
+  if (old.kind === "needsYou" && newer.kind === "fyi") return false;
+  if (old.processId && !newer.processId) return false;
+  return (
+    (!!newer.processId && newer.processId === old.processId) ||
+    (!!newer.todoId && newer.todoId === old.todoId)
+  );
+}
+
+/**
+ * Which row shows which draft: its own item's, or — when that item was
+ * replaced — the newest item that replaced it. Two items side by side (an
+ * FYI next to an open question about the same agent) never share one.
+ */
+function placeDrafts(
+  items: ResponseItem[],
+  drafts: Draft[],
+): Map<string, Draft> {
+  const placed = new Map<string, Draft>();
+  const live = new Set(items.map((i) => i.id));
+  for (const d of drafts) if (live.has(d.itemId)) placed.set(d.itemId, d);
+  for (const d of drafts) {
+    if (live.has(d.itemId)) continue;
+    // Newest first, so this is the latest item that replaced it.
+    const heir = items.find((i) => !placed.has(i.id) && supersedes(i, d));
+    if (heir) placed.set(heir.id, d);
+  }
+  return placed;
 }
 
 export function ResponsesSection() {
@@ -42,23 +74,24 @@ export function ResponsesSection() {
     return () => clearInterval(timer);
   }, []);
 
-  // One draft per conversation thread: an item adopts the draft that shares
-  // any of its keys, and clearing it drops the whole draft — every key it
-  // was filed under — so it cannot resurface on a later item.
-  const owns = (d: Draft, item: ResponseItem) =>
-    draftKeys(item).some((k) => d.keys.includes(k));
-
-  function draftOf(item: ResponseItem): string | null {
-    return drafts.find((d) => owns(d, item))?.text ?? null;
-  }
+  const placed = placeDrafts(responses, drafts);
 
   function setDraftOf(item: ResponseItem, text: string | null) {
+    const old = placed.get(item.id);
     setDrafts((prev) => {
-      const old = prev.find((d) => owns(d, item));
       const rest = prev.filter((d) => d !== old);
       if (text === null) return rest;
-      const keys = [...new Set([...(old?.keys ?? []), ...draftKeys(item)])];
-      return [...rest, { keys, text }];
+      return [
+        ...rest,
+        {
+          itemId: item.id,
+          kind: item.kind,
+          processId: item.processId,
+          todoId: item.todoId,
+          createdAt: item.createdAt,
+          text,
+        },
+      ];
     });
   }
 
@@ -84,7 +117,7 @@ export function ResponsesSection() {
             <ResponseRow
               key={item.id}
               item={item}
-              draft={draftOf(item)}
+              draft={placed.get(item.id)?.text ?? null}
               setDraft={(text) => setDraftOf(item, text)}
             />
           ))}

@@ -48,7 +48,7 @@ pub use process::pty::TermChunk;
 pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
-pub use responses::{ResponseItem, ResponseKind};
+pub use responses::{LabelledResponse, ResponseItem, ResponseKind};
 pub use scratchpad::ScratchpadInfo;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
 pub use worktree::WorktreeInfo;

@@ -535,6 +535,10 @@ pub struct ProposalInfo {
     pub created_at: DateTime<Utc>,
 }
 
+/// `add_response` as the CLI names it: Podium's MCP server is registered as
+/// `podium` for the assistant too (`agent::write_assistant_mcp_config`).
+const ADD_RESPONSE_TOOL: &str = "mcp__podium__add_response";
+
 /// One parsed item from the assistant's output stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
@@ -601,7 +605,10 @@ pub enum AssistantEvent {
     /// The Responses list changed (an item was added, marked as read or
     /// answered). The whole list, newest first — a snapshot like
     /// [`AssistantEvent::QueueChanged`]. Not conversation, so never recorded.
-    ResponsesChanged { items: Vec<ResponseItem> },
+    ResponsesChanged {
+        #[serde(serialize_with = "crate::responses::serialize_labelled")]
+        items: Vec<ResponseItem>,
+    },
 }
 
 /// Who spoke in one persisted transcript row. A subset of the live event
@@ -765,9 +772,6 @@ impl AssistantStore {
             AssistantEvent::Message { text } => {
                 self.append(TranscriptRole::Assistant, text.clone())
             }
-            // `add_response` is bookkeeping for the Responses list, which
-            // shows its result already; an action row per update is noise.
-            AssistantEvent::Tool { name } if name.rsplit("__").next() == Some("add_response") => {}
             AssistantEvent::Tool { name } => self.append(TranscriptRole::Tool, name.clone()),
             AssistantEvent::ToolFailed { message } => {
                 self.append(TranscriptRole::Notice, message.clone())
@@ -1338,11 +1342,15 @@ impl AssistantManager {
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
 
-    /// Kill the session, if any (app shutdown). Whatever is still waiting is
-    /// reported as undelivered once the output task notices the session is
-    /// gone.
+    /// Kill the session, if any (app shutdown). The queue dies with the app,
+    /// so a waiting reply's Responses item is put back first — synchronously,
+    /// since nothing after this is guaranteed to run.
     pub async fn shutdown(&self) {
-        if let Some(mut session) = self.state.lock().await.session.take() {
+        let mut state = self.state.lock().await;
+        for item in std::mem::take(&mut state.pending) {
+            restore_reply(&self.store, &self.events, &item);
+        }
+        if let Some(mut session) = state.session.take() {
             let _ = session.child.kill().await;
         }
     }
@@ -1924,14 +1932,17 @@ fn content_block_event(block: &serde_json::Value) -> Option<AssistantEvent> {
             .map(|t| AssistantEvent::Message {
                 text: t.to_string(),
             }),
-        Some("tool_use") => {
-            block
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|name| AssistantEvent::Tool {
-                    name: name.to_string(),
-                })
-        }
+        Some("tool_use") => block
+            .get("name")
+            .and_then(|n| n.as_str())
+            // Bookkeeping for the Responses list, which shows its result
+            // already: an action row per update in the chat (and the
+            // transcript) would be noise. Podium's own server only — another
+            // server's tool of the same name is a real action.
+            .filter(|name| *name != ADD_RESPONSE_TOOL)
+            .map(|name| AssistantEvent::Tool {
+                name: name.to_string(),
+            }),
         _ => None,
     }
 }
@@ -2306,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn the_store_records_prose_actions_and_failures_but_not_proposals_or_add_response() {
+    fn the_store_records_prose_actions_and_failures_but_not_proposals() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(dir.path());
 
@@ -2316,9 +2327,6 @@ mod tests {
         });
         store.record(&AssistantEvent::Tool {
             name: "list_todos".to_string(),
-        });
-        store.record(&AssistantEvent::Tool {
-            name: "mcp__podium__add_response".to_string(),
         });
         store.record(&AssistantEvent::ToolFailed {
             message: "project not found".to_string(),
@@ -2510,6 +2518,44 @@ mod tests {
                 session_id: "sess-1".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn podiums_own_add_response_call_is_not_an_action_row() {
+        let events = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[
+                {"type":"tool_use","name":"mcp__podium__add_response","input":{}},
+                {"type":"tool_use","name":"mcp__crm__add_response","input":{}}
+            ]}}"#,
+        );
+        // Another server's tool of the same name is a real action.
+        assert_eq!(
+            events,
+            vec![AssistantEvent::Tool {
+                name: "mcp__crm__add_response".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_responses_snapshot_carries_each_items_label() {
+        let item = ResponseItem {
+            id: crate::ids::ResponseId::new(),
+            kind: crate::responses::ResponseKind::Fyi,
+            text: "Merged.".to_string(),
+            project: Some("Webshop".to_string()),
+            agent: Some("checkout-fix".to_string()),
+            agent_color: None,
+            todo: None,
+            source: None,
+            process_id: None,
+            todo_id: None,
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(AssistantEvent::ResponsesChanged { items: vec![item] })
+            .expect("serialize");
+        assert_eq!(json["items"][0]["label"], "checkout-fix · Webshop");
+        assert_eq!(json["items"][0]["text"], "Merged.");
     }
 
     #[test]
@@ -3122,6 +3168,17 @@ mod tests {
             queue_nudge(&manager, &format!("nudge {i}")).await;
         }
         assert_eq!(manager.store.responses().list(), vec![answered]);
+    }
+
+    #[tokio::test]
+    async fn a_reply_waiting_at_shutdown_puts_its_item_back() {
+        let manager = AssistantManager::new(EventBus::new());
+        let item = reply("merge it");
+        let answered = item.reply_to.clone().expect("a reply");
+        manager.state.lock().await.pending.push_back(item);
+        manager.shutdown().await;
+        assert_eq!(manager.store.responses().list(), vec![answered]);
+        assert!(manager.state.lock().await.pending.is_empty());
     }
 
     #[tokio::test]

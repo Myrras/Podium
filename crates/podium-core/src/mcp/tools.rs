@@ -934,6 +934,7 @@ impl PodiumTools {
                     todo_id,
                     p.source.as_deref(),
                 )
+                .map(crate::responses::LabelledResponse::from)
                 .map_err(core_error)?,
         )
     }

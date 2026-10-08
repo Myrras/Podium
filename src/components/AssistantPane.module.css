@@ -253,8 +253,8 @@
   font-size: var(--fs-sm);
 }
 
-/* A reply to a Responses item: one line, like the user bubble but compact —
-   the item it answers reads first, muted, and the reply ellipsises. */
+/* A reply to a Responses item: like the user bubble but compact — the item
+   it answers reads first, muted and clipped to one line, then the reply. */
 .message[data-role="reply"] {
   padding: var(--sp-1) var(--sp-2);
   background: var(--surface-2);

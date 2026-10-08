@@ -538,11 +538,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "tool":
           return {
             activity: event.name,
-            // `add_response` is bookkeeping: the Responses list shows its
-            // result, so it gets no action row (the transcript skips it too).
-            messages: /(^|__)add_response$/.test(event.name)
-              ? s.messages
-              : [...s.messages, message("tool", event.name)],
+            messages: [...s.messages, message("tool", event.name)],
           };
         // Podium nudging the assistant, not the user: demoted so it never
         // reads as a message written to them (see the `"nudge"` ChatRole doc).

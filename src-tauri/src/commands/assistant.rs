@@ -11,7 +11,7 @@ use tauri::State;
 
 use podium_core::assistant::AssistantPolling;
 use podium_core::{
-    Attachment, AutonomyMode, PendingId, ProposalId, ResponseId, ResponseItem, TranscriptEntry,
+    Attachment, AutonomyMode, LabelledResponse, PendingId, ProposalId, ResponseId, TranscriptEntry,
 };
 
 use crate::error::IpcError;
@@ -199,8 +199,13 @@ pub async fn assistant_interrupt(state: State<'_, AppState>) -> Result<(), IpcEr
 #[tauri::command]
 pub async fn assistant_responses_list(
     state: State<'_, AppState>,
-) -> Result<Vec<ResponseItem>, IpcError> {
-    Ok(state.orchestrator.assistant_responses())
+) -> Result<Vec<LabelledResponse>, IpcError> {
+    Ok(state
+        .orchestrator
+        .assistant_responses()
+        .into_iter()
+        .map(LabelledResponse::from)
+        .collect())
 }
 
 /// Mark one Responses item as read (removes it).

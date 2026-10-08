@@ -12,6 +12,8 @@ import { shortAge } from "../lib/dateFormat";
 import { ResponsesSection } from "./ResponsesSection";
 
 const NOW = Date.now();
+// Filed after the fixture items: what a superseding item looks like.
+const LATER = new Date(NOW).toISOString();
 
 function item(overrides: Partial<ResponseItem> = {}): ResponseItem {
   return {
@@ -166,7 +168,9 @@ describe("ResponsesSection", () => {
     // A newer item about the same agent supersedes r-1.
     act(() =>
       useAssistantStore.setState({
-        responses: [item({ id: "r-3", text: "Redirect still needed?" })],
+        responses: [
+          item({ id: "r-3", text: "Redirect still needed?", createdAt: LATER }),
+        ],
       }),
     );
 
@@ -183,7 +187,7 @@ describe("ResponsesSection", () => {
     // Superseded via the agent only; the draft follows, then is cancelled.
     act(() =>
       useAssistantStore.setState({
-        responses: [item({ id: "r-3", todoId: null })],
+        responses: [item({ id: "r-3", todoId: null, createdAt: LATER })],
       }),
     );
     expect(screen.getByLabelText("Reply text")).toHaveValue("half a thought");
@@ -192,7 +196,7 @@ describe("ResponsesSection", () => {
     // A later item about the original to-do must not bring it back.
     act(() =>
       useAssistantStore.setState({
-        responses: [item({ id: "r-4", processId: null })],
+        responses: [item({ id: "r-4", processId: null, createdAt: LATER })],
       }),
     );
     expect(screen.queryByLabelText("Reply text")).not.toBeInTheDocument();
@@ -213,12 +217,53 @@ describe("ResponsesSection", () => {
     composer.focus();
     act(() =>
       useAssistantStore.setState({
-        responses: [item({ id: "r-3", text: "Redirect still needed?" })],
+        responses: [
+          item({ id: "r-3", text: "Redirect still needed?", createdAt: LATER }),
+        ],
       }),
     );
     expect(screen.getByLabelText("Reply text")).toHaveValue("Keep it");
     expect(composer).toHaveFocus();
     composer.remove();
+  });
+
+  it("keeps a draft on its own row when an FYI about the same agent sits beside it", async () => {
+    const user = userEvent.setup();
+    useAssistantStore.setState({ responses: [item()] });
+    render(<ResponsesSection />);
+
+    await user.click(screen.getByRole("button", { name: "Reply" }));
+    await user.type(screen.getByLabelText("Reply text"), "Drop it");
+    // An FYI never replaces the open question: both rows stay.
+    act(() =>
+      useAssistantStore.setState({
+        responses: [
+          item({
+            id: "r-5",
+            kind: "fyi",
+            text: "Tests green.",
+            createdAt: LATER,
+          }),
+          item(),
+        ],
+      }),
+    );
+    expect(screen.getAllByLabelText("Reply text")).toHaveLength(1);
+    expect(screen.getByLabelText("Reply text")).toHaveValue("Drop it");
+
+    // The FYI's own reply box starts empty and answers the FYI.
+    const [fyiReply, questionReply] = screen.getAllByRole("button", {
+      name: "Reply",
+    });
+    expect(questionReply).toHaveAttribute("aria-pressed", "true");
+    await user.click(fyiReply);
+    const [fyiBox, questionBox] = screen.getAllByLabelText("Reply text");
+    expect(fyiBox).toHaveValue("");
+    expect(questionBox).toHaveValue("Drop it");
+    await user.type(fyiBox, "Thanks{Enter}");
+    expect(replyResponse).toHaveBeenCalledWith("r-5", "Thanks");
+    await user.type(questionBox, "{Enter}");
+    expect(replyResponse).toHaveBeenCalledWith("r-1", "Drop it");
   });
 
   it("keeps the ages current", () => {

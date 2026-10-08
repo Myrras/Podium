@@ -17,7 +17,6 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
-use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::{CoreError, CoreResult};
@@ -42,10 +41,9 @@ pub enum ResponseKind {
     Fyi,
 }
 
-/// One item on the Responses list. Serializes with a computed `label`
-/// ([`ResponseItem::label`]) so the panel shows the same name a reply
-/// carries back to the session; reading it back ignores that field.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// One item on the Responses list, as stored. What crosses to the UI (and
+/// back to the assistant over MCP) is a [`LabelledResponse`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseItem {
     pub id: ResponseId,
@@ -68,25 +66,29 @@ pub struct ResponseItem {
     pub created_at: DateTime<Utc>,
 }
 
-// Hand-written only to add `label`; the round-trip test catches a field
-// added to the struct but not here.
-impl Serialize for ResponseItem {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut st = s.serialize_struct("ResponseItem", 13)?;
-        st.serialize_field("id", &self.id)?;
-        st.serialize_field("kind", &self.kind)?;
-        st.serialize_field("text", &self.text)?;
-        st.serialize_field("project", &self.project)?;
-        st.serialize_field("agent", &self.agent)?;
-        st.serialize_field("agentColor", &self.agent_color)?;
-        st.serialize_field("todo", &self.todo)?;
-        st.serialize_field("source", &self.source)?;
-        st.serialize_field("processId", &self.process_id)?;
-        st.serialize_field("todoId", &self.todo_id)?;
-        st.serialize_field("createdAt", &self.created_at)?;
-        st.serialize_field("label", &self.label())?;
-        st.end()
+/// A [`ResponseItem`] plus its computed [`label`](ResponseItem::label), the
+/// shape it has on the wire, so the panel shows the same name a reply
+/// carries back to the session. Never written to disk.
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelledResponse {
+    #[serde(flatten)]
+    pub item: ResponseItem,
+    pub label: String,
+}
+
+impl From<ResponseItem> for LabelledResponse {
+    fn from(item: ResponseItem) -> Self {
+        let label = item.label();
+        Self { item, label }
     }
+}
+
+/// `serialize_with` for a list of items at the IPC/event boundary.
+pub(crate) fn serialize_labelled<S: Serializer>(
+    items: &[ResponseItem],
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.collect_seq(items.iter().cloned().map(LabelledResponse::from))
 }
 
 impl ResponseItem {
@@ -112,9 +114,16 @@ impl ResponseItem {
     /// Whether `newer` is about the same agent or the same to-do, so it
     /// replaces this one. An item with neither key never supersedes anything,
     /// and an FYI never replaces an open "needs you": the question is still
-    /// waiting for the user, however much news arrives after it.
+    /// waiting for the user, however much news arrives after it. An item
+    /// about an agent is only replaced by another item about an agent — the
+    /// same one, or (via the to-do) the agent that took the task over, e.g.
+    /// after `respawn_agent` — never by an agent-less note on its to-do such
+    /// as the lingering-to-do sweep's.
     fn superseded_by(&self, newer: &ResponseItem) -> bool {
         if self.kind == ResponseKind::NeedsYou && newer.kind == ResponseKind::Fyi {
+            return false;
+        }
+        if self.process_id.is_some() && newer.process_id.is_none() {
             return false;
         }
         (newer.process_id.is_some() && self.process_id == newer.process_id)
@@ -338,6 +347,28 @@ mod tests {
     }
 
     #[test]
+    fn a_note_on_the_to_do_without_an_agent_leaves_the_agents_item() {
+        let store = ResponseStore::new();
+        let todo = TodoId::new();
+        let question = ResponseItem {
+            kind: ResponseKind::NeedsYou,
+            ..item(Some(ProcessId::new()), Some(todo), "merge now?")
+        };
+        add(&store, question);
+        let list = add(
+            &store,
+            ResponseItem {
+                kind: ResponseKind::NeedsYou,
+                ..item(None, Some(todo), "open for a week: drop it?")
+            },
+        );
+        assert_eq!(
+            texts(&list),
+            vec!["open for a week: drop it?", "merge now?"]
+        );
+    }
+
+    #[test]
     fn a_restore_respects_the_cap() {
         let store = ResponseStore::new();
         let mut oldest = item(None, None, "oldest");
@@ -477,17 +508,22 @@ mod tests {
     }
 
     #[test]
-    fn items_serialize_camel_case_with_a_label_and_read_back() {
+    fn the_wire_shape_adds_a_label_that_the_stored_shape_lacks() {
         let full = ResponseItem {
             agent_color: Some("#7aa2f7".to_string()),
             todo: Some("Fix the login redirect".to_string()),
             source: Some("Slack".to_string()),
             ..item(Some(ProcessId::new()), Some(TodoId::new()), "x")
         };
-        let json = serde_json::to_value(&full).unwrap();
-        assert_eq!(json["label"], full.label());
-        // Every field survives the trip, so none was left out of `serialize`.
-        assert_eq!(serde_json::from_value::<ResponseItem>(json).unwrap(), full);
+        let stored = serde_json::to_value(&full).unwrap();
+        assert!(stored.get("label").is_none(), "{stored}");
+        let wire = serde_json::to_value(LabelledResponse::from(full.clone())).unwrap();
+        assert_eq!(wire["label"], full.label());
+        // The wire shape is the stored one plus `label`, field for field.
+        let mut without_label = wire.clone();
+        without_label.as_object_mut().unwrap().remove("label");
+        assert_eq!(without_label, stored);
+        assert_eq!(serde_json::from_value::<ResponseItem>(wire).unwrap(), full);
 
         let json = serde_json::to_value(item(None, None, "x")).unwrap();
         assert_eq!(json["kind"], "fyi");
