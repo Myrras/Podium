@@ -302,13 +302,14 @@ async fn tools_list_includes_scratchpad_tools() {
         "list_worktrees",
         "remove_worktree",
         "verify_sender",
-        "add_response",
     ] {
         assert!(
             tools.contains(&name),
             "{name} missing from tools/list: {tools:?}"
         );
     }
+    // The assistant's own tool: only its route lists it.
+    assert!(!tools.contains(&"add_response"), "{tools:?}");
 
     server.stop();
 }
@@ -2883,6 +2884,13 @@ async fn add_response_files_an_item_and_is_refused_on_the_agent_route() {
     .await;
     let item: serde_json::Value = serde_json::from_str(&answer).expect("json item");
     assert_eq!(item["kind"], "needsYou");
+    assert_eq!(
+        item["label"],
+        format!(
+            "{} · review the onboarding copy",
+            item["project"].as_str().unwrap()
+        )
+    );
     assert_eq!(item["todo"], "review the onboarding copy");
     assert!(item["project"].is_string(), "{item}");
 
@@ -2922,10 +2930,30 @@ async fn add_response_files_an_item_and_is_refused_on_the_agent_route() {
     assert!(
         body["error"]["message"]
             .as_str()
-            .is_some_and(|m| m.contains("only available to the personal assistant")),
+            .is_some_and(|m| m.contains("tool not found")),
         "{body}"
     );
     assert_eq!(orch.assistant_responses().len(), 1);
+
+    // The assistant's route lists it.
+    let (status, response) = http_post_path(
+        server.url(),
+        ASSISTANT_PATH,
+        Some(server.token()),
+        Some(&assistant),
+        &tools_list_request(4),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    assert!(
+        body["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .any(|t| t["name"] == "add_response"),
+        "{body}"
+    );
 
     server.stop();
     orch.shutdown().await;

@@ -720,8 +720,8 @@ function ProposalCard({ proposal }: { proposal: ChatProposal }) {
 }
 
 /**
- * The user's reply to a Responses item, as one compact line: which item it
- * answers, then the reply itself (ellipsised; hover for all of it). `text` is
+ * The user's reply to a Responses item: which item it answers (clipped to
+ * one line), then the reply itself, wrapped in full. `text` is
  * `"<label>\n<reply>"`, the shape the backend stores too.
  */
 function ReplyLine({ text }: { text: string }) {
@@ -729,7 +729,7 @@ function ReplyLine({ text }: { text: string }) {
   const label = newline < 0 ? "" : text.slice(0, newline);
   const reply = text.slice(newline + 1);
   return (
-    <span className={styles.reply} title={reply}>
+    <span className={styles.reply}>
       <ReplyIcon className={styles.replyIcon} />
       <span className={styles.replyLabel}>Re: {label}</span>
       <span className={styles.replyText}>{reply}</span>

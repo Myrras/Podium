@@ -336,7 +336,16 @@ impl Watcher {
                 todos
                     .into_iter()
                     .filter(|t| !t.done && !t.archived && t.created_at < cutoff)
-                    .map(|t| format!("{} ({})", t.text, project.name)),
+                    // Ids, as `describe` gives agents', so the assistant can
+                    // key its Responses item to the to-do (`add_response`'s
+                    // `todo_id` + `project_id`) and the next sweep replaces
+                    // it instead of filing a duplicate.
+                    .map(|t| {
+                        format!(
+                            "\"{}\" (to-do {}) in project \"{}\" (project {})",
+                            t.text, t.id, project.name, project.id
+                        )
+                    }),
             );
         }
         if lingering.is_empty() {

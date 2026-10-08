@@ -14,7 +14,7 @@ use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo}
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
-    ProposalInfo, ReplyTo, TranscriptEntry,
+    ProposalInfo, TranscriptEntry,
 };
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
@@ -196,11 +196,9 @@ pub struct Orchestrator {
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
-    /// The workspace-wide personal assistant session (chat panel).
+    /// The workspace-wide personal assistant session (chat panel). Also
+    /// holds the Responses list ([`Self::responses`]).
     assistant: AssistantManager,
-    /// The assistant's Responses list (survives restarts and new
-    /// conversations).
-    responses: ResponseStore,
 }
 
 impl Default for Orchestrator {
@@ -227,7 +225,6 @@ impl Orchestrator {
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
             agent_settings: AgentSettingsStore::new(),
-            responses: ResponseStore::new(),
         }
     }
 
@@ -258,7 +255,14 @@ impl Orchestrator {
     /// Point the Responses list at its backing file (app data dir) and load
     /// it. Until this is called, items are held in memory only.
     pub fn set_responses_path(&self, path: PathBuf) {
-        self.responses.set_path(path);
+        self.responses().set_path(path);
+    }
+
+    /// The assistant's Responses list (survives restarts and new
+    /// conversations). Kept in the assistant's store so its queue can put
+    /// back the item of a reply it never delivered.
+    fn responses(&self) -> &ResponseStore {
+        self.assistant.store().responses()
     }
 
     /// Point the assistant at its CLI binary, working directory and the dir
@@ -574,15 +578,17 @@ impl Orchestrator {
 
     /// The assistant's Responses list, newest first.
     pub fn assistant_responses(&self) -> Vec<ResponseItem> {
-        self.responses.list()
+        self.responses().list()
     }
 
     /// File one Responses item (the assistant's `add_response`). Agent,
     /// project and to-do names are resolved now, so the item still reads
     /// right after the agent exits or the project closes. The project comes
-    /// from the agent when it is live, else from `project_id`; a to-do needs
-    /// one of the two. A project or to-do that is gone is dropped from the
-    /// item rather than refusing it.
+    /// from the agent when it is live, else from `project_id`. A `todo_id`
+    /// is refused without a `project_id` or `process_id` to find it by; a
+    /// project or to-do that is gone (including an agent that exited, so
+    /// there is no project to look in) is dropped from the item rather than
+    /// refusing it.
     /// A newer item about the same agent or to-do replaces the open one.
     /// An agent that is already gone keeps its id as the supersede key but
     /// loses its name: it may well have exited between the nudge and this
@@ -643,14 +649,14 @@ impl Orchestrator {
             todo_id,
             created_at: Utc::now(),
         };
-        self.responses
+        self.responses()
             .add(item.clone(), |items| self.publish_responses(items))?;
         Ok(item)
     }
 
     /// Mark one Responses item as read: it is simply removed.
     pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
-        self.responses
+        self.responses()
             .remove(id, |items| self.publish_responses(items))?;
         Ok(())
     }
@@ -668,17 +674,13 @@ impl Orchestrator {
             ));
         }
         let item = self
-            .responses
+            .responses()
             .remove(id, |items| self.publish_responses(items))?;
-        let reply_to = ReplyTo {
-            label: item.label(),
-            question: item.text.clone(),
-        };
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        match self.assistant.send_reply(text, reply_to, mcp).await {
+        match self.assistant.send_reply(text, item.clone(), mcp).await {
             Ok(delivered) => Ok(delivered),
             Err(e) => {
-                self.responses
+                self.responses()
                     .restore(item, |items| self.publish_responses(items));
                 Err(e)
             }
@@ -686,11 +688,7 @@ impl Orchestrator {
     }
 
     fn publish_responses(&self, items: &[ResponseItem]) {
-        self.events.publish(PodiumEvent::AssistantEvent {
-            event: crate::assistant::AssistantEvent::ResponsesChanged {
-                items: items.to_vec(),
-            },
-        });
+        crate::assistant::publish_responses(&self.events, items);
     }
 
     /// Point the global agent settings at their backing file (app data dir)

@@ -110,8 +110,13 @@ impl ResponseItem {
     }
 
     /// Whether `newer` is about the same agent or the same to-do, so it
-    /// replaces this one. An item with neither key never supersedes anything.
+    /// replaces this one. An item with neither key never supersedes anything,
+    /// and an FYI never replaces an open "needs you": the question is still
+    /// waiting for the user, however much news arrives after it.
     fn superseded_by(&self, newer: &ResponseItem) -> bool {
+        if self.kind == ResponseKind::NeedsYou && newer.kind == ResponseKind::Fyi {
+            return false;
+        }
         (newer.process_id.is_some() && self.process_id == newer.process_id)
             || (newer.todo_id.is_some() && self.todo_id == newer.todo_id)
     }
@@ -202,6 +207,7 @@ impl ResponseStore {
         // Kept in memory even if the write fails: this undoes a reply that
         // never got through, and losing the item is worse than a stale file.
         inner.items.insert(at, item);
+        inner.items.truncate(MAX_ITEMS);
         let _ = save(inner.path.as_deref(), &inner.items);
         changed(&inner.items);
     }
@@ -307,6 +313,40 @@ mod tests {
             item(Some(ProcessId::new()), Some(todo), "new agent"),
         );
         assert_eq!(texts(&list), vec!["new agent"]);
+    }
+
+    #[test]
+    fn an_fyi_never_replaces_an_open_needs_you() {
+        let store = ResponseStore::new();
+        let agent = ProcessId::new();
+        let question = ResponseItem {
+            kind: ResponseKind::NeedsYou,
+            ..item(Some(agent), None, "merge now?")
+        };
+        add(&store, question.clone());
+        let list = add(&store, item(Some(agent), None, "tests green"));
+        assert_eq!(texts(&list), vec!["tests green", "merge now?"]);
+        // A newer question still replaces both.
+        let list = add(
+            &store,
+            ResponseItem {
+                kind: ResponseKind::NeedsYou,
+                ..item(Some(agent), None, "rebase first?")
+            },
+        );
+        assert_eq!(texts(&list), vec!["rebase first?"]);
+    }
+
+    #[test]
+    fn a_restore_respects_the_cap() {
+        let store = ResponseStore::new();
+        let mut oldest = item(None, None, "oldest");
+        oldest.created_at -= chrono::Duration::minutes(1);
+        for n in 0..MAX_ITEMS {
+            add(&store, item(None, None, &n.to_string()));
+        }
+        store.restore(oldest, |_| {});
+        assert_eq!(store.list().len(), MAX_ITEMS);
     }
 
     #[test]

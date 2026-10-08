@@ -262,12 +262,12 @@
   font-size: var(--fs-sm);
 }
 
+/* The reply itself wraps like any message; only the "Re:" label is clipped. */
 .reply {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--sp-1);
   min-width: 0;
-  white-space: nowrap;
 }
 
 .replyIcon {
@@ -291,8 +291,8 @@
 
 .replyText {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* Podium nudging the assistant, not the user: a quiet aside, not a message —

@@ -340,7 +340,13 @@ impl PodiumTools {
     pub fn new(orchestrator: Arc<Orchestrator>) -> Self {
         Self {
             orchestrator,
-            tool_router: Self::tool_router(),
+            // The Responses list is the assistant's summary for the user; an
+            // agent writing to it would bypass the one voice meant to curate
+            // it, so the agent route neither lists nor runs `add_response`. A
+            // guard against a confused agent, not a boundary: both routes
+            // share one bearer token, so the route is identity only by
+            // convention.
+            tool_router: Self::tool_router().with_disabled("add_response"),
             assistant: false,
         }
     }
@@ -348,8 +354,9 @@ impl PodiumTools {
     /// The same tools for the personal assistant, gated by its autonomy mode.
     pub fn new_assistant(orchestrator: Arc<Orchestrator>) -> Self {
         Self {
+            orchestrator,
+            tool_router: Self::tool_router(),
             assistant: true,
-            ..Self::new(orchestrator)
         }
     }
 
@@ -913,16 +920,6 @@ impl PodiumTools {
         &self,
         Parameters(p): Parameters<AddResponseParams>,
     ) -> Result<CallToolResult, McpError> {
-        // The list is the assistant's summary for the user; an agent writing
-        // to it would bypass the one voice that is meant to curate it. A
-        // guard against a confused agent, not a boundary: both routes share
-        // one bearer token, so the route is identity only by convention.
-        if !self.assistant {
-            return Err(McpError::invalid_request(
-                "add_response is only available to the personal assistant".to_string(),
-                None,
-            ));
-        }
         let process_id = p.process_id.as_deref().map(parse_process_id).transpose()?;
         let project_id = p.project_id.as_deref().map(parse_project_id).transpose()?;
         let todo_id = p.todo_id.as_deref().map(parse_todo_id).transpose()?;

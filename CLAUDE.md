@@ -223,7 +223,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   it gets the same live-or-queued delivery, cap and proactivity switch as any
   other nudge), `verify_sender` (see _Cross-session messaging_), and
   `add_response` (the assistant filing a Responses item — see _Personal
-  assistant_; refused on the agent route).
+  assistant_; only the assistant route lists or runs it).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -557,21 +557,26 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   project closed, to-do removed) is dropped from the item rather than
   refusing it. Agent and project names are capped at 40 chars, the to-do at
   60, the source at 40. A newer item with the same `processId` or
-  `todoId` replaces the open one; an item with neither key never replaces
-  anything. `add_response` is refused on the agent route (the list is the
-  assistant's to curate) — a guard against a confused agent, not a security
+  `todoId` replaces the open one — except that an FYI never replaces an
+  open "needs you" (both stay); an item with neither key never replaces
+  anything. `add_response` is disabled in the agent route's tool router, so
+  it is neither listed nor runnable there (the list is the assistant's to
+  curate) — a guard against a confused agent, not a security
   boundary: both routes share one bearer token, so an agent that deliberately
   posts to `/mcp-assistant` gets through, exactly as it could reach every
   other assistant-route tool; the OS user stays the trust boundary. It is
   classified read-only, so the gate never parks it as a proposal, and capped
   (newest 100 items, 500-char text) since the assistant writes it from
-  content it read. The nudges Podium sends name the agent's process id so the
-  assistant can pass it as the supersede key. Every change publishes a full `responsesChanged`
-  snapshot, never recorded in the transcript. The user either ticks an item
+  content it read. The nudges Podium sends name the agent's process id (and
+  the lingering-to-do sweep each to-do's and project's id) so the assistant
+  can pass them as the supersede key. Every change publishes a full
+  `responsesChanged` snapshot, never recorded in the transcript; nor is the
+  `add_response` call itself — neither the transcript nor the chat shows an
+  action row for it, since the list already shows its result. The user either ticks an item
   (`assistant_response_dismiss`, it is just removed) or replies
   (`assistant_response_reply`): the reply is an ordinary user turn through
   `send`'s path (`AssistantManager::send_reply`, so it queues like any
-  message) carrying a `ReplyTo { label, question }`. The session sees it as
+  message) carrying the answered `ResponseItem` itself. The session sees it as
   `[Reply to your Responses item — "<label>": "<item text>"]` + the reply
   (label and text JSON-quoted, since an agent name or to-do text is
   agent-controlled and must not be able to close the bracket), the
@@ -579,8 +584,13 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   reply exposes `replyTo` (the label) on `QueuedMessage` and on
   `queueItemDelivered`; editing a waiting reply changes only its text. The
   item is taken off the list before the send (so a double submit cannot send
-  twice) and put back if the send fails; a queued reply that never goes out
-  (the conversation ended) is named with its item in the undelivered notice.
+  twice) and put back if the send fails — or if a queued reply never goes
+  out: dropped by the queue cap, withdrawn by the user
+  (`assistant_queue_remove`), or lost with the session (new conversation,
+  crash, shutdown — also named in the undelivered notice). That is why the
+  `ResponseStore` lives on the `AssistantStore`: the queue code needs it.
+  `restore` skips an item a newer one has since replaced and keeps the
+  100-item cap.
   Snapshots are published under the store's lock, so they arrive in the order
   the changes happened, and a write that fails leaves the list (and the
   published snapshot) unchanged. The label is the non-empty parts of agent ·
@@ -589,7 +599,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   re-derives it. The panel's `loadResponses` drops its result when a
   snapshot landed while it was in flight, and a half-typed reply is filed
   under the item's agent and to-do too, so it carries over to the item that
-  replaces its row.
+  replaces its row (cleared as a whole, so it cannot resurface on a later
+  item); the reply box takes focus only when its Reply button is clicked.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so

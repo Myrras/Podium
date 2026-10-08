@@ -174,6 +174,53 @@ describe("ResponsesSection", () => {
     expect(screen.getByLabelText("Reply text")).toHaveValue("Keep it for");
   });
 
+  it("drops a cleared draft under every key, so it never resurfaces", async () => {
+    const user = userEvent.setup();
+    render(<ResponsesSection />);
+
+    await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await user.type(screen.getByLabelText("Reply text"), "half a thought");
+    // Superseded via the agent only; the draft follows, then is cancelled.
+    act(() =>
+      useAssistantStore.setState({
+        responses: [item({ id: "r-3", todoId: null })],
+      }),
+    );
+    expect(screen.getByLabelText("Reply text")).toHaveValue("half a thought");
+    await user.type(screen.getByLabelText("Reply text"), "{Escape}");
+
+    // A later item about the original to-do must not bring it back.
+    act(() =>
+      useAssistantStore.setState({
+        responses: [item({ id: "r-4", processId: null })],
+      }),
+    );
+    expect(screen.queryByLabelText("Reply text")).not.toBeInTheDocument();
+  });
+
+  it("focuses the reply box only when Reply is clicked", async () => {
+    const user = userEvent.setup();
+    render(<ResponsesSection />);
+
+    await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    expect(screen.getByLabelText("Reply text")).toHaveFocus();
+    await user.type(screen.getByLabelText("Reply text"), "Keep it");
+
+    // The user moves on to the main composer; a superseding item that
+    // carries the draft over must not pull focus back.
+    const composer = document.createElement("textarea");
+    document.body.append(composer);
+    composer.focus();
+    act(() =>
+      useAssistantStore.setState({
+        responses: [item({ id: "r-3", text: "Redirect still needed?" })],
+      }),
+    );
+    expect(screen.getByLabelText("Reply text")).toHaveValue("Keep it");
+    expect(composer).toHaveFocus();
+    composer.remove();
+  });
+
   it("keeps the ages current", () => {
     vi.useFakeTimers({ now: NOW });
     try {

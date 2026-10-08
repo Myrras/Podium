@@ -205,7 +205,7 @@ describe("AssistantPane", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders a reply as one compact line naming the item it answers", () => {
+  it("renders a reply naming the item it answers", () => {
     useAssistantStore.setState({
       messages: [
         {
@@ -220,11 +220,10 @@ describe("AssistantPane", () => {
     expect(
       screen.getByText("Re: Invoice export · Webshop"),
     ).toBeInTheDocument();
-    const reply = screen.getByText("XLSX, with the VAT column split out");
-    expect(reply.parentElement).toHaveAttribute(
-      "title",
-      "XLSX, with the VAT column split out",
-    );
+    // The reply is shown in full (it wraps), so it needs no hover title.
+    expect(
+      screen.getByText("XLSX, with the VAT column split out"),
+    ).toBeInTheDocument();
   });
 
   it("demotes a proactive nudge instead of showing it as a message to the user", () => {

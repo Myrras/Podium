@@ -308,6 +308,18 @@ describe("assistantStore", () => {
     expect(useAssistantStore.getState().activity).toBeNull();
   });
 
+  it("shows an action row per tool, but none for add_response", () => {
+    const { apply } = useAssistantStore.getState();
+    apply({ type: "tool", name: "mcp__podium__list_todos" });
+    apply({ type: "tool", name: "mcp__podium__add_response" });
+    expect(
+      useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
+    ).toEqual([["tool", "mcp__podium__list_todos"]]);
+    expect(useAssistantStore.getState().activity).toBe(
+      "mcp__podium__add_response",
+    );
+  });
+
   it("ignores the session-id event but reports an ended session", () => {
     const { apply } = useAssistantStore.getState();
     apply({ type: "started", sessionId: "sess-1" });

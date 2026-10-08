@@ -5,7 +5,7 @@
  * conversation. Workspace-wide, persisted by the backend, hidden when empty.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ResponseItem } from "../ipc/types";
 import { shortAge } from "../lib/dateFormat";
@@ -18,6 +18,11 @@ import styles from "./ResponsesSection.module.css";
  * its own id, so a newer item about the same agent or to-do — which replaces
  * this row — picks up a half-typed reply instead of dropping it.
  */
+interface Draft {
+  keys: string[];
+  text: string;
+}
+
 function draftKeys(item: ResponseItem): string[] {
   return [
     item.processId && `p:${item.processId}`,
@@ -29,7 +34,7 @@ function draftKeys(item: ResponseItem): string[] {
 export function ResponsesSection() {
   const responses = useAssistantStore((s) => s.responses);
   const [open, setOpen] = useState(true);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Draft[]>([]);
   // One tick for the whole section re-renders every row's age.
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -37,21 +42,23 @@ export function ResponsesSection() {
     return () => clearInterval(timer);
   }, []);
 
+  // One draft per conversation thread: an item adopts the draft that shares
+  // any of its keys, and clearing it drops the whole draft — every key it
+  // was filed under — so it cannot resurface on a later item.
+  const owns = (d: Draft, item: ResponseItem) =>
+    draftKeys(item).some((k) => d.keys.includes(k));
+
   function draftOf(item: ResponseItem): string | null {
-    for (const key of draftKeys(item)) {
-      if (key in drafts) return drafts[key];
-    }
-    return null;
+    return drafts.find((d) => owns(d, item))?.text ?? null;
   }
 
   function setDraftOf(item: ResponseItem, text: string | null) {
     setDrafts((prev) => {
-      const next = { ...prev };
-      for (const key of draftKeys(item)) {
-        if (text === null) delete next[key];
-        else next[key] = text;
-      }
-      return next;
+      const old = prev.find((d) => owns(d, item));
+      const rest = prev.filter((d) => d !== old);
+      if (text === null) return rest;
+      const keys = [...new Set([...(old?.keys ?? []), ...draftKeys(item)])];
+      return [...rest, { keys, text }];
     });
   }
 
@@ -99,6 +106,17 @@ function ResponseRow({
 }) {
   const dismissResponse = useAssistantStore((s) => s.dismissResponse);
   const replyResponse = useAssistantStore((s) => s.replyResponse);
+  // Focused only when the user opens the reply box — never on mount, or a
+  // row that replaced one with an open draft would steal focus from
+  // whatever the user is typing in now.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const focusOnOpen = useRef(false);
+  useEffect(() => {
+    if (focusOnOpen.current && inputRef.current) {
+      focusOnOpen.current = false;
+      inputRef.current.focus();
+    }
+  });
   // Enter and the Send button both submit; ignore a second one while the
   // first is in flight.
   const [sending, setSending] = useState(false);
@@ -143,7 +161,7 @@ function ResponseRow({
             <textarea
               className={styles.replyInput}
               rows={2}
-              autoFocus
+              ref={inputRef}
               value={draft}
               aria-label="Reply text"
               placeholder="Reply to the assistant…"
@@ -176,7 +194,10 @@ function ResponseRow({
         aria-label="Reply"
         title="Reply"
         aria-pressed={draft !== null}
-        onClick={() => setDraft(draft === null ? "" : null)}
+        onClick={() => {
+          focusOnOpen.current = draft === null;
+          setDraft(draft === null ? "" : null);
+        }}
       >
         <ReplyIcon />
       </button>

@@ -1848,3 +1848,95 @@ async fn a_live_agents_own_project_wins_over_a_mismatched_project_id() {
 
     orch.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_lingering_to_do_sweep_names_each_to_do_by_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project, "review the onboarding copy", None)
+        .expect("add todo");
+    // Older than `lingering_after` by the time the watcher looks.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("review the onboarding copy"), "{notice}");
+    // The ids `add_response` needs to key an item to this to-do, so the next
+    // sweep replaces it rather than filing a duplicate.
+    assert!(notice.contains(&format!("to-do {}", todo.id)), "{notice}");
+    assert!(notice.contains(&format!("project {project}")), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_withdrawn_waiting_reply_puts_its_item_back() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "CSV or XLSX for the export?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    orch.assistant_send("hang").await.expect("send first");
+    assert!(!orch
+        .reply_assistant_response(item.id, "XLSX")
+        .await
+        .expect("reply"));
+    assert!(orch.assistant_responses().is_empty());
+
+    let queued = collect_until(
+        &mut rx,
+        |e| matches!(e, AssistantEvent::QueueChanged { items } if !items.is_empty()),
+    )
+    .await;
+    let Some(AssistantEvent::QueueChanged { items }) = queued.last() else {
+        unreachable!()
+    };
+    orch.assistant_queue_remove(items[0].id)
+        .await
+        .expect("withdraw");
+    assert_eq!(orch.assistant_responses(), vec![item]);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_waiting_reply_lost_with_the_conversation_puts_its_item_back() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "CSV or XLSX for the export?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    orch.assistant_send("hang").await.expect("send first");
+    assert!(!orch
+        .reply_assistant_response(item.id, "XLSX")
+        .await
+        .expect("reply"));
+    orch.assistant_new_conversation().await;
+    assert_eq!(orch.assistant_responses(), vec![item]);
+
+    orch.shutdown().await;
+}
