@@ -69,6 +69,9 @@ pub enum CoreError {
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
 
+    #[error("Podium is shutting down")]
+    ShuttingDown,
+
     #[error("No Git board is set up: add one in Settings → Issues.")]
     IssuesNotConfigured,
 

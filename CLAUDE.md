@@ -216,21 +216,26 @@ atomically, before the async `podium.yml` load.
   `remember_sessions` in `agents.json`, default off) builds on _Restart
   resumes the session_ (see To-dos below): `session_memory.json` in the app
   data dir, keyed by project root. `Orchestrator::shutdown()` is the only
-  place a session is captured: each still-running agent with an
-  `AgentSession` is remembered under that session's **current id** — the
-  Podium-assigned `--session-id`, or the one its last restart moved it to —
-  with its name, the to-dos/scratchpads it owns, its per-spawn
-  `args_override` and its `worktree`/`worktree_name` request
-  (`ManagedProcess.spawn_*`, so the restored identity prompt matches), oldest
-  `started_at` first so a restore keeps the sidebar order, all in one write. Nothing is
-  read from Claude Code's files and no process starts on that exit path. An
-  agent without an `AgentSession` is **not** remembered: Auggie (no session
-  flags), and an agent whose own `extra_args` pick the session (`--resume`,
-  `--continue`, …) — a restore would put Podium's `--resume` next to the
-  user's flag. Like a restart, a session `/clear`ed mid-run comes back as the
-  pre-`/clear` conversation (the CLI moves to a new id Podium never sees).
-  The next `open_project` on that root, with the setting on, respawns each
-  entry through the restart path: `spawn_agent_inner` with
+  place a session is captured: each still-running agent with an `AgentSession`
+  is remembered under that session's **current id** — the Podium-assigned
+  `--session-id`, or the one its last restart moved it to — with its name, the
+  to-dos/scratchpads it owns, its per-spawn `args_override` and its
+  `worktree`/`worktree_name` request (`ManagedProcess.spawn_*`, so the
+  restored identity prompt matches), in spawn order (`ManagedProcess.seq`, a
+  per-run insertion counter a restart keeps) so a restore keeps the sidebar
+  order, all in one write. Nothing is read from Claude Code's files and no
+  process starts on that exit path. An agent without an `AgentSession` is
+  **not** remembered: Auggie (no session flags), and an agent whose own
+  `extra_args` pick the session (`--resume`, `--continue`, …) — a restore
+  would put Podium's `--resume` next to the user's flag. Like a restart, a
+  session `/clear`ed mid-run comes back as the pre-`/clear` conversation (the
+  CLI moves to a new id Podium never sees).
+
+  The next `open_project` on that root, with the setting on, restores the
+  entries one at a time: `pop_front` takes the oldest off the list and saves
+  the rest at once (a failed save is logged, never cancels the restore), so a
+  quit or crash part-way leaves the unrestored ones stored. Each is respawned
+  through the restart path: `spawn_agent_inner` with
   `AgentSpawn.resume_session_id` sets the new process's `AgentSession.id` to
   the remembered id and hands `restart_launch(…, stored = true)` — the
   `--resume` line, no prompt — to `do_start`, so a resume that crashes within
@@ -241,17 +246,23 @@ atomically, before the async `podium.yml` load.
   unquoted on the shell line), or `AgentAdapter::session_exists` (disk, or the
   WSL distro's login shell — `Orchestrator::session_stored`, shared with
   `start_process`) no longer finds it: a pruned session would only come back
-  as a fresh agent without context or prompt. After the spawn the agent is
-  re-assigned the to-dos/scratchpads that still exist, are not
-  done/archived and no live agent claimed (re-assigned, not handed over: a
-  composed prompt would land in the resumed conversation as a new message).
-  The remembered list for that root is always taken on open (`take`, before
-  the restore and on or off), so a quit during the restore cannot have what
-  it captures wiped afterwards; `shutdown()` sets `shutting_down` first, and
-  the restore checks it before each spawn, putting the entries it has not
-  restored back for the next run. Turning the setting off clears every root. The MCP server is started
-  synchronously in `setup` so a restored agent never spawns before the MCP
-  connect info (its `--mcp-config`, `-n` and identity) is set.
+  as a fresh agent without context or prompt. A `worktree` request whose named
+  worktree already exists under `.podium/worktrees/` (`worktree::exists`) is
+  dropped, so the agent does not make a `-2` copy; an unnamed request cannot
+  be matched and is passed on. After the spawn the agent is re-assigned the
+  to-dos/scratchpads that still exist, are not done/archived and no live agent
+  claimed (re-assigned, not handed over: a composed prompt would land in the
+  resumed conversation as a new message).
+
+  `shutdown()` sets `Inner.shutting_down` first, under the lock; from then on
+  `do_start` refuses every start with `CoreError::ShuttingDown` under that
+  same lock, so nothing — a restore in flight, a supervised restart — launches
+  after the stop sweep. The restore loop stops at the flag, and an entry whose
+  spawn was refused goes back on the list. With the setting off, opening a
+  project drops its list (`clear`), and turning the setting off clears every
+  root. The MCP server is started synchronously in `setup` so a restored agent
+  never spawns before the MCP connect info (its `--mcp-config`, `-n` and
+  identity) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,

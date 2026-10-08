@@ -127,6 +127,12 @@ fn worktrees_dir(root: &Path) -> PathBuf {
     root.join(".podium").join("worktrees")
 }
 
+/// Whether a Podium worktree named `name` (as [`create`] would slug it) is
+/// already checked out under `root`.
+pub(crate) fn exists(root: &Path, name: &str) -> bool {
+    slugify(name).is_ok_and(|slug| worktrees_dir(root).join(slug).is_dir())
+}
+
 /// Make git ignore `.podium/` via `.git/info/exclude` (never `.gitignore` —
 /// that file belongs to the user). Idempotent: appends only when no
 /// `.podium` line is present yet.
