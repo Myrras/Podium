@@ -41,16 +41,18 @@ export function formatLongTime(iso: string | null): string {
 
 /**
  * Short "time ago" label (e.g. "3 minutes ago", "just now"); empty string for
- * null. `now` is injectable for tests.
+ * null. `compact` gives a terse age instead ("now", "3m", "2h", "5d") for
+ * tight rows. `now` is injectable for tests.
  */
 export function formatRelativeTime(
   iso: string | null,
   now: Date = new Date(),
+  { compact = false }: { compact?: boolean } = {},
 ): string {
   if (!iso) return "";
   const deltaMs = now.getTime() - new Date(iso).getTime();
   const deltaS = Math.round(deltaMs / 1000);
-  if (deltaS < 45) return "just now";
+  if (deltaS < 45) return compact ? "now" : "just now";
   const units: [number, string][] = [
     [60, "second"],
     [60, "minute"],
@@ -69,8 +71,18 @@ export function formatRelativeTime(
     value = Math.round(value / size);
     unit = name;
   }
+  if (compact) return `${value}${COMPACT_UNITS[unit]}`;
   return `${value} ${unit}${value === 1 ? "" : "s"} ago`;
 }
+
+const COMPACT_UNITS: Record<string, string> = {
+  second: "s",
+  minute: "m",
+  hour: "h",
+  day: "d",
+  month: "mo",
+  year: "y",
+};
 
 /**
  * Full "Updated" footer label combining the long date/time with a relative

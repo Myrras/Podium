@@ -253,6 +253,48 @@
   font-size: var(--fs-sm);
 }
 
+/* A reply to a Responses item: like the user bubble but compact — the item
+   it answers reads first, muted and clipped to one line, then the reply. */
+.message[data-role="reply"] {
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+/* The reply itself wraps like any message; only the "Re:" label is clipped. */
+.reply {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.replyIcon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Also used inline at the start of a waiting row's text, where it needs
+   inline-block (and its own nowrap) for the ellipsis to apply; as a flex
+   item in `.reply` the display is ignored. */
+.replyLabel {
+  display: inline-block;
+  vertical-align: bottom;
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.replyText {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Podium nudging the assistant, not the user: a quiet aside, not a message —
    no background, small and muted, unlike `[data-role="notice"]` above. */
 .message[data-role="nudge"] {

@@ -10,6 +10,15 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **A Responses list in the assistant panel.** When an agent reports back, the
+  assistant pins its essential point above the chat — *Needs you* when you have
+  to decide or act, *FYI* when it is only news — with the agent, project, to-do
+  and how long ago. Tick an item off, or reply right there: your answer goes to
+  the assistant as your message. A newer update about the same agent or to-do
+  replaces the old one, and open items survive restarts.
+
 ## [2.4.0] - 2026-10-08
 
 ### Changed
