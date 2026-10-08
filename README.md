@@ -71,8 +71,9 @@ Every agent gets a **session colour** from an 8-hue palette, avoiding colours
 live agents already hold. Its sidebar row and the to-dos it owns are tinted
 the same colour, so you can see at a glance who is on what. A stopped agent
 loses its colour (its to-dos stay linked, tinted grey, but you can start
-another agent on them, which takes them over); restarting it picks a
-new colour and, for Claude Code, **resumes its conversation** instead of
+another agent on them, which takes them over); restarting it gives it its
+colour back (or a new one if another agent took it meanwhile) and, for
+Claude Code, **resumes its conversation** instead of
 starting an empty one (if Claude Code no longer has that conversation, the
 agent starts a fresh one from its original prompt). The row also
 shows an activity state: **working…** (sustained output in the last 2.5 s —

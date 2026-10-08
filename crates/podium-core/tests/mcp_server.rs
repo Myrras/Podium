@@ -2858,9 +2858,16 @@ async fn verify_sender_answers_from_podiums_own_registry() {
     orch.shutdown().await;
 }
 
-/// Agent whose restart resumes its session when `stored` says the CLI has one.
+/// Agent whose restart resumes its session when the CLI "has a transcript"
+/// for it — `stored` names the one session id that does.
 struct ResumableAdapter {
-    stored: std::sync::atomic::AtomicBool,
+    stored: std::sync::Mutex<Option<String>>,
+}
+
+impl ResumableAdapter {
+    fn store(&self, session_id: Option<&str>) {
+        *self.stored.lock().expect("lock") = session_id.map(str::to_string);
+    }
 }
 
 impl AgentAdapter for ResumableAdapter {
@@ -2876,21 +2883,29 @@ impl AgentAdapter for ResumableAdapter {
         "resumable-agent"
     }
 
-    fn build_launch(&self, _ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
-        // Each launch prints which command ran, so the test can tell them
-        // apart from the agent's own output.
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        // Each launch prints its session flag and id as `<flag><id>`, so the
+        // test can tell which command ran and on which session.
+        let restart = RestartCommands {
+            bin: "printf '<%s>'".to_string(),
+            prompt: Some("launch".to_string()),
+            tail: "; sleep 30".to_string(),
+            new_flag: "--session-id",
+            resume_flag: "--resume",
+        };
         Ok(LaunchPlan {
-            command: "echo launch-first; sleep 30".to_string(),
+            command: restart.fresh(&ctx.process_id.to_string()),
             env: Vec::new(),
-            restart: Some(RestartCommands {
-                resume: "echo launch-resume; sleep 30".to_string(),
-                fresh: "echo launch-fresh; sleep 30".to_string(),
-            }),
+            restart: Some(restart),
         })
     }
 
-    fn session_exists(&self, _session_id: &str) -> bool {
-        self.stored.load(std::sync::atomic::Ordering::SeqCst)
+    fn session_exists(
+        &self,
+        session_id: &str,
+        _wsl: Option<&podium_core::platform::WslBackend>,
+    ) -> bool {
+        self.stored.lock().expect("lock").as_deref() == Some(session_id)
     }
 
     fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
@@ -2898,32 +2913,84 @@ impl AgentAdapter for ResumableAdapter {
     }
 }
 
-/// Wait until the latest launch marker `ResumableAdapter`'s commands print
-/// is `expected` — i.e. which of its commands the latest start ran.
-async fn wait_for_launch(orch: &Orchestrator, id: ProcessId, expected: &str) {
-    let mut last = String::new();
+/// Wait until the latest `<flag><session id>` launch line printed by
+/// `ResumableAdapter` satisfies `done`, and return it.
+async fn wait_for_launch(
+    orch: &Orchestrator,
+    id: ProcessId,
+    done: impl Fn(&str, &str) -> bool,
+) -> (String, String) {
+    let mut last = (String::new(), String::new());
     for _ in 0..200 {
         let out = orch.tail_text(id, 4096).await.expect("tail");
-        if let Some(at) = out.rfind("launch-") {
-            last = out[at..]
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_string();
-            if last == expected {
-                return;
+        if let Some(at) = out.rfind("<--") {
+            let mut parts = out[at + 1..].split('>');
+            let flag = parts.next().unwrap_or("").to_string();
+            let session = parts.next().unwrap_or("").trim_start_matches('<');
+            last = (flag, session.to_string());
+            // A whole UUID, so a half-flushed line is never taken.
+            if last.1.len() == 36 && done(&last.0, &last.1) {
+                return last;
             }
         }
         sleep(Duration::from_millis(25)).await;
     }
-    panic!("expected launch {expected}, last saw {last:?}");
+    panic!("launch never matched, last saw {last:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_agent_takes_its_old_colour_back_while_it_is_free() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(ResumableAdapter {
+            stored: std::sync::Mutex::new(None),
+        })]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let spawn = || {
+        orch.spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+    };
+    let color = |id: ProcessId| {
+        orch.list_processes(Some(project_id))
+            .into_iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.color)
+    };
+    // `other` takes the palette's first colour, `agent` the second.
+    let other = spawn().await.expect("spawn other");
+    let agent = spawn().await.expect("spawn agent");
+    let own = color(agent).expect("coloured");
+    assert_ne!(Some(own.clone()), color(other));
+
+    // With both stopped, the first colour is free again — but `agent` takes
+    // its own back rather than whichever comes first in the palette.
+    for id in [other, agent] {
+        orch.stop_process(id).await.expect("stop");
+        wait_for_exit(&orch, id).await;
+    }
+    orch.start_process(agent).await.expect("restart");
+    assert_eq!(color(agent), Some(own));
+
+    orch.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let adapter = Arc::new(ResumableAdapter {
-        stored: std::sync::atomic::AtomicBool::new(false),
+        stored: std::sync::Mutex::new(None),
     });
     let orch =
         Arc::new(Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()])));
@@ -2961,7 +3028,8 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
             .find(|t| t.id == todo.id)
             .and_then(|t| t.assigned_agent)
     };
-    wait_for_launch(&orch, agent, "launch-first").await;
+    let pid = agent.to_string();
+    wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id == pid).await;
     let first = process(&orch).color.expect("a live agent has a colour");
     assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
     assert!(todo_owner(&orch).expect("owned").active);
@@ -3001,32 +3069,46 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     .await
     .expect("spawn second");
 
-    // No stored session found: the restart starts a fresh session (never
-    // the original `--session-id` launch, which the CLI would refuse).
+    // No stored session found: the restart starts a fresh session under a
+    // new id (never the process id again, which the CLI may still know).
     orch.restart_process(agent).await.expect("restart");
-    wait_for_launch(&orch, agent, "launch-fresh").await;
+    let (_, fresh_id) =
+        wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id != pid).await;
     let restarted = process(&orch);
-    assert_eq!(restarted.command, "echo launch-first; sleep 30");
+    assert!(
+        restarted.command.contains(&pid),
+        "spec.command is never swapped: {}",
+        restarted.command
+    );
     let second = restarted.color.expect("a restarted agent gets a colour");
     assert_ne!(second, first, "the old colour is held by another agent");
-    assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(second));
+    assert_eq!(
+        todo_owner(&orch).and_then(|a| a.color),
+        Some(second.clone())
+    );
 
-    // Once the CLI stored the session, a restart resumes it.
-    adapter
-        .stored
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // Once the CLI stored that new session, the next restart resumes it —
+    // the fresh restart did not make the agent non-resumable.
+    adapter.store(Some(&fresh_id));
     orch.restart_process(agent).await.expect("restart again");
-    wait_for_launch(&orch, agent, "launch-resume").await;
+    wait_for_launch(&orch, agent, |flag, id| {
+        flag == "--resume" && id == fresh_id
+    })
+    .await;
+    // Nobody else holds its colour now, so it keeps it across the restart.
+    assert_eq!(process(&orch).color, Some(second));
 
     // The transcript is gone again: the choice is made per start, so the
-    // next restart is fresh rather than a `--resume` that can only fail.
-    adapter
-        .stored
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+    // next restart is fresh (on yet another id) rather than a `--resume`
+    // that can only fail.
+    adapter.store(None);
     orch.restart_process(agent)
         .await
         .expect("restart a third time");
-    wait_for_launch(&orch, agent, "launch-fresh").await;
+    wait_for_launch(&orch, agent, |flag, id| {
+        flag == "--session-id" && id != pid && id != fresh_id
+    })
+    .await;
 
     orch.stop_process(agent).await.expect("stop again");
     wait_for_exit(&orch, agent).await;

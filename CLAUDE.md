@@ -290,21 +290,28 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   spawn button is hidden and it drops out of multi-select — one session owns
   it. An agent that **exits** keeps its to-do/scratchpad links (only removing
   the process drops them) but loses its colour (`spec.color` cleared in the
-  exit handler, to-do row tinted neutral grey); the next start (`do_start`)
-  picks a fresh one with the same `pick_session_color` a spawn uses. A link
+  exit handler and kept as `last_color`, to-do row tinted neutral grey); the
+  next start (`do_start`) takes `last_color` back if no live agent holds it,
+  else picks one the way a spawn does (`pick_session_color`). A link
   to an exited agent no longer counts as **owning**: `AssignedAgent.active`
   (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
   `false`, the row gets its spawn button back and can join a multi-select
   again, and spawning on it (or `assign_todo`) hands it to the new agent.
   **Restart resumes the session**: Claude Code agents launch with
   `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
-  (`RestartCommands`) holds the two commands a manual start of an exited
-  agent can run instead, chosen per start (`restart_command`; `spec.command`
-  is never swapped): `resume` (`--resume <process id>`, no initial prompt)
-  when `AgentAdapter::session_exists` finds the CLI's transcript
-  (`~/.claude/projects/*/<id>.jsonl`, or under `$CLAUDE_CONFIG_DIR`), else
-  `fresh` — the original launch *without* `--session-id`, since the CLI
-  refuses an id it already used and `--resume` fails without a transcript.
+  (`RestartCommands`, the launch line in parts) spells the two commands a
+  manual start of an exited agent can run instead, for whichever session id
+  is current (`AgentSession` on the process; `spec.command` is never
+  swapped). `restart_launch` picks per start: `resume(<current id>)` (no
+  initial prompt) when `AgentAdapter::session_exists` finds the CLI's
+  transcript, else `fresh(<new UUID>)` — the original launch under a *new*
+  `--session-id`, since the CLI refuses an id it already used and `--resume`
+  fails without a transcript; the new id becomes current, so the agent stays
+  resumable. The transcript is `projects/*/<id>.jsonl` under
+  `$CLAUDE_CONFIG_DIR` or `~/.claude` — read from disk natively, and on a WSL
+  project checked inside the distro through its login shell
+  (`run_shell_ok_on`, off the async runtime), since that is where the CLI
+  runs.
   A session flag the user put in `extra_args` (`--session-id`, `--resume`,
   `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
   all of it. Sidebar rows distinguish being **open** in the work area (a subtle

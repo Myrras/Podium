@@ -120,11 +120,23 @@ struct ManagedProcess {
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
-    /// For an agent: what a manual start after it exited runs instead of
-    /// `spec.command` (from [`LaunchPlan::restart`]), chosen per start by
-    /// [`restart_command`]. `spec.command` itself is never swapped, so the
-    /// choice is made afresh every time. `None` for everything else.
-    session_restart: Option<RestartCommands>,
+    /// For an agent: how a manual start after it exited is spelled, and the
+    /// CLI session it is on (see [`AgentSession`]). `None` for everything
+    /// else.
+    session: Option<AgentSession>,
+    /// The colour an exited agent gave up, which its next start takes back
+    /// unless another live agent holds it by then.
+    last_color: Option<String>,
+}
+
+/// An agent's CLI session: the commands a restart picks from
+/// ([`LaunchPlan::restart`]) and the id of the session it is on — the
+/// process id at spawn, a new one after each fresh restart. `spec.command`
+/// itself is never swapped, so the choice is made afresh every start.
+#[derive(Clone)]
+struct AgentSession {
+    commands: RestartCommands,
+    id: String,
 }
 
 impl ManagedProcess {
@@ -1530,7 +1542,7 @@ impl Orchestrator {
                 .filter(|p| p.project_id == project_id)
                 .map(|p| p.spec.name.clone())
                 .collect();
-            let color = pick_session_color(&inner, project_id);
+            let color = pick_session_color(&inner, project_id, None);
             (
                 handle.root.clone(),
                 handle.wsl,
@@ -1657,7 +1669,10 @@ impl Orchestrator {
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && !worktree,
         })?;
-        let session_restart = plan.restart;
+        let session = plan.restart.map(|commands| AgentSession {
+            commands,
+            id: process_id.to_string(),
+        });
         let spec = ProcessSpec {
             name,
             command: plan.command,
@@ -1685,7 +1700,7 @@ impl Orchestrator {
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
             if let Some(p) = inner.processes.get_mut(&process_id) {
-                p.session_restart = session_restart;
+                p.session = session;
             }
         }
         self.events.publish(PodiumEvent::ProcessAdded {
@@ -1900,28 +1915,55 @@ impl Orchestrator {
     ///
     /// An agent that ran before picks its CLI session back up when the CLI
     /// has it stored, and otherwise starts a fresh session (see
-    /// [`restart_command`]). Its first start always runs `spec.command`.
+    /// [`restart_launch`]). Its first start always runs `spec.command`.
     pub async fn start_process(&self, id: ProcessId) -> CoreResult<()> {
         let restart = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
-            match (&proc.spec.kind, &proc.session_restart) {
-                (ProcessKind::Agent { adapter }, Some(cmds))
+            match (&proc.spec.kind, &proc.session) {
+                (ProcessKind::Agent { adapter }, Some(session))
                     if matches!(proc.status, ProcessStatus::Exited { .. }) =>
                 {
-                    Some((adapter.clone(), cmds.clone()))
+                    Some((
+                        adapter.clone(),
+                        session.clone(),
+                        project_backend(&inner, proc.project_id),
+                    ))
                 }
                 _ => None,
             }
         };
-        // The session check reads the disk, so it runs outside the lock.
-        let command = restart.map(|(adapter, cmds)| {
-            let stored = self
-                .adapters
-                .by_id(&adapter)
-                .is_some_and(|a| a.session_exists(&id.to_string()));
-            restart_command(&cmds, stored).to_string()
-        });
+        let command = match restart {
+            Some((adapter, session, wsl)) => {
+                // The session check reads the disk — or, on WSL, runs a
+                // login shell in the distro — so it runs off the lock and off
+                // the async runtime.
+                let stored = match self.adapters.by_id(&adapter) {
+                    Some(adapter) => {
+                        let session_id = session.id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            adapter.session_exists(&session_id, wsl)
+                        })
+                        .await
+                        .unwrap_or(false)
+                    }
+                    None => false,
+                };
+                let (command, session_id) = restart_launch(&session, stored);
+                if let Some(s) = self
+                    .inner
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .processes
+                    .get_mut(&id)
+                    .and_then(|p| p.session.as_mut())
+                {
+                    s.id = session_id;
+                }
+                Some(command)
+            }
+            None => None,
+        };
         do_start(
             &self.inner,
             &self.events,
@@ -2203,10 +2245,11 @@ const SESSION_COLORS: [&str; 8] = [
 ];
 
 /// Pick a session colour not currently used by another live agent in the
-/// project; once the palette is exhausted, cycle by the used count.
+/// project — `preferred` when it is free; once the palette is exhausted,
+/// cycle by the used count.
 // ponytail: two concurrent spawns could momentarily pick the same colour —
 // cosmetic only, and the max is 8 agents = palette size, so it's rare.
-fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
+fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&str>) -> String {
     let used: HashSet<&str> = inner
         .processes
         .values()
@@ -2217,9 +2260,9 @@ fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
         })
         .filter_map(|p| p.spec.color.as_deref())
         .collect();
-    SESSION_COLORS
-        .iter()
-        .copied()
+    preferred
+        .into_iter()
+        .chain(SESSION_COLORS.iter().copied())
         .find(|c| !used.contains(c))
         .unwrap_or(SESSION_COLORS[used.len() % SESSION_COLORS.len()])
         .to_string()
@@ -2510,7 +2553,8 @@ fn insert_process(
             restart: RestartState::default(),
             started_at: None,
             waiting_since: None,
-            session_restart: None,
+            session: None,
+            last_color: None,
         },
     );
 }
@@ -2541,15 +2585,19 @@ fn do_start(
     // command (sync ones on the main thread included) needs.
     let launch_gate = crate::platform::wsl_launch_guard_for(wsl);
     let mut guard = inner.lock().expect(LOCK_POISONED);
-    // An agent that lost its colour on exit gets a fresh one, picked exactly
-    // as at spawn (it is not active, so its old colour is free again too).
+    // An agent that lost its colour on exit takes it back if no live agent
+    // holds it now, else gets a new one picked exactly as at spawn.
     let new_color = match guard.processes.get(&id) {
         Some(p)
             if p.spec.color.is_none()
                 && !p.is_active()
                 && matches!(p.spec.kind, ProcessKind::Agent { .. }) =>
         {
-            Some(pick_session_color(&guard, p.project_id))
+            Some(pick_session_color(
+                &guard,
+                p.project_id,
+                p.last_color.as_deref(),
+            ))
         }
         _ => None,
     };
@@ -2611,15 +2659,18 @@ fn do_start(
     Ok(())
 }
 
-/// The command a manual start of an exited agent runs: its stored session
-/// when the CLI has the transcript, else a fresh session. Never the original
-/// `--session-id` launch again: the CLI refuses an id it already used, so a
-/// transcript the check failed to find must not make the agent unstartable.
-fn restart_command(cmds: &RestartCommands, stored: bool) -> &str {
+/// The command a manual start of an exited agent runs, and the session id it
+/// is on afterwards: the current session resumed when the CLI has its
+/// transcript, else a fresh session under a **new** id. Never the current id
+/// again: the CLI refuses an id it already used, so a transcript the check
+/// failed to find must not make the agent unstartable — and the new id keeps
+/// the agent resumable from then on.
+fn restart_launch(session: &AgentSession, stored: bool) -> (String, String) {
     if stored {
-        &cmds.resume
+        (session.commands.resume(&session.id), session.id.clone())
     } else {
-        &cmds.fresh
+        let id = uuid::Uuid::new_v4().to_string();
+        (session.commands.fresh(&id), id)
     }
 }
 
@@ -2696,10 +2747,13 @@ fn make_exit_handler(
             // An exited agent that is not being restarted keeps its
             // to-dos/scratchpads (a restart picks the work back up) but loses
             // its colour, so the UI shows it as no longer live. The next
-            // start picks a fresh one.
+            // start takes it back if it is still free.
             let decolored = restart.is_none()
                 && matches!(p.spec.kind, ProcessKind::Agent { .. })
-                && p.spec.color.take().is_some();
+                && p.spec.color.is_some();
+            if decolored {
+                p.last_color = p.spec.color.take();
+            }
             events.publish(PodiumEvent::ProcessStatusChanged {
                 project_id,
                 process_id: id,
@@ -2762,12 +2816,27 @@ mod tests {
 
     #[test]
     fn a_restart_resumes_a_stored_session_and_otherwise_starts_fresh() {
-        let cmds = RestartCommands {
-            resume: "claude --resume 0f0e0d0c".to_string(),
-            fresh: "claude 'fix the login bug'".to_string(),
+        let session = AgentSession {
+            commands: RestartCommands {
+                bin: "claude".to_string(),
+                prompt: Some("'fix the login bug'".to_string()),
+                tail: String::new(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            },
+            id: "0f0e0d0c".to_string(),
         };
-        assert_eq!(restart_command(&cmds, true), cmds.resume);
-        assert_eq!(restart_command(&cmds, false), cmds.fresh);
+        let (command, id) = restart_launch(&session, true);
+        assert_eq!(command, "claude --resume 0f0e0d0c");
+        assert_eq!(id, "0f0e0d0c");
+
+        // Not found: a new id, never the current one the CLI may still know.
+        let (command, id) = restart_launch(&session, false);
+        assert_ne!(id, session.id);
+        assert_eq!(
+            command,
+            format!("claude 'fix the login bug' --session-id {id}")
+        );
     }
 
     fn todo(text: &str, description: Option<&str>) -> TodoInfo {
