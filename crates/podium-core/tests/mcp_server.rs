@@ -3032,7 +3032,8 @@ async fn wait_for_launch(
     done: impl Fn(&str, &str) -> bool,
 ) -> (String, String) {
     let mut last = (String::new(), String::new());
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
         let out = orch.tail_text(id, 4096).await.expect("tail");
         if let Some(at) = out.rfind("<--") {
             let mut parts = out[at + 1..].split('>');
