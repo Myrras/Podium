@@ -453,23 +453,21 @@ impl PodiumTools {
         let mine = p.mine.unwrap_or(false);
         let refresh = p.refresh.unwrap_or(false);
         let orch = Arc::clone(&self.orchestrator);
-        let cached = orch
-            .cached_issue_board(project_id, mine)
-            .map_err(core_error)?;
-        let (board, fetched_at) = match cached {
-            Some(c)
-                if !refresh && chrono::Utc::now() - c.fetched_at < chrono::Duration::minutes(5) =>
-            {
-                (c.board, c.fetched_at)
+        // One blocking task for the cache read and the fetch, like the IPC command.
+        let (board, fetched_at) = tokio::task::spawn_blocking(move || {
+            if !refresh {
+                if let Some(c) = orch.cached_issue_board(project_id, mine)? {
+                    if chrono::Utc::now() - c.fetched_at < chrono::Duration::minutes(5) {
+                        return Ok((c.board, c.fetched_at));
+                    }
+                }
             }
-            _ => {
-                let c = tokio::task::spawn_blocking(move || orch.issue_board(project_id, mine))
-                    .await
-                    .map_err(|e| McpError::internal_error(format!("board task failed: {e}"), None))?
-                    .map_err(core_error)?;
-                (c.board, c.fetched_at)
-            }
-        };
+            orch.issue_board(project_id, mine)
+                .map(|c| (c.board, c.fetched_at))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("board task failed: {e}"), None))?
+        .map_err(core_error)?;
         let items: Vec<_> = board
             .items
             .iter()

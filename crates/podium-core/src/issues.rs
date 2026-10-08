@@ -913,6 +913,13 @@ pub fn normalize_url(input: &str) -> Option<String> {
     };
     let rest = rest.trim_end_matches('/');
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    // A `:` leaves a port, digits only (an IPv6 `[::1]` has colons inside).
+    if let Some(i) = host.rfind(':').filter(|&i| !host[i..].contains(']')) {
+        let port = &host[i + 1..];
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
     (!host.is_empty() && !rest.contains(char::is_whitespace))
         .then(|| format!("{scheme}://{}{path}", host.to_ascii_lowercase()))
 }
@@ -2333,6 +2340,13 @@ mod tests {
             ("https://me:secret@git.example.test", None),
             ("me@git.example.test/gitlab", None),
             ("https://me:tok#en@git.example.test", None),
+            ("https://me:pa/ss@git.example.test", None),
+            ("https://git.example.test:abc", None),
+            ("https://git.example.test:", None),
+            (
+                "https://git.example.test:8443/gitlab",
+                Some("https://git.example.test:8443/gitlab"),
+            ),
             ("https://me:tok?en@git.example.test", None),
             // An `@` in the path is not credentials.
             (

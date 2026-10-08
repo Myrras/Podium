@@ -142,9 +142,12 @@ const autoFetchSlot = (): Promise<void> | null => {
     ? new Promise((resolve) => setTimeout(resolve, at - now))
     : null;
 };
+/** When the setups last changed (ms): a cached board older than this is stale. */
+let setupsChangedAt = 0;
 /** Tests only: forget the pacing between tests. */
 export const resetAutoFetchPacing = () => {
   nextAutoFetch = 0;
+  setupsChangedAt = 0;
   autoWaiting.clear();
 };
 
@@ -198,6 +201,9 @@ export const useIssueStore = create<IssueState>((set, get) => {
 
     setOverview: (overview) => {
       set({ overview });
+      // A hidden project's cached board predates this: `startAutoRefresh`
+      // refetches it when its section is switched back on.
+      setupsChangedAt = Date.now();
       // Only boards someone can see: a hidden or closed project's entry is
       // refetched by its own mount when it comes back.
       const shown = new Set(
@@ -209,9 +215,6 @@ export const useIssueStore = create<IssueState>((set, get) => {
       for (const projectId of Object.keys(get().byProject)) {
         if (shown.has(projectId)) {
           void get().refresh(projectId, { rerun: true, auto: true });
-        } else {
-          // Stale, so a section switched back on fetches right away.
-          patch(projectId, { fetchedAt: 0 });
         }
       }
     },
@@ -307,7 +310,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
       if (switched()) {
         await get().refresh(projectId);
       } else if (again) {
-        await get().refresh(projectId, { auto: true });
+        await get().refresh(projectId, { auto: true, rerun: true });
       }
     },
 
@@ -380,7 +383,11 @@ export const useIssueStore = create<IssueState>((set, get) => {
         .hydrate(projectId)
         .then((at) => {
           if (stopped || (drops.get(projectId) ?? 0) !== drop) return;
-          if (at === null || Date.now() - at > ISSUE_POLL_MS) {
+          if (
+            at === null ||
+            Date.now() - at > ISSUE_POLL_MS ||
+            at < setupsChangedAt
+          ) {
             void refresh(projectId, { auto: true });
           }
         });

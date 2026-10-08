@@ -149,8 +149,25 @@ describe("issueStore", () => {
     await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
     // "c" has its Git section off, so it never fetches.
     expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b"]);
-    // ...and is stale, so showing it again fetches at once.
-    expect(useIssueStore.getState().byProject.c.fetchedAt).toBe(0);
+  });
+
+  it("a section shown again after a setup change refetches despite a fresh cache", async () => {
+    listMock.mockResolvedValue(board(2));
+    // Cached a second ago: fresh by age, but from before the setup change.
+    cachedMock.mockResolvedValue({
+      board: board(1),
+      fetchedAt: new Date(Date.now()).toISOString(),
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    openProjects({ [P]: false });
+    useIssueStore.getState().setOverview(CONFIGURED);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(listMock).not.toHaveBeenCalled();
+    openProjects({ [P]: true });
+    const stop = useIssueStore.getState().startAutoRefresh(P);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listMock).toHaveBeenCalledTimes(1);
+    stop();
   });
 
   it("the first setup paces projects that sit on the not-configured error", async () => {
