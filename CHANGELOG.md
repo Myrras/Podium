@@ -10,6 +10,14 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent that did the work pushes it.** Tell the assistant an agent may
+  push, and it passes that go-ahead on to the agent itself instead of starting
+  a fresh one: the agent pushes its own branch, opens the PR/MR in the same
+  repository and reports back with the link. Force, delete, tag and main/master
+  pushes, pushes elsewhere and PRs/MRs against another repository stay blocked.
+
 ## [2.1.3] - 2026-10-08
 
 ### Changed
