@@ -1120,8 +1120,7 @@ done
 /// A fake CLI that only records that it was launched, standing in for "no
 /// session should ever be spawned just to deliver a report".
 #[cfg(unix)]
-const ARGV_RECORDING_CLAUDE: &str =
-    "#!/bin/sh\nprintf ok > \"$(dirname \"$0\")/argv.txt\"\nsleep 5\n";
+const ARGV_RECORDING_CLAUDE: &str = "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf ok > \"$d/argv.tmp\"\nmv \"$d/argv.tmp\" \"$d/argv.txt\"\nsleep 5\n";
 
 #[cfg(unix)]
 fn write_fake_cli(dir: &std::path::Path, script: &str) -> String {
