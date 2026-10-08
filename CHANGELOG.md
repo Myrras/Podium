@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-08
+
 ### Added
 
 - **Agents can pick up where they left off after you quit Podium.** A new
