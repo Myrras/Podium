@@ -58,10 +58,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 33 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 34 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **93 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **96 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -75,11 +75,12 @@ them in sync when you add a command or MCP tool.
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible, resizable right-side
-  assistant chat panel (replayed transcript, action + proposal cards,
+  assistant chat panel (replayed transcript, a Responses list pinned above it,
+  action + proposal cards,
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 93 commands.
+  IPC wrappers over all 96 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -133,8 +134,9 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 33 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 34 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
@@ -235,8 +237,10 @@ atomically, before the async `podium.yml` load.
   `report_to_assistant` (a finished or blocked agent handing the assistant a
   short summary of its own work, routed to `Orchestrator::assistant_nudge` so
   it gets the same live-or-queued delivery, cap and proactivity switch as any
-  other nudge), `get_board` / `move_board_item` (the Git board, see _Git board_), and
-  `verify_sender` (see _Cross-session messaging_).
+  other nudge), `get_board` / `move_board_item` (the Git board, see _Git board_),
+  `verify_sender` (see _Cross-session messaging_), and
+  `add_response` (the assistant filing a Responses item — see _Personal
+  assistant_; only the assistant route lists or runs it).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -262,12 +266,50 @@ atomically, before the async `podium.yml` load.
   / `ListAgents`. Two things make that work, both set per session so the
   user's own `~/.claude/settings.json` is never touched:
   - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
-    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    (`agent::peer_inbound_settings`). Without it the CLI decides per message
     from the two sessions' permission-mode classes, and the assistant
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
     A `--settings` the user put in `extra_args` wins over Podium's.
+  - **Go-ahead rules.** A Claude Code agent's `--settings`
+    (`agent::agent_session_settings`, built on the same inbound setting)
+    also allows `git push`, `gh pr create` and `glab mr create`, so a
+    go-ahead the assistant relays by message can run in the existing
+    session — no peer message can approve a prompt. `GO_AHEAD_DENY_RULES`
+    (deny beats allow) block force, `+refspec`, delete, mirror/prune/all,
+    `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
+    pushes, URL/`@` destinations, main/master as the destination and any
+    quoting, `$`/backtick/brace expansion or a literal `*` (glob refspec)
+    in a push, any of the three fed through `xargs` (a prefix allow also
+    matches `xargs <prefix> …`, with the arguments out of sight on stdin),
+    plus `-R`/`--repo` on `gh`/`glab`, wherever the flag sits (mid-pattern
+    `*`; long git options cut to their shortest unambiguous prefix), and
+    every way to read a local file into the PR/MR — `gh --body-file`/`-F`,
+    `glab --description-file`/`--attach`, `gh --attach` — which would
+    publish e.g. an ssh key without a prompt (the prompt's retry is
+    `--fill`, or `--body` inline), plus glab's other-repository flags
+    `-H`/`--head` and `--target-p…` (not in its docs; denied anyway), and
+    glab's `-s`/`--source-branch` (also quoted/escaped): glab
+    `--fill`/`--push` pushes `HEAD:<source-branch>` itself, around the git
+    push rules. They
+    match command text only:
+    `git -C … push`, aliases, some flag clusters, an scp-style `host:path`
+    destination with no user (`example.com:other.git`, an ssh-config
+    alias), an explicit push to another non-main branch (`HEAD:develop`)
+    and an implicit push of a checked-out
+    main slip past (see the code comment); the identity prompt has the agent
+    check it is not on main/master before pushing. The test's matcher
+    mirrors CLI 2.1.292 — re-check it on a CLI upgrade. With the user's own
+    `--settings` (either form) none of this applies, and the identity
+    prompt drops the go-ahead. The assistant's fresh fallback agent is a
+    `claude-code` spawn with no `--allowedTools`: Podium's settings already
+    carry the allow and deny rules, and with the user's own `--settings` an
+    `--allowedTools` would grant a push with no deny list behind it. When
+    those `--settings` come from the default agent args or a project's
+    `agents.extra_args` (merged in by `spawn_agent`), the fallback has no
+    rules either: the push waits for approval in its terminal, and the
+    assistant is told to say so.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -302,7 +344,38 @@ atomically, before the async `podium.yml` load.
   `ProcessInfo.color`): the to-do row **and the agent's own sidebar row** are
   tinted the same colour so the two can be matched at a glance; the to-do's
   spawn button is hidden and it drops out of multi-select — one session owns
-  it. Sidebar rows distinguish being **open** in the work area (a subtle
+  it. An agent that **exits** keeps its to-do/scratchpad links (only removing
+  the process drops them) but loses its colour (`spec.color` cleared in the
+  exit handler and kept as `last_color`, to-do row tinted neutral grey); the
+  next start (`do_start`) takes `last_color` back if no live agent holds it,
+  else picks one the way a spawn does (`pick_session_color`). A link
+  to an exited agent no longer counts as **owning**: `AssignedAgent.active`
+  (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
+  `false`, the row gets its spawn button back and can join a multi-select
+  again, and spawning on it (or `assign_todo`) hands it to the new agent.
+  **Restart resumes the session**: Claude Code agents launch with
+  `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
+  (`RestartCommands`, the launch line in parts) spells the two commands a
+  manual start of an exited agent can run instead, for whichever session id
+  is current (`AgentSession` on the process; `spec.command` is never
+  swapped). `restart_launch` picks per start: `resume(<current id>)` (no
+  initial prompt) when `AgentAdapter::session_exists` finds the CLI's
+  transcript, else `fresh(<new UUID>)` — the original launch under a *new*
+  `--session-id`, since the CLI refuses an id it already used and `--resume`
+  fails without a transcript; the new id becomes current, so the agent stays
+  resumable. The chosen launch (`Relaunch`) is handed to `do_start`, which
+  makes its id current under the same lock only once the PTY spawned — a
+  concurrent start that loses with `ProcessAlreadyRunning` cannot overwrite
+  it. A resumed run that crashes within `RESUME_FAILURE_WINDOW` (5 s) marks
+  the id `resume_failed` in the exit handler, so the next start is fresh
+  instead of crash-looping on `--resume`. The transcript is `projects/*/<id>.jsonl` under
+  `$CLAUDE_CONFIG_DIR` or `~/.claude` — read from disk natively, and on a WSL
+  project checked inside the distro through its login shell
+  (`run_shell_ok_on`, off the async runtime), since that is where the CLI
+  runs.
+  A session flag the user put in `extra_args` (`--session-id`, `--resume`,
+  `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
+  all of it. Sidebar rows distinguish being **open** in the work area (a subtle
   accent highlight, like agents/terminals) from being in a **Cmd/Ctrl+click
   multi-select** (a bolder accent fill — those rows are queued for the next
   agent).
@@ -570,7 +643,8 @@ atomically, before the async `podium.yml` load.
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
   `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
-  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered`) published
+  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered` /
+  `responsesChanged`) published
   on the `EventBus` and forwarded to the webview as `assistant:event`.
   Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
@@ -588,8 +662,12 @@ atomically, before the async `podium.yml` load.
   lookups go to `spawn_agent`, never its own Agent-tool subagents, which have
   no shell here), to keep agent updates to warnings and done-ness, how to stop
   agents safely (only the project in question; check the output for follow-up
-  work and complete the to-do first), and how to get a peer-refused external
-  write done (a fresh agent carrying the authorisation and `--allowedTools`).
+  work and complete the to-do first), and how to pass on a push go-ahead (a
+  message to an existing Claude Code agent, which accepts it once
+  `verify_sender` says the sender is the assistant, pushes, opens the PR/MR
+  and reports back with its URL; a fresh `claude-code` agent (no
+  `--allowedTools`) if it refuses, never reports a push, or is not Claude
+  Code).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
@@ -613,7 +691,24 @@ atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event.
+  become a `toolFailed` event. The gate only sees Podium's own MCP tools,
+  so the CLI's own `SendMessage` — the way a push go-ahead is relayed — is
+  refused outright under `propose-all` instead: that mode adds it to the
+  session's `--disallowedTools`. A CLI flag cannot change in a running
+  session, so moving into or out of `propose-all`
+  (`Orchestrator::set_assistant_autonomy` →
+  `AssistantManager::set_send_message_blocked`) replaces the session,
+  resuming the conversation: at once when it is idle (dropped, respawned by
+  the next turn), or at the running turn's `TurnEnd` — never mid-turn — via
+  the output task, which carries a `SpawnCtx` to start its own replacement
+  before the next waiting item goes out (if that spawn fails, the waiting
+  items are reported undelivered and `exited` is published, as for any exit
+  nobody asked for). So the block applies from the next turn boundary: a
+  turn already running when `propose-all` is chosen can still `SendMessage`
+  until it ends. The mode loaded at startup is
+  applied with `preset_send_message_blocked`. The prompt, which never knows
+  the mode, says: if `SendMessage` is unavailable, use the fresh-agent route
+  (a `spawn_agent`, which gets the card).
 
   **Persistence** is one `assistant.json` in the app data dir (atomic writes,
   the same kind of store as `todos.json`): Claude's own session id plus the
@@ -738,6 +833,76 @@ atomically, before the async `podium.yml` load.
   reply on its own task, so appending afterwards let a fast reply land
   *above* the message it answers, and a restart replayed the conversation out
   of order. It is idempotent, since a failed write re-queues the same item.
+
+  **Responses** (`responses.rs`) are the short "needs you" / "FYI" points the
+  assistant files, one per agent or to-do update, via the `add_response` MCP
+  tool — the identity prompt asks for it (pinned by a unit test); the detail
+  stays in its chat reply. One workspace-wide list, newest first, persisted in
+  `assistant-responses.json` (atomic writes, like `todos.json`) so items
+  survive a restart *and* the blank conversation every launch starts with —
+  they are the user's to clear. Agent, project and to-do names (and the
+  agent's colour) are resolved when the item is added, so an item about an
+  exited agent still reads right; a live agent's own project wins over a
+  mismatched `project_id`, and a context that is already gone (agent exited,
+  project closed, to-do removed) is dropped from the item rather than
+  refusing it. Agent and project names are capped at 40 chars, the to-do at
+  60, the source at 40. A newer item with the same `processId` or
+  `todoId` replaces the open one — except that an FYI never replaces an
+  open "needs you" (both stay), and an item about an agent is only replaced
+  by another agent's item (the same agent, or one on the same to-do, as
+  after `respawn_agent`), never by an agent-less one such as the sweep's; an
+  item with neither key never replaces anything. `add_response` is disabled in the agent route's tool router, so
+  it is neither listed nor runnable there (the list is the assistant's to
+  curate) — a guard against a confused agent, not a security
+  boundary: both routes share one bearer token, so an agent that deliberately
+  posts to `/mcp-assistant` gets through, exactly as it could reach every
+  other assistant-route tool; the OS user stays the trust boundary. It is
+  classified read-only, so the gate never parks it as a proposal, and capped
+  (newest 100 items, 500-char text) since the assistant writes it from
+  content it read. The nudges Podium sends name the agent's process id (and
+  the lingering-to-do sweep each to-do's and project's id) so the assistant
+  can pass them as the supersede key. Every change publishes a full
+  `responsesChanged` snapshot, never recorded in the transcript; nor is the
+  `add_response` call itself — `parse_stream_line` drops the exact
+  `mcp__podium__add_response` tool event, so neither the transcript nor the
+  chat shows an action row for it (the list already shows its result). The user either ticks an item
+  (`assistant_response_dismiss`, it is just removed) or replies
+  (`assistant_response_reply`): the reply is an ordinary user turn through
+  `send`'s path (`AssistantManager::send_reply`, so it queues like any
+  message) carrying the answered `ResponseItem` itself. The session sees it as
+  `[Reply to your Responses item — "<label>": "<item text>"]` + the reply
+  (label and text JSON-quoted, since an agent name or to-do text is
+  agent-controlled and must not be able to close the bracket), the
+  transcript stores it as a `reply` row (`"<label>\n<reply>"`), and a waiting
+  reply exposes `replyTo` (the label) on `QueuedMessage` and on
+  `queueItemDelivered`; editing a waiting reply changes only its text. The
+  item is taken off the list before the send (so a double submit cannot send
+  twice) and put back if the send fails — or if a queued reply never goes
+  out: dropped by the queue cap, withdrawn by the user
+  (`assistant_queue_remove`), or lost with the session (new conversation or
+  crash, both also named in the undelivered notice; at app shutdown
+  `AssistantManager::shutdown` restores them itself before killing the
+  child, since nothing after it is sure to run). That is why the
+  `ResponseStore` lives on the `AssistantStore`: the queue code needs it.
+  `restore` skips an item a *newer* one has since replaced (an older item
+  beside it never counts) and keeps the 100-item cap by dropping the oldest
+  other item, never the restored one. `add_response` refuses a `process_id`
+  that names a live terminal or service rather than an agent.
+  Snapshots are published under the store's lock, so they arrive in the order
+  the changes happened, and a write that fails leaves the list (and the
+  published snapshot) unchanged. The label is the non-empty parts of agent ·
+  project · to-do · source, or `Responses item`; it is computed in Rust
+  (`ResponseItem::label`) and added as `label` only at the wire boundary
+  (`LabelledResponse`, used by `assistant_responses_list`, the
+  `responsesChanged` event and `add_response`'s answer) — never written to
+  `assistant-responses.json` — so the frontend never re-derives it. (The
+  row shows the same parts with the agent styled apart, dropping blank ones
+  as `label()` does; its `nowrap` collapses whitespace inside a part.) The panel's `loadResponses` drops its result when a
+  snapshot landed while it was in flight. A half-typed reply is filed under
+  its item's id; when that item is replaced, the draft moves to the newest
+  item that replaced it (the backend's rule mirrored in `supersedes`), so
+  two items side by side never share one. The reply box takes focus only
+  when its Reply button is clicked.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so
@@ -1074,6 +1239,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_queue_send_now` | `{ id }` (waiting user message)          | –                 |
 | `assistant_queue_remove` | `{ id }`                                   | –                 |
 | `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
+| `assistant_responses_list` | –                                        | `ResponseItem[]` (newest first) |
+| `assistant_response_dismiss` | `{ id }` (unknown id: `responseNotFound`) | –              |
+| `assistant_response_reply` | `{ id, text }`                           | `bool` — as `assistant_send` |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:

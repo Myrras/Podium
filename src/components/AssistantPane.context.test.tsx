@@ -71,6 +71,7 @@ describe("AssistantPane selection context", () => {
         case "assistant_autonomy_get":
           return Promise.resolve("confirm-destructive");
         case "assistant_transcript":
+        case "assistant_responses_list":
           return Promise.resolve([]);
         default:
           return Promise.resolve(null);

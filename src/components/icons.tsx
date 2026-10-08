@@ -38,6 +38,7 @@ import {
   Minimize2,
   NotebookPen,
   Quote,
+  Reply,
   SquareTerminal,
   Strikethrough,
   Table2,
@@ -103,6 +104,7 @@ export const SendIcon = icon(ArrowUp, { size: 15 });
 export const AttachIcon = icon(Paperclip, { size: 15 });
 export const ImageAttachmentIcon = icon(ImageGlyph, { size: 14 });
 export const FileAttachmentIcon = icon(FileGlyph, { size: 14 });
+export const ReplyIcon = icon(Reply);
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.
 export const AgentIcon = icon(Bot);

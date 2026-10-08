@@ -14,9 +14,9 @@ use podium_core::mcp::tools::{
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
-    AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
-    Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
-    TodoId,
+    AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
+    CoreResult, LaunchPlan, Orchestrator, PodiumEvent, ProcessId, ProcessKind, ProcessSpec,
+    ProcessStatus, ProjectId, RestartCommands, RestartPolicy, TodoId,
 };
 // Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
 #[cfg(unix)]
@@ -311,6 +311,8 @@ async fn tools_list_includes_scratchpad_tools() {
             "{name} missing from tools/list: {tools:?}"
         );
     }
+    // The assistant's own tool: only its route lists it.
+    assert!(!tools.contains(&"add_response"), "{tools:?}");
 
     server.stop();
 }
@@ -747,6 +749,7 @@ impl AgentAdapter for FakeAgentAdapter {
         Ok(LaunchPlan {
             command: "sleep 30".to_string(),
             env: Vec::new(),
+            restart: None,
         })
     }
 
@@ -1122,8 +1125,7 @@ done
 /// A fake CLI that only records that it was launched, standing in for "no
 /// session should ever be spawned just to deliver a report".
 #[cfg(unix)]
-const ARGV_RECORDING_CLAUDE: &str =
-    "#!/bin/sh\nprintf ok > \"$(dirname \"$0\")/argv.txt\"\nsleep 5\n";
+const ARGV_RECORDING_CLAUDE: &str = "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf ok > \"$d/argv.tmp\"\nmv \"$d/argv.tmp\" \"$d/argv.txt\"\nsleep 5\n";
 
 #[cfg(unix)]
 fn write_fake_cli(dir: &std::path::Path, script: &str) -> String {
@@ -1362,6 +1364,7 @@ impl AgentAdapter for PromptEchoAdapter {
         Ok(LaunchPlan {
             command: format!("sleep 30 # {}", ctx.prompt.unwrap_or("")),
             env: Vec::new(),
+            restart: None,
         })
     }
 
@@ -1858,6 +1861,7 @@ impl AgentAdapter for EchoAdapter {
         Ok(LaunchPlan {
             command: parts.join(" "),
             env: Vec::new(),
+            restart: None,
         })
     }
 
@@ -1887,6 +1891,7 @@ impl AgentAdapter for BetaAdapter {
         Ok(LaunchPlan {
             command: self.binary().to_string(),
             env: Vec::new(),
+            restart: None,
         })
     }
 
@@ -2617,6 +2622,7 @@ async fn the_autonomy_mode_decides_what_is_gated_and_agents_never_are() {
 
     // propose-all: even adding a to-do is proposed first.
     orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
         .expect("set autonomy");
     let answer = call_tool_text(
         &server,
@@ -2659,6 +2665,7 @@ async fn the_autonomy_mode_decides_what_is_gated_and_agents_never_are() {
 
     // full autonomy: the assistant archives straight away too.
     orch.set_assistant_autonomy(AutonomyMode::Full)
+        .await
         .expect("set autonomy");
     let remaining = orch.list_todos(project_id).expect("list todos")[0].id;
     call_tool_text(
@@ -2697,6 +2704,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("get_board", true, false),
     ("move_board_item", false, true),
     ("verify_sender", true, false),
+    ("add_response", true, false),
     ("spawn_agent", false, false),
     ("start_process", false, false),
     ("stop_process", false, true),
@@ -2856,6 +2864,453 @@ async fn verify_sender_answers_from_podiums_own_registry() {
         "an exited session must not verify"
     );
 
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_response_files_an_item_and_is_refused_on_the_agent_route() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let (project_id, todo_id) = project_with_todo(&orch, dir.path()).await;
+    let server = mcp::start(Arc::clone(&orch), dir.path().join("mcp"))
+        .await
+        .expect("mcp server starts");
+    let mut events = orch.subscribe_events();
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+
+    let answer = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        2,
+        "add_response",
+        serde_json::json!({
+            "kind": "needsYou",
+            "text": "Pick a copy variant for the welcome screen.",
+            "project_id": project_id.to_string(),
+            "todo_id": todo_id.to_string(),
+        }),
+    )
+    .await;
+    let item: serde_json::Value = serde_json::from_str(&answer).expect("json item");
+    assert_eq!(item["kind"], "needsYou");
+    assert_eq!(
+        item["label"],
+        format!(
+            "{} · review the onboarding copy",
+            item["project"].as_str().unwrap()
+        )
+    );
+    assert_eq!(item["todo"], "review the onboarding copy");
+    assert!(item["project"].is_string(), "{item}");
+
+    let listed = orch.assistant_responses();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].todo_id, Some(todo_id));
+    let snapshot = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::ResponsesChanged { items },
+            }) = events.recv().await
+            {
+                return items;
+            }
+        }
+    })
+    .await
+    .expect("responsesChanged published");
+    assert_eq!(snapshot, listed);
+
+    // An agent cannot write to the user's list.
+    let agent = open_session(&server, "/mcp").await;
+    let (status, response) = http_post_path(
+        server.url(),
+        "/mcp",
+        Some(server.token()),
+        Some(&agent),
+        &tools_call_request(
+            3,
+            "add_response",
+            serde_json::json!({ "kind": "fyi", "text": "done" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("tool not found")),
+        "{body}"
+    );
+    assert_eq!(orch.assistant_responses().len(), 1);
+
+    // The assistant's route lists it.
+    let (status, response) = http_post_path(
+        server.url(),
+        ASSISTANT_PATH,
+        Some(server.token()),
+        Some(&assistant),
+        &tools_list_request(4),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    assert!(
+        body["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .any(|t| t["name"] == "add_response"),
+        "{body}"
+    );
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+/// Agent whose restart resumes its session when the CLI "has a transcript"
+/// for it — `stored` names the one session id that does.
+struct ResumableAdapter {
+    stored: std::sync::Mutex<Option<String>>,
+}
+
+impl ResumableAdapter {
+    fn store(&self, session_id: Option<&str>) {
+        *self.stored.lock().expect("lock") = session_id.map(str::to_string);
+    }
+}
+
+impl AgentAdapter for ResumableAdapter {
+    fn id(&self) -> &'static str {
+        "resumable"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Resumable"
+    }
+
+    fn binary(&self) -> &'static str {
+        "resumable-agent"
+    }
+
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        // Each launch prints its session flag and id as `<flag><id>`, so the
+        // test can tell which command ran and on which session.
+        let restart = RestartCommands {
+            bin: "printf '<%s>'".to_string(),
+            prompt: Some("launch".to_string()),
+            tail: "; sleep 30".to_string(),
+            new_flag: "--session-id",
+            resume_flag: "--resume",
+        };
+        Ok(LaunchPlan {
+            command: restart.fresh(&ctx.process_id.to_string()),
+            env: Vec::new(),
+            restart: Some(restart),
+        })
+    }
+
+    fn session_exists(
+        &self,
+        session_id: &str,
+        _wsl: Option<&podium_core::platform::WslBackend>,
+    ) -> bool {
+        self.stored.lock().expect("lock").as_deref() == Some(session_id)
+    }
+
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
+        true
+    }
+}
+
+/// Wait until the latest `<flag><session id>` launch line printed by
+/// `ResumableAdapter` satisfies `done`, and return it.
+async fn wait_for_launch(
+    orch: &Orchestrator,
+    id: ProcessId,
+    done: impl Fn(&str, &str) -> bool,
+) -> (String, String) {
+    let mut last = (String::new(), String::new());
+    for _ in 0..200 {
+        let out = orch.tail_text(id, 4096).await.expect("tail");
+        if let Some(at) = out.rfind("<--") {
+            let mut parts = out[at + 1..].split('>');
+            let flag = parts.next().unwrap_or("").to_string();
+            let session = parts.next().unwrap_or("").trim_start_matches('<');
+            last = (flag, session.to_string());
+            // A whole UUID, so a half-flushed line is never taken.
+            if last.1.len() == 36 && done(&last.0, &last.1) {
+                return last;
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!("launch never matched, last saw {last:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_that_loses_a_race_does_not_change_the_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let adapter = Arc::new(ResumableAdapter {
+        stored: std::sync::Mutex::new(None),
+    });
+    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn");
+    let pid = agent.to_string();
+    wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id == pid).await;
+    orch.stop_process(agent).await.expect("stop");
+    wait_for_exit(&orch, agent).await;
+
+    // Two starts at once, both picking a fresh session: one runs, the other
+    // is refused — and must not leave its own, never-launched id behind.
+    let (a, b) = tokio::join!(orch.start_process(agent), orch.start_process(agent));
+    assert!(
+        a.is_ok() != b.is_ok(),
+        "exactly one start wins: {a:?} {b:?}"
+    );
+    let (_, running) =
+        wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id != pid).await;
+
+    // The session that actually ran is the one the next restart resumes.
+    adapter.store(Some(&running));
+    orch.restart_process(agent).await.expect("restart");
+    wait_for_launch(&orch, agent, |flag, id| flag == "--resume" && id == running).await;
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_agent_takes_its_old_colour_back_while_it_is_free() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch =
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(ResumableAdapter {
+            stored: std::sync::Mutex::new(None),
+        })]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let spawn = || {
+        orch.spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+    };
+    let color = |id: ProcessId| {
+        orch.list_processes(Some(project_id))
+            .into_iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.color)
+    };
+    // `other` takes the palette's first colour, `agent` the second.
+    let other = spawn().await.expect("spawn other");
+    let agent = spawn().await.expect("spawn agent");
+    let own = color(agent).expect("coloured");
+    assert_ne!(Some(own.clone()), color(other));
+
+    // With both stopped, the first colour is free again — but `agent` takes
+    // its own back rather than whichever comes first in the palette.
+    for id in [other, agent] {
+        orch.stop_process(id).await.expect("stop");
+        wait_for_exit(&orch, id).await;
+    }
+    orch.start_process(agent).await.expect("restart");
+    assert_eq!(color(agent), Some(own));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let adapter = Arc::new(ResumableAdapter {
+        stored: std::sync::Mutex::new(None),
+    });
+    let orch =
+        Arc::new(Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()])));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project_id, "wire up OAuth", None)
+        .expect("todo");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn");
+    let process = |orch: &Orchestrator| {
+        orch.list_processes(Some(project_id))
+            .into_iter()
+            .find(|p| p.id == agent)
+            .expect("listed")
+    };
+    let todo_owner = |orch: &Orchestrator| {
+        orch.list_todos(project_id)
+            .expect("list")
+            .into_iter()
+            .find(|t| t.id == todo.id)
+            .and_then(|t| t.assigned_agent)
+    };
+    let pid = agent.to_string();
+    wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id == pid).await;
+    let first = process(&orch).color.expect("a live agent has a colour");
+    assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
+    assert!(todo_owner(&orch).expect("owned").active);
+
+    // Stopped: the colour goes from the agent and its to-do, the link stays.
+    orch.stop_process(agent).await.expect("stop");
+    wait_for_exit(&orch, agent).await;
+    assert_eq!(process(&orch).color, None);
+    let owner = todo_owner(&orch).expect("the to-do is still linked");
+    assert_eq!(owner.process_id, agent);
+    assert_eq!(owner.color, None);
+    assert!(!owner.active, "a stopped agent no longer owns the to-do");
+    // …and the MCP listing says so, so an agent reading it knows too.
+    let listed = PodiumTools::new(Arc::clone(&orch))
+        .list_todos(Parameters(ListTodosParams {
+            project_id: project_id.to_string(),
+            todo_id: None,
+        }))
+        .await
+        .expect("list_todos");
+    let listed = first_text(&listed);
+    assert!(listed.contains("\"active\": false"), "{listed:?}");
+
+    // A second live agent takes the first colour, so the restart has to pick
+    // a new one — the same way a spawn does.
+    orch.spawn_agent(
+        project_id,
+        Some("resumable".to_string()),
+        None,
+        None,
+        vec![],
+        vec![],
+        false,
+        None,
+        None,
+    )
+    .await
+    .expect("spawn second");
+
+    // No stored session found: the restart starts a fresh session under a
+    // new id (never the process id again, which the CLI may still know).
+    orch.restart_process(agent).await.expect("restart");
+    let (_, fresh_id) =
+        wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id != pid).await;
+    let restarted = process(&orch);
+    assert!(
+        restarted.command.contains(&pid),
+        "spec.command is never swapped: {}",
+        restarted.command
+    );
+    let second = restarted.color.expect("a restarted agent gets a colour");
+    assert_ne!(second, first, "the old colour is held by another agent");
+    assert_eq!(
+        todo_owner(&orch).and_then(|a| a.color),
+        Some(second.clone())
+    );
+
+    // Once the CLI stored that new session, the next restart resumes it —
+    // the fresh restart did not make the agent non-resumable.
+    adapter.store(Some(&fresh_id));
+    orch.restart_process(agent).await.expect("restart again");
+    wait_for_launch(&orch, agent, |flag, id| {
+        flag == "--resume" && id == fresh_id
+    })
+    .await;
+    // Nobody else holds its colour now, so it keeps it across the restart.
+    assert_eq!(process(&orch).color, Some(second));
+
+    // The transcript is gone again: the choice is made per start, so the
+    // next restart is fresh (on yet another id) rather than a `--resume`
+    // that can only fail.
+    adapter.store(None);
+    orch.restart_process(agent)
+        .await
+        .expect("restart a third time");
+    wait_for_launch(&orch, agent, |flag, id| {
+        flag == "--session-id" && id != pid && id != fresh_id
+    })
+    .await;
+
+    orch.stop_process(agent).await.expect("stop again");
+    wait_for_exit(&orch, agent).await;
+    // A link to a stopped agent does not block another agent from claiming
+    // the to-do.
+    let claimer = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn claimer");
+    orch.assign_todo(project_id, todo.id, claimer)
+        .expect("a stopped owner can be taken over");
+
+    // Spawning on a to-do whose owner has stopped hands it to the new agent.
+    orch.stop_process(claimer).await.expect("stop claimer");
+    wait_for_exit(&orch, claimer).await;
+    assert!(!todo_owner(&orch).expect("still linked").active);
+    let successor = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![todo.id],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn on the to-do");
+    let owner = todo_owner(&orch).expect("owned");
+    assert_eq!(owner.process_id, successor);
+    assert!(owner.active);
     orch.shutdown().await;
 }
 

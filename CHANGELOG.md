@@ -22,6 +22,52 @@ when it merges.
   project header turns the sidebar's To-do's, Terminals, Worktrees,
   Scratchpads and Git board on or off per project; hiding one deletes nothing.
 
+## [2.6.0] - 2026-10-08
+
+### Added
+
+- **The agent that did the work pushes it.** Tell the assistant an agent may
+  push, and it passes that go-ahead on to the agent itself instead of starting
+  a fresh one: the agent pushes its own branch, opens the PR/MR in the same
+  repository and reports back with the link. An agent on main or master does
+  not push. Force, delete, tag and explicit main/master pushes, pushes
+  elsewhere, PRs/MRs against another repository and reading a local file into
+  a PR/MR body (`--body-file`, `-F`, `--description-file`, `--attach`) or
+  choosing glab's source branch (`-s`, `--source-branch`) are blocked in
+  their plain spellings. Under the `propose-all` autonomy mode the
+  assistant can no longer message an agent directly (it would skip the
+  confirmation card), so switching into or out of that mode restarts its
+  session between turns, keeping the conversation.
+
+## [2.5.0] - 2026-10-08
+
+### Added
+
+- **A Responses list in the assistant panel.** When an agent reports back, the
+  assistant pins its essential point above the chat — *Needs you* when you have
+  to decide or act, *FYI* when it is only news — with the agent, project, to-do
+  and how long ago. Tick an item off, or reply right there: your answer goes to
+  the assistant as your message. A newer update about the same agent or to-do
+  replaces the old one, and open items survive restarts.
+
+## [2.4.0] - 2026-10-08
+
+### Changed
+
+- **Restarting a stopped agent picks up its own conversation.** A Claude Code
+  agent you stop and start again resumes the session it was in, instead of
+  starting over with its original prompt. If Claude Code no longer has that
+  conversation, or resuming it fails straight away, the agent starts a fresh
+  one rather than failing to start.
+- **A stopped agent gives up its session colour.** Its row and its to-dos turn
+  neutral grey while it is stopped. Restarting it gives its colour back, or a
+  new one if another agent took it in the meantime.
+- **A stopped agent's to-dos can be picked up again.** They stay linked to it,
+  so a restart carries on where it left off, but they get their "start an
+  agent" button back and can be multi-selected again — starting a new agent
+  on one hands it to that agent. Restarting the stopped agent afterwards
+  resumes its own conversation, so it may still think it is on that to-do.
+
 ## [2.3.0] - 2026-10-08
 
 ### Added

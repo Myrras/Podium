@@ -1,0 +1,211 @@
+/* Pinned between the header and the log, a shade darker than the pane so it
+   reads as its own tray. Capped so a long list never pushes the chat out of
+   view — the rows scroll instead. */
+.section {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: 40%;
+  min-height: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+.header:hover {
+  background: var(--surface-hover);
+}
+
+.caret {
+  display: flex;
+  color: var(--text-faint);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.caret[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.count {
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-lg);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: var(--fs-xs);
+  line-height: 16px;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--surface-2);
+  animation: rowIn var(--dur-2) var(--ease-out);
+}
+
+/* The agent's session colour, matching its sidebar row; faint without one. */
+.dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--session-color, var(--text-faint));
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.kind {
+  flex-shrink: 0;
+  padding: 0 var(--sp-1);
+  border: 1px solid currentcolor;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.kind[data-kind="needsYou"] {
+  color: var(--warning);
+}
+
+.age {
+  flex-shrink: 0;
+}
+
+.text {
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.replyRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+
+.replyInput {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.replyInput:focus {
+  outline: none;
+}
+
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+
+.iconBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.iconBtn[aria-pressed="true"] {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+.sendBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: var(--radius-md);
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.sendBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.sendBtn:disabled {
+  background: var(--surface-2);
+  color: var(--text-faint);
+}
+
+@keyframes rowIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}

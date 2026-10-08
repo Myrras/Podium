@@ -23,6 +23,7 @@ pub mod platform;
 pub mod proactivity;
 pub mod process;
 pub mod project;
+pub mod responses;
 pub mod scratchpad;
 pub mod todo;
 pub mod worktree;
@@ -30,6 +31,7 @@ pub mod worktree;
 pub use agent::settings::{AdapterOverride, AgentSettings, MergeMode};
 pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, McpConnectInfo,
+    RestartCommands,
 };
 pub use assignment::AssignedAgent;
 pub use assistant::{
@@ -40,7 +42,8 @@ pub use boards::CachedBoard;
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
 pub use ids::{
-    CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
+    CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ResponseId, ScratchpadId,
+    TodoId,
 };
 pub use issues::{Board, IssueProvider, IssuesOverview, ItemKind};
 pub use mcp::McpServer;
@@ -51,6 +54,7 @@ pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 pub use project::ProjectSections;
+pub use responses::{LabelledResponse, ResponseItem, ResponseKind};
 pub use scratchpad::ScratchpadInfo;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
 pub use worktree::WorktreeInfo;

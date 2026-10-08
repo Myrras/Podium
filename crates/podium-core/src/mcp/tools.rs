@@ -1,4 +1,4 @@
-//! The 31 MCP tools Podium exposes to agents — all thin calls into
+//! The 32 MCP tools Podium exposes to agents — all thin calls into
 //! [`Orchestrator`], returning JSON (or plain text for output tails).
 //!
 //! The same surface serves the personal assistant, on its own endpoint
@@ -22,6 +22,7 @@ use crate::assistant::{requires_proposal, ProposalAction};
 use crate::error::CoreError;
 use crate::ids::{ProcessId, ProjectId, ScratchpadId, TodoId};
 use crate::orchestrator::{Orchestrator, PeerSender};
+use crate::responses::ResponseKind;
 
 /// Longest argument blob shown on a proposal card.
 const MAX_SUMMARY_CHARS: usize = 300;
@@ -120,6 +121,27 @@ pub struct UpdateAssistantMemoryParams {
     /// The full new memory text (markdown). It replaces what is stored, so
     /// include everything worth keeping; an empty string clears it.
     pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddResponseParams {
+    /// `needsYou` when the user has to decide or act, `fyi` when it is only
+    /// worth knowing.
+    pub kind: ResponseKind,
+    /// The essential point in a sentence or two (must not be blank). The
+    /// detail belongs in your chat reply.
+    pub text: String,
+    /// UUID of the agent process the update is about (from `list_processes`).
+    /// A newer item about the same agent replaces the open one.
+    pub process_id: Option<String>,
+    /// Project UUID; derived from `process_id` when omitted.
+    pub project_id: Option<String>,
+    /// UUID of the to-do the update is about; needs `project_id` or
+    /// `process_id`. A newer item about the same to-do replaces the open one.
+    pub todo_id: Option<String>,
+    /// A short label for an item about neither an agent nor a project, e.g.
+    /// `Slack`.
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -340,7 +362,13 @@ impl PodiumTools {
     pub fn new(orchestrator: Arc<Orchestrator>) -> Self {
         Self {
             orchestrator,
-            tool_router: Self::tool_router(),
+            // The Responses list is the assistant's summary for the user; an
+            // agent writing to it would bypass the one voice meant to curate
+            // it, so the agent route neither lists nor runs `add_response`. A
+            // guard against a confused agent, not a boundary: both routes
+            // share one bearer token, so the route is identity only by
+            // convention.
+            tool_router: Self::tool_router().with_disabled("add_response"),
             assistant: false,
         }
     }
@@ -348,8 +376,9 @@ impl PodiumTools {
     /// The same tools for the personal assistant, gated by its autonomy mode.
     pub fn new_assistant(orchestrator: Arc<Orchestrator>) -> Self {
         Self {
+            orchestrator,
+            tool_router: Self::tool_router(),
             assistant: true,
-            ..Self::new(orchestrator)
         }
     }
 
@@ -641,8 +670,11 @@ impl PodiumTools {
 
     #[tool(
         description = "List a project's to-do items (id, text, description, done, \
-                       links, commentCount, …). Comment bodies are left out — pass \
-                       todo_id to read one to-do in full, comments included."
+                       links, commentCount, assignedAgent, …). Comment bodies are left \
+                       out — pass todo_id to read one to-do in full, comments included. \
+                       assignedAgent.active is false when the agent it is linked to has \
+                       stopped: it no longer owns the to-do, so another agent may be \
+                       put on it."
     )]
     pub async fn list_todos(
         &self,
@@ -804,9 +836,9 @@ impl PodiumTools {
             .unwrap_or_else(|| "a closed project".to_string());
         self.orchestrator
             .assistant_nudge(format!(
-                "[Podium] The agent \"{}\" in project \"{project}\" reports: {summary} Tell \
-                 the user in a line or two.",
-                process.name
+                "[Podium] The agent \"{}\" (process {}) in project \"{project}\" reports: \
+                 {summary} Tell the user in a line or two.",
+                process.name, process.id
             ))
             .await;
         Ok(text_result("Reported to the assistant.".to_string()))
@@ -980,6 +1012,32 @@ impl PodiumTools {
         Ok(text_result(
             "Memory saved. It is in your prompt from the next conversation on.".to_string(),
         ))
+    }
+
+    #[tool(
+        description = "File one item on the user's Responses list, pinned above the chat: the essential point of an agent or to-do update, kind `needsYou` (the user has to decide or act) or `fyi` (only worth knowing). Keep the detail in your chat reply. A newer item about the same agent (process_id) or to-do (todo_id) replaces the open one. The user ticks an item off or replies to it; a reply reaches you as a message prefixed `[Reply to your Responses item — …]`. Only the assistant may call this."
+    )]
+    pub async fn add_response(
+        &self,
+        Parameters(p): Parameters<AddResponseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let process_id = p.process_id.as_deref().map(parse_process_id).transpose()?;
+        let project_id = p.project_id.as_deref().map(parse_project_id).transpose()?;
+        let todo_id = p.todo_id.as_deref().map(parse_todo_id).transpose()?;
+        json_result(
+            &self
+                .orchestrator
+                .add_assistant_response(
+                    p.kind,
+                    &p.text,
+                    process_id,
+                    project_id,
+                    todo_id,
+                    p.source.as_deref(),
+                )
+                .map(crate::responses::LabelledResponse::from)
+                .map_err(core_error)?,
+        )
     }
 
     fn find_process(&self, id: ProcessId) -> Result<crate::process::ProcessInfo, McpError> {

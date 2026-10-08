@@ -77,7 +77,16 @@ on, a request to work inside a **git worktree**, and per-spawn CLI args
 
 Every agent gets a **session colour** from an 8-hue palette, avoiding colours
 live agents already hold. Its sidebar row and the to-dos it owns are tinted
-the same colour, so you can see at a glance who is on what. The row also
+the same colour, so you can see at a glance who is on what. A stopped agent
+loses its colour (its to-dos stay linked, tinted grey, but you can start
+another agent on them, which takes them over); restarting it gives it its
+colour back (or a new one if another agent took it meanwhile) and, for
+Claude Code, **resumes its conversation** instead of
+starting an empty one (if Claude Code no longer has that conversation, or
+resuming it fails straight away, the agent starts a fresh one from its
+original prompt). If you put another agent on a stopped agent's to-dos and
+then restart the stopped one too, it resumes its own conversation and may
+still think it is working on them. The row also
 shows an activity state: **working…** (sustained output in the last 2.5 s —
 a single redraw does not count, and it works whether or not you ever opened
 the terminal), **idle**, or **needs input** — the last one is read off the
@@ -175,7 +184,12 @@ whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
-  becomes a card you confirm or reject.
+  becomes a card you confirm or reject. Under `propose-all` the assistant
+  also cannot message an agent directly, so a push go-ahead goes through a
+  new agent you confirm; switching into or out of that mode restarts its
+  session (between turns, keeping the conversation). The block applies from
+  the next turn boundary: a turn already running when you switch can still
+  message an agent until it ends.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
@@ -185,10 +199,28 @@ whether agents are done, no recap of what they did.
 - **External sweep** — every 10 minutes by default, it checks the sources you
   enabled (Slack, Teams — through your *own* MCP servers) and stays silent
   when there is nothing to report.
+- **Responses** — when an agent reports back, the assistant also files the
+  essential point as a *Needs you* or *FYI* item in a collapsible list pinned
+  above the chat (agent, project, to-do, age); the details stay in its chat
+  reply. Tick an item off, or reply inline — the reply goes to the assistant
+  as your message and shows in the chat as a one-line "Re: …". A newer item
+  about the same agent or to-do replaces the old one, and open items survive
+  restarts and new conversations.
 - **Start my day** — one button for a prioritised summary of open work across
   all projects.
 - **Queue** — one turn runs at a time; anything you send mid-turn waits, and
   can be edited, removed or pushed into the running turn.
+- **Push go-ahead** — tell the assistant a Claude Code agent may push, and
+  it messages that agent instead of starting a new one; the agent pushes its
+  own branch (`git push -u origin HEAD`), opens its PR/MR in the same
+  repository (`gh pr create` / `glab mr create`) and reports back with the
+  link; an agent on main or master pushes nothing and says so. Spawned
+  agents may do both without a prompt. Force, delete, tag, mirror and
+  explicit main/master pushes, pushes to another URL and PRs/MRs against
+  another repository are blocked in their plain spellings — a push written
+  another way (`git -C … push`, an alias) falls back to the normal prompt.
+  Passing your own `--settings` in an agent's args turns this off for that
+  agent.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 
@@ -197,10 +229,10 @@ whether agents are done, no recap of what they did.
 ### Built-in MCP server
 
 Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
-and exposes **33 tools** over it: process inspection and control, agent
+and exposes **34 tools** over it: process inspection and control, agent
 spawning (and respawning a stuck agent with the answer in its prompt), the
 full to-do, scratchpad and worktree surfaces, the Git board (`get_board`,
-`move_board_item`), assistant memory, and sender
+`move_board_item`), assistant memory and Responses items, and sender
 verification for cross-session messages.
 
 Agents Podium spawns get the URL + token automatically. External clients go
