@@ -301,39 +301,86 @@ function ProjectGroup({
         <span className={styles.projectBadge} aria-hidden>
           {project.iconInitials}
         </span>
-        {editing ? (
-          <input
-            ref={inputRef}
-            className={styles.projectNameInput}
-            value={draft}
-            aria-label={`Rename ${project.name}`}
-            placeholder={project.name}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitRename();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelRename();
-              }
-            }}
-          />
-        ) : (
-          <span
-            className={styles.projectName}
-            title={project.root}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              startEditing();
-            }}
-          >
-            {project.name}
-          </span>
-        )}
+        {/* The name and its hover actions share one slot: the actions
+            overlay the end of the name instead of reserving their width,
+            and stay inside the slot so they never cover the caret, the
+            badge or the podium.yml error icon. */}
+        <div className={styles.nameSlot}>
+          {editing ? (
+            <input
+              ref={inputRef}
+              className={styles.projectNameInput}
+              value={draft}
+              aria-label={`Rename ${project.name}`}
+              placeholder={project.name}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+            />
+          ) : (
+            <span
+              className={styles.projectName}
+              title={project.root}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEditing();
+              }}
+            >
+              {project.name}
+            </span>
+          )}
+          {/* Hidden while renaming so they never cover the input. */}
+          {!editing && (
+            <div className={styles.projectActions}>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Rename ${project.name}`}
+                title="Rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startEditing();
+                }}
+              >
+                <EditIcon size={12} />
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Reload podium.yml for ${project.name}`}
+                title="Reload podium.yml"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void reloadProjectConfig(project.id);
+                }}
+              >
+                <RestartIcon size={12} />
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Remove ${project.name} from sidebar`}
+                title="Remove from sidebar"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void closeProject(project.id);
+                }}
+              >
+                <CloseIcon size={12} />
+              </button>
+            </div>
+          )}
+        </div>
         {project.configError && (
           <span
             className={styles.configError}
@@ -344,44 +391,6 @@ function ProjectGroup({
             <ErrorIcon size={13} />
           </span>
         )}
-        {!editing && (
-          <button
-            type="button"
-            className={styles.projectAction}
-            aria-label={`Rename ${project.name}`}
-            title="Rename"
-            onClick={(e) => {
-              e.stopPropagation();
-              startEditing();
-            }}
-          >
-            <EditIcon size={12} />
-          </button>
-        )}
-        <button
-          type="button"
-          className={styles.projectAction}
-          aria-label={`Reload podium.yml for ${project.name}`}
-          title="Reload podium.yml"
-          onClick={(e) => {
-            e.stopPropagation();
-            void reloadProjectConfig(project.id);
-          }}
-        >
-          <RestartIcon size={12} />
-        </button>
-        <button
-          type="button"
-          className={styles.projectAction}
-          aria-label={`Remove ${project.name} from sidebar`}
-          title="Remove from sidebar"
-          onClick={(e) => {
-            e.stopPropagation();
-            void closeProject(project.id);
-          }}
-        >
-          <CloseIcon size={12} />
-        </button>
       </div>
       <div
         className={`${styles.groupBody}${isCollapsed ? ` ${styles.groupBodyCollapsed}` : ""}`}
