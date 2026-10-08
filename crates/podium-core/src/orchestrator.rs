@@ -992,83 +992,91 @@ impl Orchestrator {
             project_backend(&inner, project_id)
         };
         let now = Utc::now();
-        // One entry at a time, each off the disk just before it is restored:
-        // a quit or crash part-way leaves the rest stored for the next run,
-        // and whatever a quit captures meanwhile is appended behind them.
+        // One entry at a time, oldest first, each left on the list until its
+        // outcome is known: an app that exits part-way (a quit, a crash)
+        // still has the one in flight and the rest next time.
         loop {
             // The app is quitting: spawn nothing more. `do_start` refuses
-            // anyway; this just stops the loop before it pops another entry.
+            // anyway; this just stops the loop.
             if self.inner.lock().expect(LOCK_POISONED).shutting_down {
                 return;
             }
-            let Some(entry) = self.session_memory.pop_front(root) else {
+            let Some(entry) = self.session_memory.front(root) else {
                 return;
             };
-            if entry.is_expired(now) {
-                continue;
-            }
-            // The file is user-writable and the id lands unquoted on a shell
-            // line: never hand `--resume` anything but a UUID.
-            if !session_memory::is_valid_session_id(&entry.session_id) {
-                tracing::warn!("skipping a remembered agent session with an invalid id");
-                continue;
-            }
-            // No transcript (pruned by Claude Code's retention, or an adapter
-            // that cannot resume): a fresh agent without its context and
-            // without a prompt would be of no use, so it is not respawned.
-            if !self
-                .session_stored(&entry.adapter_id, &entry.session_id, wsl)
-                .await
-            {
-                continue;
-            }
-            // A worktree the agent already made under the requested name is
-            // not asked for again (that would make a `-2` copy). An unnamed
-            // request cannot be matched, so it is passed on as it was.
-            let worktree = entry.worktree
-                && !entry
-                    .worktree_name
-                    .as_deref()
-                    .is_some_and(|n| crate::worktree::exists(root, n));
-            // The to-dos/scratchpads are re-assigned, not handed over: a
-            // prompt composed from them would land in the resumed
-            // conversation as a fresh user message.
-            let spawned = self
-                .spawn_agent_inner(AgentSpawn {
-                    project_id,
-                    adapter_id: Some(entry.adapter_id.clone()),
-                    name: Some(entry.name.clone()),
-                    args_override: entry.args.clone(),
-                    resume_session_id: Some(entry.session_id.clone()),
-                    prompt: None,
-                    todo_ids: Vec::new(),
-                    scratchpad_ids: Vec::new(),
-                    worktree,
-                    worktree_name: entry.worktree_name.clone(),
-                })
-                .await;
-            match spawned {
-                Ok(process_id) => self.reassign_restored(
-                    project_id,
-                    root,
-                    process_id,
-                    &entry.todo_ids,
-                    &entry.scratchpad_ids,
-                ),
-                // The quit began while this one was on its way: it never
-                // ran, so it goes back for the next run.
-                Err(CoreError::ShuttingDown) => {
-                    if let Err(e) = self
-                        .session_memory
-                        .remember_all(vec![(root.to_path_buf(), entry)])
-                    {
-                        tracing::warn!("keeping a remembered agent session failed: {e}");
-                    }
-                    return;
-                }
+            match self.restore_one(project_id, root, wsl, now, &entry).await {
+                // Never ran: it stays for the next run.
+                Err(CoreError::ShuttingDown) => return,
                 Err(e) => tracing::warn!("restoring a remembered agent session failed: {e}"),
+                Ok(()) => {}
             }
+            self.session_memory.remove(root, &entry);
         }
+    }
+
+    /// Restore one remembered `entry` (see
+    /// [`Self::restore_remembered_sessions`]); `Ok` also when it is skipped.
+    async fn restore_one(
+        &self,
+        project_id: ProjectId,
+        root: &Path,
+        wsl: Option<&'static WslBackend>,
+        now: DateTime<Utc>,
+        entry: &RememberedSession,
+    ) -> CoreResult<()> {
+        if entry.is_expired(now) {
+            return Ok(());
+        }
+        // The file is user-writable and the id lands unquoted on a shell
+        // line: never hand `--resume` anything but a UUID.
+        if !session_memory::is_valid_session_id(&entry.session_id) {
+            tracing::warn!("skipping a remembered agent session with an invalid id");
+            return Ok(());
+        }
+        // No transcript (pruned by Claude Code's retention, or an adapter
+        // that cannot resume): a fresh agent without its context and
+        // without a prompt would be of no use, so it is not respawned.
+        if !self
+            .session_stored(&entry.adapter_id, &entry.session_id, wsl)
+            .await
+        {
+            return Ok(());
+        }
+        // A worktree the agent already made under the requested name is not
+        // asked for again — nor offered by the "suggest worktree" setting —
+        // since that would make a `-2` copy. An unnamed request cannot be
+        // matched, so it is passed on as it was.
+        let made = entry.worktree
+            && entry
+                .worktree_name
+                .as_deref()
+                .is_some_and(|n| crate::worktree::exists(root, n));
+        // The to-dos/scratchpads are re-assigned, not handed over: a prompt
+        // composed from them would land in the resumed conversation as a
+        // fresh user message.
+        let process_id = self
+            .spawn_agent_inner(AgentSpawn {
+                project_id,
+                adapter_id: Some(entry.adapter_id.clone()),
+                name: Some(entry.name.clone()),
+                args_override: entry.args.clone(),
+                resume_session_id: Some(entry.session_id.clone()),
+                prompt: None,
+                todo_ids: Vec::new(),
+                scratchpad_ids: Vec::new(),
+                worktree: entry.worktree && !made,
+                worktree_name: entry.worktree_name.clone(),
+                suggest_worktree: !made,
+            })
+            .await?;
+        self.reassign_restored(
+            project_id,
+            root,
+            process_id,
+            &entry.todo_ids,
+            &entry.scratchpad_ids,
+        );
+        Ok(())
     }
 
     /// Whether adapter `adapter_id`'s CLI has a stored conversation for
@@ -2024,6 +2032,7 @@ impl Orchestrator {
             worktree_name,
             args_override,
             resume_session_id: None,
+            suggest_worktree: true,
         })
         .await
     }
@@ -2040,6 +2049,7 @@ impl Orchestrator {
             worktree_name,
             args_override,
             resume_session_id,
+            suggest_worktree,
         } = req;
         let (root, wsl, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
@@ -2181,7 +2191,7 @@ impl Orchestrator {
             named,
             worktree,
             worktree_name: wt_name,
-            suggest_worktree: global.suggest_worktree && !worktree,
+            suggest_worktree: global.suggest_worktree && suggest_worktree && !worktree,
         })?;
         let mut session = plan.restart.map(|commands| AgentSession {
             commands,
@@ -2219,7 +2229,11 @@ impl Orchestrator {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             // Re-check under the same lock as the insert: a concurrent spawn
             // may have raced past the early check above.
-            let guard = if !inner.projects.contains_key(&project_id) {
+            let guard = if inner.shutting_down {
+                // Refused here as well as in `do_start`, so a quit leaves no
+                // never-started row behind.
+                Some(CoreError::ShuttingDown)
+            } else if !inner.projects.contains_key(&project_id) {
                 Some(CoreError::ProjectNotFound)
             } else if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
                 Some(CoreError::AgentLimitReached)
@@ -3060,6 +3074,9 @@ struct AgentSpawn {
     worktree_name: Option<String>,
     args_override: Option<Vec<String>>,
     resume_session_id: Option<String>,
+    /// `false` keeps the "suggest worktree" setting out of the identity
+    /// prompt: a restored agent that already made its worktree.
+    suggest_worktree: bool,
 }
 
 /// Trim a project display name; blank means "none".
@@ -4519,13 +4536,17 @@ mod tests {
     /// session flag and id as `<flag><id>` and then stays up, and the CLI
     /// "has a transcript" only for the ids in `stored`. With `fail_resume`,
     /// a `--resume` launch exits non-zero at once, like a CLI refusing it.
-    /// `worktrees` records each launch's worktree request; the check for the
-    /// session in `slow` takes a while, so a test can quit mid-restore.
+    /// `worktrees` records each launch's `(worktree, worktree_name,
+    /// suggest_worktree)`. The check for the session in `slow` signals
+    /// `entered` and then waits for `release`, so a test can quit while a
+    /// restore is in flight.
     struct MemoryAdapter {
         stored: Mutex<Vec<String>>,
         fail_resume: bool,
-        worktrees: Mutex<Vec<(bool, Option<String>)>>,
+        worktrees: Mutex<Vec<(bool, Option<String>, bool)>>,
         slow: Mutex<Option<String>>,
+        entered: tokio::sync::Notify,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     }
 
     impl MemoryAdapter {
@@ -4535,6 +4556,8 @@ mod tests {
                 fail_resume,
                 worktrees: Mutex::new(Vec::new()),
                 slow: Mutex::new(None),
+                entered: tokio::sync::Notify::new(),
+                release: Mutex::new(None),
             })
         }
 
@@ -4557,10 +4580,11 @@ mod tests {
         }
 
         fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<crate::agent::LaunchPlan> {
-            self.worktrees
-                .lock()
-                .unwrap()
-                .push((ctx.worktree, ctx.worktree_name.map(str::to_string)));
+            self.worktrees.lock().unwrap().push((
+                ctx.worktree,
+                ctx.worktree_name.map(str::to_string),
+                ctx.suggest_worktree,
+            ));
             let (bin, tail) = if self.fail_resume {
                 (
                     r#"f() { printf '<%s>' "$@"; [ "$1" != --resume ] || exit 3; sleep 30; }; f"#,
@@ -4585,7 +4609,11 @@ mod tests {
 
         fn session_exists(&self, session_id: &str, _wsl: Option<&WslBackend>) -> bool {
             if self.slow.lock().unwrap().as_deref() == Some(session_id) {
-                std::thread::sleep(Duration::from_millis(500));
+                self.entered.notify_one();
+                let release = self.release.lock().unwrap().take();
+                if let Some(release) = release {
+                    let _ = release.recv();
+                }
             }
             self.stored.lock().unwrap().iter().any(|s| s == session_id)
         }
@@ -4944,7 +4972,7 @@ mod tests {
         // identity prompt matches the original's.
         assert_eq!(
             *adapter.worktrees.lock().unwrap(),
-            vec![(true, Some("fictional-wt".to_string()))]
+            vec![(true, Some("fictional-wt".to_string()), false)]
         );
         restarted.shutdown().await;
     }
@@ -5005,9 +5033,11 @@ mod tests {
         for id in [SESS_1, SESS_2, SESS_3] {
             adapter.store(id);
         }
-        // The second check is slow: the quit lands while it runs.
+        // The second check holds until the quit has begun.
         *adapter.slow.lock().unwrap() = Some(SESS_2.to_string());
-        let orch = memory_orch(data.path(), adapter);
+        let (release, held) = std::sync::mpsc::channel();
+        *adapter.release.lock().unwrap() = Some(held);
+        let orch = memory_orch(data.path(), adapter.clone());
         orch.set_agent_remember_sessions(true).unwrap();
         orch.session_memory
             .remember_all(
@@ -5017,21 +5047,18 @@ mod tests {
             )
             .unwrap();
         let quit = async {
-            while orch.list_processes(None).is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+            adapter.entered.notified().await;
             orch.shutdown().await;
+            // Only now does the second restore reach its spawn, which the
+            // quit refuses.
+            release.send(()).unwrap();
         };
         let (opened, ()) = tokio::join!(orch.open_project(root.clone()), quit);
         let id = opened.unwrap();
-        let running = orch
-            .list_processes(Some(id))
-            .into_iter()
-            .filter(|p| !matches!(p.status, ProcessStatus::NotStarted))
-            .count();
-        assert_eq!(running, 1, "only the first was restored");
-        // On disk: the first as the quit captured it, and the two the
-        // restore never got to.
+        // Only the first was restored, and the refused spawn left no row.
+        assert_eq!(orch.list_processes(Some(id)).len(), 1);
+        // On disk: the first as the quit captured it, the one in flight and
+        // the one the restore never got to.
         let reloaded = SessionMemoryStore::new();
         reloaded.set_path(data.path().join("session_memory.json"));
         let mut ids: Vec<String> = reloaded
@@ -5066,6 +5093,10 @@ mod tests {
         assert!(
             matches!(refused, Err(CoreError::ShuttingDown)),
             "{refused:?}"
+        );
+        assert!(
+            orch.list_processes(Some(id)).is_empty(),
+            "no never-started row is left behind"
         );
     }
 
@@ -5140,10 +5171,13 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(orch.agent_settings().suggest_worktree, "the setting is on");
         orch.open_project(root).await.unwrap();
+        // Neither requested again nor offered by the setting, so the
+        // identity prompt does not ask the user about a worktree.
         assert_eq!(
             *adapter.worktrees.lock().unwrap(),
-            vec![(false, Some("Fictional WT".to_string()))]
+            vec![(false, Some("Fictional WT".to_string()), false)]
         );
         orch.shutdown().await;
     }

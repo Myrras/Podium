@@ -232,10 +232,14 @@ atomically, before the async `podium.yml` load.
   CLI moves to a new id Podium never sees).
 
   The next `open_project` on that root, with the setting on, restores the
-  entries one at a time: `pop_front` takes the oldest off the list and saves
-  the rest at once (a failed save is logged, never cancels the restore), so a
-  quit or crash part-way leaves the unrestored ones stored. Each is respawned
-  through the restart path: `spawn_agent_inner` with
+  entries one at a time, oldest first: `front` peeks at the oldest, and only
+  once its outcome is known — restored, or skipped — does `remove` drop
+  exactly that entry (matched on the whole entry, so a fresh capture of the
+  same session survives) in one write. A failed save is logged and never
+  cancels the restore. An app that exits part-way (a quit, a crash) therefore
+  still has the entry in flight and the rest next time, and `remember_all`
+  dedupes on the session id, so a leftover cannot turn into a duplicate. Each
+  is respawned through the restart path: `spawn_agent_inner` with
   `AgentSpawn.resume_session_id` sets the new process's `AgentSession.id` to
   the remembered id and hands `restart_launch(…, stored = true)` — the
   `--resume` line, no prompt — to `do_start`, so a resume that crashes within
@@ -246,23 +250,28 @@ atomically, before the async `podium.yml` load.
   unquoted on the shell line), or `AgentAdapter::session_exists` (disk, or the
   WSL distro's login shell — `Orchestrator::session_stored`, shared with
   `start_process`) no longer finds it: a pruned session would only come back
-  as a fresh agent without context or prompt. A `worktree` request whose named
-  worktree already exists under `.podium/worktrees/` (`worktree::exists`) is
-  dropped, so the agent does not make a `-2` copy; an unnamed request cannot
-  be matched and is passed on. After the spawn the agent is re-assigned the
+  as a fresh agent without context or prompt.
+
+  A `worktree` request whose named worktree already exists under
+  `.podium/worktrees/` (`worktree::exists`) is dropped, and so is the "suggest
+  worktree" offer (`AgentSpawn.suggest_worktree = false`), so the agent
+  neither makes a `-2` copy nor asks about one. `exists` matches the slug
+  only: a worktree `create` de-duplicated to `<slug>-2`, or another agent's
+  under the same slug, is taken as is. An unnamed request cannot be matched
+  and is passed on. After the spawn the agent is re-assigned the
   to-dos/scratchpads that still exist, are not done/archived and no live agent
   claimed (re-assigned, not handed over: a composed prompt would land in the
   resumed conversation as a new message).
 
-  `shutdown()` sets `Inner.shutting_down` first, under the lock; from then on
-  `do_start` refuses every start with `CoreError::ShuttingDown` under that
-  same lock, so nothing — a restore in flight, a supervised restart — launches
-  after the stop sweep. The restore loop stops at the flag, and an entry whose
-  spawn was refused goes back on the list. With the setting off, opening a
-  project drops its list (`clear`), and turning the setting off clears every
-  root. The MCP server is started synchronously in `setup` so a restored agent
-  never spawns before the MCP connect info (its `--mcp-config`, `-n` and
-  identity) is set.
+  `shutdown()` sets `Inner.shutting_down` first, under the lock. From then on
+  `spawn_agent_inner` (before it inserts a row) and `do_start` refuse with
+  `CoreError::ShuttingDown` under that same lock, so nothing — a restore in
+  flight, a supervised restart — launches after the stop sweep, and no
+  never-started row is left. The restore loop stops at the flag, leaving a
+  refused entry on the list. With the setting off, opening a project drops its
+  list (`clear`), and turning the setting off clears every root. The MCP
+  server is started synchronously in `setup` so a restored agent never spawns
+  before the MCP connect info (its `--mcp-config`, `-n` and identity) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,

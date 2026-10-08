@@ -129,6 +129,9 @@ fn worktrees_dir(root: &Path) -> PathBuf {
 
 /// Whether a Podium worktree named `name` (as [`create`] would slug it) is
 /// already checked out under `root`.
+// ponytail: matches the slug only. A worktree `create` de-duplicated to
+// `<slug>-2`, or one another agent made under the same slug, is taken as is;
+// a restore then merely skips asking for a worktree it may not own.
 pub(crate) fn exists(root: &Path, name: &str) -> bool {
     slugify(name).is_ok_and(|slug| worktrees_dir(root).join(slug).is_dir())
 }

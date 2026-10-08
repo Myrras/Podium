@@ -103,7 +103,7 @@ impl SessionMemoryStore {
     }
 
     /// Remembered sessions for a project root, oldest first (tests; the app
-    /// only ever [`pop_front`](Self::pop_front)s them).
+    /// reads them one at a time with [`front`](Self::front)).
     #[cfg(test)]
     pub fn list(&self, root: &Path) -> Vec<RememberedSession> {
         self.inner
@@ -159,21 +159,31 @@ impl SessionMemoryStore {
         save(&inner)
     }
 
-    /// Remove and return the oldest remembered session for `root`, saving
-    /// the rest at once — so the restore takes one entry off the disk at a
-    /// time and a quit or crash part-way leaves the others stored. A failed
-    /// save is logged, not returned: it must not cancel the restore.
-    pub fn pop_front(&self, root: &Path) -> Option<RememberedSession> {
+    /// The oldest remembered session for `root`, left in place: the restore
+    /// [`remove`](Self::remove)s it only once its outcome is known, so an
+    /// app that exits while it is in flight still has it next time.
+    pub fn front(&self, root: &Path) -> Option<RememberedSession> {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.by_root.get(root)?.first().cloned()
+    }
+
+    /// Drop exactly `entry` from `root`'s list — matched on the whole entry,
+    /// not just the session id, so a fresh capture of the same session
+    /// (a quit right after it was restored) is not dropped with it. A failed
+    /// save is logged, not returned: it must not cancel the restore, and the
+    /// entry is gone from memory either way, so the restore moves on.
+    pub fn remove(&self, root: &Path, entry: &RememberedSession) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        let list = inner.by_root.get_mut(root)?;
-        let entry = (!list.is_empty()).then(|| list.remove(0));
+        let Some(list) = inner.by_root.get_mut(root) else {
+            return;
+        };
+        list.retain(|e| e != entry);
         if list.is_empty() {
             inner.by_root.remove(root);
         }
         if let Err(e) = save(&inner) {
             tracing::warn!("saving remembered agent sessions failed: {e}");
         }
-        entry
     }
 }
 
@@ -269,41 +279,45 @@ mod tests {
     }
 
     #[test]
-    fn pop_front_takes_one_entry_off_the_disk_at_a_time() {
+    fn front_peeks_and_remove_drops_exactly_that_entry() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("session_memory.json");
         let store = SessionMemoryStore::new();
         store.set_path(file.clone());
         let root = Path::new("/project/root");
-        // Nothing remembered: nothing popped, and no file written for it.
-        assert!(store.pop_front(root).is_none());
+        // Nothing remembered: nothing to peek, and no file written for it.
+        assert!(store.front(root).is_none());
         store.clear(root).unwrap();
         assert!(!file.exists());
+        let first = entry("agent-1", "00000000-0000-4000-8000-000000000001");
         store
             .remember_all(vec![
-                (
-                    root.to_path_buf(),
-                    entry("agent-1", "00000000-0000-4000-8000-000000000001"),
-                ),
+                (root.to_path_buf(), first.clone()),
                 (
                     root.to_path_buf(),
                     entry("agent-2", "00000000-0000-4000-8000-000000000002"),
                 ),
             ])
             .unwrap();
-        assert_eq!(store.pop_front(root).unwrap().name, "agent-1");
-        // The rest is already on disk without it.
+        assert_eq!(store.front(root), Some(first.clone()));
+        assert_eq!(store.list(root).len(), 2, "a peek leaves it in place");
+        // A fresh capture of the same session survives removing the old one.
+        let recaptured = RememberedSession {
+            updated_at: first.updated_at + chrono::TimeDelta::seconds(1),
+            ..first.clone()
+        };
+        store.remember(root, recaptured.clone()).unwrap();
+        store.remove(root, &first);
         let reloaded = SessionMemoryStore::new();
         reloaded.set_path(file);
-        let left = reloaded.list(root);
-        assert_eq!(left.len(), 1);
-        assert_eq!(left[0].name, "agent-2");
-        assert_eq!(store.pop_front(root).unwrap().name, "agent-2");
-        assert!(store.pop_front(root).is_none());
+        let left: Vec<String> = reloaded.list(root).into_iter().map(|e| e.name).collect();
+        assert_eq!(left, ["agent-2", "agent-1"]);
+        store.remove(root, &recaptured);
+        assert_eq!(store.front(root).unwrap().name, "agent-2");
     }
 
     #[test]
-    fn a_failed_save_still_pops_the_entry() {
+    fn a_failed_save_still_removes_the_entry() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionMemoryStore::new();
         // A path whose parent is a file: every save fails.
@@ -311,12 +325,11 @@ mod tests {
         std::fs::write(&blocker, "").unwrap();
         store.set_path(blocker.join("session_memory.json"));
         let root = Path::new("/project/root");
+        let e = entry("agent-1", "00000000-0000-4000-8000-000000000001");
         // `remember` fails to save but keeps the entry in memory.
-        let _ = store.remember(
-            root,
-            entry("agent-1", "00000000-0000-4000-8000-000000000001"),
-        );
-        assert_eq!(store.pop_front(root).unwrap().name, "agent-1");
+        let _ = store.remember(root, e.clone());
+        store.remove(root, &e);
+        assert!(store.front(root).is_none());
     }
 
     #[test]
