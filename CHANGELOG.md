@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-10-08
+
 ### Fixed
 
 - **Messages waiting to be sent stay visible.** A long conversation with the
