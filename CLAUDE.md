@@ -1146,11 +1146,11 @@ Conversations that touch no code (questions, exploration) need no branch.
 3. **PR** — `gh pr create --base main --fill` (or with an explicit title/body).
    The PR must add its entry under `## [Unreleased]` in `CHANGELOG.md` (CI
    fails without one). `ci.yml` runs on the PR and must be green.
-4. **Merge = release** — use the **`release` skill**
-   (`.claude/skills/release/SKILL.md`): it checks the `## [Unreleased]` entry,
-   sets a `minor`/`major` label if the change warrants more than a patch, and
-   (with explicit approval) squash-merges. CI then cuts the release; nobody
-   bumps the version or tags by hand.
+4. **Merge = release** — merging a PR to `main` is the release; nobody
+   bumps the version or tags by hand. Before merging, set a `minor` or `major`
+   label if the change warrants more than a patch (`gh pr edit N --add-label
+   minor`). Merge with `gh pr merge N --squash`; the branch auto-deletes. Get
+   explicit user confirmation first, because merging publishes a release.
 
 ## Versioning & CI
 
