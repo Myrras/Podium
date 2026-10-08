@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-08
+
 ### Added
 
 - **Give each project its own badge colour.** Click a project's initials
