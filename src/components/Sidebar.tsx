@@ -27,14 +27,21 @@ import type {
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
 import { terminalShellFor } from "../lib/terminalShell";
-import { useLayoutStore } from "../state/layoutStore";
+import { SECTIONS, sectionKey, useLayoutStore } from "../state/layoutStore";
+import type { Section } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
+import { useWorktreeStore } from "../state/worktreeStore";
 import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
+import {
+  useSectionCollapsed,
+  useWaitingCount,
+} from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
 import { WorktreeSubsection } from "./WorktreeSubsection";
@@ -42,6 +49,8 @@ import {
   AddIcon,
   AgentIcon,
   CaretIcon,
+  CollapseIcon,
+  ExpandIcon,
   CloseIcon,
   EditIcon,
   ErrorIcon,
@@ -55,6 +64,9 @@ import {
 import styles from "./Sidebar.module.css";
 
 interface SubsectionProps {
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
+  section: Section;
   title: string;
   Icon: typeof AgentIcon;
   rows: ProcessInfo[];
@@ -67,12 +79,34 @@ interface SubsectionProps {
 }
 
 /** One entity subsection (Agents / Processes / Terminals) in a group. */
-function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
+function Subsection({
+  projectRoot,
+  section,
+  title,
+  Icon,
+  rows,
+  empty,
+  add,
+  extra,
+}: SubsectionProps) {
+  const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, section);
+  const waiting = useWaitingCount(
+    rows.filter((p) => p.status.state === "running").map((p) => p.id),
+  );
   return (
-    <div className={styles.subsection}>
+    <div
+      className={styles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={styles.sectionHeader}>
-        <Icon className={styles.panelIcon} />
-        <span className={styles.panelTitle}>{title}</span>
+        <SectionTitle
+          title={title}
+          Icon={Icon}
+          count={rows.length}
+          waiting={waiting}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
         {extra?.map((action) => (
           <button
             key={action.label}
@@ -91,13 +125,16 @@ function Subsection({ title, Icon, rows, empty, add, extra }: SubsectionProps) {
             className={styles.addBtn}
             aria-label={add.label}
             title={add.label}
-            onClick={add.onClick}
+            onClick={() => {
+              setCollapsed(false);
+              add.onClick();
+            }}
           >
             <AddIcon size={13} />
           </button>
         )}
       </div>
-      {rows.length > 0 ? (
+      {collapsed ? null : rows.length > 0 ? (
         <div className={styles.rows}>
           {rows.map((p) => (
             <ProcessRow key={p.id} process={p} />
@@ -167,6 +204,23 @@ function ProjectGroup({
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const hasWorktrees = useWorktreeStore(
+    (s) => (s.worktreesByProject[project.id]?.length ?? 0) > 0,
+  );
+  const hasServices = processes.some((p) => p.kind.kind === "service");
+  // Only the subsections actually on screen count: Processes and Worktrees
+  // render nothing when empty, and folding the visible ones by hand should
+  // still flip this button to "Expand all".
+  const allSectionsCollapsed = useLayoutStore((s) =>
+    SECTIONS.filter(
+      (sec) =>
+        (sec !== "processes" || hasServices) &&
+        (sec !== "worktrees" || hasWorktrees),
+    ).every((sec) => s.collapsedSections[sectionKey(project.root, sec)]),
+  );
+  const setAllSectionsCollapsed = useLayoutStore(
+    (s) => s.setAllSectionsCollapsed,
+  );
 
   const addProcess = useProcessStore((s) => s.addProcess);
   const startProcess = useProcessStore((s) => s.startProcess);
@@ -356,6 +410,26 @@ function ProjectGroup({
               <button
                 type="button"
                 className={styles.projectAction}
+                aria-label={`${allSectionsCollapsed ? "Expand" : "Collapse"} all sections of ${project.name}`}
+                title={
+                  allSectionsCollapsed
+                    ? "Expand all sections"
+                    : "Collapse all sections"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setAllSectionsCollapsed(project.root, !allSectionsCollapsed);
+                }}
+              >
+                {allSectionsCollapsed ? (
+                  <ExpandIcon size={12} />
+                ) : (
+                  <CollapseIcon size={12} />
+                )}
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
                 aria-label={`Reload podium.yml for ${project.name}`}
                 title="Reload podium.yml"
                 onClick={(e) => {
@@ -397,10 +471,13 @@ function ProjectGroup({
         <div className={styles.groupBodyInner}>
           <TodoSubsection
             projectId={project.id}
+            projectRoot={project.root}
             onOpenTodo={onOpenTodo}
             onPickAgent={onPickAgent}
           />
           <Subsection
+            projectRoot={project.root}
+            section="agents"
             title="Agents"
             Icon={AgentIcon}
             rows={agents}
@@ -414,9 +491,17 @@ function ProjectGroup({
             }}
           />
           {services.length > 0 && (
-            <Subsection title="Processes" Icon={RunIcon} rows={services} />
+            <Subsection
+              projectRoot={project.root}
+              section="processes"
+              title="Processes"
+              Icon={RunIcon}
+              rows={services}
+            />
           )}
           <Subsection
+            projectRoot={project.root}
+            section="terminals"
             title="Terminals"
             Icon={TerminalIcon}
             rows={terminals.filter((p) => p.worktree == null)}
@@ -440,6 +525,7 @@ function ProjectGroup({
           />
           <WorktreeSubsection
             projectId={project.id}
+            projectRoot={project.root}
             nativeInWslMode={project.nativeInWslMode}
             terminals={terminals}
             onOpenCommands={(wt) => {
@@ -457,6 +543,7 @@ function ProjectGroup({
           />
           <ScratchpadSubsection
             projectId={project.id}
+            projectRoot={project.root}
             onOpenScratchpad={onOpenScratchpad}
             onPickAgent={onPickScratchpadAgent}
           />

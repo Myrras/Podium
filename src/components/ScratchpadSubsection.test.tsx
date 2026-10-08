@@ -88,6 +88,7 @@ describe("ScratchpadSubsection", () => {
     render(
       <ScratchpadSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenScratchpad={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -103,6 +104,7 @@ describe("ScratchpadSubsection", () => {
     render(
       <ScratchpadSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenScratchpad={onOpenScratchpad}
         onPickAgent={vi.fn()}
       />,
@@ -122,6 +124,7 @@ describe("ScratchpadSubsection", () => {
     render(
       <ScratchpadSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenScratchpad={onOpenScratchpad}
         onPickAgent={vi.fn()}
       />,
@@ -136,6 +139,7 @@ describe("ScratchpadSubsection", () => {
     render(
       <ScratchpadSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenScratchpad={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -149,6 +153,7 @@ describe("ScratchpadSubsection", () => {
     render(
       <ScratchpadSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenScratchpad={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -163,6 +168,7 @@ describe("ScratchpadSubsection", () => {
     render(
       <ScratchpadSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenScratchpad={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -180,6 +186,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={vi.fn()}
           onPickAgent={onPickAgent}
         />,
@@ -203,6 +210,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={onOpenScratchpad}
           onPickAgent={vi.fn()}
         />,
@@ -224,6 +232,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={onOpenScratchpad}
           onPickAgent={vi.fn()}
         />,
@@ -253,6 +262,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={vi.fn()}
           onPickAgent={onPickAgent}
         />,
@@ -275,6 +285,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={vi.fn()}
           onPickAgent={onPickAgent}
         />,
@@ -294,6 +305,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={vi.fn()}
           onPickAgent={vi.fn()}
         />,
@@ -309,6 +321,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={vi.fn()}
           onPickAgent={vi.fn()}
         />,
@@ -334,6 +347,7 @@ describe("ScratchpadSubsection", () => {
       render(
         <ScratchpadSubsection
           projectId={PROJECT}
+          projectRoot="/fake/root"
           onOpenScratchpad={onOpenScratchpad}
           onPickAgent={vi.fn()}
         />,
