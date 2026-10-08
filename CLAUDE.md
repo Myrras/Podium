@@ -262,16 +262,22 @@ one lock acquisition, atomically, before the async `podium.yml` load.
     (deny beats allow) block force, `+refspec`, delete, mirror/prune/all,
     `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
     pushes, URL/`@` destinations, main/master as the destination and any
-    quoting or `$`/backtick/brace expansion in a push, plus `-R`/`--repo` on
+    quoting, `$`/backtick/brace expansion or a literal `*` (glob refspec)
+    in a push, plus `-R`/`--repo` on
     `gh`/`glab`, wherever the flag sits (mid-pattern `*`; long git options
     cut to their shortest unambiguous prefix). They match command text only:
-    `git -C … push`, aliases, some flag clusters, an explicit push to another
-    non-main branch (`HEAD:develop`) and an implicit push of a checked-out
+    `git -C … push`, aliases, some flag clusters, an scp-style `host:path`
+    destination with no user (`example.com:other.git`, an ssh-config
+    alias), an explicit push to another non-main branch (`HEAD:develop`)
+    and an implicit push of a checked-out
     main slip past (see the code comment); the identity prompt has the agent
     check it is not on main/master before pushing. The test's matcher
     mirrors CLI 2.1.292 — re-check it on a CLI upgrade. With the user's own
     `--settings` (either form) none of this applies, and the identity
-    prompt drops the go-ahead.
+    prompt drops the go-ahead. The assistant's fresh fallback agent is a
+    `claude-code` spawn with no `--allowedTools`: Podium's settings already
+    carry the allow and deny rules, and with the user's own `--settings` an
+    `--allowedTools` would grant a push with no deny list behind it.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -437,7 +443,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event.
+  become a `toolFailed` event. The gate only sees Podium's own MCP tools:
+  the CLI's `SendMessage` — including a relayed push go-ahead — is never
+  gated, in any mode. The assistant cannot route around that by itself,
+  since the mode is deliberately absent from its prompt.
 
   **Persistence** is one `assistant.json` in the app data dir (atomic writes,
   the same kind of store as `todos.json`): Claude's own session id plus the

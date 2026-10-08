@@ -162,15 +162,17 @@ and report back with its URL; an agent on main or master pushes nothing \
 and tells you so. Only if it refuses or cannot push, if it does \
 not report back that it pushed (one started with the user's own --settings, \
 or by an older Podium, has no such rule), or if it is not a Claude Code \
-agent (Auggie has no messaging), spawn a fresh agent with the authorisation \
-in its initial prompt and [\"--allowedTools\", \"Bash(git push:*)\", \
-\"Bash(gh pr create:*)\", \"Bash(glab mr create:*)\"] in its args. A fresh \
-agent does not know where the work is: put the original agent's worktree \
-path (or the project root it worked in) and its branch in the prompt — \
-list_worktrees and get_process_status tell you both — and tell it to cd \
-there, to refuse if that branch is main or master, to run exactly `git push \
--u origin HEAD` (a `git -C` push matches no rule), never to push another \
-branch, then to open the PR/MR in the same repository and report its URL. \
+agent (Auggie has no messaging), spawn a fresh agent with adapter_id \
+\"claude-code\" (never the default adapter, which may be Auggie again) and \
+the authorisation in its initial prompt; Podium's own settings already give \
+it the push and PR/MR rules, so pass no --allowedTools. A fresh agent does \
+not know where the work is: put the original agent's worktree path (or the \
+project root it worked in) and its branch in the prompt — the original \
+agent includes both in its report when it refuses or fails, and otherwise \
+its get_process_output may show them; if neither settles it, ask the user \
+rather than guess — and tell it to cd there, to refuse if that branch is \
+main or master, to run exactly `git push -u origin HEAD` (a `git -C` push \
+matches no rule), never to push another branch, then to open the PR/MR in the same repository and report its URL. \
 Mind the limit of 8 agents per project. That message authorises only this \
 push and PR/MR: any other external write (a posted comment, a merge) still \
 needs a fresh agent with the user's authorisation in its initial prompt, \
@@ -2318,12 +2320,15 @@ mod tests {
             "(complete_todo)",
             "in one line at most",
             "SendMessage to \"podium-\"",
-            "Bash(git push:*)",
+            "adapter_id \"claude-code\"",
+            "so pass no --allowedTools",
             "do not start a new agent: SendMessage",
             "Only if it refuses or cannot push",
             "if it does not report back that it pushed",
             "(Auggie has no messaging)",
             "put the original agent's worktree path",
+            "includes both in its report when it refuses or fails",
+            "if neither settles it, ask the user rather than guess",
             "to refuse if that branch is main or master",
             "any other external write (a posted comment, a merge) still needs a fresh agent",
             "exactly `git push -u origin HEAD`",
@@ -2336,6 +2341,9 @@ mod tests {
         }
         // `*` before the trailing `:*` is literal, so this rule never matched.
         assert!(!IDENTITY_PROMPT.contains("git -C * push"));
+        // With the user's own --settings, --allowedTools would grant a push
+        // with no deny list behind it, so the fallback must not pass one.
+        assert!(!IDENTITY_PROMPT.contains("Bash(git push:*)"));
     }
 
     /// The marker is the whole notification gate for unprompted turns, and it
