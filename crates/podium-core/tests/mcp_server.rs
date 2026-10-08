@@ -2619,6 +2619,7 @@ async fn the_autonomy_mode_decides_what_is_gated_and_agents_never_are() {
 
     // propose-all: even adding a to-do is proposed first.
     orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
         .expect("set autonomy");
     let answer = call_tool_text(
         &server,
@@ -2661,6 +2662,7 @@ async fn the_autonomy_mode_decides_what_is_gated_and_agents_never_are() {
 
     // full autonomy: the assistant archives straight away too.
     orch.set_assistant_autonomy(AutonomyMode::Full)
+        .await
         .expect("set autonomy");
     let remaining = orch.list_todos(project_id).expect("list todos")[0].id;
     call_tool_text(

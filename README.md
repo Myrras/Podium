@@ -131,7 +131,12 @@ whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
-  becomes a card you confirm or reject.
+  becomes a card you confirm or reject. Under `propose-all` the assistant
+  also cannot message an agent directly, so a push go-ahead goes through a
+  new agent you confirm; switching into or out of that mode restarts its
+  session (between turns, keeping the conversation). The block applies from
+  the next turn boundary: a turn already running when you switch can still
+  message an agent until it ends.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
@@ -152,6 +157,17 @@ whether agents are done, no recap of what they did.
   all projects.
 - **Queue** — one turn runs at a time; anything you send mid-turn waits, and
   can be edited, removed or pushed into the running turn.
+- **Push go-ahead** — tell the assistant a Claude Code agent may push, and
+  it messages that agent instead of starting a new one; the agent pushes its
+  own branch (`git push -u origin HEAD`), opens its PR/MR in the same
+  repository (`gh pr create` / `glab mr create`) and reports back with the
+  link; an agent on main or master pushes nothing and says so. Spawned
+  agents may do both without a prompt. Force, delete, tag, mirror and
+  explicit main/master pushes, pushes to another URL and PRs/MRs against
+  another repository are blocked in their plain spellings — a push written
+  another way (`git -C … push`, an alias) falls back to the normal prompt.
+  Passing your own `--settings` in an agent's args turns this off for that
+  agent.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 
