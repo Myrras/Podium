@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-08
+
 ### Changed
 
 - **Restarting a stopped agent picks up its own conversation.** A Claude Code
