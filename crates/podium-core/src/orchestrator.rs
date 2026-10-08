@@ -3696,18 +3696,25 @@ async fn read_live_sessions(probes: Vec<LiveProbe>) -> Vec<(LiveProbe, String)> 
     let reads: Vec<_> = probes
         .into_iter()
         .map(|probe| {
-            tokio::task::spawn_blocking(move || {
+            let id = probe.id;
+            let read = tokio::task::spawn_blocking(move || {
                 let live = read_live_session(&probe);
                 (probe, live)
-            })
+            });
+            (id, read)
         })
         .collect();
     let mut followed = Vec::new();
-    for read in reads {
+    for (id, read) in reads {
         match tokio::time::timeout_at(deadline, read).await {
             Ok(Ok((probe, Some(live)))) => followed.push((probe, live)),
-            Ok(_) => {}
-            Err(_) => tracing::debug!("a CLI's live session read timed out; keeping its id"),
+            Ok(Ok((_, None))) => {}
+            Ok(Err(e)) => {
+                tracing::debug!(process_id = %id, ?e, "live session read failed; keeping its id")
+            }
+            Err(_) => {
+                tracing::debug!(process_id = %id, "live session read timed out; keeping its id")
+            }
         }
     }
     followed
@@ -5653,7 +5660,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(pid_of(&orch, agent), (SESS_2.to_string(), true));
-        *adapter.live_delay.lock().unwrap() = Duration::from_secs(3);
+        *adapter.live_delay.lock().unwrap() = Duration::from_millis(1500);
         let probe = live_probe(&orch.inner.lock().unwrap(), agent).unwrap();
         let began = Instant::now();
         let followed = read_live_sessions(vec![probe]).await;
