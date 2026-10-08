@@ -28,6 +28,7 @@ pub mod worktree;
 pub use agent::settings::{AdapterOverride, AgentSettings, MergeMode};
 pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, McpConnectInfo,
+    RestartCommands,
 };
 pub use assignment::AssignedAgent;
 pub use assistant::{

@@ -14,8 +14,8 @@ use podium_core::mcp::tools::{
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
-    Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartPolicy,
-    TodoId,
+    Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartCommands,
+    RestartPolicy, TodoId,
 };
 // Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
 #[cfg(unix)]
@@ -744,7 +744,7 @@ impl AgentAdapter for FakeAgentAdapter {
         Ok(LaunchPlan {
             command: "sleep 30".to_string(),
             env: Vec::new(),
-            resume_command: None,
+            restart: None,
         })
     }
 
@@ -1360,7 +1360,7 @@ impl AgentAdapter for PromptEchoAdapter {
         Ok(LaunchPlan {
             command: format!("sleep 30 # {}", ctx.prompt.unwrap_or("")),
             env: Vec::new(),
-            resume_command: None,
+            restart: None,
         })
     }
 
@@ -1857,7 +1857,7 @@ impl AgentAdapter for EchoAdapter {
         Ok(LaunchPlan {
             command: parts.join(" "),
             env: Vec::new(),
-            resume_command: None,
+            restart: None,
         })
     }
 
@@ -1887,7 +1887,7 @@ impl AgentAdapter for BetaAdapter {
         Ok(LaunchPlan {
             command: self.binary().to_string(),
             env: Vec::new(),
-            resume_command: None,
+            restart: None,
         })
     }
 
@@ -2876,11 +2876,16 @@ impl AgentAdapter for ResumableAdapter {
         "resumable-agent"
     }
 
-    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+    fn build_launch(&self, _ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        // Each launch prints which command ran, so the test can tell them
+        // apart from the agent's own output.
         Ok(LaunchPlan {
-            command: format!("sleep 30 # fresh {}", ctx.process_id),
+            command: "echo launch-first; sleep 30".to_string(),
             env: Vec::new(),
-            resume_command: Some(format!("sleep 30 # resume {}", ctx.process_id)),
+            restart: Some(RestartCommands {
+                resume: "echo launch-resume; sleep 30".to_string(),
+                fresh: "echo launch-fresh; sleep 30".to_string(),
+            }),
         })
     }
 
@@ -2891,6 +2896,27 @@ impl AgentAdapter for ResumableAdapter {
     fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
+}
+
+/// Wait until the latest launch marker `ResumableAdapter`'s commands print
+/// is `expected` — i.e. which of its commands the latest start ran.
+async fn wait_for_launch(orch: &Orchestrator, id: ProcessId, expected: &str) {
+    let mut last = String::new();
+    for _ in 0..200 {
+        let out = orch.tail_text(id, 4096).await.expect("tail");
+        if let Some(at) = out.rfind("launch-") {
+            last = out[at..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if last == expected {
+                return;
+            }
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!("expected launch {expected}, last saw {last:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2934,6 +2960,7 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
             .find(|t| t.id == todo.id)
             .and_then(|t| t.assigned_agent)
     };
+    wait_for_launch(&orch, agent, "launch-first").await;
     let first = process(&orch).color.expect("a live agent has a colour");
     assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
 
@@ -2961,14 +2988,12 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     .await
     .expect("spawn second");
 
-    // No stored session yet: the restart starts fresh.
+    // No stored session found: the restart starts a fresh session (never
+    // the original `--session-id` launch, which the CLI would refuse).
     orch.restart_process(agent).await.expect("restart");
+    wait_for_launch(&orch, agent, "launch-fresh").await;
     let restarted = process(&orch);
-    assert!(
-        restarted.command.contains("# fresh"),
-        "{}",
-        restarted.command
-    );
+    assert_eq!(restarted.command, "echo launch-first; sleep 30");
     let second = restarted.color.expect("a restarted agent gets a colour");
     assert_ne!(second, first, "the old colour is held by another agent");
     assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(second));
@@ -2978,7 +3003,17 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
         .stored
         .store(true, std::sync::atomic::Ordering::SeqCst);
     orch.restart_process(agent).await.expect("restart again");
-    assert_eq!(process(&orch).command, format!("sleep 30 # resume {agent}"));
+    wait_for_launch(&orch, agent, "launch-resume").await;
+
+    // The transcript is gone again: the choice is made per start, so the
+    // next restart is fresh rather than a `--resume` that can only fail.
+    adapter
+        .stored
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    orch.restart_process(agent)
+        .await
+        .expect("restart a third time");
+    wait_for_launch(&orch, agent, "launch-fresh").await;
 
     orch.stop_process(agent).await.expect("stop again");
     wait_for_exit(&orch, agent).await;

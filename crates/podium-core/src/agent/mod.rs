@@ -85,11 +85,26 @@ impl fmt::Debug for McpConnectInfo {
 pub struct LaunchPlan {
     pub command: String,
     pub env: Vec<(String, String)>,
-    /// The command that picks this session back up after it exited (same
-    /// flags, `--resume` instead of a new session, no initial prompt). `None`
+    /// What a restart of the exited agent runs instead of `command`. `None`
     /// when the CLI cannot resume by id, or the user's own args already pick
     /// the session.
-    pub resume_command: Option<String>,
+    pub restart: Option<RestartCommands>,
+}
+
+/// The two ways an exited agent can start again; the orchestrator picks one
+/// per start (see [`AgentAdapter::session_exists`]).
+#[derive(Debug, Clone)]
+pub struct RestartCommands {
+    /// Picks the stored session back up (same flags, `--resume` instead of a
+    /// new session id, no initial prompt — it is already in the
+    /// conversation).
+    pub resume: String,
+    /// `command` without the session-id flag: a genuinely fresh session.
+    /// Re-running `--session-id` with an id the CLI already used fails ("is
+    /// already in use"), and `--resume` with one it has no transcript for
+    /// fails too ("No conversation found"), so when the transcript cannot be
+    /// found this is the one restart that always works.
+    pub fresh: String,
 }
 
 /// One supported agent CLI (Claude Code today; more later).
@@ -102,7 +117,8 @@ pub trait AgentAdapter: Send + Sync {
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan>;
 
     /// Whether the CLI has a stored conversation for `session_id`, so the
-    /// plan's `resume_command` can pick it up. `false` means start fresh.
+    /// plan's [`RestartCommands::resume`] can pick it up. `false` means a
+    /// restart runs [`RestartCommands::fresh`].
     fn session_exists(&self, _session_id: &str) -> bool {
         false
     }
@@ -276,12 +292,7 @@ impl AgentAdapter for CliAdapter {
         // The process id doubles as the CLI session id, so a restart can
         // resume the conversation. Skipped when the user's own args already
         // choose a session — theirs wins, as with `--settings`/`-n`.
-        let user_picks_session = ctx.extra_args.iter().any(|a| {
-            matches!(
-                a.as_str(),
-                "--session-id" | "--resume" | "-r" | "--continue" | "-c"
-            )
-        });
+        let user_picks_session = ctx.extra_args.iter().any(|a| user_picks_session(a));
         let session = self.session_flags.filter(|_| !user_picks_session);
         let id = ctx.process_id.to_string();
         let tail = args.join(" ");
@@ -291,21 +302,22 @@ impl AgentAdapter for CliAdapter {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        let mut head = vec![bin.clone()];
+        let mut fresh = vec![bin.clone()];
         if let Some(prompt) = ctx.prompt {
-            head.push(quote(prompt)?);
+            fresh.push(quote(prompt)?);
         }
+        let mut head = fresh.clone();
         if let Some((new_flag, _)) = session {
             head.push(new_flag.to_string());
             head.push(id.clone());
         }
-        // Resuming never re-sends the initial prompt: it is already in the
-        // conversation.
-        let resume_command =
-            session.map(|(_, resume_flag)| join(vec![bin.clone(), resume_flag.to_string(), id]));
+        let restart = session.map(|(_, resume_flag)| RestartCommands {
+            resume: join(vec![bin.clone(), resume_flag.to_string(), id]),
+            fresh: join(fresh),
+        });
         Ok(LaunchPlan {
             command: join(head),
-            resume_command,
+            restart,
             env: vec![
                 ("PODIUM_PROJECT_ID".to_string(), ctx.project_id.to_string()),
                 ("PODIUM_PROCESS_ID".to_string(), ctx.process_id.to_string()),
@@ -316,7 +328,9 @@ impl AgentAdapter for CliAdapter {
 
 /// Claude Code's config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
 // ponytail: reads Podium's own environment, so a CLAUDE_CONFIG_DIR set only in
-// the login shell profile is missed (restart then starts fresh, not broken).
+// the login shell profile is missed: a restart then runs
+// `RestartCommands::fresh` (a new conversation, the old one not resumed)
+// rather than failing.
 fn claude_config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         return Some(dir.into());
@@ -334,6 +348,17 @@ fn claude_session_in(config_dir: &Path, session_id: &str) -> bool {
     fs::read_dir(config_dir.join("projects"))
         .map(|dirs| dirs.flatten().any(|d| d.path().join(&file).is_file()))
         .unwrap_or(false)
+}
+
+/// Whether an `extra_args` entry picks the CLI session itself (`--resume`,
+/// `--resume=<id>`, `--fork-session`, `--from-pr …`), so Podium's own
+/// session flags must stay out of its way.
+fn user_picks_session(arg: &str) -> bool {
+    let flag = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+    matches!(
+        flag,
+        "--session-id" | "--resume" | "-r" | "--continue" | "-c" | "--fork-session" | "--from-pr"
+    )
 }
 
 /// Inbound cross-session-messaging setting handed to every Podium-spawned
@@ -732,11 +757,35 @@ mod tests {
                 "--verbose"
             ]
         );
-        let resume = plan.resume_command.expect("claude can resume");
+        let restart = plan.restart.expect("claude can resume");
         assert_eq!(
-            split_command(&resume),
+            split_command(&restart.resume),
             vec!["claude", "--resume", &id, "--verbose"]
         );
+        // A fresh restart never reuses the id: the CLI refuses one it saw.
+        assert_eq!(
+            split_command(&restart.fresh),
+            vec!["claude", "fix the login bug", "--verbose"]
+        );
+    }
+
+    #[test]
+    fn any_spelling_of_a_session_flag_is_the_users_pick() {
+        for arg in [
+            "--continue",
+            "--resume=0f0e0d0c",
+            "--session-id=0f0e0d0c",
+            "--fork-session",
+            "--from-pr",
+            "--from-pr=42",
+        ] {
+            let extra = vec![arg.to_string()];
+            let (plan, _, _) = plan(None, &extra, None);
+            assert_eq!(split_command(&plan.command), vec!["claude", arg], "{arg}");
+            assert!(plan.restart.is_none(), "{arg}");
+        }
+        assert!(!user_picks_session("--resumable"));
+        assert!(!user_picks_session("--model=opus"));
     }
 
     #[test]
@@ -744,7 +793,7 @@ mod tests {
         let extra = vec!["--continue".to_string()];
         let (plan, _, _) = plan(None, &extra, None);
         assert_eq!(split_command(&plan.command), vec!["claude", "--continue"]);
-        assert!(plan.resume_command.is_none());
+        assert!(plan.restart.is_none());
     }
 
     #[test]
@@ -765,7 +814,7 @@ mod tests {
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         assert_eq!(plan.command, "auggie");
-        assert!(plan.resume_command.is_none());
+        assert!(plan.restart.is_none());
         assert!(!AUGGIE.session_exists(&ctx.process_id.to_string()));
     }
 
@@ -818,8 +867,9 @@ mod tests {
         let (plan, _, _) = plan_with_override(None, &[], Some("/opt/bin/claude"), None);
         let tokens = split_command(&plan.command);
         assert_eq!(tokens[0], "/opt/bin/claude");
-        let resume = plan.resume_command.expect("resume");
-        assert_eq!(split_command(&resume)[0], "/opt/bin/claude");
+        let restart = plan.restart.expect("restart");
+        assert_eq!(split_command(&restart.resume)[0], "/opt/bin/claude");
+        assert_eq!(split_command(&restart.fresh)[0], "/opt/bin/claude");
     }
 
     #[test]

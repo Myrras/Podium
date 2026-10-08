@@ -290,13 +290,17 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   exit handler, to-do row tinted neutral grey); the next start (`do_start`)
   picks a fresh one with the same `pick_session_color` a spawn uses.
   **Restart resumes the session**: Claude Code agents launch with
-  `--session-id <process id>`, and the adapter's `LaunchPlan.resume_command`
-  (`--resume <process id>`, no initial prompt) replaces the command on a
-  manual start of an exited agent once `AgentAdapter::session_exists` finds
-  the CLI's transcript (`~/.claude/projects/*/<id>.jsonl`, or under
-  `$CLAUDE_CONFIG_DIR`); otherwise it starts fresh with the original prompt.
+  `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
+  (`RestartCommands`) holds the two commands a manual start of an exited
+  agent can run instead, chosen per start (`restart_command`; `spec.command`
+  is never swapped): `resume` (`--resume <process id>`, no initial prompt)
+  when `AgentAdapter::session_exists` finds the CLI's transcript
+  (`~/.claude/projects/*/<id>.jsonl`, or under `$CLAUDE_CONFIG_DIR`), else
+  `fresh` — the original launch *without* `--session-id`, since the CLI
+  refuses an id it already used and `--resume` fails without a transcript.
   A session flag the user put in `extra_args` (`--session-id`, `--resume`,
-  `--continue`, …) disables both. Sidebar rows distinguish being **open** in the work area (a subtle
+  `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
+  all of it. Sidebar rows distinguish being **open** in the work area (a subtle
   accent highlight, like agents/terminals) from being in a **Cmd/Ctrl+click
   multi-select** (a bolder accent fill — those rows are queued for the next
   agent).
