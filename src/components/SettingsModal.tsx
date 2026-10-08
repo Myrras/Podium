@@ -26,6 +26,7 @@ import {
   agentSettingsSetDefaultAdapter,
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
+  agentSettingsSetRememberSessions,
   backendSettingsGet,
   backendSettingsSetNativeDriveProjects,
   backendSettingsSetWslDistro,
@@ -655,6 +656,7 @@ function AgentsTab() {
             mergeMode: "merge",
             defaultAdapter: "",
             suggestWorktree: true,
+            rememberSessions: false,
             adapters: [],
           });
       });
@@ -768,6 +770,22 @@ function AgentsTab() {
               .catch((err) =>
                 toastError(
                   "Could not save worktree setting",
+                  toIpcError(err).message,
+                ),
+              );
+          }}
+        />
+        <SettingToggle
+          label="Remember agent sessions"
+          help="When on, a running Claude Code agent's conversation resumes automatically the next time its project opens, still owning its to-dos and on the same model (Claude Code only). Turning it off forgets what was remembered."
+          value={data.rememberSessions}
+          onChange={(enabled) => {
+            setData({ ...data, rememberSessions: enabled });
+            agentSettingsSetRememberSessions(enabled)
+              .then(setData)
+              .catch((err) =>
+                toastError(
+                  "Could not save session memory setting",
                   toIpcError(err).message,
                 ),
               );

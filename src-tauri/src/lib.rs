@@ -171,6 +171,11 @@ pub fn run() {
             state
                 .orchestrator
                 .set_agent_settings_path(app.path().app_data_dir()?.join("agents.json"));
+            // Remembered agent session ids (for resuming across restarts)
+            // persist alongside the other app-data-dir stores.
+            state
+                .orchestrator
+                .set_session_memory_path(app.path().app_data_dir()?.join("session_memory.json"));
             // The personal assistant's headless CLI child runs in the app
             // data dir: a stable, writable cwd that is not one of the user's
             // projects (it is workspace-wide, not per project). Its
@@ -215,18 +220,21 @@ pub fn run() {
             // bearer token). Agents get the URL + token via 0600 config files
             // under `{app_data_dir}/mcp`, which is wiped on every start. A
             // failure is logged but not fatal: Podium works without MCP.
+            // `block_on`, not a spawned task: the frontend's startup
+            // `project_open` can restore remembered agents, and one spawned
+            // before the MCP connect info is set would run its whole life
+            // without Podium's MCP config, session name or identity. Binding
+            // a localhost port is quick; the server's own serve loop is a
+            // task on the runtime, so it keeps running after this returns.
             let orchestrator = Arc::clone(&state.orchestrator);
-            let handle = app.handle().clone();
             let config_dir = app.path().app_data_dir()?.join("mcp");
-            tauri::async_runtime::spawn(async move {
-                match podium_core::mcp::start(orchestrator, config_dir).await {
-                    Ok(server) => {
-                        let state = handle.state::<AppState>();
-                        *state.mcp.lock().expect("mcp state lock poisoned") = Some(server);
-                    }
-                    Err(e) => tracing::error!("failed to start mcp server: {e}"),
+            match tauri::async_runtime::block_on(podium_core::mcp::start(orchestrator, config_dir))
+            {
+                Ok(server) => {
+                    *state.mcp.lock().expect("mcp state lock poisoned") = Some(server);
                 }
-            });
+                Err(e) => tracing::error!("failed to start mcp server: {e}"),
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -288,6 +296,7 @@ pub fn run() {
             commands::agent::agent_settings_set_default_adapter,
             commands::agent::agent_settings_set_merge_mode,
             commands::agent::agent_settings_set_suggest_worktree,
+            commands::agent::agent_settings_set_remember_sessions,
             commands::mcp::mcp_status,
             commands::mcp::mcp_clients_status,
             commands::mcp::mcp_client_install,

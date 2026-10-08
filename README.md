@@ -81,12 +81,17 @@ the same colour, so you can see at a glance who is on what. A stopped agent
 loses its colour (its to-dos stay linked, tinted grey, but you can start
 another agent on them, which takes them over); restarting it gives it its
 colour back (or a new one if another agent took it meanwhile) and, for
-Claude Code, **resumes its conversation** instead of
-starting an empty one (if Claude Code no longer has that conversation, or
-resuming it fails straight away, the agent starts a fresh one from its
-original prompt). If you put another agent on a stopped agent's to-dos and
-then restart the stopped one too, it resumes its own conversation and may
-still think it is working on them. The row also
+Claude Code, **resumes its conversation** instead of starting an empty one
+(if Claude Code no longer has that conversation, or resuming it fails
+straight away, the agent starts a fresh one from its original prompt). After
+a `/clear` it resumes the conversation from after the clear, once Claude
+Code has stored it — on macOS and Linux, when Podium starts `claude` itself
+(no wrapper command, shell function or fish shell), and unless the agent
+ended itself with `/exit`; otherwise, on Windows or WSL, or when reading
+which session the agent is on takes over 200 ms, it is the one from before.
+If you put another agent on a stopped agent's to-dos and then restart the
+stopped one too, it resumes its own conversation and may still think it is
+working on them. The row also
 shows an activity state: **working…** (sustained output in the last 2.5 s —
 a single redraw does not count, and it works whether or not you ever opened
 the terminal), **idle**, or **needs input** — the last one is read off the
@@ -292,7 +297,7 @@ you added by hand alone.
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
-| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree"             |
+| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation (after a `/clear`, the one from after it, with the same limits as a restart) the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
 | **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
