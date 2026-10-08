@@ -468,14 +468,17 @@ function IssuesTab() {
       .finally(() => setBusy(false));
   };
 
-  // A blank token deletes the stored one (the backend's rule for `""`).
+  // A blank token deletes the stored one (the backend's rule for `""`). It
+  // saves the setup as stored, not the draft: unsaved edits stay unsaved.
   const clearToken = (d: IssueSetupDraft) => {
+    const stored = overview?.setups.find((s) => s.id === d.id);
+    if (!stored) return;
     setBusy(true);
     issuesSetupSave({
-      id: d.id,
-      name: d.name,
-      provider: d.provider,
-      url: d.url,
+      id: stored.id,
+      name: stored.name,
+      provider: stored.provider,
+      url: stored.url,
       token: "",
     })
       .then((o) => {

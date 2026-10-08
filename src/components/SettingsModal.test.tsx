@@ -405,6 +405,10 @@ describe("SettingsModal — Issues tab", () => {
   it("clears a GitLab setup's stored token", async () => {
     await openIssuesTab();
     fireEvent.click(screen.getByText("Edit"));
+    // An unsaved edit is not saved along with the clear.
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Unsaved name" },
+    });
     fireEvent.click(screen.getByText("Clear token"));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("issues_setup_save", {

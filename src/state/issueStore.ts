@@ -141,7 +141,27 @@ const autoFetchSlot = (): Promise<void> | null => {
 /** Tests only: forget the pacing between tests. */
 export const resetAutoFetchPacing = () => {
   nextAutoFetch = 0;
+  autoWaiting.clear();
 };
+
+/** Auto refreshes waiting for their slot, by project; a ticket per wait. */
+const autoWaiting = new Map<ProjectId, object>();
+
+/**
+ * Errors no fetch can fix until something changes locally (a setup, the
+ * remote): such a project's auto refresh costs no API call worth pacing, so
+ * it takes no slot.
+ */
+const UNPACED_ERRORS = new Set([
+  "issuesNotConfigured",
+  "issuesNoRemote",
+  "issuesUnsupportedHost",
+  "issuesHostMismatch",
+  "issuesGitlabNotConfigured",
+  "issuesGhUnavailable",
+]);
+const unpaced = (error: IpcError | null) =>
+  error !== null && UNPACED_ERRORS.has(error.kind);
 
 /** Projects whose in-flight fetch must be followed by one more (`rerun`). */
 const rerunAfterFetch = new Set<ProjectId>();
@@ -177,6 +197,28 @@ export const useIssueStore = create<IssueState>((set, get) => {
     },
 
     refresh: async (projectId, opts) => {
+      if (opts?.auto) {
+        const before = get().byProject[projectId] ?? EMPTY;
+        // Already fetching or already waiting for a slot: nothing to add.
+        if (before.loading || autoWaiting.has(projectId)) return;
+        // No setup at all: nothing is fetched, so nothing to pace either.
+        const noSetup = get().overview?.setups?.length === 0;
+        if (!noSetup && !unpaced(before.error)) {
+          // Wait *before* showing it as loading: a queued project is not
+          // busy, so a manual refresh can still run (and this one lapses).
+          const slot = autoFetchSlot();
+          if (slot) {
+            const ticket = {};
+            autoWaiting.set(projectId, ticket);
+            await slot;
+            // Lapsed: a manual refresh ran meanwhile, or the project closed.
+            if (autoWaiting.get(projectId) !== ticket) return;
+            autoWaiting.delete(projectId);
+          }
+        }
+      } else {
+        autoWaiting.delete(projectId);
+      }
       const current = get().byProject[projectId] ?? EMPTY;
       if (current.loading) {
         // A setup/token change must not wait for the next poll: run once more
@@ -204,9 +246,9 @@ export const useIssueStore = create<IssueState>((set, get) => {
         });
       } else {
         try {
-          const slot = opts?.auto ? autoFetchSlot() : null;
-          if (slot) await slot;
           const board = await issuesBoard(projectId, mine);
+          // Closed meanwhile: do not bring its entry back.
+          if (!get().byProject[projectId]) return;
           patch(
             projectId,
             switched()
@@ -214,6 +256,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
               : { board, error: null, loading: false, fetchedAt: Date.now() },
           );
         } catch (e: unknown) {
+          if (!get().byProject[projectId]) return;
           patch(
             projectId,
             switched()
@@ -314,6 +357,8 @@ export const useIssueStore = create<IssueState>((set, get) => {
 
     dropProject: (projectId) =>
       set((s) => {
+        rerunAfterFetch.delete(projectId);
+        autoWaiting.delete(projectId);
         const next = { ...s.byProject };
         delete next[projectId];
         return { byProject: next };

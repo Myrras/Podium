@@ -145,6 +145,57 @@ describe("issueStore", () => {
     stops.forEach((stop) => stop());
   });
 
+  it("auto-refresh: a queued project is not loading, and a manual refresh runs at once", async () => {
+    listMock.mockResolvedValue(board(1));
+    const stops = ["a", "b"].map((p) =>
+      useIssueStore.getState().startAutoRefresh(p),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a"]);
+    expect(useIssueStore.getState().byProject.b?.loading ?? false).toBe(false);
+    await useIssueStore.getState().refresh("b");
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b"]);
+    // The queued auto refresh of "b" lapses instead of fetching again.
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS * 2);
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b"]);
+    stops.forEach((stop) => stop());
+  });
+
+  it("auto-refresh: a project closed while queued is not brought back", async () => {
+    listMock.mockResolvedValue(board(1));
+    const stops = ["a", "b"].map((p) =>
+      useIssueStore.getState().startAutoRefresh(p),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    useIssueStore.getState().dropProject("b");
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS * 2);
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a"]);
+    expect(useIssueStore.getState().byProject.b).toBeUndefined();
+    stops.forEach((stop) => stop());
+  });
+
+  it("auto-refresh: a project stuck on a local error takes no slot", async () => {
+    listMock.mockResolvedValue(board(1));
+    useIssueStore.setState({
+      byProject: {
+        a: {
+          board: null,
+          error: { kind: "issuesNoRemote", message: "no remote" },
+          loading: false,
+          fetchedAt: 0,
+          mine: true,
+        },
+      },
+    });
+    const stops = ["a", "b"].map((p) =>
+      useIssueStore.getState().startAutoRefresh(p),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    // Both go at once: "a" did not use up the free slot.
+    expect(listMock.mock.calls.map(([p]) => p).sort()).toEqual(["a", "b"]);
+    stops.forEach((stop) => stop());
+  });
+
   it("a setup change mid-fetch refetches once that fetch is done", async () => {
     let resolve!: (v: Board) => void;
     listMock.mockReturnValueOnce(new Promise((r) => (resolve = r)));

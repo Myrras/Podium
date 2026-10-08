@@ -901,6 +901,32 @@ pub fn normalize_url(input: &str) -> Option<String> {
         .then(|| format!("{scheme}://{}{path}", host.to_ascii_lowercase()))
 }
 
+/// The GitLab API base and project path for a remote `remote_path` under the
+/// setup URL `url`. A GitLab served under a path (`https://host/gitlab`) puts
+/// that path into an HTTPS remote too (`gitlab/group/proj`), so it is cut off
+/// the project path — an SSH remote never has it. A setup URL that is the
+/// project's own URL (`https://host/group/proj`, pasted from the browser) is
+/// cut back to the host.
+fn gitlab_target(url: &str, remote_path: &str) -> (String, String) {
+    let after_scheme = url.find("://").map_or(0, |i| i + 3);
+    let (origin, prefix) = match url[after_scheme..].find('/') {
+        Some(i) => url.split_at(after_scheme + i),
+        None => (url, ""),
+    };
+    let prefix = prefix.trim_matches('/');
+    if prefix.is_empty() {
+        return (url.to_string(), remote_path.to_string());
+    }
+    if remote_path.eq_ignore_ascii_case(prefix) {
+        return (origin.to_string(), remote_path.to_string());
+    }
+    let rest = remote_path
+        .get(..prefix.len() + 1)
+        .filter(|head| head.eq_ignore_ascii_case(&format!("{prefix}/")))
+        .map(|_| &remote_path[prefix.len() + 1..]);
+    (url.to_string(), rest.unwrap_or(remote_path).to_string())
+}
+
 /// The bare hostname of a normalized setup URL (port dropped, as
 /// [`parse_remote`] drops it from the remote).
 pub fn url_host(url: &str) -> &str {
@@ -1620,8 +1646,9 @@ pub fn board(
         } => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
+            let (base, path) = gitlab_target(url, &path);
             fetch_gitlab(
-                url,
+                &base,
                 &path,
                 &token,
                 mine,
@@ -1977,7 +2004,8 @@ pub fn move_item(
         } => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
-            move_gitlab(url, &path, &token, board, item, to).map(Some)
+            let (base, path) = gitlab_target(url, &path);
+            move_gitlab(&base, &path, &token, board, item, to).map(Some)
         }
         _ => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
@@ -2114,7 +2142,8 @@ pub fn unassign_item(
         } => {
             // ponytail: temporary, remove once Connect is on GitHub
             let token = gitlab_token_get(id).ok_or(CoreError::IssuesGitlabNotConfigured)?;
-            unassign_gitlab(url, &path, &token, item, me)
+            let (base, path) = gitlab_target(url, &path);
+            unassign_gitlab(&base, &path, &token, item, me)
         }
         setup => {
             let gh = crate::platform::gh_binary().ok_or(CoreError::IssuesGhUnavailable)?;
@@ -2282,6 +2311,31 @@ mod tests {
             url_host("https://git.example.test/gitlab"),
             "git.example.test"
         );
+
+        let t = |url, remote| gitlab_target(url, remote);
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        // Under a path: an HTTPS remote carries it, an SSH remote does not.
+        let sub = "https://git.example.test/gitlab";
+        assert_eq!(t(sub, "gitlab/grp/proj"), s(sub, "grp/proj"));
+        assert_eq!(t(sub, "grp/proj"), s(sub, "grp/proj"));
+        // No path: untouched.
+        let root = "https://git.example.test";
+        assert_eq!(t(root, "grp/proj"), s(root, "grp/proj"));
+        // The project's own URL pasted as the setup: back to the host.
+        assert_eq!(
+            t("https://git.example.test/grp/proj", "grp/proj"),
+            s(root, "grp/proj")
+        );
+        // A prefix that only looks alike is not cut.
+        assert_eq!(t(sub, "gitlabx/proj"), s(sub, "gitlabx/proj"));
+        // End to end from the remote URL, HTTPS and SSH alike.
+        for remote in [
+            "https://git.example.test/gitlab/grp/proj.git",
+            "git@git.example.test:grp/proj.git",
+        ] {
+            let (_, path) = parse_remote(remote).unwrap();
+            assert_eq!(gitlab_target(sub, &path), s(sub, "grp/proj"), "{remote}");
+        }
     }
 
     #[test]

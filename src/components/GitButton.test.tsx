@@ -10,7 +10,7 @@ vi.mock("../ipc/commands", () => ({
 
 import { issuesBoard } from "../ipc/commands";
 import type { BoardItem } from "../ipc/types";
-import { useIssueStore } from "../state/issueStore";
+import { resetAutoFetchPacing, useIssueStore } from "../state/issueStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { GitButton } from "./GitButton";
@@ -50,6 +50,7 @@ const CONFIGURED = {
 
 beforeEach(() => {
   vi.mocked(issuesBoard).mockClear();
+  resetAutoFetchPacing();
   useIssueStore.setState({ byProject: {}, overview: CONFIGURED }, false);
   useLayoutStore.setState({ openBoard: null });
   useProjectStore.setState({ activeProjectId: null });
