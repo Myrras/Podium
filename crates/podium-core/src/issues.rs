@@ -499,9 +499,11 @@ fn parse_gh_project(json: &str, owner_repo: &str) -> Option<GhProject> {
 }
 
 /// Build the items from the four `gh … list --json` outputs. With a
-/// `project`, an item with a Status sits in that column; the rest fall back to
-/// open issue → `open`, open PR → `review`, closed/merged → `done`. Without
-/// one, the default placement (linked PR, label, draft) applies.
+/// `project`, an open item with a Status sits in that column; the rest fall
+/// back to open issue → `open`, open PR → `review`. Closed/merged items are
+/// always `done`, Status or not (as on GitLab): a closed issue parked in a
+/// Status column would read as open, and moving it would skip the reopen.
+/// Without a project, the default placement (linked PR, label, draft) applies.
 fn assemble_github(
     open_issues: &str,
     closed_issues: &str,
@@ -534,8 +536,7 @@ fn assemble_github(
         items.push(i.into_item(ItemKind::Issue, &column));
     }
     for i in parse_gh(closed_issues)? {
-        let column = place(i.number, "done");
-        items.push(i.into_item(ItemKind::Issue, &column));
+        items.push(i.into_item(ItemKind::Issue, "done"));
     }
     for p in open_prs {
         let default = if project.is_some() {
@@ -548,9 +549,8 @@ fn assemble_github(
         items.push(p.into_item(ItemKind::Pr, &column));
     }
     for p in parse_gh(merged_prs)? {
-        let column = place(p.number, "done");
         closing.push(gh_closing(&p, true));
-        items.push(p.into_item(ItemKind::Pr, &column));
+        items.push(p.into_item(ItemKind::Pr, "done"));
     }
     Ok(sorted(fold_linked(items, &closing)))
 }
@@ -1198,9 +1198,15 @@ fn gitlab_send(
     Err(last)
 }
 
+/// One HTTP client for every GitLab call: a board fetch fires a dozen-plus
+/// requests in parallel, and each `Client::new()` builds its own connection
+/// pool and TLS config (and, blocking, its own runtime thread).
+static GITLAB_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
+    std::sync::LazyLock::new(reqwest::blocking::Client::new);
+
 /// One GitLab API GET: the body plus the `X-Total` header.
 fn gitlab_get(base: &str, token: &str, path: &str) -> CoreResult<(String, Option<u64>)> {
-    let client = reqwest::blocking::Client::new();
+    let client = &*GITLAB_CLIENT;
     let response = gitlab_send(|| {
         client
             .get(format!("{base}{path}"))
@@ -1298,7 +1304,7 @@ pub fn fetch_gitlab(
             token,
             &p,
             project_path,
-            &[&open_issues, &closed_issues],
+            &open_issues,
             open_mrs,
             merged_mrs,
         )?
@@ -1341,8 +1347,8 @@ pub fn fetch_gitlab(
 
 /// Mine only: add someone else's MRs that belong to one of my issues (a
 /// colleague's MR on an issue I'm co-assigned to), which `created_by_me`
-/// never returns. One `related_merge_requests` call per issue on the board no
-/// fetched MR links to yet; an MR is kept when [`gl_closing`] links it to that
+/// never returns. One `related_merge_requests` call per *open* issue no
+/// fetched MR links to yet (a closed one is done; not worth a request); an MR is kept when [`gl_closing`] links it to that
 /// issue, so a passing mention does not become a stray card. A failed lookup
 /// just leaves that issue unlinked.
 // ponytail: one request per unlinked issue (≤ 2×LIMIT, all in parallel); a
@@ -1352,7 +1358,7 @@ fn with_related_mrs(
     token: &str,
     p: &str,
     project_path: &str,
-    issues: &[&str],
+    open_issues: &str,
     open_mrs: String,
     merged_mrs: String,
 ) -> CoreResult<(String, String)> {
@@ -1368,15 +1374,11 @@ fn with_related_mrs(
         known.insert(m.iid);
         linked.extend(gl_closing(&m, project_path));
     }
-    let mut unlinked = Vec::new();
-    for json in issues {
-        unlinked.extend(
-            parse_gl(json)?
-                .into_iter()
-                .map(|i| i.iid)
-                .filter(|n| !linked.contains(n)),
-        );
-    }
+    let unlinked: Vec<u64> = parse_gl(open_issues)?
+        .into_iter()
+        .map(|i| i.iid)
+        .filter(|n| !linked.contains(n))
+        .collect();
     if unlinked.is_empty() {
         return Ok((open_mrs, merged_mrs));
     }
@@ -1438,7 +1440,7 @@ fn gitlab_approvals(
         "query": GL_APPROVALS_QUERY,
         "variables": { "p": project_path, "i": iids },
     });
-    let client = reqwest::blocking::Client::new();
+    let client = &*GITLAB_CLIENT;
     let Ok(response) = gitlab_send(|| {
         client
             .post(format!("{base}/api/graphql"))
@@ -1575,8 +1577,9 @@ fn refused<T>(msg: &str) -> CoreResult<T> {
     Err(CoreError::IssuesMove(msg.to_string()))
 }
 
-/// Check a move of `kind` #`number` to column `to` against the board the user
-/// sees; returns the item. The board's own drop rules are the authority.
+/// Check a move of `kind` #`number` to column `to` against the cached board;
+/// returns the item. The board's own drop rules are the authority. A card
+/// already in `to` passes; the caller makes that a no-op.
 pub fn validate_move<'a>(
     board: &'a Board,
     kind: ItemKind,
@@ -1599,8 +1602,9 @@ pub fn validate_move<'a>(
     if !item.movable {
         return refused("A merged PR/MR cannot be moved.");
     }
+    // Already there: the caller treats it as a no-op, not a refusal.
     if item.column == to {
-        return refused("The card is already in that column.");
+        return Ok(item);
     }
     if board.source.is_none() && to == "open" && item.column != "done" {
         return refused("Without a project board, cards only return to Open from Done.");
@@ -1664,7 +1668,7 @@ fn gitlab_put(
     params: &[(&str, String)],
     failed: &str,
 ) -> CoreResult<()> {
-    let client = reqwest::blocking::Client::new();
+    let client = &*GITLAB_CLIENT;
     let response = gitlab_send(|| {
         client
             .put(format!("{base}{path}"))
@@ -2402,6 +2406,9 @@ mod tests {
                     r#"{"id":5,"username":"fixture-me"}"#
                 } else if req.contains("/issues?state=opened") {
                     r#"[{"iid":12,"title":"mine","web_url":"u12"}]"#
+                } else if req.contains("/issues?state=closed") {
+                    r#"[{"iid":13,"title":"closed","web_url":"u13",
+                        "closed_at":"2026-09-29T11:00:00Z"}]"#
                 } else if req.contains("/issues/12/related_merge_requests") {
                     // A colleague's merged MR on the `issue/12` branch, and one
                     // that only mentions the issue.
@@ -2422,10 +2429,20 @@ mod tests {
             }
         });
         let board = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap();
-        assert_eq!(board.items.len(), 1, "no stray card for the mention");
+        assert_eq!(board.items.len(), 2, "no stray card for the mention");
+        let board = Board {
+            items: board.items.into_iter().filter(|i| i.number == 12).collect(),
+            ..board
+        };
         let linked = &board.items[0].linked;
         assert_eq!(linked.len(), 1);
         assert_eq!((linked[0].number, linked[0].merged), (40, true));
+        // A closed issue is not looked up.
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.contains("/issues/13/related_merge_requests")));
 
         // The All board lists every MR already, so it looks nothing up.
         seen.lock().unwrap().clear();
@@ -2566,6 +2583,7 @@ mod tests {
         {"content":{"number":7,"repository":{"nameWithOwner":"acme/widgets"}},"fieldValueByName":{"optionId":"o2"}},
         {"content":{"number":20,"repository":{"nameWithOwner":"acme/widgets"}},"fieldValueByName":{"optionId":"o1"}},
         {"content":{"number":3,"repository":{"nameWithOwner":"acme/widgets"}},"fieldValueByName":{"optionId":"o2"}},
+        {"content":{"number":22,"repository":{"nameWithOwner":"acme/widgets"}},"fieldValueByName":{"optionId":"o1"}},
         {"content":{"number":8,"repository":{"nameWithOwner":"acme/widgets"}},"fieldValueByName":null},
         {"content":{"number":8,"repository":{"nameWithOwner":"acme/other"}},
          "fieldValueByName":{"optionId":"o1"}},
@@ -2585,7 +2603,7 @@ mod tests {
                 {"number":4,"title":"closed","url":"u"}]"#,
             r#"[{"number":20,"title":"pr placed","url":"u"},
                 {"number":21,"title":"pr draft","url":"u","isDraft":true}]"#,
-            "[]",
+            r#"[{"number":22,"title":"merged, placed","url":"u"}]"#,
             Some(&p),
         )
         .unwrap();
@@ -2601,8 +2619,10 @@ mod tests {
         // #8 of another repo in the same project is not this repo's #8.
         assert_eq!(col(8), "open");
         assert_eq!(col(9), "open");
-        assert_eq!(col(3), "status:o2");
+        // Closed/merged always land in done, even with a Status set.
+        assert_eq!(col(3), "done");
         assert_eq!(col(4), "done");
+        assert_eq!(col(22), "done");
         assert_eq!(col(20), "status:o1");
         // The default draft/linked placement does not apply with a project.
         assert_eq!(col(21), "review");
@@ -2719,7 +2739,8 @@ mod tests {
         assert!(refusal(Issue, 2, "review").contains("does not accept"));
         assert!(refusal(Pr, 10, "done").contains("does not accept"));
         assert!(refusal(Pr, 11, "label:doing").contains("merged"));
-        assert!(refusal(Issue, 1, "label:doing").contains("already"));
+        // Already there: accepted (the caller makes it a no-op).
+        assert!(validate_move(&b, Issue, 1, "label:doing").is_ok());
         // Kind and number are one key: PR #2 is not issue #2.
         assert!(refusal(Pr, 2, "review").contains("Refresh"));
         // Default board: Open is only reachable from Done.

@@ -153,23 +153,27 @@ export const useIssueStore = create<IssueState>((set, get) => {
         });
         return;
       }
+      // The scope was switched mid-fetch: that answer is for the old one, so
+      // it must not land on the new scope's board; refetch instead.
+      const switched = () =>
+        (get().byProject[projectId]?.mine ?? true) !== mine;
       try {
         const board = await issuesBoard(projectId, mine);
-        patch(projectId, {
-          board,
-          error: null,
-          loading: false,
-          fetchedAt: Date.now(),
-        });
+        patch(
+          projectId,
+          switched()
+            ? { loading: false }
+            : { board, error: null, loading: false, fetchedAt: Date.now() },
+        );
       } catch (e: unknown) {
-        patch(projectId, {
-          error: toIpcError(e),
-          loading: false,
-          fetchedAt: Date.now(),
-        });
+        patch(
+          projectId,
+          switched()
+            ? { loading: false }
+            : { error: toIpcError(e), loading: false, fetchedAt: Date.now() },
+        );
       }
-      // The scope was switched mid-fetch: that answer was for the old one.
-      if ((get().byProject[projectId]?.mine ?? true) !== mine) {
+      if (switched()) {
         await get().refresh(projectId);
       }
     },

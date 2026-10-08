@@ -220,6 +220,8 @@ const DESTRUCTIVE_TOOLS: &[&str] = &[
     "set_scratchpad_archived",
     "remove_scratchpad_tag",
     "remove_worktree",
+    // Closes/reopens real issues and moves cards on a board others see.
+    "move_board_item",
 ];
 
 /// How much the assistant may do on its own.

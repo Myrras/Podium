@@ -198,6 +198,30 @@ describe("issueStore", () => {
     });
   });
 
+  it("a Mine answer landing after a switch to All never shows on All", async () => {
+    let resolveMine!: (v: Board) => void;
+    let resolveAll!: (v: Board) => void;
+    listMock
+      .mockReturnValueOnce(new Promise((r) => (resolveMine = r)))
+      .mockReturnValueOnce(new Promise((r) => (resolveAll = r)));
+    cachedMock.mockResolvedValue({
+      board: board(7),
+      fetchedAt: new Date().toISOString(),
+    });
+    const first = useIssueStore.getState().refresh(P);
+    useIssueStore.getState().setMine(P, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useIssueStore.getState().byProject[P].board).toEqual(board(7));
+    resolveMine(board(1));
+    await vi.advanceTimersByTimeAsync(0);
+    // The All board (its cache) stays; the Mine answer is dropped.
+    expect(useIssueStore.getState().byProject[P].board).toEqual(board(7));
+    expect(listMock).toHaveBeenLastCalledWith(P, false);
+    resolveAll(board(2));
+    await first;
+    expect(useIssueStore.getState().byProject[P].board).toEqual(board(2));
+  });
+
   it("auto-refresh: a fresh cache is shown without an immediate fetch", async () => {
     cachedMock.mockResolvedValue({
       board: board(3),

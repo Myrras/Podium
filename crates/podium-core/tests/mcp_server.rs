@@ -2682,7 +2682,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("list_scratchpads", true, false),
     ("list_worktrees", true, false),
     ("get_board", true, false),
-    ("move_board_item", false, false),
+    ("move_board_item", false, true),
     ("verify_sender", true, false),
     ("spawn_agent", false, false),
     ("start_process", false, false),
@@ -2938,7 +2938,6 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
     for (kind, number, column, want) in [
         ("pr", 2, "label:doing", "merged"),
         ("issue", 1, "review", "does not accept"),
-        ("issue", 1, "open", "already"),
         ("issue", 1, "nowhere", "Unknown column"),
         ("issue", 9, "done", "not on the board"),
     ] {
@@ -2953,4 +2952,36 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
         .await
         .expect_err("bad kind");
     assert!(err.message.contains("invalid kind"), "{err:?}");
+    // Already there: a no-op success, nothing remote touched (with no setup,
+    // any platform call would fail).
+    tools
+        .move_board_item(Parameters(mv("issue", 1, "open")))
+        .await
+        .expect("no-op move");
+
+    // A stale scope does not decide the move: `mine` (an hour old) still has
+    // #1 closed, the freshly fetched `all` has it open again. The move to
+    // Open goes by `all` — already there, so a no-op rather than a reopen
+    // (which would hit the platform and fail here), and `mine` catches up.
+    let stale = chrono::Utc::now() - chrono::Duration::hours(1);
+    let mut closed = board.clone();
+    closed["items"][0]["column"] = "done".into();
+    let cached = serde_json::json!({
+        root.to_string_lossy(): {
+            "mine": {"board": closed, "fetchedAt": stale.to_rfc3339()},
+            "all": {"board": board, "fetchedAt": chrono::Utc::now().to_rfc3339()}
+        }
+    });
+    let path = data.path().join("boards-scopes.json");
+    std::fs::write(&path, cached.to_string()).expect("write boards.json");
+    orch.set_boards_path(path);
+    tools
+        .move_board_item(Parameters(mv("issue", 1, "open")))
+        .await
+        .expect("decided by the fresher scope");
+    let mine = orch
+        .cached_issue_board(project_id, true)
+        .expect("cached")
+        .expect("mine scope");
+    assert_eq!(mine.board.items[0].column, "open");
 }

@@ -121,6 +121,9 @@ export default function App() {
         useScratchpadStore.getState().dropProject(e.projectId);
         useWorktreeStore.getState().dropProject(e.projectId);
         useIssueStore.getState().dropProject(e.projectId);
+        const layout = useLayoutStore.getState();
+        if (layout.openBoard?.projectId === e.projectId)
+          layout.clearOpenBoard();
       }),
       onTodosChanged((e) => void useTodoStore.getState().refresh(e.projectId)),
       onScratchpadsChanged(

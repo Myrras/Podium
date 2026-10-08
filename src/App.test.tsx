@@ -38,6 +38,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => undefined)),
 }));
+import { listen } from "@tauri-apps/api/event";
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
@@ -135,6 +136,25 @@ describe("App", () => {
 
     await user.click(screen.getByLabelText("Hide assistant"));
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+  });
+
+  it("closes the open Git board when its project closes", async () => {
+    useLayoutStore.setState({ openBoard: { projectId: "proj-1" } });
+    render(<App />);
+    const handler = () =>
+      vi
+        .mocked(listen)
+        .mock.calls.find(([name]) => name === "project:closed")?.[1];
+    await waitFor(() => expect(handler()).toBeDefined());
+    const fire = (projectId: string) =>
+      handler()?.({ event: "project:closed", id: 0, payload: { projectId } });
+
+    fire("proj-2");
+    expect(useLayoutStore.getState().openBoard).toEqual({
+      projectId: "proj-1",
+    });
+    fire("proj-1");
+    expect(useLayoutStore.getState().openBoard).toBeNull();
   });
 
   it("draws its own window controls on Windows", () => {

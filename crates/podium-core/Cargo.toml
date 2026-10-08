@@ -57,6 +57,12 @@ dunce = "1"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "process"] }
 
+# Linux: the GitLab token goes in the Secret Service (GNOME Keyring/KWallet)
+# over D-Bus, so it persists like on macOS/Windows. Building needs libdbus
+# headers (`libdbus-1-dev` / `dbus-devel`).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
 [dev-dependencies]
 tempfile = "3"
 # Integration tests call the MCP tools directly (Parameters extractor).

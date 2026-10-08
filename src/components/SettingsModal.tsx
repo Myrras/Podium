@@ -472,10 +472,11 @@ function IssuesTab() {
       <small className={styles.rowHelp}>
         A project&apos;s Issues section uses the setup picked there, or the
         first one whose host matches its <code>origin</code>. GitHub goes
-        through your <code>gh</code> login (optionally a specific account);
-        github.com works without a setup. Self-hosted GitLab needs a personal
-        access token (<code>read_api</code>), kept in the OS keychain —
-        temporary, until Connect is on GitHub.
+        through your <code>gh</code> login (optionally a specific account),
+        github.com included — every host needs a setup. Self-hosted GitLab needs
+        a personal access token with the <code>api</code> scope (moving cards
+        and unassigning write to GitLab), kept in the OS keychain — temporary,
+        until Connect is on GitHub.
       </small>
       {setups.map((s) => (
         <div key={s.id} className={styles.clientCard}>

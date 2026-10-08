@@ -431,7 +431,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   Connect still runs on GitLab; removing it is `IssueProvider::Gitlab`, its
   arm in `issues::board` and the `// ponytail: temporary` blocks. **Token
   handling:** a GitLab token lives only in the OS keychain (`keyring`, service
-  `com.podium.app.gitlab`, account = setup id); `issues_settings_get` reports
+  `com.podium.app.gitlab`, account = setup id; on Linux the Secret Service
+  over D-Bus, so building there needs `libdbus-1-dev`); `issues_settings_get` reports
   just `tokenSet`, the token is never returned over IPC, logged, or put in an
   error, and the Settings field is never prefilled. Failures are typed
   (`IssuesNotConfigured` / `IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
@@ -460,7 +461,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   cache also keeps **columns stable**: when GitLab's `/boards` request *fails*
   (not: answers without a label-list board) `fetch_gitlab` places cards in the
   cached board's `label:` columns instead of the defaults. Project boards
-  always carry `review` and `done`.
+  always carry `review` and `done`. A fetch that started before a move or
+  unassign landed is not stored (`BoardStore`'s edit counter, taken before the
+  fetch); `issue_board` serves the cache, which has the edit, instead.
+  Closed issues and merged PRs are always in `done`, also on a GitHub Project
+  with a Status set, so `done` means closed on both providers.
 
   **Drop rules** ride on the wire: `Column.accepts` (`("issue"|"pr")[]`) —
   default board `open` [issue], `inProgress` [], `review` [], `done` [issue];
@@ -476,9 +481,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `/merge_requests/:iid/closes_issues`).
 
   **Moves** (`Orchestrator::move_board_item` → `issues::validate_move` then
-  `move_item`, blocking): validated against the cached board (item there,
-  column exists and accepts the kind, movable, not the current column; without
-  a project board `open` is only reachable from `done`), refusals are
+  `move_item`, blocking): validated against the cached board — of the scopes
+  holding the card, the most recently fetched, since its `done` decides
+  close/reopen (item there, column exists and accepts the kind, movable;
+  without a project board `open` is only reachable from `done`; already in
+  that column is a no-op success that syncs both scopes), refusals are
   `CoreError::IssuesMove` (`issuesMove`, Podium-owned text). GitLab: one `PUT`
   on the issue/MR — `add_labels`/`remove_labels` for `label:*` (other list
   labels removed), all list labels removed for `open`/`review`,
@@ -491,7 +498,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   GitLab `labels`; `linked` untouched) and `PodiumEvent::BoardChanged` →
   `board:changed`. MCP: `get_board` (cache if under 5 min old and not
   `refresh`; no bodies; classified read-only) and `move_board_item` (same
-  path as the IPC command; state-changing for the autonomy gate).
+  path as the IPC command; **destructive** for the autonomy gate, since it
+  closes/reopens issues other people see).
 
   **Unassign** (`Orchestrator::unassign_board_item` → `issues::
   validate_unassign` then `unassign_item`): each board also carries `me` (the
@@ -569,7 +577,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   this tool needs the user, and a gated call never runs. Instead it is parked as
   a `ProposalInfo` — carrying a closure that replays that very dispatch later —
   and the tool answers that a proposal is awaiting the user. `full` gates
-  nothing; `confirm-destructive` gates the stopping/archiving/removing tools;
+  nothing; `confirm-destructive` gates the stopping/archiving/removing tools
+  and `move_board_item`;
   `propose-all` gates everything that is not read-only (an *unknown* tool counts
   as state-changing, so a tool added later cannot slip through). Proposals live
   in memory (never expiring, but lost on restart) and surface as

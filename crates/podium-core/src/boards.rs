@@ -49,6 +49,11 @@ type BoardMap = BTreeMap<String, RootBoards>;
 struct Inner {
     path: Option<PathBuf>,
     boards: BoardMap,
+    /// Bumped by every local edit (move/unassign), so a fetch that started
+    /// before one cannot overwrite it with the pre-edit board.
+    // ponytail: one counter for all projects; an edit elsewhere only costs a
+    // fetch its cache write. Per-root counters if that ever matters.
+    edits: u64,
 }
 
 pub(crate) struct BoardStore {
@@ -61,6 +66,7 @@ impl BoardStore {
             inner: Mutex::new(Inner {
                 path: None,
                 boards: BoardMap::new(),
+                edits: 0,
             }),
         }
     }
@@ -81,14 +87,25 @@ impl BoardStore {
             .and_then(|r| r.scope(mine).clone())
     }
 
-    /// Store a freshly fetched board (best-effort persisted).
-    pub fn put(&self, root: &Path, mine: bool, board: Board) {
+    /// The edit counter; take it before a fetch and hand it to [`Self::put`].
+    pub fn edits(&self) -> u64 {
+        self.inner.lock().expect(LOCK_POISONED).edits
+    }
+
+    /// Store a freshly fetched board (best-effort persisted), unless a local
+    /// edit landed since the fetch started (`edits` taken before it) — that
+    /// board predates the edit. Returns whether it was stored.
+    pub fn put(&self, root: &Path, mine: bool, board: Board, edits: u64) -> bool {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        if inner.edits != edits {
+            return false;
+        }
         *inner.boards.entry(key(root)).or_default().scope(mine) = Some(CachedBoard {
             board,
             fetched_at: Utc::now(),
         });
         let _ = save(&inner);
+        true
     }
 
     /// After a successful move: put the item in `column` (and, for GitLab, its
@@ -102,6 +119,7 @@ impl BoardStore {
         labels: Option<&[String]>,
     ) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.edits += 1;
         let Some(root_boards) = inner.boards.get_mut(&key(root)) else {
             return;
         };
@@ -130,6 +148,7 @@ impl BoardStore {
     /// the issues assigned to you (its PRs are the ones you wrote, so they stay).
     pub fn apply_unassign(&self, root: &Path, kind: ItemKind, number: u64, me: &str) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.edits += 1;
         let Some(root_boards) = inner.boards.get_mut(&key(root)) else {
             return;
         };
@@ -236,8 +255,8 @@ mod tests {
         let store = BoardStore::new();
         store.set_path(path.clone());
         assert_eq!(store.get(&root, true), None);
-        store.put(&root, true, board());
-        store.put(&root, false, board());
+        store.put(&root, true, board(), 0);
+        store.put(&root, false, board(), 0);
 
         // A second store on the same file sees both scopes, RFC 3339 on disk.
         let reloaded = BoardStore::new();
@@ -275,8 +294,8 @@ mod tests {
     fn unassign_drops_the_issue_from_mine_and_the_name_everywhere() {
         let root = PathBuf::from("/tmp/fixture-project");
         let store = BoardStore::new();
-        store.put(&root, true, board());
-        store.put(&root, false, board());
+        store.put(&root, true, board(), 0);
+        store.put(&root, false, board(), 0);
         store.apply_unassign(&root, ItemKind::Issue, 1, "sam");
         store.apply_unassign(&root, ItemKind::Pr, 2, "sam");
         let mine = store.get(&root, true).unwrap().board;
@@ -285,6 +304,24 @@ mod tests {
         let all = store.get(&root, false).unwrap().board;
         assert_eq!(all.items.len(), 2);
         assert!(all.items.iter().all(|i| i.assignees == ["kim"]));
+    }
+
+    #[test]
+    fn a_fetch_started_before_an_edit_is_not_stored() {
+        let root = PathBuf::from("/tmp/fixture-project");
+        let store = BoardStore::new();
+        assert!(store.put(&root, false, board(), store.edits()));
+        let before = store.edits();
+        store.apply_move(&root, ItemKind::Issue, 1, "open", None);
+        // The in-flight fetch lands after the move: dropped, the move stays.
+        assert!(!store.put(&root, false, board(), before));
+        let b = store.get(&root, false).unwrap().board;
+        assert_eq!(b.items[0].column, "open");
+        // A fetch started after it is stored as usual.
+        assert!(store.put(&root, false, board(), store.edits()));
+        let before = store.edits();
+        store.apply_unassign(&root, ItemKind::Pr, 2, "sam");
+        assert!(!store.put(&root, false, board(), before));
     }
 
     #[test]

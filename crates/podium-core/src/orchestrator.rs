@@ -1750,6 +1750,8 @@ impl Orchestrator {
             .projects
             .get(&root)
             .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        // Taken before the fetch: a move landing meanwhile wins over its result.
+        let edits = self.boards.edits();
         // Either scope's last board tells GitLab where the columns were.
         let cached = self
             .boards
@@ -1762,8 +1764,12 @@ impl Orchestrator {
             mine,
             cached.as_ref().map(|c| &c.board),
         )?;
-        self.boards.put(&root, mine, board.clone());
-        Ok(board)
+        if self.boards.put(&root, mine, board.clone(), edits) {
+            return Ok(board);
+        }
+        // A move/unassign landed mid-fetch, so this board predates it: serve
+        // the cache (which has the edit) instead; the next refresh catches up.
+        Ok(self.boards.get(&root, mine).map_or(board, |c| c.board))
     }
 
     /// The last successfully fetched board of this scope, if any. No network.
@@ -1777,9 +1783,13 @@ impl Orchestrator {
 
     /// Move a card to another column of the project's Git board, on the
     /// platform itself (GitLab labels/state, GitHub close/reopen/Project
-    /// Status). Validated against the cached board, so it needs one. On
-    /// success both cached scopes are updated and `BoardChanged` published.
-    /// Shells out / blocks — call from a blocking-friendly context.
+    /// Status). Validated against the cached board, so it needs one: of the
+    /// scopes holding the card, the most recently fetched — the best word on
+    /// whether it is open or closed, which decides close/reopen. A card
+    /// already in `column` there is a no-op success (the other scope was
+    /// stale), not a refusal. On success both cached scopes are updated and
+    /// `BoardChanged` published. Shells out / blocks — call from a
+    /// blocking-friendly context.
     pub fn move_board_item(
         &self,
         project_id: ProjectId,
@@ -1791,17 +1801,24 @@ impl Orchestrator {
         let cached = [true, false]
             .into_iter()
             .filter_map(|mine| self.boards.get(&root, mine))
-            .find(|c| {
+            .filter(|c| {
                 c.board
                     .items
                     .iter()
                     .any(|i| i.kind == kind && i.number == number)
             })
+            .max_by_key(|c| c.fetched_at)
             .or_else(|| self.boards.get(&root, true))
             .or_else(|| self.boards.get(&root, false))
             .ok_or_else(|| CoreError::IssuesMove("Refresh the board first.".to_string()))?;
         let board = &cached.board;
         let item = crate::issues::validate_move(board, kind, number, column)?;
+        if item.column == column {
+            self.boards.apply_move(&root, kind, number, column, None);
+            self.events
+                .publish(PodiumEvent::BoardChanged { project_id });
+            return Ok(());
+        }
         let issues = self.agent_settings().issues;
         let selected = issues
             .projects
