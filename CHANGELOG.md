@@ -24,6 +24,13 @@ when it merges.
   agent" button back and can be multi-selected again — starting a new agent
   on one hands it to that agent.
 
+### Fixed
+
+- **Messages waiting to be sent stay visible.** A long conversation with the
+  assistant could squeeze the "thinking" indicator and the queued messages at
+  the bottom of the panel down to nothing, hiding what was about to be sent.
+  They now keep their space however long the transcript gets.
+
 ## [2.1.3] - 2026-10-08
 
 ### Changed
