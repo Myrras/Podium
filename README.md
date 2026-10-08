@@ -137,10 +137,14 @@ whether agents are done, no recap of what they did.
   can be edited, removed or pushed into the running turn.
 - **Push go-ahead** — tell the assistant a Claude Code agent may push, and
   it messages that agent instead of starting a new one; the agent pushes its
-  own branch (`git push -u origin HEAD`) and reports back. Spawned agents may
-  push without a prompt, but force, delete, tag, mirror and main/master
-  pushes are refused outright. Passing your own `--settings` in an agent's
-  args turns this off for that agent.
+  own branch (`git push -u origin HEAD`), opens its PR/MR in the same
+  repository (`gh pr create` / `glab mr create`) and reports back with the
+  link. Spawned agents may do both without a prompt. Force, delete, tag,
+  mirror and main/master pushes, pushes to another URL and PRs/MRs against
+  another repository are blocked in their plain spellings — a push written
+  another way (`git -C … push`, an alias) falls back to the normal prompt.
+  Passing your own `--settings` in an agent's args turns this off for that
+  agent.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 

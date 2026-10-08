@@ -250,17 +250,22 @@ one lock acquisition, atomically, before the async `podium.yml` load.
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
     A `--settings` the user put in `extra_args` wins over Podium's.
-  - **Push rules.** A Claude Code agent's `--settings`
+  - **Go-ahead rules.** A Claude Code agent's `--settings`
     (`agent::agent_session_settings`, built on the same inbound setting)
-    also allows `Bash(git push:*)`, so a push go-ahead the assistant relays
-    by message can run in the existing session — no peer message can
-    approve a prompt. `PUSH_DENY_RULES` (deny beats allow) block force,
-    `+refspec`, delete (`-d`, `--delete`, `:branch`), mirror/prune/all,
-    tag pushes and main/master as the destination, wherever the flag sits
-    (mid-pattern `*`). They match command text only: `git -C … push`,
-    aliases, flag clusters like `-vf` and an implicit push of a checked-out
-    main slip past (see the code comment). With the user's own `--settings`
-    none of this applies, and the identity prompt drops the go-ahead.
+    also allows `git push`, `gh pr create` and `glab mr create`, so a
+    go-ahead the assistant relays by message can run in the existing
+    session — no peer message can approve a prompt. `GO_AHEAD_DENY_RULES`
+    (deny beats allow) block force, `+refspec`, delete, mirror/prune/all,
+    `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
+    pushes, URL/`@` destinations, main/master as the destination and any
+    quoting or `$`/backtick expansion in a push, plus `-R`/`--repo` on
+    `gh`/`glab`, wherever the flag sits (mid-pattern `*`; long git options
+    cut to their shortest unambiguous prefix). They match command text only:
+    `git -C … push`, aliases, some flag clusters and an implicit push of a
+    checked-out main slip past (see the code comment). The test's matcher
+    mirrors CLI 2.1.292 — re-check it on a CLI upgrade. With the user's own
+    `--settings` (either form) none of this applies, and the identity
+    prompt drops the go-ahead.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -401,9 +406,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   agents safely (only the project in question; check the output for follow-up
   work and complete the to-do first), and how to pass on a push go-ahead (a
   message to an existing Claude Code agent, which accepts it once
-  `verify_sender` says the sender is the assistant and reports back; a fresh
-  agent with `--allowedTools` if it refuses, never reports a push, or is
-  not Claude Code).
+  `verify_sender` says the sender is the assistant, pushes, opens the PR/MR
+  and reports back with its URL; a fresh agent with `--allowedTools` if it
+  refuses, never reports a push, or is not Claude Code).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
