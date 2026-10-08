@@ -55,6 +55,12 @@ pub struct RememberedSession {
     /// the defaults.
     #[serde(default)]
     pub args: Option<Vec<String>>,
+    /// Whether it was spawned to work in a worktree, and under which name —
+    /// both shape its identity prompt, so a restore passes them on again.
+    #[serde(default)]
+    pub worktree: bool,
+    #[serde(default)]
+    pub worktree_name: Option<String>,
 }
 
 impl RememberedSession {
@@ -96,7 +102,9 @@ impl SessionMemoryStore {
         inner.by_root = by_root;
     }
 
-    /// Remembered sessions for a project root, oldest first.
+    /// Remembered sessions for a project root, oldest first (tests; the app
+    /// only ever [`take`](Self::take)s them).
+    #[cfg(test)]
     pub fn list(&self, root: &Path) -> Vec<RememberedSession> {
         self.inner
             .lock()
@@ -140,13 +148,17 @@ impl SessionMemoryStore {
         save(&inner)
     }
 
-    /// Drop every remembered session for `root` (called once its sessions
-    /// have been restored, so a second `open_project` in the same run does
-    /// not re-spawn them).
-    pub fn clear(&self, root: &Path) -> CoreResult<()> {
+    /// Remove and return every remembered session for `root` — taken when
+    /// its project opens, before anything is restored, so nothing captured
+    /// later in the run (a quit during the restore) can be wiped by it. No
+    /// write when the root has none.
+    pub fn take(&self, root: &Path) -> CoreResult<Vec<RememberedSession>> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.by_root.remove(root);
-        save(&inner)
+        let Some(taken) = inner.by_root.remove(root) else {
+            return Ok(Vec::new());
+        };
+        save(&inner)?;
+        Ok(taken)
     }
 }
 
@@ -189,6 +201,8 @@ mod tests {
             todo_ids: Vec::new(),
             scratchpad_ids: Vec::new(),
             args: None,
+            worktree: false,
+            worktree_name: None,
         }
     }
 
@@ -240,17 +254,25 @@ mod tests {
     }
 
     #[test]
-    fn clear_drops_everything_for_that_root() {
+    fn take_returns_and_drops_everything_for_that_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("session_memory.json");
         let store = SessionMemoryStore::new();
+        store.set_path(file.clone());
         let root = Path::new("/project/root");
+        // Nothing remembered: nothing taken, and no file written for it.
+        assert!(store.take(root).unwrap().is_empty());
+        assert!(!file.exists());
         store
             .remember(
                 root,
                 entry("agent-1", "00000000-0000-4000-8000-000000000001"),
             )
             .unwrap();
-        store.clear(root).unwrap();
+        let taken = store.take(root).unwrap();
+        assert_eq!(taken.len(), 1);
         assert!(store.list(root).is_empty());
+        assert!(store.take(root).unwrap().is_empty());
     }
 
     #[test]
@@ -337,6 +359,8 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(listed[0].todo_ids.is_empty());
         assert_eq!(listed[0].args, None);
+        assert!(!listed[0].worktree);
+        assert_eq!(listed[0].worktree_name, None);
     }
 
     #[test]

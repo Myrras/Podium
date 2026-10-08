@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -145,6 +146,10 @@ struct ManagedProcess {
     /// The per-spawn args it was started with (`args_override`), remembered
     /// with its session so a restore runs on the same model.
     spawn_args: Option<Vec<String>>,
+    /// The `worktree` flag and name it was spawned with, remembered with its
+    /// session so a restore gets the same identity prompt.
+    spawn_worktree: bool,
+    spawn_worktree_name: Option<String>,
     /// For an agent: how a manual start after it exited is spelled, and the
     /// CLI session it is on (see [`AgentSession`]). `None` for everything
     /// else.
@@ -254,6 +259,9 @@ pub struct Orchestrator {
     /// Agent sessions to resume on the next open of their project, keyed by
     /// root (`AgentSettings.remember_sessions`).
     session_memory: SessionMemoryStore,
+    /// Set as [`Self::shutdown`] begins, so a restore still running on a
+    /// project open spawns nothing after the stop sweep.
+    shutting_down: AtomicBool,
     /// The workspace-wide personal assistant session (chat panel). Also
     /// holds the Responses list ([`Self::responses`]).
     assistant: AssistantManager,
@@ -285,6 +293,7 @@ impl Orchestrator {
             boards: BoardStore::new(),
             agent_settings: AgentSettingsStore::new(),
             session_memory: SessionMemoryStore::new(),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -957,12 +966,16 @@ impl Orchestrator {
                 tracing::warn!(process_id = %pid, "auto-start failed: {e}");
             }
         }
+        // Taken even with the toggle off, so old sessions never resurface
+        // later — and before the restore, so a quit during it cannot lose
+        // what that quit captures.
+        let remembered = self.session_memory.take(&path).unwrap_or_else(|e| {
+            tracing::warn!("taking remembered agent sessions failed: {e}");
+            Vec::new()
+        });
         if self.agent_settings.get().remember_sessions {
-            self.restore_remembered_sessions(id, &path).await;
-        }
-        // Dropped even with the toggle off, so old sessions never resurface later.
-        if let Err(e) = self.session_memory.clear(&path) {
-            tracing::warn!("clearing remembered agent sessions failed: {e}");
+            self.restore_remembered_sessions(id, &path, remembered)
+                .await;
         }
         Ok(id)
     }
@@ -970,14 +983,20 @@ impl Orchestrator {
     /// Respawn every agent remembered for `root` on the session it was on,
     /// through the same resume path as a manual restart ([`restart_launch`]),
     /// on the args it was started with and owning its to-dos/scratchpads
-    /// again. Best-effort per entry; the caller clears the list afterwards.
-    async fn restore_remembered_sessions(&self, project_id: ProjectId, root: &Path) {
+    /// again. Best-effort per entry.
+    async fn restore_remembered_sessions(
+        &self,
+        project_id: ProjectId,
+        root: &Path,
+        remembered: Vec<RememberedSession>,
+    ) {
         let wsl = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             project_backend(&inner, project_id)
         };
         let now = Utc::now();
-        for entry in self.session_memory.list(root) {
+        let mut remembered = remembered.into_iter();
+        while let Some(entry) = remembered.next() {
             if entry.is_expired(now) {
                 continue;
             }
@@ -996,6 +1015,22 @@ impl Orchestrator {
             {
                 continue;
             }
+            // The app is quitting: spawn nothing more, and keep this entry
+            // and the rest for the next run, next to what the quit captured.
+            // ponytail: checked before each spawn, not under the spawn's own
+            // lock, so a spawn already past this point when the quit begins
+            // can still start after the stop sweep; closing that needs the
+            // flag checked in `do_start`.
+            if self.shutting_down.load(Ordering::SeqCst) {
+                let rest = std::iter::once(entry)
+                    .chain(remembered)
+                    .map(|e| (root.to_path_buf(), e))
+                    .collect();
+                if let Err(e) = self.session_memory.remember_all(rest) {
+                    tracing::warn!("keeping remembered agent sessions failed: {e}");
+                }
+                return;
+            }
             // The to-dos/scratchpads are re-assigned, not handed over: a
             // prompt composed from them would land in the resumed
             // conversation as a fresh user message.
@@ -1009,8 +1044,8 @@ impl Orchestrator {
                     prompt: None,
                     todo_ids: Vec::new(),
                     scratchpad_ids: Vec::new(),
-                    worktree: false,
-                    worktree_name: None,
+                    worktree: entry.worktree,
+                    worktree_name: entry.worktree_name,
                 })
                 .await;
             match spawned {
@@ -2188,6 +2223,8 @@ impl Orchestrator {
             if let Some(p) = inner.processes.get_mut(&process_id) {
                 p.session = session;
                 p.spawn_args = args_override;
+                p.spawn_worktree = worktree;
+                p.spawn_worktree_name = worktree_name.clone();
             }
         }
         self.events.publish(PodiumEvent::ProcessAdded {
@@ -2907,6 +2944,7 @@ impl Orchestrator {
     /// `remember_sessions` on, running agents' session ids are captured first
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions();
@@ -2944,7 +2982,7 @@ impl Orchestrator {
     /// Runs on the app's exit path, so it reads nothing from disk and starts
     /// no process; every entry goes out in one write.
     fn capture_agent_sessions(&self) {
-        let entries: Vec<(PathBuf, RememberedSession)> = {
+        let mut entries: Vec<(Option<Instant>, PathBuf, RememberedSession)> = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             inner
                 .processes
@@ -2958,6 +2996,7 @@ impl Orchestrator {
                     }
                     let session = p.session.as_ref()?;
                     Some((
+                        p.started_at,
                         inner.projects.get(&p.project_id)?.root.clone(),
                         RememberedSession {
                             adapter_id: adapter.clone(),
@@ -2967,11 +3006,20 @@ impl Orchestrator {
                             todo_ids: owned_by(&inner.todo_assignments, *id),
                             scratchpad_ids: owned_by(&inner.scratchpad_assignments, *id),
                             args: p.spawn_args.clone(),
+                            worktree: p.spawn_worktree,
+                            worktree_name: p.spawn_worktree_name.clone(),
                         },
                     ))
                 })
                 .collect()
         };
+        // Oldest first, so the restore respawns them — and the sidebar lists
+        // them — in the order they were started.
+        entries.sort_by_key(|(started, ..)| *started);
+        let entries = entries
+            .into_iter()
+            .map(|(_, root, entry)| (root, entry))
+            .collect();
         if let Err(e) = self.session_memory.remember_all(entries) {
             tracing::warn!("remembering agent sessions failed: {e}");
         }
@@ -3369,6 +3417,8 @@ fn insert_process(
             started_at: None,
             waiting_since: None,
             spawn_args: None,
+            spawn_worktree: false,
+            spawn_worktree_name: None,
             session: None,
             last_color: None,
         },
@@ -4453,18 +4503,19 @@ mod tests {
     /// session flag and id as `<flag><id>` and then stays up, and the CLI
     /// "has a transcript" only for the ids in `stored`. With `fail_resume`,
     /// a `--resume` launch exits non-zero at once, like a CLI refusing it.
-    #[cfg(unix)]
+    /// `worktrees` records each launch's worktree request.
     struct MemoryAdapter {
         stored: Mutex<Vec<String>>,
         fail_resume: bool,
+        worktrees: Mutex<Vec<(bool, Option<String>)>>,
     }
 
-    #[cfg(unix)]
     impl MemoryAdapter {
         fn new(fail_resume: bool) -> Arc<Self> {
             Arc::new(Self {
                 stored: Mutex::new(Vec::new()),
                 fail_resume,
+                worktrees: Mutex::new(Vec::new()),
             })
         }
 
@@ -4473,7 +4524,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl crate::agent::AgentAdapter for MemoryAdapter {
         fn id(&self) -> &'static str {
             "memory"
@@ -4488,6 +4538,10 @@ mod tests {
         }
 
         fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<crate::agent::LaunchPlan> {
+            self.worktrees
+                .lock()
+                .unwrap()
+                .push((ctx.worktree, ctx.worktree_name.map(str::to_string)));
             let (bin, tail) = if self.fail_resume {
                 (
                     r#"f() { printf '<%s>' "$@"; [ "$1" != --resume ] || exit 3; sleep 30; }; f"#,
@@ -4520,7 +4574,6 @@ mod tests {
     }
 
     /// An orchestrator on `adapter`, persisting under `data`.
-    #[cfg(unix)]
     fn memory_orch(data: &Path, adapter: Arc<MemoryAdapter>) -> Orchestrator {
         let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter]));
         orch.set_agent_settings_path(data.join("agents.json"));
@@ -4530,7 +4583,6 @@ mod tests {
         orch
     }
 
-    #[cfg(unix)]
     async fn spawn_memory_agent(
         orch: &Orchestrator,
         project: ProjectId,
@@ -4555,7 +4607,6 @@ mod tests {
 
     /// Wait until agent `id` printed a launch line `<flag><session id>` that
     /// satisfies `done`, and return it.
-    #[cfg(unix)]
     async fn wait_for_launch(
         orch: &Orchestrator,
         id: ProcessId,
@@ -4579,7 +4630,6 @@ mod tests {
         panic!("launch never matched, last saw {last:?}");
     }
 
-    #[cfg(unix)]
     fn remembered(session_id: &str, updated_at: DateTime<Utc>) -> RememberedSession {
         RememberedSession {
             adapter_id: "memory".to_string(),
@@ -4589,14 +4639,15 @@ mod tests {
             todo_ids: Vec::new(),
             scratchpad_ids: Vec::new(),
             args: None,
+            worktree: false,
+            worktree_name: None,
         }
     }
 
-    #[cfg(unix)]
     const SESS_1: &str = "00000000-0000-4000-8000-000000000001";
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
     async fn a_remembered_session_resumes_on_the_next_open() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4646,7 +4697,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
     async fn a_session_the_cli_no_longer_has_is_not_restored() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4665,7 +4716,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
     async fn a_restore_that_fails_to_resume_starts_fresh_next_time() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4702,7 +4753,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
     async fn toggle_off_skips_restore_even_with_remembered_sessions() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4724,7 +4774,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
     async fn turning_the_setting_off_forgets_every_captured_session() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4742,7 +4791,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
     async fn an_expired_or_invalid_remembered_session_is_not_restored() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4766,7 +4814,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg(unix)]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
     async fn a_restored_agent_owns_its_todos_and_keeps_its_args() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
@@ -4813,6 +4861,115 @@ mod tests {
             Some(resumed)
         );
         restarted.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restore_after_the_quit_began_spawns_nothing_and_keeps_its_entries() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        orch.set_agent_remember_sessions(true).unwrap();
+        orch.session_memory
+            .remember(&root, remembered(SESS_1, Utc::now()))
+            .unwrap();
+        // The quit lands before the restore reaches its spawn.
+        orch.shutdown().await;
+        let id = orch.open_project(root.clone()).await.unwrap();
+        assert!(orch.list_processes(Some(id)).is_empty());
+        let kept = orch.session_memory.list(&root);
+        assert_eq!(kept.len(), 1, "kept for the next run");
+        assert_eq!(kept[0].session_id, SESS_1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_restored_agent_keeps_its_worktree_request() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        let agent = orch
+            .spawn_agent(
+                id,
+                Some("memory".to_string()),
+                Some("agent-1".to_string()),
+                None,
+                Vec::new(),
+                Vec::new(),
+                true,
+                Some("fictional-wt".to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        orch.shutdown().await;
+        let listed = orch.session_memory.list(&root);
+        assert!(listed[0].worktree);
+        assert_eq!(listed[0].worktree_name.as_deref(), Some("fictional-wt"));
+
+        adapter.worktrees.lock().unwrap().clear();
+        adapter.store(&agent.to_string());
+        let restarted = memory_orch(data.path(), adapter.clone());
+        let id = restarted.open_project(root.clone()).await.unwrap();
+        assert_eq!(restarted.list_processes(Some(id)).len(), 1);
+        // The restored launch was built with the same request, so its
+        // identity prompt matches the original's.
+        assert_eq!(
+            *adapter.worktrees.lock().unwrap(),
+            vec![(true, Some("fictional-wt".to_string()))]
+        );
+        restarted.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_todo_a_live_agent_owns_is_not_reassigned_on_restore() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let orch = memory_orch(data.path(), MemoryAdapter::new(false));
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        let taken = orch.add_todo(id, "Fictional taken task", None).unwrap();
+        let free = orch.add_todo(id, "Fictional free task", None).unwrap();
+        let other = spawn_memory_agent(&orch, id, "other", vec![taken.id], None).await;
+        let restored = spawn_memory_agent(&orch, id, "restored", Vec::new(), None).await;
+        orch.reassign_restored(id, &root, restored, &[taken.id, free.id], &[]);
+        let todos = orch.list_todos(id).unwrap();
+        let owner = |tid| {
+            todos
+                .iter()
+                .find(|t| t.id == tid)
+                .and_then(|t| t.assigned_agent.as_ref())
+                .map(|a| a.process_id)
+        };
+        assert_eq!(owner(taken.id), Some(other));
+        assert_eq!(owner(free.id), Some(restored));
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn two_concurrent_opens_restore_one_agent() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        orch.set_agent_remember_sessions(true).unwrap();
+        orch.session_memory
+            .remember(&root, remembered(SESS_1, Utc::now()))
+            .unwrap();
+        // As React StrictMode's double startup restore does.
+        let (a, b) = tokio::join!(
+            orch.open_project(root.clone()),
+            orch.open_project(root.clone())
+        );
+        assert_eq!(a.unwrap(), b.unwrap());
+        assert_eq!(orch.list_processes(None).len(), 1);
+        orch.shutdown().await;
     }
 
     /// The real Claude Code adapter: an agent whose own args pick the

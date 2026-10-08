@@ -219,8 +219,10 @@ atomically, before the async `podium.yml` load.
   place a session is captured: each still-running agent with an
   `AgentSession` is remembered under that session's **current id** — the
   Podium-assigned `--session-id`, or the one its last restart moved it to —
-  with its name, the to-dos/scratchpads it owns and its per-spawn
-  `args_override` (`ManagedProcess.spawn_args`), all in one write. Nothing is
+  with its name, the to-dos/scratchpads it owns, its per-spawn
+  `args_override` and its `worktree`/`worktree_name` request
+  (`ManagedProcess.spawn_*`, so the restored identity prompt matches), oldest
+  `started_at` first so a restore keeps the sidebar order, all in one write. Nothing is
   read from Claude Code's files and no process starts on that exit path. An
   agent without an `AgentSession` is **not** remembered: Auggie (no session
   flags), and an agent whose own `extra_args` pick the session (`--resume`,
@@ -243,8 +245,11 @@ atomically, before the async `podium.yml` load.
   re-assigned the to-dos/scratchpads that still exist, are not
   done/archived and no live agent claimed (re-assigned, not handed over: a
   composed prompt would land in the resumed conversation as a new message).
-  The remembered list for that root is always cleared on open, on or off, and
-  turning the setting off clears every root. The MCP server is started
+  The remembered list for that root is always taken on open (`take`, before
+  the restore and on or off), so a quit during the restore cannot have what
+  it captures wiped afterwards; `shutdown()` sets `shutting_down` first, and
+  the restore checks it before each spawn, putting the entries it has not
+  restored back for the next run. Turning the setting off clears every root. The MCP server is started
   synchronously in `setup` so a restored agent never spawns before the MCP
   connect info (its `--mcp-config`, `-n` and identity) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
