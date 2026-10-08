@@ -125,7 +125,9 @@ whether agents are done, no recap of what they did.
   becomes a card you confirm or reject. Under `propose-all` the assistant
   also cannot message an agent directly, so a push go-ahead goes through a
   new agent you confirm; switching into or out of that mode restarts its
-  session (between turns, keeping the conversation).
+  session (between turns, keeping the conversation). The block applies from
+  the next turn boundary: a turn already running when you switch can still
+  message an agent until it ends.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.

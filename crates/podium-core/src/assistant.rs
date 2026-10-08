@@ -959,14 +959,19 @@ impl AssistantManager {
     /// session, so a session launched the other way is replaced, resuming
     /// the same conversation: right now when it is idle (dropped here and
     /// respawned lazily by the next turn), or at its `TurnEnd` when a turn
-    /// is running — never mid-turn.
+    /// is running — never mid-turn. So a switch *into* `propose-all` during a
+    /// running turn leaves that turn's session able to `SendMessage` until its
+    /// `TurnEnd`: the block applies from the next turn boundary.
     pub async fn set_send_message_blocked(&self, blocked: bool) {
         self.preset_send_message_blocked(blocked);
         let mut state = self.state.lock().await;
+        // Read the shared flag, not `blocked`: a concurrent call may have
+        // moved it again, and the flag is what the next session spawns with.
+        let wanted = self.block_send_message.load(Ordering::Relaxed);
         let stale = state
             .session
             .as_ref()
-            .is_some_and(|s| s.send_message_blocked != blocked);
+            .is_some_and(|s| s.send_message_blocked != wanted);
         // A running turn keeps its session; its `TurnEnd` swaps it.
         if stale && !state.in_flight {
             if let Some(mut session) = state.session.take() {
@@ -1545,8 +1550,16 @@ fn spawn_session(ctx: SpawnCtx) -> CoreResult<Session> {
                         if !st.pending.is_empty() {
                             match spawn_session(respawn.clone()) {
                                 Ok(session) => st.session = Some(session),
+                                // No session to take the waiting items, and
+                                // no `TurnEnd` will come to retry: report
+                                // them undelivered, as the exit path does.
                                 Err(e) => {
-                                    tracing::warn!("could not respawn the assistant session: {e}")
+                                    tracing::warn!("could not respawn the assistant session: {e}");
+                                    let dropped = std::mem::take(&mut st.pending);
+                                    report_undelivered(&store, &events, dropped);
+                                    events.publish(PodiumEvent::AssistantEvent {
+                                        event: AssistantEvent::Exited,
+                                    });
                                 }
                             }
                         }

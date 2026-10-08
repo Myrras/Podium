@@ -268,7 +268,12 @@ atomically, before the async `podium.yml` load.
     in a push, any of the three fed through `xargs` (a prefix allow also
     matches `xargs <prefix> …`, with the arguments out of sight on stdin),
     plus `-R`/`--repo` on `gh`/`glab`, wherever the flag sits (mid-pattern
-    `*`; long git options cut to their shortest unambiguous prefix). They
+    `*`; long git options cut to their shortest unambiguous prefix), and
+    every way to read a local file into the PR/MR — `gh --body-file`/`-F`,
+    `glab --description-file`/`--attach` — which would publish e.g. an ssh
+    key without a prompt (the prompt's retry is `--fill`, or `--body`
+    inline), plus glab's other-repository flags `-H`/`--head` and
+    `--target-p…` (not in its docs; denied anyway). They
     match command text only:
     `git -C … push`, aliases, some flag clusters, an scp-style `host:path`
     destination with no user (`example.com:other.git`, an ssh-config
@@ -462,7 +467,11 @@ atomically, before the async `podium.yml` load.
   resuming the conversation: at once when it is idle (dropped, respawned by
   the next turn), or at the running turn's `TurnEnd` — never mid-turn — via
   the output task, which carries a `SpawnCtx` to start its own replacement
-  before the next waiting item goes out. The mode loaded at startup is
+  before the next waiting item goes out (if that spawn fails, the waiting
+  items are reported undelivered and `exited` is published, as for any exit
+  nobody asked for). So the block applies from the next turn boundary: a
+  turn already running when `propose-all` is chosen can still `SendMessage`
+  until it ends. The mode loaded at startup is
   applied with `preset_send_message_blocked`. The prompt, which never knows
   the mode, says: if `SendMessage` is unavailable, use the fresh-agent route
   (a `spawn_agent`, which gets the card).
