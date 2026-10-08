@@ -94,7 +94,7 @@ pub async fn assistant_autonomy_set(
     state: State<'_, AppState>,
     mode: AutonomyMode,
 ) -> Result<AutonomyMode, IpcError> {
-    Ok(state.orchestrator.set_assistant_autonomy(mode)?)
+    Ok(state.orchestrator.set_assistant_autonomy(mode).await?)
 }
 
 /// Whether Podium may nudge the assistant unprompted (agent finished, agent

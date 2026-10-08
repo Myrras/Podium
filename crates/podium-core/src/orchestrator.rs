@@ -411,12 +411,21 @@ impl Orchestrator {
     }
 
     /// Change the assistant's autonomy mode; returns what was stored.
-    pub fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AutonomyMode> {
-        Ok(self
+    ///
+    /// Moving into or out of `propose-all` also flips whether the assistant's
+    /// CLI session may use `SendMessage` — the one way it could reach an
+    /// agent without passing the gate — which replaces the session (see
+    /// [`AssistantManager::set_send_message_blocked`]).
+    pub async fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AutonomyMode> {
+        let stored = self
             .agent_settings
             .set_assistant_autonomy(mode)?
             .assistant
-            .autonomy)
+            .autonomy;
+        self.assistant
+            .set_send_message_blocked(stored == AutonomyMode::ProposeAll)
+            .await;
+        Ok(stored)
     }
 
     /// Whether Podium may nudge the assistant unprompted (Settings →
@@ -749,6 +758,9 @@ impl Orchestrator {
     /// and load them. Until this is called, settings are held in memory only.
     pub fn set_agent_settings_path(&self, path: PathBuf) {
         self.agent_settings.set_path(path);
+        // The assistant's first session must already match the stored mode.
+        self.assistant
+            .preset_send_message_blocked(self.assistant_autonomy() == AutonomyMode::ProposeAll);
     }
 
     /// A snapshot of the global agent settings.

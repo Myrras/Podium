@@ -10,6 +10,21 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent that did the work pushes it.** Tell the assistant an agent may
+  push, and it passes that go-ahead on to the agent itself instead of starting
+  a fresh one: the agent pushes its own branch, opens the PR/MR in the same
+  repository and reports back with the link. An agent on main or master does
+  not push. Force, delete, tag and explicit main/master pushes, pushes
+  elsewhere, PRs/MRs against another repository and reading a local file into
+  a PR/MR body (`--body-file`, `-F`, `--description-file`, `--attach`) or
+  choosing glab's source branch (`-s`, `--source-branch`) are blocked in
+  their plain spellings. Under the `propose-all` autonomy mode the
+  assistant can no longer message an agent directly (it would skip the
+  confirmation card), so switching into or out of that mode restarts its
+  session between turns, keeping the conversation.
+
 ## [2.5.0] - 2026-10-08
 
 ### Added

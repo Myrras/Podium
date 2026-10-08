@@ -254,12 +254,50 @@ atomically, before the async `podium.yml` load.
   / `ListAgents`. Two things make that work, both set per session so the
   user's own `~/.claude/settings.json` is never touched:
   - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
-    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    (`agent::peer_inbound_settings`). Without it the CLI decides per message
     from the two sessions' permission-mode classes, and the assistant
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
     A `--settings` the user put in `extra_args` wins over Podium's.
+  - **Go-ahead rules.** A Claude Code agent's `--settings`
+    (`agent::agent_session_settings`, built on the same inbound setting)
+    also allows `git push`, `gh pr create` and `glab mr create`, so a
+    go-ahead the assistant relays by message can run in the existing
+    session — no peer message can approve a prompt. `GO_AHEAD_DENY_RULES`
+    (deny beats allow) block force, `+refspec`, delete, mirror/prune/all,
+    `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
+    pushes, URL/`@` destinations, main/master as the destination and any
+    quoting, `$`/backtick/brace expansion or a literal `*` (glob refspec)
+    in a push, any of the three fed through `xargs` (a prefix allow also
+    matches `xargs <prefix> …`, with the arguments out of sight on stdin),
+    plus `-R`/`--repo` on `gh`/`glab`, wherever the flag sits (mid-pattern
+    `*`; long git options cut to their shortest unambiguous prefix), and
+    every way to read a local file into the PR/MR — `gh --body-file`/`-F`,
+    `glab --description-file`/`--attach`, `gh --attach` — which would
+    publish e.g. an ssh key without a prompt (the prompt's retry is
+    `--fill`, or `--body` inline), plus glab's other-repository flags
+    `-H`/`--head` and `--target-p…` (not in its docs; denied anyway), and
+    glab's `-s`/`--source-branch` (also quoted/escaped): glab
+    `--fill`/`--push` pushes `HEAD:<source-branch>` itself, around the git
+    push rules. They
+    match command text only:
+    `git -C … push`, aliases, some flag clusters, an scp-style `host:path`
+    destination with no user (`example.com:other.git`, an ssh-config
+    alias), an explicit push to another non-main branch (`HEAD:develop`)
+    and an implicit push of a checked-out
+    main slip past (see the code comment); the identity prompt has the agent
+    check it is not on main/master before pushing. The test's matcher
+    mirrors CLI 2.1.292 — re-check it on a CLI upgrade. With the user's own
+    `--settings` (either form) none of this applies, and the identity
+    prompt drops the go-ahead. The assistant's fresh fallback agent is a
+    `claude-code` spawn with no `--allowedTools`: Podium's settings already
+    carry the allow and deny rules, and with the user's own `--settings` an
+    `--allowedTools` would grant a push with no deny list behind it. When
+    those `--settings` come from the default agent args or a project's
+    `agents.extra_args` (merged in by `spawn_agent`), the fallback has no
+    rules either: the push waits for approval in its terminal, and the
+    assistant is told to say so.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -430,8 +468,12 @@ atomically, before the async `podium.yml` load.
   lookups go to `spawn_agent`, never its own Agent-tool subagents, which have
   no shell here), to keep agent updates to warnings and done-ness, how to stop
   agents safely (only the project in question; check the output for follow-up
-  work and complete the to-do first), and how to get a peer-refused external
-  write done (a fresh agent carrying the authorisation and `--allowedTools`).
+  work and complete the to-do first), and how to pass on a push go-ahead (a
+  message to an existing Claude Code agent, which accepts it once
+  `verify_sender` says the sender is the assistant, pushes, opens the PR/MR
+  and reports back with its URL; a fresh `claude-code` agent (no
+  `--allowedTools`) if it refuses, never reports a push, or is not Claude
+  Code).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
@@ -454,7 +496,24 @@ atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event.
+  become a `toolFailed` event. The gate only sees Podium's own MCP tools,
+  so the CLI's own `SendMessage` — the way a push go-ahead is relayed — is
+  refused outright under `propose-all` instead: that mode adds it to the
+  session's `--disallowedTools`. A CLI flag cannot change in a running
+  session, so moving into or out of `propose-all`
+  (`Orchestrator::set_assistant_autonomy` →
+  `AssistantManager::set_send_message_blocked`) replaces the session,
+  resuming the conversation: at once when it is idle (dropped, respawned by
+  the next turn), or at the running turn's `TurnEnd` — never mid-turn — via
+  the output task, which carries a `SpawnCtx` to start its own replacement
+  before the next waiting item goes out (if that spawn fails, the waiting
+  items are reported undelivered and `exited` is published, as for any exit
+  nobody asked for). So the block applies from the next turn boundary: a
+  turn already running when `propose-all` is chosen can still `SendMessage`
+  until it ends. The mode loaded at startup is
+  applied with `preset_send_message_blocked`. The prompt, which never knows
+  the mode, says: if `SendMessage` is unavailable, use the fresh-agent route
+  (a `spawn_agent`, which gets the card).
 
   **Persistence** is one `assistant.json` in the app data dir (atomic writes,
   the same kind of store as `todos.json`): Claude's own session id plus the
