@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **83 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **84 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -78,7 +78,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 83 commands.
+  IPC wrappers over all 84 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -166,18 +166,20 @@ reaches around it.
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
 it; at startup the frontend calls `workspace_list` and re-opens every path via
-`project_open`. A path that fails to open (folder moved/deleted, drive not
-yet mounted) is *not* auto-pruned — a transient failure must not silently
-drop the project — but its error toast offers a "Remove from workspace"
-action wired to `workspace_remove` for permanent failures. Each entry is
-a `{ path, name? }` object — the optional `name` is a user-set display-name
-override (set via `project_rename`) and list position is the sidebar order
-(set via `project_reorder`); legacy bare-path-string files are migrated on
-load. `project_open` re-applies a stored name override so a renamed project
-comes back named after a restart. Opening the same folder concurrently (e.g.
-React StrictMode's double-mount firing `restoreWorkspace` twice) dedupes to
-one project: the "already open" check and the id reservation happen under
-one lock acquisition, atomically, before the async `podium.yml` load.
+`project_open`. A path that fails to open (folder moved/deleted, drive not yet
+mounted) is *not* auto-pruned — a transient failure must not silently drop the
+project — but its error toast offers a "Remove from workspace" action wired to
+`workspace_remove` for permanent failures. Each entry is a `{ path, name?,
+color? }` object — the optional `name` is a user-set display-name override (set
+via `project_rename`), `color` the badge colour (`#rrggbb`, set via
+`project_set_color`, validated in core since it lands in a CSS property) and
+list position is the sidebar order (set via `project_reorder`); legacy
+bare-path-string files are migrated on load. `project_open` re-applies a stored
+name override and colour so a renamed/recoloured project comes back that way
+after a restart. Opening the same folder concurrently (e.g. React StrictMode's
+double-mount firing `restoreWorkspace` twice) dedupes to one project: the
+"already open" check and the id reservation happen under one lock acquisition,
+atomically, before the async `podium.yml` load.
 
 - **Processes** are shell command lines run via `$SHELL -lic` (login +
   interactive, so both `.zprofile`/`.bash_profile` and `.zshrc`/`.bashrc`
@@ -836,6 +838,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `project_list`          | –                                           | `ProjectInfo[]`   |
 | `project_config_reload` | `{ projectId }`                             | `ProjectInfo`     |
 | `project_rename`        | `{ projectId, name? }` (blank clears)       | `ProjectInfo`     |
+| `project_set_color`     | `{ projectId, color? }` (`#rrggbb`, blank clears) | `ProjectInfo` |
 | `project_reorder`       | `{ ordered: string[] }` (project ids)       | `ProjectInfo[]`   |
 | `project_just_recipes`  | `{ projectId }`                             | `string[]`        |
 | `project_open_in_warp`  | `{ projectId }`                             | –                 |

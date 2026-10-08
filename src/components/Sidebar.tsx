@@ -31,6 +31,7 @@ import { SECTIONS, sectionKey, useLayoutStore } from "../state/layoutStore";
 import type { Section } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
+import { type ThemeMode, useThemeStore } from "../state/themeStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
@@ -204,6 +205,7 @@ function ProjectGroup({
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const setProjectColor = useProjectStore((s) => s.setProjectColor);
   const hasWorktrees = useWorktreeStore(
     (s) => (s.worktreesByProject[project.id]?.length ?? 0) > 0,
   );
@@ -234,6 +236,58 @@ function ProjectGroup({
   >(undefined);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Badge colour: `colorDraft` follows the picker while it is open (the
+  // `input` event) so the badge recolours instantly, and only the native
+  // `change` event — the picker committing — is persisted. Persisting every
+  // `input` meant a workspace.json write plus a full project refresh per
+  // drag step.
+  const [colorDraft, setColorDraft] = useState<string | null>(null);
+  const colorInputRef = useRef<HTMLInputElement>(null);
+  const saving = useRef(0);
+  const badgeColor = colorDraft ?? project.color;
+  const themeMode = useThemeStore((s) => s.mode);
+  // An uncoloured badge follows the theme's accent, so the picker opens on
+  // that rather than on one theme's hard-coded hex.
+  const accentHex = themeAccentHex(themeMode);
+
+  useEffect(() => {
+    const el = colorInputRef.current;
+    if (!el) return;
+    const commit = () => {
+      const next = el.value;
+      if (next === project.color) {
+        setColorDraft(null);
+        return;
+      }
+      // Keep showing the draft until the store has the saved colour, so the
+      // badge does not flash back to the old one in between.
+      // Only clear it if the user has not moved on to a newer draft meanwhile.
+      saving.current += 1;
+      void setProjectColor(project.id, next).finally(() => {
+        saving.current -= 1;
+        setColorDraft((d) => (d === next ? null : d));
+      });
+    };
+    // A picker dismissed without a `change` must not leave its draft on the badge.
+    // (A blur during a pending save keeps the draft; the save clears it.)
+    const discard = () => {
+      if (!saving.current) setColorDraft(null);
+    };
+    el.addEventListener("change", commit);
+    el.addEventListener("blur", discard);
+    return () => {
+      el.removeEventListener("change", commit);
+      el.removeEventListener("blur", discard);
+    };
+  }, [project.id, project.color, setProjectColor]);
+
+  const resetColor = () => {
+    // A late-landing older save would overwrite the reset.
+    if (saving.current) return;
+    setColorDraft(null);
+    if (project.color) void setProjectColor(project.id, null);
+  };
 
   useEffect(() => {
     if (editing) inputRef.current?.select();
@@ -315,20 +369,12 @@ function ProjectGroup({
         onDrop();
       }}
     >
-      <div
-        className={styles.projectHeader}
-        role="button"
-        tabIndex={0}
-        aria-expanded={!isCollapsed}
-        aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${project.name}`}
-        onClick={toggleGroup}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            toggleGroup();
-          }
-        }}
-      >
+      {/* The header row is a plain mouse target; the caret is the real,
+          focusable toggle. Making the whole row role="button" nested the
+          badge picker and the action buttons inside a button, which screen
+          readers flatten to just its label, and its Enter/Space handler
+          swallowed Space meant for the picker. */}
+      <div className={styles.projectHeader} onClick={toggleGroup}>
         <span
           className={styles.dragHandle}
           role="img"
@@ -345,15 +391,59 @@ function ProjectGroup({
         >
           <GripIcon size={13} />
         </span>
-        <span
-          className={styles.caretWrap}
-          data-open={!isCollapsed ? "true" : undefined}
+        <button
+          type="button"
+          className={styles.caretButton}
+          aria-expanded={!isCollapsed}
+          aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${project.name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleGroup();
+          }}
         >
-          <CaretIcon />
-        </span>
-        <span className={styles.projectBadge} aria-hidden>
-          {project.iconInitials}
-        </span>
+          <span
+            className={styles.caretWrap}
+            data-open={!isCollapsed ? "true" : undefined}
+          >
+            <CaretIcon />
+          </span>
+        </button>
+        <label
+          className={styles.projectBadge}
+          title={
+            project.color
+              ? "Change colour (right-click to reset)"
+              : "Change colour"
+          }
+          style={
+            badgeColor
+              ? { background: badgeColor, color: readableOn(badgeColor) }
+              : undefined
+          }
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            resetColor();
+          }}
+        >
+          <span aria-hidden>{project.iconInitials}</span>
+          <input
+            ref={colorInputRef}
+            type="color"
+            className={styles.badgeColorInput}
+            aria-label={`Change colour of ${project.name}`}
+            aria-keyshortcuts={project.color ? "Delete" : undefined}
+            value={badgeColor ?? accentHex}
+            onChange={(e) => setColorDraft(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                resetColor();
+              }
+            }}
+          />
+        </label>
         {/* The name and its hover actions share one slot: the actions
             overlay the end of the name instead of reserving their width,
             and stay inside the slot so they never cover the caret, the
@@ -673,4 +763,38 @@ export function Sidebar() {
       />
     </aside>
   );
+}
+
+/** Resolved `--accent` per theme; the CSS lookup is not free. */
+const accentByTheme = new Map<ThemeMode, string>();
+
+/**
+ * The active theme's `--accent` as `#rrggbb`, what a colour input takes.
+ * Read from the CSS tokens (once per theme) rather than duplicated here.
+ */
+function themeAccentHex(mode: ThemeMode): string {
+  const cached = accentByTheme.get(mode);
+  if (cached) return cached;
+  const accent = getComputedStyle(document.documentElement)
+    .getPropertyValue("--accent")
+    .trim()
+    .toLowerCase();
+  const hex = /^#[0-9a-f]{6}$/.test(accent) ? accent : "#000000";
+  accentByTheme.set(mode, hex);
+  return hex;
+}
+
+/** Black or white initials, whichever reads better on a `#rrggbb` badge. */
+function readableOn(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  // WCAG relative luminance; pick whichever of black/white contrasts more.
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const l =
+    0.2126 * lin(n >> 16) +
+    0.7152 * lin((n >> 8) & 255) +
+    0.0722 * lin(n & 255);
+  return (l + 0.05) / 0.05 > 1.05 / (l + 0.05) ? "#000" : "#fff";
 }

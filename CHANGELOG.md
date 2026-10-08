@@ -20,6 +20,12 @@ when it merges.
   elsewhere and PRs/MRs against another repository are blocked in their plain
   spellings.
 
+- **Give each project its own badge colour.** Click a project's initials
+  badge in the sidebar to pick a colour, so projects are easy to tell apart;
+  the initials switch to black or white, whichever reads better. Right-click
+  the badge (or press Delete while it has focus) to go back to the theme
+  accent. The colour is remembered across restarts.
+
 ## [2.2.0] - 2026-10-08
 
 ### Added
