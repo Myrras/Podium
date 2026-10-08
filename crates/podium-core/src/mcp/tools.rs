@@ -463,11 +463,11 @@ impl PodiumTools {
                 (c.board, c.fetched_at)
             }
             _ => {
-                let board = tokio::task::spawn_blocking(move || orch.issue_board(project_id, mine))
+                let c = tokio::task::spawn_blocking(move || orch.issue_board(project_id, mine))
                     .await
                     .map_err(|e| McpError::internal_error(format!("board task failed: {e}"), None))?
                     .map_err(core_error)?;
-                (board, chrono::Utc::now())
+                (c.board, c.fetched_at)
             }
         };
         let items: Vec<_> = board

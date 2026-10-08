@@ -5,7 +5,7 @@
 //! atomic (temp file + rename); a missing or corrupt file is an empty store,
 //! and without [`BoardStore::set_path`] it is in-memory only.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -49,11 +49,10 @@ type BoardMap = BTreeMap<String, RootBoards>;
 struct Inner {
     path: Option<PathBuf>,
     boards: BoardMap,
-    /// Bumped by every local edit (move/unassign), so a fetch that started
-    /// before one cannot overwrite it with the pre-edit board.
-    // ponytail: one counter for all projects; an edit elsewhere only costs a
-    // fetch its cache write. Per-root counters if that ever matters.
-    edits: u64,
+    /// Per project root, bumped by every local edit (move/unassign), so a
+    /// fetch of that project that started before one cannot overwrite it with
+    /// the pre-edit board. In memory only: a restart has no fetch in flight.
+    edits: HashMap<String, u64>,
 }
 
 pub(crate) struct BoardStore {
@@ -66,7 +65,7 @@ impl BoardStore {
             inner: Mutex::new(Inner {
                 path: None,
                 boards: BoardMap::new(),
-                edits: 0,
+                edits: HashMap::new(),
             }),
         }
     }
@@ -87,25 +86,29 @@ impl BoardStore {
             .and_then(|r| r.scope(mine).clone())
     }
 
-    /// The edit counter; take it before a fetch and hand it to [`Self::put`].
-    pub fn edits(&self) -> u64 {
-        self.inner.lock().expect(LOCK_POISONED).edits
+    /// This project's edit counter; take it before a fetch and hand it to
+    /// [`Self::put`].
+    pub fn edits(&self, root: &Path) -> u64 {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.edits.get(&key(root)).copied().unwrap_or(0)
     }
 
     /// Store a freshly fetched board (best-effort persisted), unless a local
-    /// edit landed since the fetch started (`edits` taken before it) — that
-    /// board predates the edit. Returns whether it was stored.
-    pub fn put(&self, root: &Path, mine: bool, board: Board, edits: u64) -> bool {
+    /// edit of this project landed since the fetch started (`edits` taken
+    /// before it) — that board predates the edit. Returns the stored entry.
+    pub fn put(&self, root: &Path, mine: bool, board: Board, edits: u64) -> Option<CachedBoard> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        if inner.edits != edits {
-            return false;
+        let key = key(root);
+        if inner.edits.get(&key).copied().unwrap_or(0) != edits {
+            return None;
         }
-        *inner.boards.entry(key(root)).or_default().scope(mine) = Some(CachedBoard {
+        let cached = CachedBoard {
             board,
             fetched_at: Utc::now(),
-        });
+        };
+        *inner.boards.entry(key).or_default().scope(mine) = Some(cached.clone());
         let _ = save(&inner);
-        true
+        Some(cached)
     }
 
     /// After a successful move: put the item in `column` (and, for GitLab, its
@@ -119,7 +122,7 @@ impl BoardStore {
         labels: Option<&[String]>,
     ) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.edits += 1;
+        *inner.edits.entry(key(root)).or_default() += 1;
         let Some(root_boards) = inner.boards.get_mut(&key(root)) else {
             return;
         };
@@ -148,7 +151,7 @@ impl BoardStore {
     /// the issues assigned to you (its PRs are the ones you wrote, so they stay).
     pub fn apply_unassign(&self, root: &Path, kind: ItemKind, number: u64, me: &str) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.edits += 1;
+        *inner.edits.entry(key(root)).or_default() += 1;
         let Some(root_boards) = inner.boards.get_mut(&key(root)) else {
             return;
         };
@@ -255,8 +258,8 @@ mod tests {
         let store = BoardStore::new();
         store.set_path(path.clone());
         assert_eq!(store.get(&root, true), None);
-        store.put(&root, true, board(), 0);
-        store.put(&root, false, board(), 0);
+        store.put(&root, true, board(), 0).unwrap();
+        store.put(&root, false, board(), 0).unwrap();
 
         // A second store on the same file sees both scopes, RFC 3339 on disk.
         let reloaded = BoardStore::new();
@@ -294,8 +297,8 @@ mod tests {
     fn unassign_drops_the_issue_from_mine_and_the_name_everywhere() {
         let root = PathBuf::from("/tmp/fixture-project");
         let store = BoardStore::new();
-        store.put(&root, true, board(), 0);
-        store.put(&root, false, board(), 0);
+        store.put(&root, true, board(), 0).unwrap();
+        store.put(&root, false, board(), 0).unwrap();
         store.apply_unassign(&root, ItemKind::Issue, 1, "sam");
         store.apply_unassign(&root, ItemKind::Pr, 2, "sam");
         let mine = store.get(&root, true).unwrap().board;
@@ -309,19 +312,27 @@ mod tests {
     #[test]
     fn a_fetch_started_before_an_edit_is_not_stored() {
         let root = PathBuf::from("/tmp/fixture-project");
+        let other = PathBuf::from("/tmp/fixture-other");
         let store = BoardStore::new();
-        assert!(store.put(&root, false, board(), store.edits()));
-        let before = store.edits();
+        assert!(store
+            .put(&root, false, board(), store.edits(&root))
+            .is_some());
+        let before = store.edits(&root);
+        let other_before = store.edits(&other);
         store.apply_move(&root, ItemKind::Issue, 1, "open", None);
         // The in-flight fetch lands after the move: dropped, the move stays.
-        assert!(!store.put(&root, false, board(), before));
+        assert!(store.put(&root, false, board(), before).is_none());
         let b = store.get(&root, false).unwrap().board;
         assert_eq!(b.items[0].column, "open");
+        // Another project's fetch is not affected by this project's edit.
+        assert!(store.put(&other, false, board(), other_before).is_some());
         // A fetch started after it is stored as usual.
-        assert!(store.put(&root, false, board(), store.edits()));
-        let before = store.edits();
+        assert!(store
+            .put(&root, false, board(), store.edits(&root))
+            .is_some());
+        let before = store.edits(&root);
         store.apply_unassign(&root, ItemKind::Pr, 2, "sam");
-        assert!(!store.put(&root, false, board(), before));
+        assert!(store.put(&root, false, board(), before).is_none());
     }
 
     #[test]

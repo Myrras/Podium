@@ -28,7 +28,8 @@ export function IssueDetailPane({
   const KindIcon = item?.kind === "pr" ? PrIcon : IssueIcon;
   const board = useIssueStore((s) => s.byProject[projectId]?.board);
   const move = useIssueStore((s) => s.move);
-  const targets = item && board ? moveTargets(item, board.columns) : [];
+  const targets =
+    item && board ? moveTargets(item, board.columns, board.source) : [];
   const provider = board?.provider ?? "github";
   const prWord = provider === "gitlab" ? "merge" : "pull";
   const approvalLine = (a: ReturnType<typeof approvalBadge>) =>

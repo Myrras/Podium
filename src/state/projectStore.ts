@@ -70,10 +70,14 @@ interface ProjectState {
   reloadProjectConfig: (id: ProjectId) => Promise<void>;
   /** Rename a project; a blank/null name reverts to the folder/config name. */
   renameProject: (id: ProjectId, name: string | null) => Promise<void>;
-  /** Show/hide the project's optional sidebar sections (data is untouched). */
+  /**
+   * Show/hide the project's optional sidebar sections (data is untouched).
+   * `changed` is merged into the *latest* sections, applied at once, then
+   * persisted — so two quick toggles never undo each other.
+   */
   setProjectSections: (
     id: ProjectId,
-    sections: ProjectSections,
+    changed: Partial<ProjectSections>,
   ) => Promise<void>;
   /**
    * Move project `id` before `beforeId` (or to the end when null),
@@ -231,14 +235,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  setProjectSections: async (id, sections) => {
+  setProjectSections: async (id, changed) => {
+    const current = get().projects.find((p) => p.id === id);
+    if (!current) return;
+    const sections = { ...current.sections, ...changed };
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === id ? { ...p, sections } : p)),
+    }));
     try {
-      const project = await projectSetSections(id, sections);
-      set((s) => ({
-        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
-      }));
+      // The command is synchronous on the backend, so calls land in order and
+      // the last one (built on every earlier change) wins.
+      await projectSetSections(id, sections);
     } catch (e) {
       toastError("Could not update sections", toIpcError(e).message);
+      void get().refresh();
     }
   },
 

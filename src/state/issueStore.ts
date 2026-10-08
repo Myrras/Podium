@@ -62,14 +62,22 @@ const EMPTY: ProjectBoard = {
   mine: true,
 };
 
-/** Columns the item may be dropped on: they accept its kind and it is not there yet. */
+/**
+ * Columns the item may be dropped on: they accept its kind and it is not
+ * there yet. Without project columns (`source` null) Open is only reachable
+ * from Done — the backend's `validate_move` rule.
+ */
 export const moveTargets = (
   item: BoardItem,
   columns: BoardColumn[],
+  source: string | null,
 ): BoardColumn[] =>
   item.movable
     ? columns.filter(
-        (c) => c.accepts.includes(item.kind) && c.id !== item.column,
+        (c) =>
+          c.accepts.includes(item.kind) &&
+          c.id !== item.column &&
+          !(source === null && c.id === "open" && item.column !== "done"),
       )
     : [];
 

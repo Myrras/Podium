@@ -294,9 +294,6 @@ fn join<T>(h: ScopedJoinHandle<'_, CoreResult<T>>) -> CoreResult<T> {
         .unwrap_or_else(|_| Err(CoreError::IssuesFetch("fetch failed".to_string())))
 }
 
-/// Split a remote URL into `(host, path)` with `.git` and slashes stripped.
-/// Handles `git@host:a/b.git`, `ssh://git@host[:port]/a/b.git` and
-/// `https://host/a/b(.git)`; anything else is `None`.
 /// The signed-in user's name from a "who am I" call; its failure never fails
 /// the board (unassign just stays hidden).
 fn me(h: ScopedJoinHandle<'_, CoreResult<String>>) -> Option<String> {
@@ -304,6 +301,9 @@ fn me(h: ScopedJoinHandle<'_, CoreResult<String>>) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Split a remote URL into `(host, path)` with `.git` and slashes stripped.
+/// Handles `git@host:a/b.git`, `ssh://git@host[:port]/a/b.git` and
+/// `https://host/a/b(.git)`; anything else is `None`.
 pub fn parse_remote(url: &str) -> Option<(String, String)> {
     let url = url.trim();
     let (host, path) = if let Some(rest) = url
@@ -1061,12 +1061,19 @@ fn gl_closing(m: &GlItem, project: &str) -> Vec<u64> {
             }
         }
     }
-    // A branch segment that starts with the issue number: `42-fix`,
-    // `issue/12661`, `issue/12661b`, `feature/7-x`. The first one wins.
+    // A branch segment that is the issue number, optionally with one letter
+    // (Connect's sub-issues) and then `-…` or nothing: `42-fix`, `issue/12661`,
+    // `issue/12661b`, `feature/7-x` — not `2fa-login`, `release/2026.10` or
+    // `hotfix/3.4.1`. The first one wins.
     let branch = m.source_branch.as_deref().unwrap_or_default();
     if let Some(n) = branch.split('/').find_map(|seg| {
         let digits = seg.bytes().take_while(u8::is_ascii_digit).count();
-        seg[..digits].parse::<u64>().ok()
+        let rest = seg[digits..]
+            .strip_prefix(|c: char| c.is_ascii_alphabetic())
+            .unwrap_or(&seg[digits..]);
+        (rest.is_empty() || rest.starts_with('-'))
+            .then(|| seg[..digits].parse::<u64>().ok())
+            .flatten()
     }) {
         if !out.contains(&n) {
             out.push(n);
@@ -1351,7 +1358,7 @@ pub fn fetch_gitlab(
 /// fetched MR links to yet (a closed one is done; not worth a request); an MR is kept when [`gl_closing`] links it to that
 /// issue, so a passing mention does not become a stray card. A failed lookup
 /// just leaves that issue unlinked.
-// ponytail: one request per unlinked issue (≤ 2×LIMIT, all in parallel); a
+// ponytail: one request per unlinked open issue (≤ LIMIT), 8 at a time; a
 // GraphQL batch is the upgrade path if that gets slow.
 fn with_related_mrs(
     base: &str,
@@ -1382,22 +1389,26 @@ fn with_related_mrs(
     if unlinked.is_empty() {
         return Ok((open_mrs, merged_mrs));
     }
-    let related: Vec<(u64, Vec<serde_json::Value>)> = std::thread::scope(|s| {
-        let handles: Vec<_> = unlinked
-            .iter()
-            .map(|&n| {
-                s.spawn(move || {
-                    let path = format!("{p}/issues/{n}/related_merge_requests?per_page={LIMIT}");
-                    let found = gitlab_get(base, token, &path)
-                        .ok()
-                        .and_then(|(json, _)| values(&json).ok())
-                        .unwrap_or_default();
-                    (n, found)
+    let mut related: Vec<(u64, Vec<serde_json::Value>)> = Vec::new();
+    for chunk in unlinked.chunks(8) {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|&n| {
+                    s.spawn(move || {
+                        let path =
+                            format!("{p}/issues/{n}/related_merge_requests?per_page={LIMIT}");
+                        let found = gitlab_get(base, token, &path)
+                            .ok()
+                            .and_then(|(json, _)| values(&json).ok())
+                            .unwrap_or_default();
+                        (n, found)
+                    })
                 })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
-    });
+                .collect();
+            related.extend(handles.into_iter().filter_map(|h| h.join().ok()));
+        });
+    }
     for (n, mrs) in related {
         for v in mrs {
             let Some(m) = item(&v) else { continue };
@@ -3010,6 +3021,10 @@ mod tests {
         assert!(n("closes other/proj#7", "feature/x").is_empty());
         assert!(n("see #7, prefix #8, fixture #9", "x").is_empty());
         assert!(n("closes #", "drink-7up").is_empty());
+        assert!(n("", "2fa-login").is_empty());
+        assert!(n("", "release/2026.10").is_empty());
+        assert!(n("", "hotfix/3.4.1").is_empty());
+        assert_eq!(n("", "12-fix-x"), [12]);
 
         let m = |d: &str| gl_mentions(&mr(d, "x"), "grp/proj");
         assert_eq!(m("Closes #16234\nOnderdeel van #16225"), [16234, 16225]);

@@ -411,12 +411,20 @@ function ProjectGroup({
                   <input
                     type="checkbox"
                     checked={project.sections[key]}
-                    onChange={(e) =>
-                      void setProjectSections(project.id, {
-                        ...project.sections,
-                        [key]: e.target.checked,
-                      })
-                    }
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      void setProjectSections(project.id, { [key]: on });
+                      // Hiding the Git section unmounts its button (and the
+                      // board's auto-refresh): close the board with it.
+                      const layout = useLayoutStore.getState();
+                      if (
+                        key === "issues" &&
+                        !on &&
+                        layout.openBoard?.projectId === project.id
+                      ) {
+                        layout.clearOpenBoard();
+                      }
+                    }}
                   />
                   {label}
                 </label>

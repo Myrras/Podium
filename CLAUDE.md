@@ -462,8 +462,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   (not: answers without a label-list board) `fetch_gitlab` places cards in the
   cached board's `label:` columns instead of the defaults. Project boards
   always carry `review` and `done`. A fetch that started before a move or
-  unassign landed is not stored (`BoardStore`'s edit counter, taken before the
-  fetch); `issue_board` serves the cache, which has the edit, instead.
+  unassign of that project landed is not stored (`BoardStore`'s per-root edit
+  counter, taken before the fetch); `issue_board` then serves the cache, which
+  has the edit, with its real `fetchedAt` (what `get_board` reports).
   Closed issues and merged PRs are always in `done`, also on a GitHub Project
   with a Status set, so `done` means closed on both providers.
 
@@ -477,7 +478,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   board stays a card. GitHub uses `closingIssuesReferences`; GitLab makes no
   extra calls and matches the MR description against the default closing
   pattern (`closes|fixes|resolves|implements` + `#N` / `group/project#N`) plus
-  a source-branch segment starting with `N` (`gl_closing`, a heuristic — upgrade path
+  a source-branch segment that is `N`, optionally one letter, then `-…` or
+  nothing (`gl_closing`, a heuristic — upgrade path
   `/merge_requests/:iid/closes_issues`).
 
   **Moves** (`Orchestrator::move_board_item` → `issues::validate_move` then
@@ -520,8 +522,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `approvedBy` + `approvalsRequired`), whose failure only hides the badges.
   The **search** field (Cmd/Ctrl+F focuses it, Escape clears) filters every
   column by ref, title, labels, author, assignees and linked PRs.
-  MR ↔ issue linking also takes a branch segment starting with the issue
-  number (`issue/12661`, `issue/12661b`, `42-fix`), Connect's convention.
+  MR ↔ issue linking also takes a branch segment that is the issue number
+  (`issue/12661`, `issue/12661b`, `42-fix`), Connect's convention — not
+  `2fa-login`, `release/2026.10` or `hotfix/3.4.1`.
 
   **GitLab connection retries** (`gitlab_send`): a request that fails before
   any HTTP status (VPN/Wi-Fi not back yet after sleep — the focus refresh

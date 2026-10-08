@@ -21,11 +21,10 @@ pub async fn issues_board(
     project_id: ProjectId,
     mine: bool,
 ) -> Result<Board, IpcError> {
-    let orchestrator = Arc::clone(&state.orchestrator);
-    tauri::async_runtime::spawn_blocking(move || orchestrator.issue_board(project_id, mine))
-        .await
-        .map_err(|e| IpcError::new("io", format!("issues task failed: {e}")))?
-        .map_err(IpcError::from)
+    blocking(state, move |o| {
+        o.issue_board(project_id, mine).map(|c| c.board)
+    })
+    .await
 }
 
 /// The last fetched board of this scope, without touching the network.
@@ -51,16 +50,12 @@ pub async fn issues_board_move(
     number: u64,
     column: String,
 ) -> Result<(), IpcError> {
-    let orchestrator = Arc::clone(&state.orchestrator);
-    tauri::async_runtime::spawn_blocking(move || {
-        orchestrator.move_board_item(project_id, kind, number, &column)
+    blocking(state, move |o| {
+        o.move_board_item(project_id, kind, number, &column)
     })
     .await
-    .map_err(|e| IpcError::new("io", format!("issues task failed: {e}")))?
-    .map_err(IpcError::from)
 }
 
-/// Run an issues-settings call on a blocking thread (it touches the keychain).
 /// Unassign the signed-in user from a card on the platform (validated against
 /// the cached board); the UI follows the `board:changed` event.
 #[tauri::command]
@@ -76,6 +71,7 @@ pub async fn issues_board_unassign(
     .await
 }
 
+/// Run an issues call on a blocking thread (git/gh, GitLab HTTP, the keychain).
 async fn blocking<T: Send + 'static>(
     state: State<'_, AppState>,
     f: impl FnOnce(&Orchestrator) -> CoreResult<T> + Send + 'static,

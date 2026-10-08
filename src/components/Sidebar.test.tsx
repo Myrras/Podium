@@ -128,7 +128,7 @@ describe("Sidebar project header", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("toggling a Sections checkbox calls setProjectSections with the merged sections", () => {
+  it("toggling a Sections checkbox calls setProjectSections with the changed key", () => {
     const setProjectSections = vi.fn(() => Promise.resolve());
     useProjectStore.setState({ projects: [project()], setProjectSections });
     render(<Sidebar />);
@@ -139,12 +139,57 @@ describe("Sidebar project header", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Scratchpads" }));
 
     expect(setProjectSections).toHaveBeenCalledWith("proj-1", {
-      todos: true,
-      terminals: true,
-      worktrees: true,
       scratchpads: false,
-      issues: false,
     });
+  });
+
+  it("two quick Sections toggles both stick", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sections for Webshop" }),
+    );
+    // Neither backend call has answered yet.
+    vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Scratchpads" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Terminals" }));
+
+    const calls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "project_set_sections");
+    expect(calls[calls.length - 1]?.[1]).toEqual({
+      projectId: "proj-1",
+      sections: {
+        todos: true,
+        terminals: false,
+        worktrees: true,
+        scratchpads: false,
+        issues: false,
+      },
+    });
+  });
+
+  it("hiding the Git board section closes that project's open board", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: true,
+            issues: true,
+          },
+        }),
+      ],
+    });
+    useLayoutStore.setState({ openBoard: { projectId: "proj-1" } });
+    render(<Sidebar />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sections for Webshop" }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Git board" }));
+    expect(useLayoutStore.getState().openBoard).toBeNull();
   });
 
   it("keeps the drag handle draggable in the DOM regardless of hover state", () => {

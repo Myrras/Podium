@@ -1,7 +1,7 @@
 //! The single public API surface over projects and PTY-backed processes.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1742,8 +1742,9 @@ impl Orchestrator {
     /// The Git board (issues + PRs/MRs, all-time PR/MR counts) of the repo
     /// behind the project's `origin` remote, via the project's chosen setup
     /// (or the one matching the remote's host); `mine` narrows it to the
-    /// user's own. Shells out — call from a blocking-friendly context.
-    pub fn issue_board(&self, project_id: ProjectId, mine: bool) -> CoreResult<crate::Board> {
+    /// user's own. Returns it with the time it was fetched. Shells out — call
+    /// from a blocking-friendly context.
+    pub fn issue_board(&self, project_id: ProjectId, mine: bool) -> CoreResult<CachedBoard> {
         let root = self.project_root(project_id)?;
         let issues = self.agent_settings().issues;
         let selected = issues
@@ -1751,7 +1752,7 @@ impl Orchestrator {
             .get(&root)
             .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
         // Taken before the fetch: a move landing meanwhile wins over its result.
-        let edits = self.boards.edits();
+        let edits = self.boards.edits(&root);
         // Either scope's last board tells GitLab where the columns were.
         let cached = self
             .boards
@@ -1764,12 +1765,16 @@ impl Orchestrator {
             mine,
             cached.as_ref().map(|c| &c.board),
         )?;
-        if self.boards.put(&root, mine, board.clone(), edits) {
-            return Ok(board);
+        if let Some(stored) = self.boards.put(&root, mine, board.clone(), edits) {
+            return Ok(stored);
         }
-        // A move/unassign landed mid-fetch, so this board predates it: serve
-        // the cache (which has the edit) instead; the next refresh catches up.
-        Ok(self.boards.get(&root, mine).map_or(board, |c| c.board))
+        // A move/unassign of this project landed mid-fetch, so this board
+        // predates it: serve the cache (which has the edit), with its own
+        // fetch time; the next refresh catches up.
+        Ok(self.boards.get(&root, mine).unwrap_or_else(|| CachedBoard {
+            board,
+            fetched_at: Utc::now(),
+        }))
     }
 
     /// The last successfully fetched board of this scope, if any. No network.
@@ -1798,16 +1803,8 @@ impl Orchestrator {
         column: &str,
     ) -> CoreResult<()> {
         let root = self.project_root(project_id)?;
-        let cached = [true, false]
-            .into_iter()
-            .filter_map(|mine| self.boards.get(&root, mine))
-            .filter(|c| {
-                c.board
-                    .items
-                    .iter()
-                    .any(|i| i.kind == kind && i.number == number)
-            })
-            .max_by_key(|c| c.fetched_at)
+        let cached = self
+            .newest_board_with(&root, kind, number)
             .or_else(|| self.boards.get(&root, true))
             .or_else(|| self.boards.get(&root, false))
             .ok_or_else(|| CoreError::IssuesMove("Refresh the board first.".to_string()))?;
@@ -1833,6 +1830,26 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Of the cached scopes holding the card, the most recently fetched: the
+    /// best word on its state when the two disagree.
+    fn newest_board_with(
+        &self,
+        root: &Path,
+        kind: crate::ItemKind,
+        number: u64,
+    ) -> Option<CachedBoard> {
+        [true, false]
+            .into_iter()
+            .filter_map(|mine| self.boards.get(root, mine))
+            .filter(|c| {
+                c.board
+                    .items
+                    .iter()
+                    .any(|i| i.kind == kind && i.number == number)
+            })
+            .max_by_key(|c| c.fetched_at)
+    }
+
     /// Unassign the signed-in user from a card of the project's Git board, on
     /// the platform itself. Validated against the cached board (which knows
     /// who you are), so it needs one. On success both cached scopes are
@@ -1845,20 +1862,11 @@ impl Orchestrator {
         number: u64,
     ) -> CoreResult<()> {
         let root = self.project_root(project_id)?;
-        let cached = [true, false]
-            .into_iter()
-            .filter_map(|mine| self.boards.get(&root, mine))
-            .find(|c| {
-                c.board
-                    .items
-                    .iter()
-                    .any(|i| i.kind == kind && i.number == number)
-            })
-            .ok_or_else(|| {
-                CoreError::IssuesMove(
-                    "That card is not on the board. Refresh the board first.".to_string(),
-                )
-            })?;
+        let cached = self.newest_board_with(&root, kind, number).ok_or_else(|| {
+            CoreError::IssuesMove(
+                "That card is not on the board. Refresh the board first.".to_string(),
+            )
+        })?;
         let (item, me) = crate::issues::validate_unassign(&cached.board, kind, number)?;
         let issues = self.agent_settings().issues;
         let selected = issues
@@ -1933,8 +1941,18 @@ impl Orchestrator {
 
     /// Remove a setup, its keychain token, and any project's pick of it.
     pub fn remove_issue_setup(&self, id: &str) -> CoreResult<crate::issues::IssuesOverview> {
-        crate::issues::gitlab_token_set(id, "")?;
         let mut issues = self.agent_settings().issues;
+        // Only a GitLab setup has a token. A keychain that will not delete it
+        // must not keep the setup alive: log it and remove the setup anyway.
+        let gitlab = issues
+            .setups
+            .iter()
+            .any(|s| s.id == id && s.provider == crate::IssueProvider::Gitlab);
+        if gitlab {
+            if let Err(e) = crate::issues::gitlab_token_set(id, "") {
+                tracing::warn!("could not delete a removed setup's GitLab token: {e}");
+            }
+        }
         issues.setups.retain(|s| s.id != id);
         issues.projects.retain(|_, pick| pick != id);
         self.agent_settings.set_issues(issues)?;

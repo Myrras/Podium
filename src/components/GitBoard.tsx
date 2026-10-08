@@ -288,7 +288,8 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
             {(board?.columns ?? DEFAULT_COLUMNS).map((col) => {
               const cards = shown.filter((i) => i.column === col.id);
               const valid =
-                dragging !== null && moveTargets(dragging, [col]).length > 0;
+                dragging !== null &&
+                moveTargets(dragging, [col], board?.source ?? null).length > 0;
               const drop = (e: DragEvent) => {
                 e.preventDefault();
                 const item = dragging;

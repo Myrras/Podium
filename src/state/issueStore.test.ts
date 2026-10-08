@@ -21,6 +21,7 @@ import { toastError } from "./toastStore";
 import {
   ISSUE_FOCUS_STALE_MS,
   ISSUE_POLL_MS,
+  moveTargets,
   useIssueStore,
 } from "./issueStore";
 
@@ -300,6 +301,22 @@ describe("issueStore", () => {
     );
     expect(toastError).toHaveBeenCalledWith("Not allowed");
     expect(cachedMock).toHaveBeenCalled();
+  });
+
+  it("moveTargets: without project columns Open is only reachable from Done", () => {
+    const columns = ["open", "label:doing", "done"].map((id) => ({
+      id,
+      title: id,
+      color: null,
+      accepts: ["issue" as const],
+    }));
+    const ids = (column: string, source: string | null) =>
+      moveTargets({ ...board(1).items[0], column }, columns, source).map(
+        (c) => c.id,
+      );
+    expect(ids("label:doing", null)).toEqual(["done"]);
+    expect(ids("done", null)).toEqual(["open", "label:doing"]);
+    expect(ids("label:doing", "Dev")).toEqual(["open", "done"]);
   });
 
   it("dropProject forgets the cache", async () => {
