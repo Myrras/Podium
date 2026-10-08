@@ -382,6 +382,7 @@ describe("TodoSubsection assigned to-dos", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
