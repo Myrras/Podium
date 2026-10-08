@@ -290,7 +290,38 @@ atomically, before the async `podium.yml` load.
   `ProcessInfo.color`): the to-do row **and the agent's own sidebar row** are
   tinted the same colour so the two can be matched at a glance; the to-do's
   spawn button is hidden and it drops out of multi-select — one session owns
-  it. Sidebar rows distinguish being **open** in the work area (a subtle
+  it. An agent that **exits** keeps its to-do/scratchpad links (only removing
+  the process drops them) but loses its colour (`spec.color` cleared in the
+  exit handler and kept as `last_color`, to-do row tinted neutral grey); the
+  next start (`do_start`) takes `last_color` back if no live agent holds it,
+  else picks one the way a spawn does (`pick_session_color`). A link
+  to an exited agent no longer counts as **owning**: `AssignedAgent.active`
+  (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
+  `false`, the row gets its spawn button back and can join a multi-select
+  again, and spawning on it (or `assign_todo`) hands it to the new agent.
+  **Restart resumes the session**: Claude Code agents launch with
+  `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
+  (`RestartCommands`, the launch line in parts) spells the two commands a
+  manual start of an exited agent can run instead, for whichever session id
+  is current (`AgentSession` on the process; `spec.command` is never
+  swapped). `restart_launch` picks per start: `resume(<current id>)` (no
+  initial prompt) when `AgentAdapter::session_exists` finds the CLI's
+  transcript, else `fresh(<new UUID>)` — the original launch under a *new*
+  `--session-id`, since the CLI refuses an id it already used and `--resume`
+  fails without a transcript; the new id becomes current, so the agent stays
+  resumable. The chosen launch (`Relaunch`) is handed to `do_start`, which
+  makes its id current under the same lock only once the PTY spawned — a
+  concurrent start that loses with `ProcessAlreadyRunning` cannot overwrite
+  it. A resumed run that crashes within `RESUME_FAILURE_WINDOW` (5 s) marks
+  the id `resume_failed` in the exit handler, so the next start is fresh
+  instead of crash-looping on `--resume`. The transcript is `projects/*/<id>.jsonl` under
+  `$CLAUDE_CONFIG_DIR` or `~/.claude` — read from disk natively, and on a WSL
+  project checked inside the distro through its login shell
+  (`run_shell_ok_on`, off the async runtime), since that is where the CLI
+  runs.
+  A session flag the user put in `extra_args` (`--session-id`, `--resume`,
+  `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
+  all of it. Sidebar rows distinguish being **open** in the work area (a subtle
   accent highlight, like agents/terminals) from being in a **Cmd/Ctrl+click
   multi-select** (a bolder accent fill — those rows are queued for the next
   agent).

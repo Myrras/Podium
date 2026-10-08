@@ -52,9 +52,13 @@ done
 const DYING_CLAUDE: &str = "#!/bin/sh\nexit 1\n";
 
 /// A fake CLI that records the arguments Podium launched it with, so the
-/// spawn flags can be asserted without a real Claude Code.
+/// spawn flags can be asserted without a real Claude Code. Written to a temp
+/// file and renamed into place: `recorded_argv` reads `argv.txt` as soon as
+/// it exists, and a direct write could be caught half-way.
 const ARGV_RECORDING_CLAUDE: &str = r#"#!/bin/sh
-printf '%s\n' "$@" > "$(dirname "$0")/argv.txt"
+dir="$(dirname "$0")"
+printf '%s\n' "$@" > "$dir/argv.txt.tmp"
+mv "$dir/argv.txt.tmp" "$dir/argv.txt"
 sleep 5
 "#;
 
@@ -129,11 +133,14 @@ done
 
 /// A fake CLI that appends every turn's raw stdin line to `stdin.jsonl` next
 /// to it, so a test can inspect exactly what content blocks a turn carried —
-/// for asserting an attachment reaches the child's stdin intact.
+/// for asserting an attachment reaches the child's stdin intact. Each append
+/// is a copy renamed into place, so `recorded_stdin` never reads half a line.
 const RECORDS_STDIN_CLAUDE: &str = r#"#!/bin/sh
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+dir="$(dirname "$0")"
 while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$(dirname "$0")/stdin.jsonl"
+  { cat "$dir/stdin.jsonl" 2>/dev/null; printf '%s\n' "$line"; } > "$dir/stdin.jsonl.tmp"
+  mv "$dir/stdin.jsonl.tmp" "$dir/stdin.jsonl"
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}'
   echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 done

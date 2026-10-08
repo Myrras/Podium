@@ -10,7 +10,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
-use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
+use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo, RestartCommands};
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
@@ -44,6 +44,11 @@ const MAX_AGENTS_PER_PROJECT: usize = 8;
 const DEFAULT_ADAPTER_ID: &str = "claude-code";
 
 const LOCK_POISONED: &str = "orchestrator lock poisoned";
+
+/// A resumed agent that crashes within this long after starting is taken to
+/// have failed to resume (the CLI refusing the session), so its next start is
+/// fresh instead of the same `--resume` again.
+const RESUME_FAILURE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Read-only snapshot of an open project, for listing.
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +131,37 @@ struct ManagedProcess {
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
+    /// For an agent: how a manual start after it exited is spelled, and the
+    /// CLI session it is on (see [`AgentSession`]). `None` for everything
+    /// else.
+    session: Option<AgentSession>,
+    /// The colour an exited agent gave up, which its next start takes back
+    /// unless another live agent holds it by then.
+    last_color: Option<String>,
+}
+
+/// An agent's CLI session: the commands a restart picks from
+/// ([`LaunchPlan::restart`]) and the id of the session it is on — the
+/// process id at spawn, a new one after each fresh restart. `spec.command`
+/// itself is never swapped, so the choice is made afresh every start.
+#[derive(Clone)]
+struct AgentSession {
+    commands: RestartCommands,
+    id: String,
+    /// The current run resumed `id` (rather than starting it fresh).
+    resumed: bool,
+    /// Resuming `id` crashed right away (see [`RESUME_FAILURE_WINDOW`]), so
+    /// it is not tried again: the next start is fresh.
+    resume_failed: bool,
+}
+
+/// What a restart of an exited agent runs, from [`restart_launch`]. The
+/// session it names becomes the agent's current one only once the start has
+/// succeeded, so a start that loses a race cannot overwrite the winner's.
+struct Relaunch {
+    command: String,
+    session_id: String,
+    resumed: bool,
 }
 
 impl ManagedProcess {
@@ -159,8 +195,9 @@ struct Inner {
     order: Vec<ProjectId>,
     processes: HashMap<ProcessId, ManagedProcess>,
     /// Which agent process is working on which to-do. Runtime-only (process
-    /// ids do not survive a restart), so it is never persisted; cleared when
-    /// the agent exits, is removed, or its project closes.
+    /// ids do not survive a restart), so it is never persisted. An agent that
+    /// exits keeps its entries (a restart picks the work back up); they are
+    /// cleared when the agent is removed or its project closes.
     todo_assignments: HashMap<TodoId, ProcessId>,
     /// Which agent process is working on which scratchpad. Mirrors
     /// `todo_assignments` exactly (runtime-only, cleared the same way).
@@ -719,7 +756,7 @@ impl Orchestrator {
             });
         }
         for pid in auto_start {
-            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false) {
+            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false, None) {
                 tracing::warn!(process_id = %pid, "auto-start failed: {e}");
             }
         }
@@ -981,12 +1018,12 @@ impl Orchestrator {
                 ));
             }
             // Block claiming a to-do already owned by a *different* live agent
-            // (a stale assignment whose process is gone resolves to `None`, so
-            // it can be reclaimed; re-claiming your own is idempotent).
-            if let Some(existing) = assigned_agent_of(&inner, todo_id) {
-                if existing.process_id != process_id {
-                    return Err(CoreError::TodoAlreadyAssigned);
-                }
+            // (one that exited or is gone can be reclaimed; re-claiming your
+            // own is idempotent).
+            if assigned_agent_of(&inner, todo_id)
+                .is_some_and(|a| a.active && a.process_id != process_id)
+            {
+                return Err(CoreError::TodoAlreadyAssigned);
             }
             inner.todo_assignments.insert(todo_id, process_id);
             info.assigned_agent = assigned_agent_of(&inner, todo_id);
@@ -1495,7 +1532,7 @@ impl Orchestrator {
             });
         }
         for pid in auto_start {
-            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false) {
+            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false, None) {
                 tracing::warn!(process_id = %pid, "auto-start failed: {e}");
             }
         }
@@ -1582,7 +1619,7 @@ impl Orchestrator {
                 .filter(|p| p.project_id == project_id)
                 .map(|p| p.spec.name.clone())
                 .collect();
-            let color = pick_session_color(&inner, project_id);
+            let color = pick_session_color(&inner, project_id, None);
             (
                 handle.root.clone(),
                 handle.wsl,
@@ -1709,6 +1746,12 @@ impl Orchestrator {
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && !worktree,
         })?;
+        let session = plan.restart.map(|commands| AgentSession {
+            commands,
+            id: process_id.to_string(),
+            resumed: false,
+            resume_failed: false,
+        });
         let spec = ProcessSpec {
             name,
             command: plan.command,
@@ -1735,12 +1778,22 @@ impl Orchestrator {
                 return Err(err);
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
+            if let Some(p) = inner.processes.get_mut(&process_id) {
+                p.session = session;
+            }
         }
         self.events.publish(PodiumEvent::ProcessAdded {
             project_id,
             process_id,
         });
-        do_start(&self.inner, &self.events, self.supervisor, process_id, true)?;
+        do_start(
+            &self.inner,
+            &self.events,
+            self.supervisor,
+            process_id,
+            true,
+            None,
+        )?;
         // Link the agent to the to-dos/scratchpads it was spawned for so the
         // UI can show who is working on what (also emits TodosChanged /
         // ScratchpadsChanged for the project).
@@ -1938,8 +1991,55 @@ impl Orchestrator {
     /// Manually start a process. Cancels any pending supervised restart and
     /// resets the backoff/breaker state: an explicit user start is a fresh
     /// beginning.
+    ///
+    /// An agent that ran before picks its CLI session back up when the CLI
+    /// has it stored, and otherwise starts a fresh session (see
+    /// [`restart_launch`]). Its first start always runs `spec.command`.
     pub async fn start_process(&self, id: ProcessId) -> CoreResult<()> {
-        do_start(&self.inner, &self.events, self.supervisor, id, true)
+        let restart = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            match (&proc.spec.kind, &proc.session) {
+                (ProcessKind::Agent { adapter }, Some(session))
+                    if matches!(proc.status, ProcessStatus::Exited { .. }) =>
+                {
+                    Some((
+                        adapter.clone(),
+                        session.clone(),
+                        project_backend(&inner, proc.project_id),
+                    ))
+                }
+                _ => None,
+            }
+        };
+        let relaunch = match restart {
+            Some((adapter, session, wsl)) => {
+                // The session check reads the disk — or, on WSL, runs a
+                // login shell in the distro — so it runs off the lock and off
+                // the async runtime.
+                let stored = match self.adapters.by_id(&adapter) {
+                    Some(adapter) => {
+                        let session_id = session.id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            adapter.session_exists(&session_id, wsl)
+                        })
+                        .await
+                        .unwrap_or(false)
+                    }
+                    None => false,
+                };
+                Some(restart_launch(&session, stored))
+            }
+            None => None,
+        };
+        do_start(
+            &self.inner,
+            &self.events,
+            self.supervisor,
+            id,
+            true,
+            relaunch,
+        )
     }
 
     /// Stop a stuck agent and put a fresh one on the same work, with the
@@ -2235,10 +2335,11 @@ const SESSION_COLORS: [&str; 8] = [
 ];
 
 /// Pick a session colour not currently used by another live agent in the
-/// project; once the palette is exhausted, cycle by the used count.
+/// project — `preferred` when it is free; once the palette is exhausted,
+/// cycle by the used count.
 // ponytail: two concurrent spawns could momentarily pick the same colour —
 // cosmetic only, and the max is 8 agents = palette size, so it's rare.
-fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
+fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&str>) -> String {
     let used: HashSet<&str> = inner
         .processes
         .values()
@@ -2249,9 +2350,9 @@ fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
         })
         .filter_map(|p| p.spec.color.as_deref())
         .collect();
-    SESSION_COLORS
-        .iter()
-        .copied()
+    preferred
+        .into_iter()
+        .chain(SESSION_COLORS.iter().copied())
         .find(|c| !used.contains(c))
         .unwrap_or(SESSION_COLORS[used.len() % SESSION_COLORS.len()])
         .to_string()
@@ -2265,6 +2366,7 @@ fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
         process_id,
         name: p.spec.name.clone(),
         color: p.spec.color.clone(),
+        active: p.is_active(),
     })
 }
 
@@ -2279,6 +2381,7 @@ fn scratchpad_assigned_agent_of(
         process_id,
         name: p.spec.name.clone(),
         color: p.spec.color.clone(),
+        active: p.is_active(),
     })
 }
 
@@ -2293,7 +2396,7 @@ struct ClearedAssignments {
 }
 
 /// Drop every to-do/scratchpad assignment pointing at `process_id` (called
-/// when an agent exits, is removed, or its project closes). Returns the
+/// when an agent is removed — an exited agent keeps its assignments). Returns the
 /// affected projects, split by kind, so the caller can emit `TodosChanged`
 /// and/or `ScratchpadsChanged` once per project — without firing an event for
 /// a kind that had nothing to clear.
@@ -2540,6 +2643,8 @@ fn insert_process(
             restart: RestartState::default(),
             started_at: None,
             waiting_since: None,
+            session: None,
+            last_color: None,
         },
     );
 }
@@ -2553,6 +2658,7 @@ fn do_start(
     supervisor: SupervisorConfig,
     id: ProcessId,
     manual: bool,
+    relaunch: Option<Relaunch>,
 ) -> CoreResult<()> {
     // The project's backend, read under a short lock of its own: the gate
     // below depends on it, and must be taken before `inner`.
@@ -2569,6 +2675,22 @@ fn do_start(
     // command (sync ones on the main thread included) needs.
     let launch_gate = crate::platform::wsl_launch_guard_for(wsl);
     let mut guard = inner.lock().expect(LOCK_POISONED);
+    // An agent that lost its colour on exit takes it back if no live agent
+    // holds it now, else gets a new one picked exactly as at spawn.
+    let new_color = match guard.processes.get(&id) {
+        Some(p)
+            if p.spec.color.is_none()
+                && !p.is_active()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. }) =>
+        {
+            Some(pick_session_color(
+                &guard,
+                p.project_id,
+                p.last_color.as_deref(),
+            ))
+        }
+        _ => None,
+    };
     let proc = guard
         .processes
         .get_mut(&id)
@@ -2582,8 +2704,13 @@ fn do_start(
     }
     proc.user_stopped = false;
     let project_id = proc.project_id;
+    // A restart's command runs this once; `spec.command` stays as spawned.
+    let restart_spec = relaunch.as_ref().map(|r| ProcessSpec {
+        command: r.command.clone(),
+        ..proc.spec.clone()
+    });
     let pty = PtyProcess::spawn(
-        &proc.spec,
+        restart_spec.as_ref().unwrap_or(&proc.spec),
         wsl,
         launch_gate.as_ref(),
         None,
@@ -2604,6 +2731,16 @@ fn do_start(
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
     proc.started_at = Some(Instant::now());
+    // Only now that the launch is running does its session become current.
+    if let (Some(r), Some(session)) = (relaunch, proc.session.as_mut()) {
+        session.resume_failed &= r.session_id == session.id;
+        session.id = r.session_id;
+        session.resumed = r.resumed;
+    }
+    let recolored = new_color.is_some();
+    if recolored {
+        proc.spec.color = new_color;
+    }
     // Publish while still holding the lock: the exit callback also takes
     // the lock, so an instantly-exiting child's Exited event can never be
     // observed before this Running event.
@@ -2612,7 +2749,57 @@ fn do_start(
         process_id: id,
         status,
     });
+    if recolored {
+        publish_color_change(&guard, events, id, project_id);
+    }
     Ok(())
+}
+
+/// The command a manual start of an exited agent runs, and the session id it
+/// is on afterwards: the current session resumed when the CLI has its
+/// transcript, else a fresh session under a **new** id. Never the current id
+/// again: the CLI refuses an id it already used, so a transcript the check
+/// failed to find must not make the agent unstartable — and the new id keeps
+/// the agent resumable from then on.
+/// A resume that already failed right away is not tried again
+/// ([`AgentSession::resume_failed`]), so the agent never crash-loops on it.
+fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
+    if stored && !session.resume_failed {
+        Relaunch {
+            command: session.commands.resume(&session.id),
+            session_id: session.id.clone(),
+            resumed: true,
+        }
+    } else {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        Relaunch {
+            command: session.commands.fresh(&session_id),
+            session_id,
+            resumed: false,
+        }
+    }
+}
+
+/// Whether an agent run that just exited was a resume that failed: it
+/// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
+fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
+    session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
+}
+
+/// Tell the UI an agent's colour changed: its own row (`ProcessUpdated`
+/// re-lists processes) and the to-dos/scratchpads it owns, which carry the
+/// colour on their assignment.
+fn publish_color_change(inner: &Inner, events: &EventBus, id: ProcessId, project_id: ProjectId) {
+    events.publish(PodiumEvent::ProcessUpdated {
+        project_id,
+        process_id: id,
+    });
+    if inner.todo_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::TodosChanged { project_id });
+    }
+    if inner.scratchpad_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::ScratchpadsChanged { project_id });
+    }
 }
 
 /// Handler run on the PTY wait-thread when the child exits. A non-zero exit
@@ -2630,7 +2817,7 @@ fn make_exit_handler(
     // (all `do_start` callers run inside the runtime).
     let rt = tokio::runtime::Handle::current();
     Box::new(move |code| {
-        let (status, restart, cleared) = {
+        let restart = {
             let mut guard = inner.lock().expect(LOCK_POISONED);
             let Some(p) = guard.processes.get_mut(&id) else {
                 return;
@@ -2644,10 +2831,13 @@ fn make_exit_handler(
             };
             p.status = status.clone();
             p.pty = None;
-            let ran_long = p
-                .started_at
-                .take()
-                .is_some_and(|s| s.elapsed() >= supervisor.backoff_reset_after);
+            let ran_for = p.started_at.take().map(|s| s.elapsed());
+            if let Some(session) = p.session.as_mut() {
+                if resume_failed(session, crashed, ran_for) {
+                    session.resume_failed = true;
+                }
+            }
+            let ran_long = ran_for.is_some_and(|d| d >= supervisor.backoff_reset_after);
             if ran_long {
                 p.restart.reset_backoff();
             }
@@ -2669,27 +2859,26 @@ fn make_exit_handler(
             } else {
                 None
             };
-            // An exited agent that is not being restarted no longer works on
-            // its to-dos/scratchpads; drop the assignments so the UI stops
-            // showing it.
-            let cleared = if restart.is_none() {
-                clear_agent_assignments(&mut guard, id)
-            } else {
-                ClearedAssignments::default()
-            };
-            (status, restart, cleared)
+            // An exited agent that is not being restarted keeps its
+            // to-dos/scratchpads (a restart picks the work back up) but loses
+            // its colour, so the UI shows it as no longer live. The next
+            // start takes it back if it is still free.
+            let decolored = restart.is_none()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. })
+                && p.spec.color.is_some();
+            if decolored {
+                p.last_color = p.spec.color.take();
+            }
+            events.publish(PodiumEvent::ProcessStatusChanged {
+                project_id,
+                process_id: id,
+                status,
+            });
+            if decolored {
+                publish_color_change(&guard, &events, id, project_id);
+            }
+            restart
         };
-        events.publish(PodiumEvent::ProcessStatusChanged {
-            project_id,
-            process_id: id,
-            status,
-        });
-        for pid in cleared.todos {
-            events.publish(PodiumEvent::TodosChanged { project_id: pid });
-        }
-        for pid in cleared.scratchpads {
-            events.publish(PodiumEvent::ScratchpadsChanged { project_id: pid });
-        }
         if let Some((delay, generation)) = restart {
             schedule_restart(&rt, inner, events, supervisor, id, delay, generation);
         }
@@ -2722,7 +2911,7 @@ fn schedule_restart(
                 }
                 p.restart.clear_pending();
             }
-            if let Err(e) = do_start(&task_inner, &events, supervisor, id, false) {
+            if let Err(e) = do_start(&task_inner, &events, supervisor, id, false, None) {
                 tracing::warn!(process_id = %id, "supervised restart failed: {e}");
             }
         })
@@ -2739,6 +2928,78 @@ fn schedule_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restart_resumes_a_stored_session_and_otherwise_starts_fresh() {
+        let session = AgentSession {
+            commands: RestartCommands {
+                bin: "claude".to_string(),
+                prompt: Some("'fix the login bug'".to_string()),
+                tail: String::new(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            },
+            id: "0f0e0d0c".to_string(),
+            resumed: false,
+            resume_failed: false,
+        };
+        let resume = restart_launch(&session, true);
+        assert_eq!(resume.command, "claude --resume 0f0e0d0c");
+        assert_eq!(resume.session_id, "0f0e0d0c");
+        assert!(resume.resumed);
+
+        // Not found: a new id, never the current one the CLI may still know.
+        let fresh = restart_launch(&session, false);
+        assert_ne!(fresh.session_id, session.id);
+        assert!(!fresh.resumed);
+        assert_eq!(
+            fresh.command,
+            format!(
+                "claude 'fix the login bug' --session-id {}",
+                fresh.session_id
+            )
+        );
+
+        // A resume that already failed is not tried again, transcript or not.
+        let failed = AgentSession {
+            resume_failed: true,
+            ..session
+        };
+        let next = restart_launch(&failed, true);
+        assert!(!next.resumed);
+        assert_ne!(next.session_id, failed.id);
+    }
+
+    #[test]
+    fn only_a_resume_that_crashes_right_away_counts_as_failed() {
+        let session = |resumed| AgentSession {
+            commands: RestartCommands {
+                bin: "claude".to_string(),
+                prompt: None,
+                tail: String::new(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            },
+            id: "0f0e0d0c".to_string(),
+            resumed,
+            resume_failed: false,
+        };
+        let quick = Some(Duration::from_secs(1));
+        let long = Some(RESUME_FAILURE_WINDOW + Duration::from_secs(1));
+        assert!(resume_failed(&session(true), true, quick));
+        assert!(
+            !resume_failed(&session(true), false, quick),
+            "clean exit or user stop"
+        );
+        assert!(
+            !resume_failed(&session(true), true, long),
+            "ran a while first"
+        );
+        assert!(
+            !resume_failed(&session(false), true, quick),
+            "a fresh start"
+        );
+    }
 
     fn todo(text: &str, description: Option<&str>) -> TodoInfo {
         TodoInfo {
