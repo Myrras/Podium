@@ -43,20 +43,9 @@ pub fn to_linux(distro: &str, path: &Path) -> CoreResult<String> {
         .ok_or_else(|| invalid(path, "is not valid Unicode"))?;
     let normalized = raw.replace('/', "\\");
 
-    // Verbatim prefixes: `\\?\UNC\host\share\…` is `\\host\share\…`, and
-    // `\\?\C:\…` is `C:\…`.
-    let rest = if let Some(unc) = strip_prefix_ci(&normalized, r"\\?\UNC\") {
-        format!(r"\\{unc}")
-    } else if let Some(local) = normalized.strip_prefix(r"\\?\") {
-        local.to_string()
-    } else {
-        normalized
-    };
-
-    if let Some(unc) = rest.strip_prefix(r"\\") {
+    if let Some(unc) = unc_body(&normalized) {
         let mut parts = unc.split('\\');
-        let host = parts.next().unwrap_or_default();
-        if !WSL_HOSTS.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+        if !is_wsl_host(parts.next().unwrap_or_default()) {
             return Err(invalid(path, "is a network path, not a WSL path"));
         }
         let share = parts.next().unwrap_or_default();
@@ -72,6 +61,8 @@ pub fn to_linux(distro: &str, path: &Path) -> CoreResult<String> {
         return Ok(join_linux("", parts));
     }
 
+    // Verbatim `\\?\C:\…` is `C:\…`.
+    let rest = normalized.strip_prefix(r"\\?\").unwrap_or(&normalized);
     let bytes = rest.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         let after = &rest[2..];
@@ -108,6 +99,36 @@ pub fn to_windows(distro: &str, path: &str) -> PathBuf {
     PathBuf::from(format!(r"\\{WSL_HOST}\{distro}\{}", segments.join("\\")))
 }
 
+/// Whether `path` lives inside a WSL distro (`\\wsl.localhost\…`,
+/// `\\wsl$\…`, or their verbatim `\\?\UNC\…` forms), as opposed to a
+/// Windows drive or another network share. Any distro counts; [`to_linux`]
+/// still refuses one that is not the backend's.
+pub fn is_wsl_path(path: &Path) -> bool {
+    let Some(raw) = path.to_str() else {
+        return false;
+    };
+    unc_body(&raw.replace('/', "\\"))
+        .is_some_and(|unc| is_wsl_host(unc.split('\\').next().unwrap_or_default()))
+}
+
+/// The `host\share\…` part of a UNC path — `\\host\…`, or its verbatim
+/// form `\\?\UNC\host\…` (what `canonicalize` returns) — with separators
+/// already normalized to `\`. `None` for anything else: a drive path, its
+/// verbatim `\\?\C:\…` form, a relative path. Shared by [`to_linux`] and
+/// [`is_wsl_path`] so the two can never disagree on what a UNC path is.
+fn unc_body(normalized: &str) -> Option<&str> {
+    strip_prefix_ci(normalized, r"\\?\UNC\").or_else(|| {
+        normalized
+            .strip_prefix(r"\\")
+            .filter(|rest| !rest.starts_with(r"?\"))
+    })
+}
+
+/// Whether a UNC `host` is one Windows exposes WSL distros under.
+fn is_wsl_host(host: &str) -> bool {
+    WSL_HOSTS.iter().any(|h| h.eq_ignore_ascii_case(host))
+}
+
 /// `prefix` + `/segment` for every non-empty, non-`.` segment; `/` if none.
 fn join_linux<'a>(prefix: &str, segments: impl Iterator<Item = &'a str>) -> String {
     let mut out = prefix.to_string();
@@ -142,6 +163,27 @@ mod tests {
 
     fn windows(path: &str) -> String {
         to_windows("Ubuntu", path).to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn only_paths_inside_a_distro_are_wsl_paths() {
+        for p in [
+            r"\\wsl.localhost\Ubuntu\home\me",
+            r"\\WSL$\ubuntu",
+            r"\\?\UNC\wsl.localhost\Ubuntu\x",
+            "//wsl.localhost/Ubuntu/home",
+        ] {
+            assert!(is_wsl_path(Path::new(p)), "{p}");
+        }
+        for p in [
+            r"C:\Users\me\app",
+            r"\\?\C:\Users\me",
+            r"\\server\share\app",
+            "/home/me/app",
+            "relative",
+        ] {
+            assert!(!is_wsl_path(Path::new(p)), "{p}");
+        }
     }
 
     #[test]

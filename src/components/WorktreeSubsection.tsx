@@ -27,9 +27,9 @@ import {
 } from "../ipc/commands";
 import type { ProcessInfo, ProjectId, WorktreeInfo } from "../ipc/types";
 import { isActive } from "../lib/processStatus";
+import { terminalShellFor } from "../lib/terminalShell";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
-import { useSettingsStore } from "../state/settingsStore";
 import { toastError } from "../state/toastStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { ProcessRow } from "./ProcessRow";
@@ -56,6 +56,9 @@ interface WorktreeSubsectionProps {
   projectId: ProjectId;
   /** Project root: the key its collapse state is persisted under. */
   projectRoot: string;
+  /** A Windows-drive project running natively in WSL mode: its terminals
+   * skip the (distro) shell setting — see `terminalShellFor`. */
+  nativeInWslMode: boolean;
   /** All terminal processes for the project; nested per worktree by `p.worktree`. */
   terminals: ProcessInfo[];
   /** Open the Commands modal targeted at this worktree. */
@@ -65,6 +68,7 @@ interface WorktreeSubsectionProps {
 export function WorktreeSubsection({
   projectId,
   projectRoot,
+  nativeInWslMode,
   terminals,
   onOpenCommands,
 }: WorktreeSubsectionProps) {
@@ -102,7 +106,7 @@ export function WorktreeSubsection({
   const openTerminal = async (wt: WorktreeInfo) => {
     // Same as every other sidebar action: acting on a project activates it.
     useProjectStore.getState().setActiveProject(projectId);
-    const shell = useSettingsStore.getState().terminal.shell.trim();
+    const shell = terminalShellFor(nativeInWslMode);
     const info = await addProcess(projectId, {
       name: `Terminal (${wt.name})`,
       kind: "terminal",
