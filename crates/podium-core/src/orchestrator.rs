@@ -1005,8 +1005,17 @@ impl Orchestrator {
                 return;
             };
             match self.restore_one(project_id, root, wsl, now, &entry).await {
-                // Never ran: it stays for the next run.
-                Err(CoreError::ShuttingDown) => return,
+                // Never ran, for a reason that holds for the rest as well
+                // (quitting, the project closed, no room for another agent):
+                // it and the rest stay for the next open.
+                Err(
+                    e @ (CoreError::ShuttingDown
+                    | CoreError::ProjectNotFound
+                    | CoreError::AgentLimitReached),
+                ) => {
+                    tracing::warn!("restoring remembered agent sessions stopped: {e}");
+                    return;
+                }
                 Err(e) => tracing::warn!("restoring a remembered agent session failed: {e}"),
                 Ok(()) => {}
             }
@@ -2255,14 +2264,20 @@ impl Orchestrator {
             project_id,
             process_id,
         });
-        do_start(
+        let started = do_start(
             &self.inner,
             &self.events,
             self.supervisor,
             process_id,
             true,
             relaunch,
-        )?;
+        );
+        if let Err(CoreError::ShuttingDown) = started {
+            // The quit began between the insert and the start: drop the row,
+            // which would otherwise linger as never started.
+            let _ = self.remove_process(process_id).await;
+        }
+        started?;
         // Link the agent to the to-dos/scratchpads it was spawned for so the
         // UI can show who is working on what (also emits TodosChanged /
         // ScratchpadsChanged for the project).
@@ -5047,7 +5062,9 @@ mod tests {
             )
             .unwrap();
         let quit = async {
-            adapter.entered.notified().await;
+            tokio::time::timeout(Duration::from_secs(10), adapter.entered.notified())
+                .await
+                .expect("restore never reached the slow check");
             orch.shutdown().await;
             // Only now does the second restore reach its spawn, which the
             // quit refuses.
@@ -5179,6 +5196,29 @@ mod tests {
             *adapter.worktrees.lock().unwrap(),
             vec![(false, Some("Fictional WT".to_string()), false)]
         );
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_full_project_keeps_the_remembered_session_for_the_next_open() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        let id = orch.open_project(root.clone()).await.unwrap();
+        for n in 0..MAX_AGENTS_PER_PROJECT {
+            spawn_memory_agent(&orch, id, &format!("agent-{n}"), Vec::new(), None).await;
+        }
+        orch.session_memory
+            .remember(&root, remembered(SESS_1, Utc::now()))
+            .unwrap();
+        orch.restore_remembered_sessions(id, &root).await;
+        assert_eq!(orch.list_processes(Some(id)).len(), MAX_AGENTS_PER_PROJECT);
+        let kept = orch.session_memory.list(&root);
+        assert_eq!(kept.len(), 1, "kept for the next open");
+        assert_eq!(kept[0].session_id, SESS_1);
         orch.shutdown().await;
     }
 

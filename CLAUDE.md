@@ -266,12 +266,15 @@ atomically, before the async `podium.yml` load.
   `shutdown()` sets `Inner.shutting_down` first, under the lock. From then on
   `spawn_agent_inner` (before it inserts a row) and `do_start` refuse with
   `CoreError::ShuttingDown` under that same lock, so nothing — a restore in
-  flight, a supervised restart — launches after the stop sweep, and no
-  never-started row is left. The restore loop stops at the flag, leaving a
-  refused entry on the list. With the setting off, opening a project drops its
-  list (`clear`), and turning the setting off clears every root. The MCP
-  server is started synchronously in `setup` so a restored agent never spawns
-  before the MCP connect info (its `--mcp-config`, `-n` and identity) is set.
+  flight, a supervised restart — launches after the stop sweep; a start
+  refused after the insert removes its row again, so no never-started row is
+  left. The restore loop stops at the flag. A spawn refused with
+  `ShuttingDown`, `ProjectNotFound` or `AgentLimitReached` stops it too,
+  leaving that entry and the rest on the list for the next open. With the
+  setting off, opening a project drops its list (`clear`), and turning the
+  setting off clears every root. The MCP server is started synchronously in
+  `setup` so a restored agent never spawns before the MCP connect info (its
+  `--mcp-config`, `-n` and identity) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
