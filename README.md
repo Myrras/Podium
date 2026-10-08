@@ -38,7 +38,7 @@ your own saved per-project commands — one click runs any of them in a fresh
 terminal.
 
 The **Sections** button in a project header hides or shows its To-do's,
-Terminals, Worktrees, Scratchpads and Git sections, per project. Hiding is
+Terminals, Worktrees, Scratchpads and Git board, per project. Hiding is
 presentation only: terminals keep running and agents still see everything
 over MCP.
 Both actions above live on the Terminals header, so they go away with that

@@ -209,6 +209,9 @@ export const useIssueStore = create<IssueState>((set, get) => {
       for (const projectId of Object.keys(get().byProject)) {
         if (shown.has(projectId)) {
           void get().refresh(projectId, { rerun: true, auto: true });
+        } else {
+          // Stale, so a section switched back on fetches right away.
+          patch(projectId, { fetchedAt: 0 });
         }
       }
     },
@@ -229,7 +232,10 @@ export const useIssueStore = create<IssueState>((set, get) => {
         }
         // No setup at all: nothing is fetched, so nothing to pace either.
         const noSetup = get().overview?.setups?.length === 0;
-        if (!noSetup && !unpaced(before.error)) {
+        // A setup change (`rerun`) always paces: after the first setup every
+        // project still carries the local "not configured" error, and none of
+        // them is free any more.
+        if (!noSetup && (opts.rerun || !unpaced(before.error))) {
           // Wait *before* showing it as loading: a queued project is not
           // busy, so a manual refresh can still run (and this one lapses).
           const slot = autoFetchSlot();
@@ -298,8 +304,10 @@ export const useIssueStore = create<IssueState>((set, get) => {
       }
       const again = rerunAfterFetch.delete(projectId);
       if (gone()) return;
-      if (switched() || again) {
+      if (switched()) {
         await get().refresh(projectId);
+      } else if (again) {
+        await get().refresh(projectId, { auto: true });
       }
     },
 

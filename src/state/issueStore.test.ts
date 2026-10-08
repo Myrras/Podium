@@ -24,6 +24,7 @@ import {
   AUTO_FETCH_SPACING_MS,
   ISSUE_POLL_MS,
   moveTargets,
+  NOT_CONFIGURED,
   resetAutoFetchPacing,
   useIssueStore,
 } from "./issueStore";
@@ -147,6 +148,32 @@ describe("issueStore", () => {
     expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a"]);
     await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
     // "c" has its Git section off, so it never fetches.
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b"]);
+    // ...and is stale, so showing it again fetches at once.
+    expect(useIssueStore.getState().byProject.c.fetchedAt).toBe(0);
+  });
+
+  it("the first setup paces projects that sit on the not-configured error", async () => {
+    listMock.mockResolvedValue(board(1));
+    openProjects({ a: true, b: true });
+    for (const id of ["a", "b"]) {
+      useIssueStore.setState((s) => ({
+        byProject: {
+          ...s.byProject,
+          [id]: {
+            board: null,
+            error: NOT_CONFIGURED,
+            loading: false,
+            fetchedAt: 0,
+            mine: true,
+          },
+        },
+      }));
+    }
+    useIssueStore.getState().setOverview(CONFIGURED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a"]);
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
     expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b"]);
   });
 

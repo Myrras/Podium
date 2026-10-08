@@ -900,6 +900,12 @@ pub fn normalize_url(input: &str) -> Option<String> {
     // from the browser is cut at GitLab's `/-/` (`…/proj/-/issues`), which no
     // install path contains, and loses its query/fragment; a project path
     // left before it then fails with a "check the setup's URL" error.
+    // Credentials are checked before cutting at `?`/`#`: a token may itself
+    // contain one (`user:tok#en@host`), so the whole text up to the first
+    // `/` counts as the authority.
+    if rest.split('/').next().unwrap_or(rest).contains('@') {
+        return None;
+    }
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
     let rest = match format!("{rest}/").find("/-/") {
         Some(i) => &rest[..i],
@@ -907,7 +913,7 @@ pub fn normalize_url(input: &str) -> Option<String> {
     };
     let rest = rest.trim_end_matches('/');
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    (!host.is_empty() && !host.contains('@') && !rest.contains(char::is_whitespace))
+    (!host.is_empty() && !rest.contains(char::is_whitespace))
         .then(|| format!("{scheme}://{}{path}", host.to_ascii_lowercase()))
 }
 
@@ -2326,6 +2332,8 @@ mod tests {
             ("two words", None),
             ("https://me:secret@git.example.test", None),
             ("me@git.example.test/gitlab", None),
+            ("https://me:tok#en@git.example.test", None),
+            ("https://me:tok?en@git.example.test", None),
             // An `@` in the path is not credentials.
             (
                 "https://git.example.test/gitlab/@grp",

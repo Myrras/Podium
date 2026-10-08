@@ -849,9 +849,11 @@ impl Orchestrator {
         color: Option<String>,
         sections: Option<ProjectSections>,
     ) -> CoreResult<ProjectInfo> {
-        let color = normalize_project_color(color).unwrap_or_else(|e| {
-            tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
-            None
+        let color = color.and_then(|c| {
+            normalize_project_color(Some(c)).unwrap_or_else(|e| {
+                tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
+                None
+            })
         });
         let info = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
@@ -859,8 +861,14 @@ impl Orchestrator {
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
-            handle.name_override = normalize_project_name(name);
-            handle.color = color;
+            // Only what was stored: a project with just stored sections must
+            // not lose its name or colour.
+            if name.is_some() {
+                handle.name_override = normalize_project_name(name);
+            }
+            if color.is_some() {
+                handle.color = color;
+            }
             if let Some(sections) = sections {
                 handle.sections = sections;
             }
@@ -3484,7 +3492,27 @@ mod tests {
             .restore_project_overrides(id, Some("Shop".into()), Some("red".into()), None)
             .unwrap();
         assert_eq!(info.name, "Shop", "a bad stored colour keeps the name");
-        assert_eq!(info.color, None);
+        assert_eq!(
+            info.color.as_deref(),
+            Some("#e5484d"),
+            "a bad stored colour is ignored, not applied"
+        );
+
+        // Only sections stored: the name and colour stay as they are.
+        let info = orch
+            .restore_project_overrides(
+                id,
+                None,
+                None,
+                Some(ProjectSections {
+                    todos: false,
+                    ..ProjectSections::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(info.name, "Shop");
+        assert_eq!(info.color.as_deref(), Some("#e5484d"));
+        assert!(!info.sections.todos);
     }
 
     #[tokio::test]
