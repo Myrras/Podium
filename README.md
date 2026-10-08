@@ -70,7 +70,16 @@ on, a request to work inside a **git worktree**, and per-spawn CLI args
 
 Every agent gets a **session colour** from an 8-hue palette, avoiding colours
 live agents already hold. Its sidebar row and the to-dos it owns are tinted
-the same colour, so you can see at a glance who is on what. The row also
+the same colour, so you can see at a glance who is on what. A stopped agent
+loses its colour (its to-dos stay linked, tinted grey, but you can start
+another agent on them, which takes them over); restarting it gives it its
+colour back (or a new one if another agent took it meanwhile) and, for
+Claude Code, **resumes its conversation** instead of
+starting an empty one (if Claude Code no longer has that conversation, or
+resuming it fails straight away, the agent starts a fresh one from its
+original prompt). If you put another agent on a stopped agent's to-dos and
+then restart the stopped one too, it resumes its own conversation and may
+still think it is working on them. The row also
 shows an activity state: **working…** (sustained output in the last 2.5 s —
 a single redraw does not count, and it works whether or not you ever opened
 the terminal), **idle**, or **needs input** — the last one is read off the

@@ -24,7 +24,11 @@ function todo(
   id: string,
   text: string,
   assignedAgent:
-    (Omit<AssignedAgent, "color"> & { color?: string | null }) | null,
+    | (Omit<AssignedAgent, "color" | "active"> & {
+        color?: string | null;
+        active?: boolean;
+      })
+    | null,
 ): TodoInfo {
   return {
     id,
@@ -38,7 +42,9 @@ function todo(
     archivedAt: null,
     links: [],
     comments: [],
-    assignedAgent: assignedAgent ? { color: null, ...assignedAgent } : null,
+    assignedAgent: assignedAgent
+      ? { color: null, active: true, ...assignedAgent }
+      : null,
   };
 }
 

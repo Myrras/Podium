@@ -19,6 +19,24 @@ when it merges.
   the assistant as your message. A newer update about the same agent or to-do
   replaces the old one, and open items survive restarts.
 
+## [2.4.0] - 2026-10-08
+
+### Changed
+
+- **Restarting a stopped agent picks up its own conversation.** A Claude Code
+  agent you stop and start again resumes the session it was in, instead of
+  starting over with its original prompt. If Claude Code no longer has that
+  conversation, or resuming it fails straight away, the agent starts a fresh
+  one rather than failing to start.
+- **A stopped agent gives up its session colour.** Its row and its to-dos turn
+  neutral grey while it is stopped. Restarting it gives its colour back, or a
+  new one if another agent took it in the meantime.
+- **A stopped agent's to-dos can be picked up again.** They stay linked to it,
+  so a restart carries on where it left off, but they get their "start an
+  agent" button back and can be multi-selected again — starting a new agent
+  on one hands it to that agent. Restarting the stopped agent afterwards
+  resumes its own conversation, so it may still think it is on that to-do.
+
 ## [2.3.0] - 2026-10-08
 
 ### Added
