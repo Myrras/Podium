@@ -13,14 +13,20 @@ use podium_core::{
 use crate::error::IpcError;
 use crate::state::AppState;
 
-/// List the supported agent adapters. Availability probing shells out
-/// (`command -v` via the login shell), so it runs on a blocking thread.
+/// List the supported agent adapters, probed on the backend an agent in
+/// `project_id` would run on (the configured backend when absent).
+/// Availability probing shells out (`command -v` via the login shell), so it
+/// runs on a blocking thread.
 #[tauri::command]
-pub async fn adapters_list(state: State<'_, AppState>) -> Result<Vec<AdapterInfo>, IpcError> {
+pub async fn adapters_list(
+    state: State<'_, AppState>,
+    project_id: Option<ProjectId>,
+) -> Result<Vec<AdapterInfo>, IpcError> {
     let orchestrator = Arc::clone(&state.orchestrator);
-    tauri::async_runtime::spawn_blocking(move || orchestrator.list_adapters())
+    tauri::async_runtime::spawn_blocking(move || orchestrator.list_adapters(project_id))
         .await
-        .map_err(|e| IpcError::new("io", format!("adapter probe task failed: {e}")))
+        .map_err(|e| IpcError::new("io", format!("adapter probe task failed: {e}")))?
+        .map_err(IpcError::from)
 }
 
 /// Spawn (add + immediately start) an agent in a project. Blank `name` /
@@ -105,7 +111,8 @@ pub struct AgentSettingsDto {
 fn build_settings_dto(orchestrator: &Orchestrator) -> AgentSettingsDto {
     let settings = orchestrator.agent_settings();
     let adapters = orchestrator
-        .list_adapters()
+        .list_adapters(None)
+        .unwrap_or_default()
         .into_iter()
         .map(|a| {
             let ov = settings.override_for(&a.id);

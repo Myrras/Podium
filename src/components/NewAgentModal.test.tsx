@@ -76,6 +76,15 @@ describe("NewAgentModal worktree checkbox", () => {
     agentSettingsGetMock.mockResolvedValue(SETTINGS);
   });
 
+  it("probes adapters on the project's own backend", async () => {
+    seedSpawn();
+    render(
+      <NewAgentModal open projectId={PROJECT} onClose={() => undefined} />,
+    );
+    await screen.findByText("Claude Code");
+    expect(adaptersListMock).toHaveBeenCalledWith(PROJECT);
+  });
+
   it("passes worktree: true when the checkbox is ticked", async () => {
     const { spawnAgent } = seedSpawn();
     render(

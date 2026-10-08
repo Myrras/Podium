@@ -92,6 +92,20 @@ describe("ScratchpadAgentModal", () => {
     expect(screen.getByText(/Auggie \(not installed\)/)).toBeInTheDocument();
   });
 
+  it("probes adapters on the project's own backend", async () => {
+    seedSpawn();
+    render(
+      <ScratchpadAgentModal
+        open
+        projectId={PROJECT}
+        scratchpadIds={["sp-1"]}
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText("Claude Code");
+    expect(adaptersListMock).toHaveBeenCalledWith(PROJECT);
+  });
+
   it("shows the singular title for one scratchpad and plural for several", async () => {
     seedSpawn();
     const { rerender } = render(

@@ -29,6 +29,12 @@ export interface ProjectInfo {
   configError: string | null;
   /** True when a user-set display-name override is in effect. */
   renamed: boolean;
+  /**
+   * WSL-backend mode only: this Windows-drive project runs natively (the
+   * `nativeDriveProjects` opt-in), so the terminal-shell setting — meant for
+   * the distro's shell — is not applied to its terminals.
+   */
+  nativeInWslMode: boolean;
 }
 
 /** One remembered project (`RecentProject` in `commands/recents.rs`). */
@@ -143,13 +149,17 @@ export interface AgentAdapterConfig {
 
 /**
  * Backend settings (`BackendSettingsDto`, `commands/backend.rs`): the saved
- * WSL distro and the one this run uses. They differ until the app restarts.
+ * choices and the ones this run uses. They differ until the app restarts.
  */
 export interface BackendSettingsDto {
   /** Saved WSL distro; empty = run natively. */
   wslDistro: string;
   /** WSL distro active in this run; empty = native. */
   activeWslDistro: string;
+  /** Saved opt-in: in WSL mode, run Windows-drive projects natively. */
+  nativeDriveProjects: boolean;
+  /** Whether this run does (false outside WSL mode). */
+  activeNativeDriveProjects: boolean;
 }
 
 /** Global agent settings + adapter catalog (`AgentSettingsDto`). */

@@ -9,6 +9,7 @@
 pub mod session_memory;
 pub mod settings;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,12 +19,17 @@ use serde::Serialize;
 
 use crate::error::CoreResult;
 use crate::ids::{ProcessId, ProjectId};
+use crate::platform::WslBackend;
 
 /// Everything an adapter may need to build a [`LaunchPlan`].
 pub struct AgentLaunchCtx<'a> {
     pub project_id: ProjectId,
     pub process_id: ProcessId,
     pub project_root: &'a Path,
+    /// The project's backend, decided once when the project opened (see
+    /// [`crate::platform::wsl_for`]): the launch is quoted and its paths
+    /// spelled for this shell, and the PTY spawns it on the same one.
+    pub wsl: Option<&'a WslBackend>,
     /// Initial prompt, passed as a positional argument when supported.
     pub prompt: Option<&'a str>,
     /// CLI args for the launch: the global default args and the project's
@@ -108,12 +114,17 @@ pub trait AgentAdapter: Send + Sync {
         None
     }
 
-    /// Whether the binary resolves on the user's login-shell `PATH`. Probed
-    /// via the login shell (`command -v <binary>` on Unix, `where` on Windows)
-    /// so shell-profile PATH edits (nvm, homebrew, …) are honoured; output is
-    /// discarded, only the exit status matters.
-    fn is_available(&self) -> bool {
-        crate::platform::run_shell_ok(&crate::platform::command_exists_query(self.binary()))
+    /// Whether the binary resolves on the user's login-shell `PATH` of
+    /// backend `wsl` — the one the agent would launch on (see
+    /// [`crate::platform::wsl_for`]). Probed via that login shell (`command
+    /// -v <binary>` on Unix and in WSL, `where` on Windows) so shell-profile
+    /// PATH edits (nvm, homebrew, …) are honoured; output is discarded, only
+    /// the exit status matters.
+    fn is_available(&self, wsl: Option<&WslBackend>) -> bool {
+        crate::platform::run_shell_ok_on(
+            wsl,
+            &crate::platform::command_exists_query_on(wsl, self.binary()),
+        )
     }
 }
 
@@ -211,24 +222,26 @@ impl AgentAdapter for CliAdapter {
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        // Quoted and spelled for the shell the project's processes run in:
+        // bash in the WSL distro, or the native shell (see `ctx.wsl`).
+        let wsl = ctx.wsl;
+        let quote = |arg: &str| crate::platform::quote_arg_in(wsl, arg);
         let bin = ctx.command_override.unwrap_or(self.binary);
-        let mut args: Vec<String> = vec![crate::platform::quote_arg(bin)?];
+        let mut args: Vec<String> = vec![quote(bin)?];
         if let (Some(flag), Some(id)) = (self.resume_flag, ctx.resume_session_id) {
             args.push(flag.to_string());
-            args.push(crate::platform::quote_arg(id)?);
+            args.push(quote(id)?);
         }
         if let Some(prompt) = ctx.prompt {
-            args.push(crate::platform::quote_arg(prompt)?);
+            args.push(quote(prompt)?);
         }
         for arg in ctx.extra_args {
-            args.push(crate::platform::quote_arg(arg)?);
+            args.push(quote(arg)?);
         }
         if let Some(mcp) = ctx.mcp {
             let path = write_mcp_config(mcp, ctx.process_id)?;
             args.push("--mcp-config".to_string());
-            args.push(crate::platform::quote_arg(&crate::platform::backend_path(
-                &path,
-            )?)?);
+            args.push(quote(&crate::platform::backend_path_in(wsl, &path)?)?);
             // Cross-session messaging: with no explicit inbound setting the
             // CLI decides per message from the two sessions' permission-mode
             // classes, and the assistant (`bypassPermissions`) never matches
@@ -242,7 +255,7 @@ impl AgentAdapter for CliAdapter {
             if let Some(flag) = self.settings_flag {
                 if !ctx.extra_args.iter().any(|a| a == flag) {
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(PEER_INBOUND_SETTINGS)?);
+                    args.push(quote(PEER_INBOUND_SETTINGS)?);
                 }
             }
             // Stamp the session with a name Podium can resolve back to this
@@ -254,7 +267,7 @@ impl AgentAdapter for CliAdapter {
                 // in extra_args means the user named the session themselves.
                 if !ctx.extra_args.iter().any(|a| a == flag || a == "--name") {
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&peer_session_name(&peer_tag(
+                    args.push(quote(&peer_session_name(&peer_tag(
                         &ctx.process_id.to_string(),
                     )))?);
                 }
@@ -266,10 +279,7 @@ impl AgentAdapter for CliAdapter {
             match self.identity {
                 IdentityDelivery::Flag(flag) => {
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&identity_prompt(
-                        ctx,
-                        peer_messaging,
-                    ))?);
+                    args.push(quote(&identity_prompt(ctx, peer_messaging))?);
                 }
                 IdentityDelivery::RulesFile(flag) => {
                     let path = write_identity_rules(
@@ -278,9 +288,7 @@ impl AgentAdapter for CliAdapter {
                         &identity_prompt(ctx, peer_messaging),
                     )?;
                     args.push(flag.to_string());
-                    args.push(crate::platform::quote_arg(&crate::platform::backend_path(
-                        &path,
-                    )?)?);
+                    args.push(quote(&crate::platform::backend_path_in(wsl, &path)?)?);
                 }
                 IdentityDelivery::Unsupported => {}
             }
@@ -515,18 +523,21 @@ pub struct AdapterInfo {
     pub available: bool,
 }
 
-/// Probed availability snapshot, kept for the whole app run. Each probe spawns
-/// a login+interactive shell per adapter, which is slow; the UI re-lists on
-/// every modal open, so we probe once and reuse it all day. A newly
-/// installed/removed CLI is picked up on the next app start.
-type AvailabilityCache = Arc<Mutex<Option<Vec<AdapterInfo>>>>;
+/// Probed availability snapshots, kept for the whole app run — one per
+/// backend (keyed by WSL distro, `None` = native), since a natively-run
+/// Windows-drive project and a project in the distro find different CLIs.
+/// Each probe spawns a login+interactive shell per adapter, which is slow;
+/// the UI re-lists on every modal open, so we probe once per backend and
+/// reuse it all day. A newly installed/removed CLI is picked up on the next
+/// app start.
+type AvailabilityCache = Arc<Mutex<HashMap<Option<String>, Vec<AdapterInfo>>>>;
 
 /// The set of adapters an [`crate::Orchestrator`] can spawn. Injectable so
 /// tests can register fakes; defaults to the real registry.
 #[derive(Clone)]
 pub struct AdapterRegistry {
     adapters: Vec<Arc<dyn AgentAdapter>>,
-    /// Shared across clones so every caller hits the same cache. `None` until
+    /// Shared across clones so every caller hits the same cache. Empty until
     /// the first probe.
     cache: AvailabilityCache,
 }
@@ -535,7 +546,7 @@ impl AdapterRegistry {
     pub fn new(adapters: Vec<Arc<dyn AgentAdapter>>) -> Self {
         Self {
             adapters,
-            cache: Arc::new(Mutex::new(None)),
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -543,11 +554,14 @@ impl AdapterRegistry {
         self.adapters.iter().find(|a| a.id() == id).cloned()
     }
 
-    /// Snapshot for listing; probes each adapter's binary availability once
-    /// per app run — every later list reuses the cached result.
-    pub fn infos(&self) -> Vec<AdapterInfo> {
+    /// Snapshot for listing on backend `wsl` (a project's, see
+    /// [`crate::platform::wsl_for`]); probes each adapter's binary
+    /// availability once per backend per app run — every later list reuses
+    /// the cached result.
+    pub fn infos(&self, wsl: Option<&WslBackend>) -> Vec<AdapterInfo> {
+        let key = wsl.map(|w| w.distro().to_string());
         let mut cache = self.cache.lock().expect("adapter cache mutex poisoned");
-        if let Some(infos) = cache.as_ref() {
+        if let Some(infos) = cache.get(&key) {
             return infos.clone();
         }
         let infos: Vec<AdapterInfo> = self
@@ -557,10 +571,10 @@ impl AdapterRegistry {
                 id: a.id().to_string(),
                 display_name: a.display_name().to_string(),
                 binary: a.binary().to_string(),
-                available: a.is_available(),
+                available: a.is_available(wsl),
             })
             .collect();
-        *cache = Some(infos.clone());
+        cache.insert(key, infos.clone());
         infos
     }
 }
@@ -610,7 +624,7 @@ mod tests {
             fn build_launch(&self, _ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
                 unreachable!("not used in this test")
             }
-            fn is_available(&self) -> bool {
+            fn is_available(&self, _wsl: Option<&WslBackend>) -> bool {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 true
             }
@@ -618,8 +632,8 @@ mod tests {
 
         let probes = Arc::new(AtomicUsize::new(0));
         let registry = AdapterRegistry::new(vec![Arc::new(CountingAdapter(Arc::clone(&probes)))]);
-        let first = registry.infos();
-        let second = registry.infos();
+        let first = registry.infos(None);
+        let second = registry.infos(None);
         assert_eq!(first.len(), 1);
         assert!(second[0].available);
         assert_eq!(
@@ -627,6 +641,12 @@ mod tests {
             1,
             "second list must reuse the app-lifetime cache, not re-probe"
         );
+        // Another backend finds other CLIs, so it is probed on its own —
+        // once.
+        let distro = WslBackend::for_tests("Ubuntu");
+        registry.infos(Some(&distro));
+        registry.infos(Some(&distro));
+        assert_eq!(probes.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -635,7 +655,7 @@ mod tests {
         assert!(registry.by_id("claude-code").is_some());
         assert!(registry.by_id("auggie").is_some());
 
-        let ids: Vec<String> = registry.infos().into_iter().map(|i| i.id).collect();
+        let ids: Vec<String> = registry.infos(None).into_iter().map(|i| i.id).collect();
         assert!(ids.contains(&"claude-code".to_string()));
         assert!(ids.contains(&"auggie".to_string()));
     }
@@ -660,6 +680,7 @@ mod tests {
             project_id,
             process_id,
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt,
             extra_args,
             command_override,
@@ -707,6 +728,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp/project"),
+            wsl: None,
             prompt: Some("continue where we left off"),
             extra_args: &[],
             command_override: None,
@@ -738,6 +760,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp/project"),
+            wsl: None,
             prompt: Some("hello"),
             extra_args: &[],
             command_override: None,
@@ -771,6 +794,7 @@ mod tests {
                 project_id: ProjectId::new(),
                 process_id,
                 project_root: Path::new("/tmp/project"),
+                wsl: None,
                 prompt: None,
                 extra_args: args,
                 command_override: None,
@@ -804,6 +828,7 @@ mod tests {
                 project_id: ProjectId::new(),
                 process_id,
                 project_root: Path::new("/tmp/project"),
+                wsl: None,
                 prompt: None,
                 extra_args: &[],
                 command_override: None,
@@ -935,6 +960,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,
@@ -980,6 +1006,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,
@@ -1009,6 +1036,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,
@@ -1038,6 +1066,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,
@@ -1069,6 +1098,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,
@@ -1112,6 +1142,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,
@@ -1212,6 +1243,7 @@ mod tests {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
             project_root: Path::new("/tmp"),
+            wsl: None,
             prompt: None,
             extra_args: &[],
             command_override: None,

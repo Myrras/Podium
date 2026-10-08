@@ -272,6 +272,7 @@ pub fn run() {
             commands::assistant::assistant_interrupt,
             commands::backend::backend_settings_get,
             commands::backend::backend_settings_set_wsl_distro,
+            commands::backend::backend_settings_set_native_drive_projects,
             commands::backend::backend_wsl_networking_mode,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,
@@ -359,9 +360,16 @@ pub fn run() {
 fn init_backend(app_data_dir: &std::path::Path) {
     let settings =
         podium_core::backend_settings::load(&app_data_dir.join(commands::backend::BACKEND_FILE));
-    podium_core::platform::init_wsl(settings.wsl_distro.as_deref());
+    podium_core::platform::init_wsl(
+        settings.wsl_distro.as_deref(),
+        settings.native_drive_projects,
+    );
     if let Some(wsl) = podium_core::platform::wsl() {
-        tracing::info!("WSL backend: running processes in distro {}", wsl.distro());
+        tracing::info!(
+            "WSL backend: running processes in distro {} (Windows-drive projects native: {})",
+            wsl.distro(),
+            wsl.native_drive_projects()
+        );
     }
 }
 

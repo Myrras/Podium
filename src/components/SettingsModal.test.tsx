@@ -16,7 +16,18 @@ vi.mock("../lib/platform", () => ({
   isMac: false,
 }));
 
-let backendDto: BackendSettingsDto = { wslDistro: "", activeWslDistro: "" };
+function backend(
+  overrides: Partial<BackendSettingsDto> = {},
+): BackendSettingsDto {
+  return {
+    wslDistro: "",
+    activeWslDistro: "",
+    nativeDriveProjects: false,
+    activeNativeDriveProjects: false,
+    ...overrides,
+  };
+}
+let backendDto: BackendSettingsDto = backend();
 
 // The settings modal reaches the backend only through the Tauri invoke bridge,
 // which jsdom lacks — route every command by name to a canned response.
@@ -107,6 +118,12 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
       backendDto = {
         ...backendDto,
         wslDistro: (args as { distro: string | null }).distro ?? "",
+      };
+      return Promise.resolve(backendDto);
+    case "backend_settings_set_native_drive_projects":
+      backendDto = {
+        ...backendDto,
+        nativeDriveProjects: (args as { enabled: boolean }).enabled,
       };
       return Promise.resolve(backendDto);
     default:
@@ -336,7 +353,7 @@ describe("SettingsModal — General tab", () => {
 describe("SettingsModal — General tab, WSL backend", () => {
   beforeEach(() => {
     invoke.mockClear();
-    backendDto = { wslDistro: "", activeWslDistro: "" };
+    backendDto = backend();
   });
   afterEach(() => {
     platform.isWindows = false;
@@ -360,7 +377,7 @@ describe("SettingsModal — General tab, WSL backend", () => {
 
   it("hints the distro's $SHELL as the terminal default in WSL mode", async () => {
     platform.isWindows = true;
-    backendDto = { wslDistro: "Ubuntu", activeWslDistro: "Ubuntu" };
+    backendDto = backend({ wslDistro: "Ubuntu", activeWslDistro: "Ubuntu" });
     render(<SettingsModal open onClose={() => undefined} />);
     await waitFor(() =>
       expect(screen.getByLabelText("Shell")).toHaveAttribute(
@@ -368,6 +385,56 @@ describe("SettingsModal — General tab, WSL backend", () => {
         "$SHELL (default)",
       ),
     );
+  });
+
+  it("hints PowerShell for Windows-drive projects when they run natively", async () => {
+    platform.isWindows = true;
+    backendDto = backend({
+      wslDistro: "Ubuntu",
+      activeWslDistro: "Ubuntu",
+      nativeDriveProjects: true,
+      activeNativeDriveProjects: true,
+    });
+    render(<SettingsModal open onClose={() => undefined} />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Shell")).toHaveAttribute(
+        "placeholder",
+        "$SHELL (default; PowerShell for C:\\ projects)",
+      ),
+    );
+  });
+
+  it("offers the native Windows-drive opt-in only with a distro, off by default", async () => {
+    platform.isWindows = true;
+    render(<SettingsModal open onClose={() => undefined} />);
+    const input = await screen.findByLabelText("WSL distro");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    const label = "Run Windows-drive projects natively";
+    expect(screen.queryByRole("switch", { name: label })).toBeNull();
+
+    fireEvent.change(input, { target: { value: "Ubuntu" } });
+    const toggle = screen.getByRole("switch", { name: label });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("saves the native Windows-drive opt-in and asks for a restart", async () => {
+    platform.isWindows = true;
+    backendDto = backend({ wslDistro: "Ubuntu", activeWslDistro: "Ubuntu" });
+    render(<SettingsModal open onClose={() => undefined} />);
+    const toggle = await screen.findByRole("switch", {
+      name: "Run Windows-drive projects natively",
+    });
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "backend_settings_set_native_drive_projects",
+        { enabled: true },
+      ),
+    );
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    expect(
+      screen.getByText("Restart Podium to apply this change."),
+    ).toBeInTheDocument();
   });
 
   it("hints PowerShell as the terminal default on native Windows", async () => {
