@@ -26,10 +26,10 @@ import type {
   WorktreeInfo,
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
+import { terminalShellFor } from "../lib/terminalShell";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
-import { useSettingsStore } from "../state/settingsStore";
 import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
@@ -216,8 +216,7 @@ function ProjectGroup({
 
   const addTerminal = async () => {
     setActiveProject(project.id);
-    // Blank = backend platform default ($SHELL -i / PowerShell).
-    const shell = useSettingsStore.getState().terminal.shell.trim();
+    const shell = terminalShellFor(project.nativeInWslMode);
     const info = await addProcess(project.id, {
       name: `Terminal ${terminals.length + 1}`,
       kind: "terminal",
@@ -441,6 +440,7 @@ function ProjectGroup({
           />
           <WorktreeSubsection
             projectId={project.id}
+            nativeInWslMode={project.nativeInWslMode}
             terminals={terminals}
             onOpenCommands={(wt) => {
               setActiveProject(project.id);
