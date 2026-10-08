@@ -327,11 +327,21 @@ describe("TodoSubsection spawn button", () => {
   });
 });
 
-/** A to-do owned by a session, tinted with that session's colour. */
-function assignedTodo(id: string, text: string, color: string): TodoInfo {
+/** A to-do linked to a session, tinted with that session's colour. A `null`
+ * colour is a stopped owner, as the backend reports it. */
+function assignedTodo(
+  id: string,
+  text: string,
+  color: string | null,
+): TodoInfo {
   return {
     ...todo(id, text),
-    assignedAgent: { processId: "sess-1", name: "session", color },
+    assignedAgent: {
+      processId: "sess-1",
+      name: "session",
+      color,
+      active: color !== null,
+    },
   };
 }
 
@@ -365,6 +375,45 @@ describe("TodoSubsection assigned to-dos", () => {
     expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
       "#3e63dd",
     );
+  });
+
+  it("keeps a stopped owner's link but tints it neutral grey", () => {
+    seed([assignedTodo("a", "Todo A", null)]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    const row = screen.getByText("Todo A").closest('[data-assigned="true"]');
+    expect(row).not.toBeNull();
+    expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
+      "var(--text-faint)",
+    );
+  });
+
+  it("lets another agent take over a stopped owner's to-do", () => {
+    seed([assignedTodo("a", "Todo A", null), todo("b", "Todo B")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    // The spawn button is back…
+    expect(
+      screen.getByRole("button", { name: 'Start an agent on "Todo A"' }),
+    ).toBeInTheDocument();
+    // …and the row joins a multi-select again.
+    fireEvent.click(titleOf("Todo A"), { metaKey: true });
+    fireEvent.click(titleOf("Todo B"), { metaKey: true });
+    expect(screen.getByText(/Start agent on 2/)).toBeInTheDocument();
   });
 
   it("never joins a multi-select — any click just opens it", () => {

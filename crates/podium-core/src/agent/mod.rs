@@ -85,6 +85,53 @@ impl fmt::Debug for McpConnectInfo {
 pub struct LaunchPlan {
     pub command: String,
     pub env: Vec<(String, String)>,
+    /// What a restart of the exited agent runs instead of `command`. `None`
+    /// when the CLI cannot resume by id, or the user's own args already pick
+    /// the session.
+    pub restart: Option<RestartCommands>,
+}
+
+/// The launch line split into its parts, so a restart can be spelled for
+/// whichever session id is current: the orchestrator picks
+/// [`resume`](Self::resume) or [`fresh`](Self::fresh) per start (see
+/// [`AgentAdapter::session_exists`]). All parts are already quoted for the
+/// project's shell; session ids are UUIDs, which need no quoting.
+#[derive(Debug, Clone)]
+pub struct RestartCommands {
+    pub bin: String,
+    pub prompt: Option<String>,
+    /// Everything after the session flags (extra args, MCP config, …).
+    pub tail: String,
+    /// Starts a new session under a given id (Claude Code's `--session-id`).
+    pub new_flag: &'static str,
+    /// Picks a stored session back up (Claude Code's `--resume`).
+    pub resume_flag: &'static str,
+}
+
+impl RestartCommands {
+    /// Picks session `session_id` back up — no initial prompt, it is already
+    /// in the conversation.
+    pub fn resume(&self, session_id: &str) -> String {
+        join_line(&self.bin, &[self.resume_flag, session_id], &self.tail)
+    }
+
+    /// A new session under `session_id`, with the original prompt. The id
+    /// must be one the CLI has never seen: it refuses a used one ("is already
+    /// in use"), just as `--resume` fails for one it has no transcript of.
+    pub fn fresh(&self, session_id: &str) -> String {
+        let mut head: Vec<&str> = self.prompt.as_deref().into_iter().collect();
+        head.extend([self.new_flag, session_id]);
+        join_line(&self.bin, &head, &self.tail)
+    }
+}
+
+/// `bin`, then `head`, then a non-empty `tail`, space-separated.
+fn join_line(bin: &str, head: &[&str], tail: &str) -> String {
+    std::iter::once(bin)
+        .chain(head.iter().copied())
+        .chain((!tail.is_empty()).then_some(tail))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One supported agent CLI (Claude Code today; more later).
@@ -95,6 +142,14 @@ pub trait AgentAdapter: Send + Sync {
     /// The CLI binary the adapter drives (also the default name prefix).
     fn binary(&self) -> &'static str;
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan>;
+
+    /// Whether the CLI has a stored conversation for `session_id` on backend
+    /// `wsl` (where the agent runs), so [`RestartCommands::resume`] can pick
+    /// it up. `false` means a restart runs [`RestartCommands::fresh`]. May
+    /// run a login shell, so call it off the async runtime.
+    fn session_exists(&self, _session_id: &str, _wsl: Option<&WslBackend>) -> bool {
+        false
+    }
 
     /// Whether the binary resolves on the user's login-shell `PATH` of
     /// backend `wsl` — the one the agent would launch on (see
@@ -146,6 +201,11 @@ pub struct CliAdapter {
     /// Podium can resolve back to the process. `None` when the CLI has no
     /// such flag.
     pub name_flag: Option<&'static str>,
+    /// `(new, resume)` flags taking a session id (Claude Code's
+    /// `--session-id` / `--resume`). The process id is the session id, so a
+    /// restarted agent resumes its own conversation. `None` when the CLI
+    /// cannot pick a session by id.
+    pub session_flags: Option<(&'static str, &'static str)>,
 }
 
 /// The Claude Code CLI (`claude`).
@@ -156,6 +216,7 @@ pub const CLAUDE_CODE: CliAdapter = CliAdapter {
     identity: IdentityDelivery::Flag("--append-system-prompt"),
     settings_flag: Some("--settings"),
     name_flag: Some("-n"),
+    session_flags: Some(("--session-id", "--resume")),
 };
 
 /// The Augment / Auggie CLI (`auggie`).
@@ -169,6 +230,7 @@ pub const AUGGIE: CliAdapter = CliAdapter {
     // No cross-session messaging in Auggie, so neither flag applies.
     settings_flag: None,
     name_flag: None,
+    session_flags: None,
 };
 
 impl AgentAdapter for CliAdapter {
@@ -184,16 +246,26 @@ impl AgentAdapter for CliAdapter {
         self.binary
     }
 
+    fn session_exists(&self, session_id: &str, wsl: Option<&WslBackend>) -> bool {
+        if self.session_flags.is_none() {
+            return false;
+        }
+        match wsl {
+            // The CLI runs in the distro, so its transcripts live there.
+            Some(_) => claude_session_query(session_id)
+                .is_some_and(|q| crate::platform::run_shell_ok_on(wsl, &q)),
+            None => claude_config_dir().is_some_and(|dir| claude_session_in(&dir, session_id)),
+        }
+    }
+
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
         // Quoted and spelled for the shell the project's processes run in:
         // bash in the WSL distro, or the native shell (see `ctx.wsl`).
         let wsl = ctx.wsl;
         let quote = |arg: &str| crate::platform::quote_arg_in(wsl, arg);
         let bin = ctx.command_override.unwrap_or(self.binary);
-        let mut args: Vec<String> = vec![quote(bin)?];
-        if let Some(prompt) = ctx.prompt {
-            args.push(quote(prompt)?);
-        }
+        let bin = quote(bin)?;
+        let mut args: Vec<String> = Vec::new();
         for arg in ctx.extra_args {
             args.push(quote(arg)?);
         }
@@ -261,8 +333,32 @@ impl AgentAdapter for CliAdapter {
                 IdentityDelivery::Unsupported => {}
             }
         }
+        // The process id doubles as the CLI session id, so a restart can
+        // resume the conversation. Skipped when the user's own args already
+        // choose a session — theirs wins, as with `--settings`/`-n`.
+        let user_picks_session = ctx.extra_args.iter().any(|a| user_picks_session(a));
+        let prompt = ctx.prompt.map(quote).transpose()?;
+        let tail = args.join(" ");
+        let restart =
+            self.session_flags
+                .filter(|_| !user_picks_session)
+                .map(|(new_flag, resume_flag)| RestartCommands {
+                    bin: bin.clone(),
+                    prompt: prompt.clone(),
+                    tail: tail.clone(),
+                    new_flag,
+                    resume_flag,
+                });
+        let command = match &restart {
+            Some(r) => r.fresh(&ctx.process_id.to_string()),
+            None => {
+                let head: Vec<&str> = prompt.as_deref().into_iter().collect();
+                join_line(&bin, &head, &tail)
+            }
+        };
         Ok(LaunchPlan {
-            command: args.join(" "),
+            command,
+            restart,
             env: vec![
                 ("PODIUM_PROJECT_ID".to_string(), ctx.project_id.to_string()),
                 ("PODIUM_PROCESS_ID".to_string(), ctx.process_id.to_string()),
@@ -278,6 +374,52 @@ fn has_flag(args: &[String], flag: &str) -> bool {
         a.strip_prefix(flag)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
     })
+}
+
+/// Claude Code's config dir on the native backend: `$CLAUDE_CONFIG_DIR`, else
+/// `~/.claude`.
+// ponytail: reads Podium's own environment, so a CLAUDE_CONFIG_DIR set only in
+// the login shell profile is missed: a restart then runs
+// `RestartCommands::fresh` (a new conversation, the old one not resumed)
+// rather than failing. (The WSL check runs in the login shell, so it sees it.)
+fn claude_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(dir.into());
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".claude"))
+}
+
+/// Whether Claude Code stored a transcript for `session_id` under
+/// `config_dir`: `projects/<cwd slug>/<id>.jsonl`. Any project dir counts, so
+/// the CLI's cwd-slug rules need not be mirrored here.
+fn claude_session_in(config_dir: &Path, session_id: &str) -> bool {
+    let file = format!("{session_id}.jsonl");
+    fs::read_dir(config_dir.join("projects"))
+        .map(|dirs| dirs.flatten().any(|d| d.path().join(&file).is_file()))
+        .unwrap_or(false)
+}
+
+/// Shell test, for a POSIX login shell (the WSL distro's), that succeeds when
+/// Claude Code stored a transcript for `session_id` — [`claude_session_in`]
+/// spelled for a shell. `None` if the id cannot be quoted.
+fn claude_session_query(session_id: &str) -> Option<String> {
+    let file = crate::platform::quote_posix(&format!("{session_id}.jsonl")).ok()?;
+    Some(format!(
+        r#"ls "${{CLAUDE_CONFIG_DIR:-$HOME/.claude}}"/projects/*/{file} >/dev/null 2>&1"#
+    ))
+}
+
+/// Whether an `extra_args` entry picks the CLI session itself (`--resume`,
+/// `--resume=<id>`, `--fork-session`, `--from-pr …`), so Podium's own
+/// session flags must stay out of its way.
+fn user_picks_session(arg: &str) -> bool {
+    let flag = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+    matches!(
+        flag,
+        "--session-id" | "--resume" | "-r" | "--continue" | "-c" | "--fork-session" | "--from-pr"
+    )
 }
 
 /// Inbound cross-session-messaging setting handed to every Podium-spawned
@@ -888,19 +1030,151 @@ mod tests {
     }
 
     #[test]
-    fn bare_launch_is_just_the_binary() {
-        let (plan, _, _) = plan(None, &[], None);
-        assert_eq!(plan.command, "claude");
+    fn bare_launch_is_the_binary_plus_its_session_id() {
+        let (plan, _, process_id) = plan(None, &[], None);
+        assert_eq!(plan.command, format!("claude --session-id {process_id}"));
+    }
+
+    #[test]
+    fn resume_command_resumes_the_session_without_the_prompt() {
+        let extra = vec!["--verbose".to_string()];
+        let (plan, _, process_id) = plan(Some("fix the login bug"), &extra, None);
+        let id = process_id.to_string();
+        assert_eq!(
+            split_command(&plan.command),
+            vec![
+                "claude",
+                "fix the login bug",
+                "--session-id",
+                &id,
+                "--verbose"
+            ]
+        );
+        let restart = plan.restart.expect("claude can resume");
+        assert_eq!(
+            split_command(&restart.resume(&id)),
+            vec!["claude", "--resume", &id, "--verbose"]
+        );
+        // The first launch is the fresh command under the process id.
+        assert_eq!(restart.fresh(&id), plan.command);
+        // A fresh restart is spelled for whichever new id it is given.
+        let next = ProcessId::new().to_string();
+        assert_eq!(
+            split_command(&restart.fresh(&next)),
+            vec![
+                "claude",
+                "fix the login bug",
+                "--session-id",
+                &next,
+                "--verbose"
+            ]
+        );
+    }
+
+    #[test]
+    fn any_spelling_of_a_session_flag_is_the_users_pick() {
+        for arg in [
+            "--continue",
+            "--resume=0f0e0d0c",
+            "--session-id=0f0e0d0c",
+            "--fork-session",
+            "--from-pr",
+            "--from-pr=42",
+        ] {
+            let extra = vec![arg.to_string()];
+            let (plan, _, _) = plan(None, &extra, None);
+            assert_eq!(split_command(&plan.command), vec!["claude", arg], "{arg}");
+            assert!(plan.restart.is_none(), "{arg}");
+        }
+        assert!(!user_picks_session("--resumable"));
+        assert!(!user_picks_session("--model=opus"));
+    }
+
+    #[test]
+    fn a_session_the_user_picks_is_left_alone() {
+        let extra = vec!["--continue".to_string()];
+        let (plan, _, _) = plan(None, &extra, None);
+        assert_eq!(split_command(&plan.command), vec!["claude", "--continue"]);
+        assert!(plan.restart.is_none());
+    }
+
+    #[test]
+    fn auggie_has_no_session_to_resume() {
+        let ctx = AgentLaunchCtx {
+            project_id: ProjectId::new(),
+            process_id: ProcessId::new(),
+            project_root: Path::new("/tmp"),
+            wsl: None,
+            prompt: None,
+            extra_args: &[],
+            command_override: None,
+            mcp: None,
+            named: false,
+            worktree: false,
+            worktree_name: None,
+            suggest_worktree: false,
+        };
+        let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
+        assert_eq!(plan.command, "auggie");
+        assert!(plan.restart.is_none());
+        assert!(!AUGGIE.session_exists(&ctx.process_id.to_string(), None));
+    }
+
+    #[test]
+    fn a_session_exists_once_the_cli_stored_its_transcript() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let id = ProcessId::new().to_string();
+        assert!(!claude_session_in(dir.path(), &id), "no projects dir yet");
+        let project = dir.path().join("projects").join("-tmp-some-project");
+        fs::create_dir_all(&project).expect("mkdir");
+        assert!(!claude_session_in(dir.path(), &id));
+        fs::write(project.join(format!("{id}.jsonl")), "{}\n").expect("write");
+        assert!(claude_session_in(dir.path(), &id));
+    }
+
+    /// The WSL check is the same lookup spelled for the distro's shell; run
+    /// it through `sh` here against a fake config dir.
+    #[test]
+    #[cfg_attr(windows, ignore = "needs a POSIX sh")]
+    fn the_shell_session_check_finds_a_stored_transcript() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let id = ProcessId::new().to_string();
+        let found = |id: &str| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(claude_session_query(id).expect("query"))
+                .env("CLAUDE_CONFIG_DIR", dir.path())
+                .status()
+                .expect("sh")
+                .success()
+        };
+        assert!(!found(&id), "no projects dir yet");
+        let project = dir.path().join("projects").join("-home-dev-some-project");
+        fs::create_dir_all(&project).expect("mkdir");
+        fs::write(project.join(format!("{id}.jsonl")), "{}\n").expect("write");
+        assert!(found(&id));
+        assert!(!found(&ProcessId::new().to_string()));
     }
 
     #[test]
     fn prompt_and_extra_args_are_shell_quoted() {
         let prompt = r#"fix the "login" bug; $HOME"#;
         let extra = vec!["--verbose".to_string(), "two words".to_string()];
-        let (plan, _, _) = plan(Some(prompt), &extra, None);
+        let (plan, _, process_id) = plan(Some(prompt), &extra, None);
         // Round-trip through a shell tokenizer: quoting must preserve args.
         let tokens = split_command(&plan.command);
-        assert_eq!(tokens, vec!["claude", prompt, "--verbose", "two words"]);
+        let id = process_id.to_string();
+        assert_eq!(
+            tokens,
+            vec![
+                "claude",
+                prompt,
+                "--session-id",
+                &id,
+                "--verbose",
+                "two words"
+            ]
+        );
     }
 
     #[test]
@@ -911,14 +1185,17 @@ mod tests {
         let prompt = "You're the assigned agent for to-do 'Fix login bug'";
         let (plan, _, _) = plan(Some(prompt), &[], None);
         let tokens = split_command(&plan.command);
-        assert_eq!(tokens, vec!["claude", prompt]);
+        assert_eq!(tokens[..2], ["claude", prompt]);
     }
 
     #[test]
     fn command_override_replaces_the_binary() {
         let (plan, _, _) = plan_with_override(None, &[], Some("/opt/bin/claude"), None);
         let tokens = split_command(&plan.command);
-        assert_eq!(tokens, vec!["/opt/bin/claude"]);
+        assert_eq!(tokens[0], "/opt/bin/claude");
+        let restart = plan.restart.expect("restart");
+        assert_eq!(split_command(&restart.resume("x"))[0], "/opt/bin/claude");
+        assert_eq!(split_command(&restart.fresh("x"))[0], "/opt/bin/claude");
     }
 
     #[test]
@@ -987,10 +1264,12 @@ mod tests {
 
         let tokens = split_command(&plan.command);
         assert_eq!(
-            tokens[..4],
+            tokens[..6],
             [
                 "claude".to_string(),
                 "hello".to_string(),
+                "--session-id".to_string(),
+                process_id.to_string(),
                 "--mcp-config".to_string(),
                 path.to_string_lossy().into_owned(),
             ]

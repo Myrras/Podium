@@ -29,6 +29,7 @@ import type {
   ProjectId,
   ProjectInfo,
   RecentProject,
+  ResponseItem,
   ScratchpadId,
   ScratchpadInfo,
   TermEvent,
@@ -761,6 +762,28 @@ export function assistantQueueRemove(id: string): Promise<void> {
  */
 export function assistantInterrupt(): Promise<void> {
   return invoke("assistant_interrupt");
+}
+
+/** The assistant's Responses list, newest first. */
+export function assistantResponsesList(): Promise<ResponseItem[]> {
+  return invoke("assistant_responses_list");
+}
+
+/** Tick a Responses item off (it is removed). */
+export function assistantResponseDismiss(id: string): Promise<void> {
+  return invoke("assistant_response_dismiss", { id });
+}
+
+/**
+ * Reply to a Responses item: the reply goes to the assistant as the user's
+ * message and the item is removed. Resolves to whether it was delivered
+ * rather than queued, like {@link assistantSend}.
+ */
+export function assistantResponseReply(
+  id: string,
+  text: string,
+): Promise<boolean> {
+  return invoke("assistant_response_reply", { id, text });
 }
 
 // ---------------------------------------------------------------------------
