@@ -121,8 +121,10 @@ whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
-  becomes a card you confirm or reject. Messages the assistant sends to an
-  agent (such as a push go-ahead you gave it) are not gated.
+  becomes a card you confirm or reject. Under `propose-all` the assistant
+  also cannot message an agent directly, so a push go-ahead goes through a
+  new agent you confirm; switching into or out of that mode restarts its
+  session (between turns, keeping the conversation).
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.

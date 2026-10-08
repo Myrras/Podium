@@ -17,7 +17,8 @@ when it merges.
   a fresh one: the agent pushes its own branch, opens the PR/MR in the same
   repository and reports back with the link. An agent on main or master does
   not push. Force, delete, tag and explicit main/master pushes, pushes
-  elsewhere and PRs/MRs against another repository stay blocked.
+  elsewhere and PRs/MRs against another repository are blocked in their plain
+  spellings.
 
 ## [2.1.4] - 2026-10-08
 

@@ -326,7 +326,13 @@ const GO_AHEAD_ALLOW_RULES: &[&str] = &[
 /// carry their leading space, so a flag-looking run inside a branch name
 /// (`fix-delete`) does not trip them. Long options are cut to their shortest
 /// unambiguous prefix because git accepts abbreviations (`--m` = `--mirror`);
-/// that also blocks harmless neighbours such as `--progress`.
+/// each was checked against `git push -h` (git 2.52) to name only the
+/// options it means to block.
+///
+/// `xargs` gets rules of its own: a prefix allow also matches `xargs <prefix>
+/// …` (the CLI strips a bare `xargs`), while the arguments xargs adds come
+/// from stdin, out of every other rule's sight (`echo -f | xargs git push
+/// origin HEAD`). So any xargs-fed push or PR/MR command is denied outright.
 ///
 /// ponytail: rules match the command text, not what git does. Not caught:
 /// a push spelled another way (`git -C dir push`, `git -c … push`,
@@ -419,6 +425,10 @@ const GO_AHEAD_DENY_RULES: &[&str] = &[
     "Bash(git push*:master *)",
     "Bash(git push*/master)",
     "Bash(git push*/master *)",
+    // Arguments fed in on stdin, where no rule above can see them.
+    "Bash(xargs*git push*)",
+    "Bash(xargs*gh pr create*)",
+    "Bash(xargs*glab mr create*)",
     // A PR/MR against another repository than this one.
     "Bash(gh pr create*-R*)",
     "Bash(gh pr create*-dR*)",
@@ -560,7 +570,8 @@ fn identity_prompt(ctx: &AgentLaunchCtx, peer_messaging: bool, push_rules: bool)
              and then, still only from that branch and unless one is already \
              open, open the PR/MR for it in this same repository with `gh pr \
              create` or `glab mr create` (never -R/--repo; if that command is \
-             refused, retry with --fill or --body-file so no title or body \
+             refused, retry with --fill, or with --body-file only if you can \
+             write that file without a prompt, so no title or body \
              text sits on the command line). Never push main \
              or master, force push, push tags, or push another branch on such \
              a go-ahead. Whatever you did with it — pushed and opened the \
@@ -1194,7 +1205,7 @@ mod tests {
             "and your current branch",
             "open the PR/MR for it in this same repository",
             "(never -R/--repo;",
-            "retry with --fill or --body-file",
+            "retry with --fill, or with --body-file only if you can",
             "(give its URL)",
             "if it is main or master, push nothing and open no PR/MR",
             "Never push main or master",
@@ -1230,9 +1241,11 @@ mod tests {
     /// is a prefix rule; otherwise `*` is any text at any position, `\*` and
     /// `\\` are a literal star and backslash, the match is anchored with
     /// whitespace runs collapsed, and a lone trailing ` *` also matches the
-    /// bare command.
+    /// bare command. Both forms also match the command behind a bare
+    /// `xargs ` (`a9`; for a wildcard that holds for deny/ask rules, which is
+    /// all this test feeds it).
     fn bash_rule_matches(rule: &str, cmd: &str) -> bool {
-        #[derive(PartialEq)]
+        #[derive(Clone, PartialEq)]
         enum Tok {
             Star,
             Lit(char),
@@ -1255,7 +1268,10 @@ mod tests {
         let cmd = collapse(cmd);
         if let Some(prefix) = content.strip_suffix(":*") {
             let prefix = collapse(prefix);
-            return cmd == prefix || cmd.starts_with(&format!("{prefix} "));
+            let xargs = format!("xargs {prefix}");
+            return [prefix, xargs]
+                .iter()
+                .any(|p| cmd == *p || cmd.starts_with(&format!("{p} ")));
         }
         let pat = collapse(&content);
         let mut toks = Vec::new();
@@ -1278,7 +1294,12 @@ mod tests {
                 return true;
             }
         }
-        glob(&toks, &cmd)
+        let xargs: Vec<Tok> = "xargs "
+            .chars()
+            .map(Tok::Lit)
+            .chain(toks.iter().cloned())
+            .collect();
+        glob(&toks, &cmd) || glob(&xargs, &cmd)
     }
 
     #[test]
@@ -1387,10 +1408,19 @@ mod tests {
             "gh pr create -fR example/other",
             "glab mr create -R example/other --fill",
             "glab mr create -fR example/other",
+            "xargs git push origin",
+            "xargs git push origin HEAD",
+            "xargs -n1 git push origin",
+            "xargs gh pr create --fill",
+            "xargs glab mr create --fill",
             "glab mr create --fill --repo=example/other",
         ];
         for cmd in must_deny {
             assert!(denied(cmd), "not denied: {cmd}");
+        }
+        // Why the xargs rules exist: the allow side does match these.
+        for cmd in ["xargs git push origin", "xargs gh pr create --fill"] {
+            assert!(allow.iter().any(|r| bash_rule_matches(r, cmd)), "{cmd}");
         }
         // Every rule earns its place: each denies at least one listed case.
         for rule in &deny {

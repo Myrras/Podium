@@ -83,6 +83,11 @@ use crate::ids::{PendingId, ProjectId, ProposalId};
 /// work to spawned agents instead of touching the filesystem itself.
 const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash";
 
+/// [`DISALLOWED_TOOLS`] under `propose-all`, plus `SendMessage`: that is the
+/// CLI's own tool, so Podium's autonomy gate never sees it, and a relayed
+/// push go-ahead would otherwise skip the confirm card the mode promises.
+const DISALLOWED_UNDER_PROPOSE_ALL: &str = "Edit,Write,NotebookEdit,Bash,SendMessage";
+
 const LOCK_POISONED: &str = "assistant config lock poisoned";
 
 /// Why a proposal was dropped without the user deciding on it.
@@ -159,13 +164,19 @@ PR/MR (never force, never tags) — Podium launches those agents with rules \
 allowing that push and `gh pr create`/`glab mr create`, they verify you with \
 verify_sender, push, open the PR/MR for that branch in the same repository \
 and report back with its URL; an agent on main or master pushes nothing \
-and tells you so. Only if it refuses or cannot push, if it does \
+and tells you so. If SendMessage is unavailable to you, skip the message \
+and take the fresh-agent route straight away — spawn_agent is where the \
+user gets to confirm. Only if it refuses or cannot push, if it does \
 not report back that it pushed (one started with the user's own --settings, \
 or by an older Podium, has no such rule), or if it is not a Claude Code \
 agent (Auggie has no messaging), spawn a fresh agent with adapter_id \
 \"claude-code\" (never the default adapter, which may be Auggie again) and \
 the authorisation in its initial prompt; Podium's own settings already give \
-it the push and PR/MR rules, so pass no --allowedTools. A fresh agent does \
+it the push and PR/MR rules, so pass no --allowedTools. That does not hold \
+when the user's own --settings reach it through the default agent args or \
+the project's agents.extra_args: then it has no such rules either, the push \
+waits for the user's approval in that agent's terminal, and you tell the \
+user so. A fresh agent does \
 not know where the work is: put the original agent's worktree path (or the \
 project root it worked in) and its branch in the prompt — the original \
 agent includes both in its report when it refuses or fails, and otherwise \
@@ -842,6 +853,10 @@ struct Session {
     /// [`SessionState`], so a task cleaning up after an old session can never
     /// clobber one that replaced it in the meantime.
     quiet_exit: Arc<AtomicBool>,
+    /// Whether this session was launched with `SendMessage` refused — the
+    /// autonomy mode at spawn time. A mode change that flips it replaces the
+    /// session (see [`AssistantManager::set_send_message_blocked`]).
+    send_message_blocked: bool,
 }
 
 /// The session plus turn-in-flight bookkeeping plus the pending-input queue,
@@ -913,6 +928,10 @@ pub struct AssistantManager {
     /// registry, not the model, is what resolves it (`verify_sender`).
     peer_tag: String,
     events: EventBus,
+    /// Whether the *next* session must refuse `SendMessage` (autonomy
+    /// `propose-all`). Shared with each session's output task, which swaps a
+    /// session that no longer matches at its next `TurnEnd`.
+    block_send_message: Arc<AtomicBool>,
 }
 
 impl AssistantManager {
@@ -924,6 +943,36 @@ impl AssistantManager {
             store: Arc::new(AssistantStore::new()),
             peer_tag: crate::agent::peer_tag(&uuid::Uuid::new_v4().to_string()),
             events,
+            block_send_message: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Set what the next session spawns with, without touching a live one —
+    /// for loading the stored mode at startup, before any session exists.
+    pub fn preset_send_message_blocked(&self, blocked: bool) {
+        self.block_send_message.store(blocked, Ordering::Relaxed);
+    }
+
+    /// Refuse (or allow again) `SendMessage` in the assistant's session —
+    /// on under autonomy `propose-all`, so nothing the assistant sends a peer
+    /// gets around the confirm card. A CLI flag cannot change in a running
+    /// session, so a session launched the other way is replaced, resuming
+    /// the same conversation: right now when it is idle (dropped here and
+    /// respawned lazily by the next turn), or at its `TurnEnd` when a turn
+    /// is running — never mid-turn.
+    pub async fn set_send_message_blocked(&self, blocked: bool) {
+        self.preset_send_message_blocked(blocked);
+        let mut state = self.state.lock().await;
+        let stale = state
+            .session
+            .as_ref()
+            .is_some_and(|s| s.send_message_blocked != blocked);
+        // A running turn keeps its session; its `TurnEnd` swaps it.
+        if stale && !state.in_flight {
+            if let Some(mut session) = state.session.take() {
+                session.quiet_exit.store(true, Ordering::Relaxed);
+                let _ = session.child.kill().await;
+            }
         }
     }
 
@@ -1314,183 +1363,243 @@ impl AssistantManager {
     }
 
     fn spawn(&self, config: &AssistantConfig, mcp: Option<&McpConnectInfo>) -> CoreResult<Session> {
-        // Run through the login shell like agent launches do, so a `claude`
-        // installed by nvm/homebrew resolves even when Podium was started
-        // from Finder with a bare PATH. `exec` replaces the shell, so the
-        // child we hold IS the CLI — killing it needs no process group.
-        // In WSL-backend mode the CLI runs inside the distro, so its working
-        // directory rides along as `wsl.exe --cd` (natively this is just the
-        // login shell, and `current_dir` below does the job).
-        let (shell, prefix) = match &config.cwd {
-            Some(cwd) => crate::platform::login_shell_in(crate::platform::wsl(), cwd)?,
-            None => crate::platform::login_shell(),
-        };
-        // Its own endpoint, not the agents' one: that is what puts the
-        // assistant's tool calls through the autonomy gate. The user's own MCP
-        // servers (mail, Slack, …) stay available — this config only adds to
-        // them.
-        let mcp_config = mcp
-            .map(crate::agent::write_assistant_mcp_config)
-            .transpose()?
-            .map(|path| {
-                Ok::<String, CoreError>(format!(
-                    " --mcp-config {}",
-                    crate::platform::quote_arg(&crate::platform::backend_path(&path)?)?
-                ))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        // Pick the stored conversation back up, so a restart continues where
-        // the panel left off instead of starting a stranger.
-        let resume = self
-            .store
-            .session_id()
-            .map(|id| {
-                Ok::<String, CoreError>(format!(" --resume {}", crate::platform::quote_arg(&id)?))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let resumed = !resume.is_empty();
-        // `-p`/stream-json mode has no TTY for an interactive permission
-        // prompt, so without --permission-mode the CLI would hang asking
-        // approval for every Podium MCP tool it never gets to answer.
-        // bypassPermissions is safe here because deny rules still win:
-        // DISALLOWED_TOOLS above keeps Edit/Write/NotebookEdit/Bash refused
-        // regardless of permission mode, so the assistant still can't touch
-        // the filesystem itself (autonomy gating happens server-side, in
-        // Podium's own MCP layer, not via CLI prompts).
-        // Cross-session messaging: this session bypasses permission prompts,
-        // so the CLI's default holds every message from a prompting session
-        // (every Podium-spawned agent) for approval — and a `-p` session has
-        // no TTY to show that dialog on, so the message just expires after
-        // `dialogExpiry`. Accepting is set here, in this session's own
-        // `--settings`, rather than in the user's settings file, which would
-        // change every session they run. The `-n` name is what lets Podium
-        // resolve a peer message back to this session (`verify_sender`).
-        let command = format!(
-            "exec {} -p --input-format stream-json --output-format stream-json \
-             --verbose --permission-mode bypassPermissions --disallowedTools {} \
-             --settings {} -n {}{}{} --append-system-prompt {}",
-            crate::platform::quote_arg(&config.command)?,
-            DISALLOWED_TOOLS,
-            crate::platform::quote_arg(&crate::agent::peer_inbound_settings())?,
-            crate::platform::quote_arg(&crate::agent::peer_session_name(&self.peer_tag))?,
-            mcp_config,
-            resume,
-            crate::platform::quote_arg(&identity_prompt(&self.store.memory()))?,
-        );
-        let mut cmd = Command::new(shell);
-        cmd.args(prefix)
-            .arg(command)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // ponytail: stderr dropped — the repo forbids logging child
-            // output, and a dead session already surfaces as `Exited`.
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        if let Some(cwd) = &config.cwd {
-            cmd.current_dir(cwd);
-        }
-        // Not a PTY (ConPTY is already windowless): a plain console-subsystem
-        // child (bash, wsl.exe, cmd.exe) spawned from a GUI-subsystem Podium
-        // would otherwise flash a console window on Windows.
-        crate::platform::hide_console_window(cmd.as_std_mut());
-        let mut child = crate::platform::spawn_gated(|| cmd.spawn())?;
-        let stdin = child.stdin.take().expect("stdin piped");
-        let stdout = child.stdout.take().expect("stdout piped");
-        let events = self.events.clone();
-        let store = Arc::clone(&self.store);
-        let state = Arc::clone(&self.state);
-        let quiet_exit = Arc::new(AtomicBool::new(false));
-        let quiet = Arc::clone(&quiet_exit);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            let mut started = false;
-            // Set by an `ACTION_REQUIRED` marker anywhere in the turn, read
-            // and cleared at its `TurnEnd`. A plain local: this task sees one
-            // session's events in order, so nothing else can race it.
-            let mut action_required = false;
-            // Non-JSON noise (a chatty shell profile) is skipped, not fatal.
-            while let Ok(Some(line)) = lines.next_line().await {
-                for event in parse_stream_line(&line) {
-                    started |= matches!(event, AssistantEvent::Started { .. });
-                    // A poll that found nothing must cost the user nothing:
-                    // no chat row, no transcript entry, and — since the panel
-                    // pings once per turn that produced a reply — no
-                    // notification. Dropping it here is what makes that true
-                    // without any frontend change.
-                    if is_nothing_to_report(&event) {
-                        continue;
-                    }
-                    // The marker is for Podium, not the user: take it out of
-                    // the prose. A message that was nothing but the marker
-                    // has nothing left to show.
-                    let Some(event) = take_action_required(event, &mut action_required) else {
-                        continue;
-                    };
-                    if let AssistantEvent::TurnEnd { error, .. } = event {
-                        // The turn is over, so the next waiting item (if any)
-                        // becomes its own turn right away — never merged, and
-                        // this advances the queue even when the turn ended in
-                        // error.
-                        let mut st = state.lock().await;
-                        let event = AssistantEvent::TurnEnd {
-                            error,
-                            notify: st.turn_from_user || action_required,
-                        };
-                        st.end_turn();
-                        action_required = false;
-                        store.record(&event);
-                        events.publish(PodiumEvent::AssistantEvent { event });
-                        drain_next(&mut st, &store, &events).await;
-                        continue;
-                    }
-                    store.record(&event);
-                    events.publish(PodiumEvent::AssistantEvent { event });
-                }
-            }
-            // A session that never announced itself is a session that never
-            // came up. If we asked to resume one, the stored id is the likely
-            // culprit (Claude prunes old sessions) — drop it so the next turn
-            // starts fresh instead of failing forever.
-            if !started && resumed {
-                store.forget_session();
-            }
-            // Only clean up `state` if it still holds *this* session: a quiet
-            // kill (new conversation, interrupt) may already have replaced or
-            // cleared it by the time this task notices the pipe closed, and
-            // must not be clobbered.
-            let dropped = {
-                let mut st = state.lock().await;
-                if st
-                    .session
-                    .as_ref()
-                    .is_some_and(|s| Arc::ptr_eq(&s.quiet_exit, &quiet))
-                {
-                    st.session = None;
-                    st.end_turn();
-                    std::mem::take(&mut st.pending)
-                } else {
-                    VecDeque::new()
-                }
-            };
-            // A quiet exit (new conversation, interrupt) is handled by its
-            // caller, including reporting its own dropped items — this is
-            // only for an exit nobody asked for (crash, missing CLI, or
-            // shutdown).
-            if !quiet.load(Ordering::Relaxed) {
-                report_undelivered(&store, &events, dropped);
-                events.publish(PodiumEvent::AssistantEvent {
-                    event: AssistantEvent::Exited,
-                });
-            }
-        });
-        Ok(Session {
-            child,
-            stdin,
-            quiet_exit,
+        spawn_session(SpawnCtx {
+            config: config.clone(),
+            mcp: mcp.cloned(),
+            store: Arc::clone(&self.store),
+            state: Arc::clone(&self.state),
+            events: self.events.clone(),
+            peer_tag: self.peer_tag.clone(),
+            block_send_message: Arc::clone(&self.block_send_message),
         })
     }
+}
+
+/// Everything a session spawn needs, owned, so a session's own output task
+/// can start its replacement (see the `TurnEnd` handling in
+/// [`spawn_session`]) without a handle on the manager.
+#[derive(Clone)]
+struct SpawnCtx {
+    config: AssistantConfig,
+    mcp: Option<McpConnectInfo>,
+    store: Arc<AssistantStore>,
+    state: Arc<Mutex<SessionState>>,
+    events: EventBus,
+    peer_tag: String,
+    block_send_message: Arc<AtomicBool>,
+}
+
+fn spawn_session(ctx: SpawnCtx) -> CoreResult<Session> {
+    let config = &ctx.config;
+    let mcp = ctx.mcp.as_ref();
+    let send_message_blocked = ctx.block_send_message.load(Ordering::Relaxed);
+    // Run through the login shell like agent launches do, so a `claude`
+    // installed by nvm/homebrew resolves even when Podium was started
+    // from Finder with a bare PATH. `exec` replaces the shell, so the
+    // child we hold IS the CLI — killing it needs no process group.
+    // In WSL-backend mode the CLI runs inside the distro, so its working
+    // directory rides along as `wsl.exe --cd` (natively this is just the
+    // login shell, and `current_dir` below does the job).
+    let (shell, prefix) = match &config.cwd {
+        Some(cwd) => crate::platform::login_shell_in(crate::platform::wsl(), cwd)?,
+        None => crate::platform::login_shell(),
+    };
+    // Its own endpoint, not the agents' one: that is what puts the
+    // assistant's tool calls through the autonomy gate. The user's own MCP
+    // servers (mail, Slack, …) stay available — this config only adds to
+    // them.
+    let mcp_config = mcp
+        .map(crate::agent::write_assistant_mcp_config)
+        .transpose()?
+        .map(|path| {
+            Ok::<String, CoreError>(format!(
+                " --mcp-config {}",
+                crate::platform::quote_arg(&crate::platform::backend_path(&path)?)?
+            ))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    // Pick the stored conversation back up, so a restart continues where
+    // the panel left off instead of starting a stranger.
+    let resume = ctx
+        .store
+        .session_id()
+        .map(|id| {
+            Ok::<String, CoreError>(format!(" --resume {}", crate::platform::quote_arg(&id)?))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let resumed = !resume.is_empty();
+    // `-p`/stream-json mode has no TTY for an interactive permission
+    // prompt, so without --permission-mode the CLI would hang asking
+    // approval for every Podium MCP tool it never gets to answer.
+    // bypassPermissions is safe here because deny rules still win:
+    // DISALLOWED_TOOLS above keeps Edit/Write/NotebookEdit/Bash refused
+    // regardless of permission mode, so the assistant still can't touch
+    // the filesystem itself (autonomy gating happens server-side, in
+    // Podium's own MCP layer, not via CLI prompts).
+    // Cross-session messaging: this session bypasses permission prompts,
+    // so the CLI's default holds every message from a prompting session
+    // (every Podium-spawned agent) for approval — and a `-p` session has
+    // no TTY to show that dialog on, so the message just expires after
+    // `dialogExpiry`. Accepting is set here, in this session's own
+    // `--settings`, rather than in the user's settings file, which would
+    // change every session they run. The `-n` name is what lets Podium
+    // resolve a peer message back to this session (`verify_sender`).
+    let command = format!(
+        "exec {} -p --input-format stream-json --output-format stream-json \
+         --verbose --permission-mode bypassPermissions --disallowedTools {} \
+         --settings {} -n {}{}{} --append-system-prompt {}",
+        crate::platform::quote_arg(&config.command)?,
+        if send_message_blocked {
+            DISALLOWED_UNDER_PROPOSE_ALL
+        } else {
+            DISALLOWED_TOOLS
+        },
+        crate::platform::quote_arg(&crate::agent::peer_inbound_settings())?,
+        crate::platform::quote_arg(&crate::agent::peer_session_name(&ctx.peer_tag))?,
+        mcp_config,
+        resume,
+        crate::platform::quote_arg(&identity_prompt(&ctx.store.memory()))?,
+    );
+    let mut cmd = Command::new(shell);
+    cmd.args(prefix)
+        .arg(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // ponytail: stderr dropped — the repo forbids logging child
+        // output, and a dead session already surfaces as `Exited`.
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(cwd) = &config.cwd {
+        cmd.current_dir(cwd);
+    }
+    // Not a PTY (ConPTY is already windowless): a plain console-subsystem
+    // child (bash, wsl.exe, cmd.exe) spawned from a GUI-subsystem Podium
+    // would otherwise flash a console window on Windows.
+    crate::platform::hide_console_window(cmd.as_std_mut());
+    let mut child = crate::platform::spawn_gated(|| cmd.spawn())?;
+    let stdin = child.stdin.take().expect("stdin piped");
+    let stdout = child.stdout.take().expect("stdout piped");
+    let events = ctx.events.clone();
+    let store = Arc::clone(&ctx.store);
+    let state = Arc::clone(&ctx.state);
+    let quiet_exit = Arc::new(AtomicBool::new(false));
+    let quiet = Arc::clone(&quiet_exit);
+    let respawn = ctx.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        let mut started = false;
+        // Set by an `ACTION_REQUIRED` marker anywhere in the turn, read
+        // and cleared at its `TurnEnd`. A plain local: this task sees one
+        // session's events in order, so nothing else can race it.
+        let mut action_required = false;
+        // Non-JSON noise (a chatty shell profile) is skipped, not fatal.
+        while let Ok(Some(line)) = lines.next_line().await {
+            for event in parse_stream_line(&line) {
+                started |= matches!(event, AssistantEvent::Started { .. });
+                // A poll that found nothing must cost the user nothing:
+                // no chat row, no transcript entry, and — since the panel
+                // pings once per turn that produced a reply — no
+                // notification. Dropping it here is what makes that true
+                // without any frontend change.
+                if is_nothing_to_report(&event) {
+                    continue;
+                }
+                // The marker is for Podium, not the user: take it out of
+                // the prose. A message that was nothing but the marker
+                // has nothing left to show.
+                let Some(event) = take_action_required(event, &mut action_required) else {
+                    continue;
+                };
+                if let AssistantEvent::TurnEnd { error, .. } = event {
+                    // The turn is over, so the next waiting item (if any)
+                    // becomes its own turn right away — never merged, and
+                    // this advances the queue even when the turn ended in
+                    // error.
+                    let mut st = state.lock().await;
+                    let event = AssistantEvent::TurnEnd {
+                        error,
+                        notify: st.turn_from_user || action_required,
+                    };
+                    st.end_turn();
+                    action_required = false;
+                    store.record(&event);
+                    events.publish(PodiumEvent::AssistantEvent { event });
+                    // An autonomy change that landed mid-turn applies now,
+                    // between turns: this session was launched with the
+                    // other `SendMessage` setting, so it is replaced
+                    // (resuming the conversation) before the next waiting
+                    // item can reach it.
+                    if respawn.block_send_message.load(Ordering::Relaxed) != send_message_blocked
+                        && st
+                            .session
+                            .as_ref()
+                            .is_some_and(|s| Arc::ptr_eq(&s.quiet_exit, &quiet))
+                    {
+                        if let Some(mut old) = st.session.take() {
+                            old.quiet_exit.store(true, Ordering::Relaxed);
+                            let _ = old.child.kill().await;
+                        }
+                        // Nothing waiting: the next turn respawns lazily.
+                        if !st.pending.is_empty() {
+                            match spawn_session(respawn.clone()) {
+                                Ok(session) => st.session = Some(session),
+                                Err(e) => {
+                                    tracing::warn!("could not respawn the assistant session: {e}")
+                                }
+                            }
+                        }
+                    }
+                    drain_next(&mut st, &store, &events).await;
+                    continue;
+                }
+                store.record(&event);
+                events.publish(PodiumEvent::AssistantEvent { event });
+            }
+        }
+        // A session that never announced itself is a session that never
+        // came up. If we asked to resume one, the stored id is the likely
+        // culprit (Claude prunes old sessions) — drop it so the next turn
+        // starts fresh instead of failing forever.
+        if !started && resumed {
+            store.forget_session();
+        }
+        // Only clean up `state` if it still holds *this* session: a quiet
+        // kill (new conversation, interrupt) may already have replaced or
+        // cleared it by the time this task notices the pipe closed, and
+        // must not be clobbered.
+        let dropped = {
+            let mut st = state.lock().await;
+            if st
+                .session
+                .as_ref()
+                .is_some_and(|s| Arc::ptr_eq(&s.quiet_exit, &quiet))
+            {
+                st.session = None;
+                st.end_turn();
+                std::mem::take(&mut st.pending)
+            } else {
+                VecDeque::new()
+            }
+        };
+        // A quiet exit (new conversation, interrupt) is handled by its
+        // caller, including reporting its own dropped items — this is
+        // only for an exit nobody asked for (crash, missing CLI, or
+        // shutdown).
+        if !quiet.load(Ordering::Relaxed) {
+            report_undelivered(&store, &events, dropped);
+            events.publish(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Exited,
+            });
+        }
+    });
+    Ok(Session {
+        child,
+        stdin,
+        quiet_exit,
+        send_message_blocked,
+    })
 }
 
 /// Whether `event` is the assistant saying "nothing needs you".
@@ -2322,6 +2431,10 @@ mod tests {
             "SendMessage to \"podium-\"",
             "adapter_id \"claude-code\"",
             "so pass no --allowedTools",
+            "If SendMessage is unavailable to you, skip the message",
+            "spawn_agent is where the user gets to confirm",
+            "the project's agents.extra_args: then it has no such rules either",
+            "waits for the user's approval in that agent's terminal",
             "do not start a new agent: SendMessage",
             "Only if it refuses or cannot push",
             "if it does not report back that it pushed",

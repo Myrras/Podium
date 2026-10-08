@@ -263,9 +263,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
     `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
     pushes, URL/`@` destinations, main/master as the destination and any
     quoting, `$`/backtick/brace expansion or a literal `*` (glob refspec)
-    in a push, plus `-R`/`--repo` on
-    `gh`/`glab`, wherever the flag sits (mid-pattern `*`; long git options
-    cut to their shortest unambiguous prefix). They match command text only:
+    in a push, any of the three fed through `xargs` (a prefix allow also
+    matches `xargs <prefix> …`, with the arguments out of sight on stdin),
+    plus `-R`/`--repo` on `gh`/`glab`, wherever the flag sits (mid-pattern
+    `*`; long git options cut to their shortest unambiguous prefix). They
+    match command text only:
     `git -C … push`, aliases, some flag clusters, an scp-style `host:path`
     destination with no user (`example.com:other.git`, an ssh-config
     alias), an explicit push to another non-main branch (`HEAD:develop`)
@@ -277,7 +279,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
     prompt drops the go-ahead. The assistant's fresh fallback agent is a
     `claude-code` spawn with no `--allowedTools`: Podium's settings already
     carry the allow and deny rules, and with the user's own `--settings` an
-    `--allowedTools` would grant a push with no deny list behind it.
+    `--allowedTools` would grant a push with no deny list behind it. When
+    those `--settings` come from the default agent args or a project's
+    `agents.extra_args` (merged in by `spawn_agent`), the fallback has no
+    rules either: the push waits for approval in its terminal, and the
+    assistant is told to say so.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -419,8 +425,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   work and complete the to-do first), and how to pass on a push go-ahead (a
   message to an existing Claude Code agent, which accepts it once
   `verify_sender` says the sender is the assistant, pushes, opens the PR/MR
-  and reports back with its URL; a fresh agent with `--allowedTools` if it
-  refuses, never reports a push, or is not Claude Code).
+  and reports back with its URL; a fresh `claude-code` agent (no
+  `--allowedTools`) if it refuses, never reports a push, or is not Claude
+  Code).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
@@ -443,10 +450,20 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event. The gate only sees Podium's own MCP tools:
-  the CLI's `SendMessage` — including a relayed push go-ahead — is never
-  gated, in any mode. The assistant cannot route around that by itself,
-  since the mode is deliberately absent from its prompt.
+  become a `toolFailed` event. The gate only sees Podium's own MCP tools,
+  so the CLI's own `SendMessage` — the way a push go-ahead is relayed — is
+  refused outright under `propose-all` instead: that mode adds it to the
+  session's `--disallowedTools`. A CLI flag cannot change in a running
+  session, so moving into or out of `propose-all`
+  (`Orchestrator::set_assistant_autonomy` →
+  `AssistantManager::set_send_message_blocked`) replaces the session,
+  resuming the conversation: at once when it is idle (dropped, respawned by
+  the next turn), or at the running turn's `TurnEnd` — never mid-turn — via
+  the output task, which carries a `SpawnCtx` to start its own replacement
+  before the next waiting item goes out. The mode loaded at startup is
+  applied with `preset_send_message_blocked`. The prompt, which never knows
+  the mode, says: if `SendMessage` is unavailable, use the fresh-agent route
+  (a `spawn_agent`, which gets the card).
 
   **Persistence** is one `assistant.json` in the app data dir (atomic writes,
   the same kind of store as `todos.json`): Claude's own session id plus the
