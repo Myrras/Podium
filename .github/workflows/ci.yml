@@ -18,6 +18,13 @@
 # or minor/major via a PR label), bumps the manifests, commits `Release vX.Y.Z`
 # to main, tags it, creates the GitHub Release and dispatches build.yml, which
 # attaches the installers. The `changelog` job makes every PR add that entry.
+#
+# The release push goes over SSH with a write-enabled deploy key (secret
+# RELEASE_DEPLOY_KEY): main's ruleset only lets admins and deploy keys bypass
+# its PR rule, and GitHub refuses the Actions app as a bypass actor on a
+# user-owned repo, so a GITHUB_TOKEN push is rejected with GH013. Unlike a
+# GITHUB_TOKEN push, a deploy-key push does trigger workflows; `[skip ci]` in
+# the release commit stops that from re-running CI and build.yml on main.
 name: CI
 
 on:
@@ -66,12 +73,25 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Without the key, checkout falls back to GITHUB_TOKEN and the push dies
+      # on main's ruleset with an opaque GH013; fail here with the fix instead.
+      - name: Deploy key configured?
+        env:
+          HAS_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error title=RELEASE_DEPLOY_KEY missing::The release push needs a deploy key. Run: ssh-keygen -t ed25519 -N '' -C podium-release -f podium-release; gh repo deploy-key add podium-release.pub --allow-write --title 'CI release'; gh secret set RELEASE_DEPLOY_KEY < podium-release; then delete both key files and re-run this job. main's ruleset must list DeployKey as a bypass actor."
+            exit 1
+          fi
+
       # main, not the pushed sha: a queued second run must see the first run's
-      # release commit, or it would release the same version twice.
+      # release commit, or it would release the same version twice. The deploy
+      # key makes `git push` go over SSH (see the header comment).
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       # An empty Unreleased section means an earlier run already released this.
       - name: Anything to release?
@@ -107,7 +127,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Release $TAG"
+          # [skip ci]: the deploy-key push would otherwise re-run ci.yml and
+          # build.yml's main trigger for a commit that only bumps the version.
+          git commit -am "Release $TAG [skip ci]"
           git tag -a "$TAG" -m "Podium $TAG"
           git push --atomic origin HEAD:main "$TAG"
 
@@ -115,8 +137,9 @@ jobs:
         if: steps.pending.outputs.release == 'true'
         run: gh release create "$TAG" --title "Podium $TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
 
-      # A tag pushed with GITHUB_TOKEN does not trigger build.yml's tag trigger;
-      # a workflow_dispatch does. build.yml attaches the installers to the release.
+      # The one and only installer build for a release: build.yml has no tag
+      # trigger, so it never depends on whether [skip ci] also suppresses the
+      # tag push. build.yml attaches the installers to the release.
       - name: Build installers
         if: steps.pending.outputs.release == 'true'
         run: gh workflow run build.yml --ref "$TAG"
