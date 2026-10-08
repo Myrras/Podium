@@ -682,7 +682,11 @@ function ProjectGroup({
               section="terminals"
               title="Terminals"
               Icon={TerminalIcon}
-              rows={terminals.filter((p) => p.worktree == null)}
+              // With the Worktrees section off, a worktree's terminals have
+              // no row of their own to nest under: list them here instead.
+              rows={terminals.filter(
+                (p) => p.worktree == null || !project.sections.worktrees,
+              )}
               empty="No terminals yet."
               add={{ label: "New terminal", onClick: () => void addTerminal() }}
               extra={[

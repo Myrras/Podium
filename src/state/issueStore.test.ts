@@ -16,7 +16,8 @@ import {
   issuesBoardMove,
   issuesSettingsGet,
 } from "../ipc/commands";
-import type { Board, IssuesOverview } from "../ipc/types";
+import type { Board, IssuesOverview, ProjectInfo } from "../ipc/types";
+import { useProjectStore } from "./projectStore";
 import { toastError } from "./toastStore";
 import {
   ISSUE_FOCUS_STALE_MS,
@@ -74,7 +75,18 @@ function board(...numbers: number[]): Board {
   };
 }
 
+/** Open projects whose Git board is shown (`true`) or hidden (`false`). */
+function openProjects(shown: Record<string, boolean>) {
+  useProjectStore.setState({
+    projects: Object.entries(shown).map(
+      ([id, issues]) =>
+        ({ id, sections: { issues } }) as unknown as ProjectInfo,
+    ),
+  });
+}
+
 beforeEach(() => {
+  openProjects({ [P]: true });
   vi.useFakeTimers();
   listMock.mockReset();
   cachedMock.mockReset().mockResolvedValue(null);
@@ -111,6 +123,31 @@ describe("issueStore", () => {
     await vi.waitFor(() =>
       expect(useIssueStore.getState().byProject[P].board).toEqual(board(3)),
     );
+  });
+
+  it("a setup change refetches only shown projects, one pacing slot apart", async () => {
+    listMock.mockResolvedValue(board(1));
+    openProjects({ a: true, b: true, c: false });
+    for (const id of ["a", "b", "c"]) {
+      useIssueStore.setState((s) => ({
+        byProject: {
+          ...s.byProject,
+          [id]: {
+            board: null,
+            error: null,
+            loading: false,
+            fetchedAt: 0,
+            mine: true,
+          },
+        },
+      }));
+    }
+    useIssueStore.getState().setOverview(CONFIGURED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a"]);
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
+    // "c" has its Git section off, so it never fetches.
+    expect(listMock.mock.calls.map(([p]) => p)).toEqual(["a", "b"]);
   });
 
   it("dedupes a refresh while one is in flight", async () => {
@@ -184,6 +221,32 @@ describe("issueStore", () => {
     // A stale cache: it would be shown, then refetched, were it still open.
     answer({ board: board(3), fetchedAt: "2026-01-01T00:00:00Z" });
     await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
+    expect(listMock).not.toHaveBeenCalled();
+    expect(useIssueStore.getState().byProject[P]).toBeUndefined();
+  });
+
+  it("auto-refresh: closing during hydrate without stop() gives no fetch and no entry", async () => {
+    let answer!: (v: { board: Board; fetchedAt: string }) => void;
+    cachedMock.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    listMock.mockResolvedValue(board(1));
+    const stop = useIssueStore.getState().startAutoRefresh(P);
+    // `project:closed` lands before the tab unmounts (stop() comes later).
+    useIssueStore.getState().dropProject(P);
+    answer({ board: board(3), fetchedAt: "2026-01-01T00:00:00Z" });
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
+    expect(listMock).not.toHaveBeenCalled();
+    expect(useIssueStore.getState().byProject[P]).toBeUndefined();
+    stop();
+  });
+
+  it("a project closed while the setups load is not brought back", async () => {
+    useIssueStore.setState({ overview: null });
+    let answer!: (v: IssuesOverview) => void;
+    settingsMock.mockReturnValue(new Promise((r) => (answer = r)));
+    const refreshing = useIssueStore.getState().refresh(P);
+    useIssueStore.getState().dropProject(P);
+    answer(UNCONFIGURED);
+    await refreshing;
     expect(listMock).not.toHaveBeenCalled();
     expect(useIssueStore.getState().byProject[P]).toBeUndefined();
   });

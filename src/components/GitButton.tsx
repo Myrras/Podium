@@ -55,9 +55,7 @@ export function GitButton({ projectId }: { projectId: ProjectId }) {
       }}
     >
       <BoardIcon size={12} />
-      {entry?.board && !error && open > 0 && (
-        <span aria-hidden>{open}</span>
-      )}
+      {entry?.board && !error && open > 0 && <span aria-hidden>{open}</span>}
     </button>
   );
 }

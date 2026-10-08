@@ -41,26 +41,20 @@ pub async fn project_open(
             tracing::warn!("failed to migrate legacy recents entry: {e}");
         }
     }
-    // Re-apply any persisted display-name override and badge colour before
-    // returning, so a renamed/recoloured project comes back that way after a
-    // restart. One read of workspace.json, one ProjectUpdated for both.
+    // Re-apply the persisted display-name override, badge colour and section
+    // toggles before returning, so a project comes back as it was left after a
+    // restart. One read of workspace.json, one ProjectUpdated for all three.
     match workspace::overrides_for(&app, &root) {
-        Ok((None, None)) => {}
-        Ok((name, color)) => {
+        Ok((None, None, None)) => {}
+        Ok((name, color, sections)) => {
             if let Err(e) = state
                 .orchestrator
-                .restore_project_overrides(id, name, color)
+                .restore_project_overrides(id, name, color, sections)
             {
                 tracing::warn!("failed to apply persisted project overrides: {e}");
             }
         }
         Err(e) => tracing::warn!("failed to read persisted project overrides: {e}"),
-    }
-    // Same for the section toggles.
-    if let Ok(Some(sections)) = workspace::sections_for(&app, &root) {
-        if let Err(e) = state.orchestrator.set_project_sections(id, sections) {
-            tracing::warn!("failed to apply persisted project sections: {e}");
-        }
     }
     let info = state
         .orchestrator

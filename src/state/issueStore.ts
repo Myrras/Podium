@@ -32,6 +32,7 @@ import type {
   IssuesOverview,
   ProjectId,
 } from "../ipc/types";
+import { useProjectStore } from "./projectStore";
 import { toastError } from "./toastStore";
 
 export const ISSUE_POLL_MS = 5 * 60_000;
@@ -87,7 +88,10 @@ interface IssueState {
   overview: IssuesOverview | null;
   /** Load `overview` once (a no-op when already loaded). */
   loadOverview: () => Promise<void>;
-  /** Apply a changed overview and refetch every shown project with it. */
+  /**
+   * Apply a changed overview and refetch the projects whose Git board is
+   * shown (paced like any automatic fetch).
+   */
   setOverview: (overview: IssuesOverview) => void;
   /**
    * Fetch now; a no-op while this project already has one in flight, unless
@@ -194,16 +198,35 @@ export const useIssueStore = create<IssueState>((set, get) => {
 
     setOverview: (overview) => {
       set({ overview });
+      // Only boards someone can see: a hidden or closed project's entry is
+      // refetched by its own mount when it comes back.
+      const shown = new Set(
+        useProjectStore
+          .getState()
+          .projects.filter((p) => p.sections.issues)
+          .map((p) => p.id),
+      );
       for (const projectId of Object.keys(get().byProject)) {
-        void get().refresh(projectId, { rerun: true });
+        if (shown.has(projectId)) {
+          void get().refresh(projectId, { rerun: true, auto: true });
+        }
       }
     },
 
     refresh: async (projectId, opts) => {
+      const drop = drops.get(projectId) ?? 0;
+      // Closed since this refresh began: whatever it learned is for nobody.
+      const gone = () =>
+        (drops.get(projectId) ?? 0) !== drop || !get().byProject[projectId];
       if (opts?.auto) {
         const before = get().byProject[projectId] ?? EMPTY;
-        // Already fetching or already waiting for a slot: nothing to add.
-        if (before.loading || autoWaiting.has(projectId)) return;
+        // Already waiting for a slot: that fetch will read the new setups.
+        if (autoWaiting.has(projectId)) return;
+        // Already fetching: only a setup change needs one more afterwards.
+        if (before.loading) {
+          if (opts.rerun) rerunAfterFetch.add(projectId);
+          return;
+        }
         // No setup at all: nothing is fetched, so nothing to pace either.
         const noSetup = get().overview?.setups?.length === 0;
         if (!noSetup && !unpaced(before.error)) {
@@ -232,6 +255,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
       const { mine } = current;
       patch(projectId, { loading: true });
       if (!get().overview) await get().loadOverview();
+      if ((drops.get(projectId) ?? 0) !== drop) return;
       const { overview } = get();
       // The scope was switched mid-fetch: that answer is for the old one, so
       // it must not land on the new scope's board; refetch instead.
@@ -251,7 +275,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
         try {
           const board = await issuesBoard(projectId, mine);
           // Closed meanwhile: do not bring its entry back.
-          if (!get().byProject[projectId]) return;
+          if (gone()) return;
           patch(
             projectId,
             switched()
@@ -259,7 +283,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
               : { board, error: null, loading: false, fetchedAt: Date.now() },
           );
         } catch (e: unknown) {
-          if (!get().byProject[projectId]) return;
+          if (gone()) return;
           patch(
             projectId,
             switched()
@@ -273,6 +297,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
         }
       }
       const again = rerunAfterFetch.delete(projectId);
+      if (gone()) return;
       if (switched() || again) {
         await get().refresh(projectId);
       }
@@ -340,10 +365,13 @@ export const useIssueStore = create<IssueState>((set, get) => {
       // Stopped (unmounted, project closed) before the cache answered: no
       // first fetch for a board nobody shows any more.
       let stopped = false;
+      // A closed project is dropped before its tab unmounts, so `stopped` may
+      // still be false when the cache answers: the drop count tells.
+      const drop = drops.get(projectId) ?? 0;
       void get()
         .hydrate(projectId)
         .then((at) => {
-          if (stopped) return;
+          if (stopped || (drops.get(projectId) ?? 0) !== drop) return;
           if (at === null || Date.now() - at > ISSUE_POLL_MS) {
             void refresh(projectId, { auto: true });
           }

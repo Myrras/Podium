@@ -113,7 +113,13 @@ beforeEach(() => {
   useIssueStore.setState({ byProject: {}, overview: CONFIGURED }, false);
   useLayoutStore.setState({ openBoard: { projectId: P } });
   useProjectStore.setState({
-    projects: [{ id: P, root: "/work/widgets" } as ProjectInfo],
+    projects: [
+      {
+        id: P,
+        root: "/work/widgets",
+        sections: { issues: true },
+      } as ProjectInfo,
+    ],
   });
   useSettingsRequestStore.setState({ request: null });
 });

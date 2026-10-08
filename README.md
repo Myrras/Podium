@@ -41,6 +41,8 @@ The **Sections** button in a project header hides or shows its To-do's,
 Terminals, Worktrees, Scratchpads and Git sections, per project. Hiding is
 presentation only: terminals keep running and agents still see everything
 over MCP.
+Both actions above live on the Terminals header, so they go away with that
+section. With Worktrees off, a worktree's terminals are listed under Terminals.
 
 ### Processes, terminals and supervision
 

@@ -836,9 +836,10 @@ impl Orchestrator {
         Ok(info)
     }
 
-    /// Re-apply a project's persisted overrides (display name, badge colour)
-    /// after `open_project`, publishing one `ProjectUpdated` for both rather
-    /// than one per override. `None` leaves that override unset. A stored
+    /// Re-apply a project's persisted overrides (display name, badge colour,
+    /// section toggles) after `open_project`, publishing one `ProjectUpdated`
+    /// for all rather than one per override. `None` leaves that override
+    /// unset (sections: the default). A stored
     /// colour that is not `#rrggbb` (a hand-edited `workspace.json`) is
     /// dropped (and logged) so the name still applies.
     pub fn restore_project_overrides(
@@ -846,6 +847,7 @@ impl Orchestrator {
         id: ProjectId,
         name: Option<String>,
         color: Option<String>,
+        sections: Option<ProjectSections>,
     ) -> CoreResult<ProjectInfo> {
         let color = normalize_project_color(color).unwrap_or_else(|e| {
             tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
@@ -859,6 +861,9 @@ impl Orchestrator {
                 .ok_or(CoreError::ProjectNotFound)?;
             handle.name_override = normalize_project_name(name);
             handle.color = color;
+            if let Some(sections) = sections {
+                handle.sections = sections;
+            }
             handle.info(id)
         };
         self.events
@@ -2005,8 +2010,11 @@ impl Orchestrator {
         account: Option<String>,
         token: Option<String>,
     ) -> CoreResult<crate::issues::IssuesOverview> {
-        let url = crate::issues::normalize_url(&url)
-            .ok_or_else(|| CoreError::InvalidInput("enter a valid http(s) URL".to_string()))?;
+        let url = crate::issues::normalize_url(&url).ok_or_else(|| {
+            CoreError::InvalidInput(
+                "enter a valid http(s) URL, without a user:token@ part".to_string(),
+            )
+        })?;
         let name = match name.trim() {
             "" => crate::issues::url_host(&url).to_string(),
             n => n.to_string(),
@@ -3447,10 +3455,19 @@ mod tests {
         let mut rx = orch.subscribe_events();
 
         let info = orch
-            .restore_project_overrides(id, Some("Webshop".into()), Some("#E5484D".into()))
+            .restore_project_overrides(
+                id,
+                Some("Webshop".into()),
+                Some("#E5484D".into()),
+                Some(ProjectSections {
+                    scratchpads: false,
+                    ..ProjectSections::default()
+                }),
+            )
             .unwrap();
         assert_eq!(info.name, "Webshop");
         assert_eq!(info.color.as_deref(), Some("#e5484d"));
+        assert!(!info.sections.scratchpads, "sections ride along");
 
         let mut updates = 0;
         while let Ok(event) = rx.try_recv() {
@@ -3458,10 +3475,13 @@ mod tests {
                 updates += 1;
             }
         }
-        assert_eq!(updates, 1, "one ProjectUpdated for name + colour");
+        assert_eq!(
+            updates, 1,
+            "one ProjectUpdated for name + colour + sections"
+        );
 
         let info = orch
-            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()))
+            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()), None)
             .unwrap();
         assert_eq!(info.name, "Shop", "a bad stored colour keeps the name");
         assert_eq!(info.color, None);

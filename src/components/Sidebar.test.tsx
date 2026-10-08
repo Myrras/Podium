@@ -418,6 +418,30 @@ describe("Sidebar project header", () => {
     expect(screen.getByText("No terminals yet.")).toBeInTheDocument();
   });
 
+  it("lists worktree terminals under Terminals when the Worktrees section is off", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: false,
+            scratchpads: true,
+            issues: false,
+          },
+        }),
+      ],
+    });
+    useProcessStore.setState({
+      processes: [terminal("t1", "worktree-shell", "fix-login")],
+    });
+
+    render(<Sidebar />);
+
+    expect(screen.getByText("worktree-shell")).toBeInTheDocument();
+    expect(screen.queryByText("No terminals yet.")).not.toBeInTheDocument();
+  });
+
   it("collapses one subsection to its header with a row count", () => {
     useProjectStore.setState({ projects: [project()] });
     useProcessStore.setState({

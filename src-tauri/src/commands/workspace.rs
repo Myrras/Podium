@@ -254,28 +254,18 @@ pub fn set_sections(
     save(&file, &entries)
 }
 
-/// The persisted section toggles for `path`, if any were ever set.
-pub fn sections_for(app: &AppHandle, path: &Path) -> Result<Option<ProjectSections>, IpcError> {
-    let file = workspace_path(app)?;
-    let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
-    Ok(load(&file)
-        .into_iter()
-        .find(|e| e.path == path)
-        .and_then(|e| e.sections))
-}
+/// A project's persisted overrides: display name, badge colour, sections.
+pub type Overrides = (Option<String>, Option<String>, Option<ProjectSections>);
 
-/// The persisted overrides (display name, badge colour) for `path`, read in
-/// one pass so `project_open` parses `workspace.json` once.
-pub fn overrides_for(
-    app: &AppHandle,
-    path: &Path,
-) -> Result<(Option<String>, Option<String>), IpcError> {
+/// The persisted overrides (display name, badge colour, section toggles) for
+/// `path`, read in one pass so `project_open` parses `workspace.json` once.
+pub fn overrides_for(app: &AppHandle, path: &Path) -> Result<Overrides, IpcError> {
     let file = workspace_path(app)?;
     let _guard = WORKSPACE_LOCK.lock().expect("workspace lock poisoned");
     Ok(load(&file)
         .into_iter()
         .find(|e| e.path == path)
-        .map(|e| (e.name, e.color))
+        .map(|e| (e.name, e.color, e.sections))
         .unwrap_or_default())
 }
 

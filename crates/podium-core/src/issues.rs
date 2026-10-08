@@ -883,7 +883,9 @@ pub struct IssuesOverview {
 
 /// Reduce user input to `scheme://host[:port][/path]`: the scheme is kept
 /// (default `https`), the host lowercased, the path kept minus a trailing
-/// slash (a GitLab under `/gitlab`). `None` when no host is left.
+/// slash (a GitLab under `/gitlab`). `None` when no host is left or the
+/// authority carries `user:token@` credentials, which would otherwise be
+/// stored in plaintext in `agents.json`.
 pub fn normalize_url(input: &str) -> Option<String> {
     let s = input.trim();
     let (scheme, rest) = match s.split_once("://") {
@@ -905,7 +907,7 @@ pub fn normalize_url(input: &str) -> Option<String> {
     };
     let rest = rest.trim_end_matches('/');
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    (!host.is_empty() && !rest.contains(char::is_whitespace))
+    (!host.is_empty() && !host.contains('@') && !rest.contains(char::is_whitespace))
         .then(|| format!("{scheme}://{}{path}", host.to_ascii_lowercase()))
 }
 
@@ -2322,6 +2324,13 @@ mod tests {
             ("   ", None),
             ("https://", None),
             ("two words", None),
+            ("https://me:secret@git.example.test", None),
+            ("me@git.example.test/gitlab", None),
+            // An `@` in the path is not credentials.
+            (
+                "https://git.example.test/gitlab/@grp",
+                Some("https://git.example.test/gitlab/@grp"),
+            ),
         ] {
             assert_eq!(normalize_url(input).as_deref(), want, "{input:?}");
         }
