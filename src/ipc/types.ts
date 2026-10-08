@@ -17,6 +17,111 @@ export type CommentId = string;
 export type LinkId = string;
 export type ScratchpadId = string;
 
+/** Which optional sidebar sections a project shows (`podium_core::ProjectSections`). */
+export interface ProjectSections {
+  todos: boolean;
+  terminals: boolean;
+  worktrees: boolean;
+  scratchpads: boolean;
+  issues: boolean;
+}
+
+/**
+ * A Git board column (`podium_core::issues::Column`). `color` is a hex string
+ * (GitLab) or a lowercase GitHub option colour name ("gray", "blue", …).
+ */
+export interface BoardColumn {
+  id: string;
+  title: string;
+  color: string | null;
+  /** Item kinds that may be dropped here (`issues_board_move`). */
+  accepts: ("issue" | "pr")[];
+}
+
+/** One card on the Git board: an issue or a PR/MR (`podium_core::issues::BoardItem`). */
+export interface BoardItem {
+  kind: "issue" | "pr";
+  number: number;
+  title: string;
+  url: string;
+  body: string;
+  labels: string[];
+  updatedAt: string;
+  /** A `BoardColumn.id` of the board. */
+  column: string;
+  draft: boolean;
+  author: string;
+  /** Whether it can be moved to another column. */
+  movable: boolean;
+  /** PRs/MRs folded into this issue (empty for PRs and unlinked issues). */
+  linked: LinkedPr[];
+  /** Logins/usernames it is assigned to. */
+  assignees: string[];
+  /** Open PRs/MRs only; null when unknown. */
+  approvals: Approvals | null;
+}
+
+/** Who approved an open PR/MR (`podium_core::issues::Approvals`). */
+export interface Approvals {
+  by: string[];
+  /** Approvals the platform requires (GitLab); null when it does not say. */
+  required: number | null;
+}
+
+/** A PR/MR linked to an issue, shown inside its card instead of as its own. */
+export interface LinkedPr {
+  number: number;
+  title: string;
+  url: string;
+  draft: boolean;
+  merged: boolean;
+  approvals: Approvals | null;
+}
+
+/** A project's Git board (`podium_core::Board`); counts are all-time, `null` = unknown. */
+export interface Board {
+  provider: IssueProvider;
+  items: BoardItem[];
+  /** Display order. */
+  columns: BoardColumn[];
+  /** Name of the project board the columns come from; null = Podium's defaults. */
+  source: string | null;
+  /** Podium-owned text: how to unlock the project's columns. */
+  hint: string | null;
+  prCounts: { open: number | null; merged: number | null };
+  /** The signed-in user's login/username; null when the platform would not say. */
+  me: string | null;
+}
+
+/** The last fetched board of a scope, from the backend cache. */
+export interface CachedBoard {
+  board: Board;
+  /** RFC3339 time of the fetch. */
+  fetchedAt: string;
+}
+
+/** Platform an issue setup talks to (`podium_core::IssueProvider`). */
+export type IssueProvider = "github" | "gitlab";
+
+/** One Settings → Issues setup (`IssueSetupInfo`); a token never crosses IPC. */
+export interface IssueSetup {
+  id: string;
+  name: string;
+  provider: IssueProvider;
+  /** Base URL, scheme kept (`http://` for an instance without TLS). */
+  url: string;
+  /** GitHub: the `gh` account to use; absent = gh's active account. */
+  account?: string;
+  /** GitLab: whether a token is stored in the keychain. */
+  tokenSet: boolean;
+}
+
+/** Every setup plus each project's pick, keyed by project root (`IssuesOverview`). */
+export interface IssuesOverview {
+  setups: IssueSetup[];
+  projects: Record<string, string>;
+}
+
 /** Open project snapshot (`podium_core::ProjectInfo`). */
 export interface ProjectInfo {
   id: ProjectId;
@@ -29,6 +134,10 @@ export interface ProjectInfo {
   configError: string | null;
   /** True when a user-set display-name override is in effect. */
   renamed: boolean;
+  /** Which optional sidebar sections are shown. */
+  sections: ProjectSections;
+  /** User-picked badge colour (`#rrggbb`); null keeps the theme accent. */
+  color: string | null;
   /**
    * WSL-backend mode only: this Windows-drive project runs natively (the
    * `nativeDriveProjects` opt-in), so the terminal-shell setting — meant for
@@ -276,8 +385,12 @@ export interface AssignedAgent {
   /** The agent's display name, for showing without a process lookup. */
   name: string;
   /** The session's subtle UI colour (hex), so the item can be tinted to match
-   * the agent that owns it; `null` in legacy/edge cases. */
+   * the agent that owns it; `null` once the agent exited. */
   color: string | null;
+  /** Whether the agent is running. An exited agent keeps the link (a restart
+   * picks the work back up) but no longer owns the item: another agent may
+   * be put on it, which takes it over. */
+  active: boolean;
 }
 
 /**
@@ -419,7 +532,12 @@ export type AssistantEvent =
    * the sender itself), nothing else announces this one starting, so the UI
    * promotes its waiting row into the ordinary log.
    */
-  | { type: "queueItemDelivered"; text: string };
+  | { type: "queueItemDelivered"; text: string; replyTo: string | null }
+  /**
+   * The Responses list changed (an item added, superseded, ticked or
+   * replied to). Carries the whole list, newest first — a snapshot.
+   */
+  | { type: "responsesChanged"; items: ResponseItem[] };
 
 /**
  * Whether a queued item can be edited or withdrawn before delivery. Only a
@@ -461,10 +579,52 @@ export interface QueuedMessage {
   kind: PendingKind;
   text: string;
   attachments: AttachmentInfo[];
+  /** The Responses item label this message answers, if it is a reply. */
+  replyTo: string | null;
 }
 
 /** Who spoke in one stored chat row (`podium_core::TranscriptRole`). */
-export type TranscriptRole = "user" | "assistant" | "tool" | "notice" | "nudge";
+export type TranscriptRole =
+  | "user"
+  | "assistant"
+  | "tool"
+  | "notice"
+  | "nudge"
+  /** A reply to a Responses item; `text` is `"<label>\n<reply text>"`. */
+  | "reply";
+
+/** Whether a Responses item wants the user (`podium_core::ResponseKind`). */
+export type ResponseKind = "needsYou" | "fyi";
+
+/**
+ * One item in the assistant's Responses list (`podium_core::ResponseItem`):
+ * the essential point of an agent update, filed by the assistant itself.
+ * Names are resolved when the item is added, so they outlive the agent.
+ */
+export interface ResponseItem {
+  id: string;
+  kind: ResponseKind;
+  text: string;
+  /** Project display name. */
+  project: string | null;
+  /** Agent session name. */
+  agent: string | null;
+  /** The agent's session colour. */
+  agentColor: string | null;
+  /** To-do text, truncated. */
+  todo: string | null;
+  /** Free label when there is no agent/project, e.g. "Slack". */
+  source: string | null;
+  processId: ProcessId | null;
+  todoId: TodoId | null;
+  /** RFC 3339 timestamp. */
+  createdAt: string;
+  /**
+   * The non-empty parts of agent, project, to-do and source joined with
+   * " · " (`ResponseItem::label`) — the name a reply carries to the session.
+   */
+  label: string;
+}
 
 /**
  * One persisted chat row (`podium_core::TranscriptEntry`), replayed into the

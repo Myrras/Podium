@@ -58,27 +58,29 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 31 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 34 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **83 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **97 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
   (`window_confirm_close`), dialog + log plugins, locked-down CSP.
 - ✅ **Frontend** (`src/`): project switcher + sidebar (To-dos / Agents /
-  Processes / Terminals / Worktrees / Scratchpads), xterm.js terminals living **outside
+  Processes / Terminals / Worktrees / Scratchpads / Git, the last opening a Kanban
+  board in the work area), xterm.js terminals living **outside
   React** (registry keyed by processId; scrollback survives tab switches and
   StrictMode), snapshot+seq attach protocol with lag re-attach, new-agent
   modal, agent activity ("working…"/idle) heuristic, to-do and scratchpad
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible, resizable right-side
-  assistant chat panel (replayed transcript, action + proposal cards,
+  assistant chat panel (replayed transcript, a Responses list pinned above it,
+  action + proposal cards,
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 83 commands.
+  IPC wrappers over all 97 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -132,9 +134,12 @@ podium/
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 31 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 34 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
+│  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
+│  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ platform.rs              # the OS gap: login shell, quoting, probe, git command, WSL-backend switch
 │  ├─ platform/wsl_path.rs     # pure Windows <-> WSL path translation
@@ -163,21 +168,31 @@ entry point**: projects, processes, agents, attach/stdin/resize, events,
 shutdown. `src-tauri` holds one `Arc<Orchestrator>` in `AppState` and never
 reaches around it.
 
+Each project's sidebar shows or hides its To-do's / Terminals / Worktrees /
+Scratchpads / Git sections via `ProjectInfo.sections`
+(`ProjectSections`, all on by default; partial JSON loads).
+Presentation only: hiding never stops processes, deletes data or affects MCP.
+Agents and Processes are never hidden. Persisted per project in
+`workspace.json` (`WorkspaceEntry.sections`, `None` = defaults) and
+re-applied in `project_open`.
+
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
 it; at startup the frontend calls `workspace_list` and re-opens every path via
-`project_open`. A path that fails to open (folder moved/deleted, drive not
-yet mounted) is *not* auto-pruned — a transient failure must not silently
-drop the project — but its error toast offers a "Remove from workspace"
-action wired to `workspace_remove` for permanent failures. Each entry is
-a `{ path, name? }` object — the optional `name` is a user-set display-name
-override (set via `project_rename`) and list position is the sidebar order
-(set via `project_reorder`); legacy bare-path-string files are migrated on
-load. `project_open` re-applies a stored name override so a renamed project
-comes back named after a restart. Opening the same folder concurrently (e.g.
-React StrictMode's double-mount firing `restoreWorkspace` twice) dedupes to
-one project: the "already open" check and the id reservation happen under
-one lock acquisition, atomically, before the async `podium.yml` load.
+`project_open`. A path that fails to open (folder moved/deleted, drive not yet
+mounted) is *not* auto-pruned — a transient failure must not silently drop the
+project — but its error toast offers a "Remove from workspace" action wired to
+`workspace_remove` for permanent failures. Each entry is a `{ path, name?,
+color? }` object — the optional `name` is a user-set display-name override (set
+via `project_rename`), `color` the badge colour (`#rrggbb`, set via
+`project_set_color`, validated in core since it lands in a CSS property) and
+list position is the sidebar order (set via `project_reorder`); legacy
+bare-path-string files are migrated on load. `project_open` re-applies a stored
+name override and colour so a renamed/recoloured project comes back that way
+after a restart. Opening the same folder concurrently (e.g. React StrictMode's
+double-mount firing `restoreWorkspace` twice) dedupes to one project: the
+"already open" check and the id reservation happen under one lock acquisition,
+atomically, before the async `podium.yml` load.
 
 - **Processes** are shell command lines run via `$SHELL -lic` (login +
   interactive, so both `.zprofile`/`.bash_profile` and `.zshrc`/`.bashrc`
@@ -198,51 +213,40 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   frontend change. Max **8 active agents per project** (recursion guard —
   agents can spawn agents over MCP).
 - **Agent session memory** (`agent/session_memory.rs`, setting
-  `remember_sessions` in `agents.json`, default off): `session_memory.json`,
-  keyed by project root. `Orchestrator::shutdown()` is the only place a
-  session is captured. Each still-running Claude Code agent is matched by its
-  CLI **session name** (`ManagedProcess.session_name`, from
-  `AgentAdapter::session_name`: Podium's `-n podium-<tag>` stamp, or the
-  user's own `-n`/`--name` from the args), looked up under Claude Code's
-  config dir `<config>` = `$CLAUDE_CONFIG_DIR` or else `~/.claude`, in order:
-  1. `<config>/sessions/<pid>.json` — Claude Code's registry of *live* CLI
-     processes, mapping the name to the **current** `sessionId`. It follows
-     `/clear`, which starts a new session in a new, untitled transcript
-     (verified against real files); a few hundred bytes per file.
-  2. `<config>/projects/<sanitized-cwd>/<id>.jsonl` carrying the
-     `{"type":"custom-title","customTitle":"<name>"}` line (every
-     non-ASCII-alphanumeric char of the cwd becomes `-`, Claude Code's own
-     scheme) — the fallback for a CLI without the registry. Only files written
-     since the agent's spawn (minus a few seconds of slack for coarse mtimes)
-     are read, line by line and only up to the title.
-  3. The id the agent was itself resumed with.
-
-  Otherwise nothing is remembered, with a warning in the log — deliberately
-  no "newest file in the cwd" guess, which would adopt a `claude` session
-  the user runs themselves in the same repo. An unnamed agent (no MCP server
-  at spawn) therefore only keeps a resumed id. Two agents resolving to one
-  session (a shared user `--name`) are remembered once. Each entry also
-  carries the to-dos/scratchpads the agent owned and its per-spawn
-  `args_override`, and all entries go out in one write. In WSL-backend mode
-  `<config>` is the distro's, asked of its login shell once
-  (`platform::claude_config_dir`) and reached as a `\\wsl.localhost\…` path,
-  and the cwd is sanitized in its Linux spelling (`backend_path`). Because
-  capture runs on the exit path it never starts a process: it uses
-  `claude_config_dir_if_resolved`, and the lookup is warmed earlier — on
-  project open with the setting on, and in the background when it is turned
-  on. Only hyphenated UUIDs (`Uuid::try_parse`) are accepted, at capture and
-  again at restore (the file is user-writable, and `--resume -x` would read
-  as a flag). The next fresh `open_project` on that root respawns each
-  remembered agent with `--resume` when `remember_sessions` is on — on the
-  same args, then re-assigned the to-dos/scratchpads that still exist, are
-  not done/archived and nobody else claimed (re-assigned, not handed over: a
+  `remember_sessions` in `agents.json`, default off) builds on _Restart
+  resumes the session_ (see To-dos below): `session_memory.json` in the app
+  data dir, keyed by project root. `Orchestrator::shutdown()` is the only
+  place a session is captured: each still-running agent with an
+  `AgentSession` is remembered under that session's **current id** — the
+  Podium-assigned `--session-id`, or the one its last restart moved it to —
+  with its name, the to-dos/scratchpads it owns and its per-spawn
+  `args_override` (`ManagedProcess.spawn_args`), all in one write. Nothing is
+  read from Claude Code's files and no process starts on that exit path. An
+  agent without an `AgentSession` is **not** remembered: Auggie (no session
+  flags), and an agent whose own `extra_args` pick the session (`--resume`,
+  `--continue`, …) — a restore would put Podium's `--resume` next to the
+  user's flag. Like a restart, a session `/clear`ed mid-run comes back as the
+  pre-`/clear` conversation (the CLI moves to a new id Podium never sees).
+  The next `open_project` on that root, with the setting on, respawns each
+  entry through the restart path: `spawn_agent_inner` with
+  `AgentSpawn.resume_session_id` sets the new process's `AgentSession.id` to
+  the remembered id and hands `restart_launch(…, stored = true)` — the
+  `--resume` line, no prompt — to `do_start`, so a resume that crashes within
+  `RESUME_FAILURE_WINDOW` gets `resume_failed` and its next start is fresh,
+  exactly as for a restart. Before that, an entry is skipped when it is older
+  than 14 days (`session_memory::MAX_AGE`, for a project that kept failing to
+  open), is not a hyphenated UUID (the file is user-writable and the id lands
+  unquoted on the shell line), or `AgentAdapter::session_exists` (disk, or the
+  WSL distro's login shell — `Orchestrator::session_stored`, shared with
+  `start_process`) no longer finds it: a pruned session would only come back
+  as a fresh agent without context or prompt. After the spawn the agent is
+  re-assigned the to-dos/scratchpads that still exist, are not
+  done/archived and no live agent claimed (re-assigned, not handed over: a
   composed prompt would land in the resumed conversation as a new message).
-  It skips ids whose jsonl Claude Code has since pruned and entries older
-  than 14 days (`session_memory::MAX_AGE`, for a project that kept failing
-  to open). The remembered list for that root is always cleared on open, on
-  or off, and turning the setting off clears every root. The MCP server is
-  started synchronously in `setup` so a restored agent never spawns before
-  the MCP connect info (and with it `-n`) is set.
+  The remembered list for that root is always cleared on open, on or off, and
+  turning the setting off clears every root. The MCP server is started
+  synchronously in `setup` so a restored agent never spawns before the MCP
+  connect info (its `--mcp-config`, `-n` and identity) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
@@ -268,7 +272,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `report_to_assistant` (a finished or blocked agent handing the assistant a
   short summary of its own work, routed to `Orchestrator::assistant_nudge` so
   it gets the same live-or-queued delivery, cap and proactivity switch as any
-  other nudge), and `verify_sender` (see _Cross-session messaging_).
+  other nudge), `get_board` / `move_board_item` (the Git board, see _Git board_),
+  `verify_sender` (see _Cross-session messaging_), and
+  `add_response` (the assistant filing a Responses item — see _Personal
+  assistant_; only the assistant route lists or runs it).
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
@@ -294,12 +301,50 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   / `ListAgents`. Two things make that work, both set per session so the
   user's own `~/.claude/settings.json` is never touched:
   - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
-    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
+    (`agent::peer_inbound_settings`). Without it the CLI decides per message
     from the two sessions' permission-mode classes, and the assistant
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
     A `--settings` the user put in `extra_args` wins over Podium's.
+  - **Go-ahead rules.** A Claude Code agent's `--settings`
+    (`agent::agent_session_settings`, built on the same inbound setting)
+    also allows `git push`, `gh pr create` and `glab mr create`, so a
+    go-ahead the assistant relays by message can run in the existing
+    session — no peer message can approve a prompt. `GO_AHEAD_DENY_RULES`
+    (deny beats allow) block force, `+refspec`, delete, mirror/prune/all,
+    `--receive-pack`/`--exec`, submodules, push options, `--no-verify`, tag
+    pushes, URL/`@` destinations, main/master as the destination and any
+    quoting, `$`/backtick/brace expansion or a literal `*` (glob refspec)
+    in a push, any of the three fed through `xargs` (a prefix allow also
+    matches `xargs <prefix> …`, with the arguments out of sight on stdin),
+    plus `-R`/`--repo` on `gh`/`glab`, wherever the flag sits (mid-pattern
+    `*`; long git options cut to their shortest unambiguous prefix), and
+    every way to read a local file into the PR/MR — `gh --body-file`/`-F`,
+    `glab --description-file`/`--attach`, `gh --attach` — which would
+    publish e.g. an ssh key without a prompt (the prompt's retry is
+    `--fill`, or `--body` inline), plus glab's other-repository flags
+    `-H`/`--head` and `--target-p…` (not in its docs; denied anyway), and
+    glab's `-s`/`--source-branch` (also quoted/escaped): glab
+    `--fill`/`--push` pushes `HEAD:<source-branch>` itself, around the git
+    push rules. They
+    match command text only:
+    `git -C … push`, aliases, some flag clusters, an scp-style `host:path`
+    destination with no user (`example.com:other.git`, an ssh-config
+    alias), an explicit push to another non-main branch (`HEAD:develop`)
+    and an implicit push of a checked-out
+    main slip past (see the code comment); the identity prompt has the agent
+    check it is not on main/master before pushing. The test's matcher
+    mirrors CLI 2.1.292 — re-check it on a CLI upgrade. With the user's own
+    `--settings` (either form) none of this applies, and the identity
+    prompt drops the go-ahead. The assistant's fresh fallback agent is a
+    `claude-code` spawn with no `--allowedTools`: Podium's settings already
+    carry the allow and deny rules, and with the user's own `--settings` an
+    `--allowedTools` would grant a push with no deny list behind it. When
+    those `--settings` come from the default agent args or a project's
+    `agents.extra_args` (merged in by `spawn_agent`), the fallback has no
+    rules either: the push waits for approval in its terminal, and the
+    assistant is told to say so.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -334,7 +379,39 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `ProcessInfo.color`): the to-do row **and the agent's own sidebar row** are
   tinted the same colour so the two can be matched at a glance; the to-do's
   spawn button is hidden and it drops out of multi-select — one session owns
-  it. Sidebar rows distinguish being **open** in the work area (a subtle
+  it. An agent that **exits** keeps its to-do/scratchpad links (only removing
+  the process drops them) but loses its colour (`spec.color` cleared in the
+  exit handler and kept as `last_color`, to-do row tinted neutral grey); the
+  next start (`do_start`) takes `last_color` back if no live agent holds it,
+  else picks one the way a spawn does (`pick_session_color`). A link
+  to an exited agent no longer counts as **owning**: `AssignedAgent.active`
+  (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
+  `false`, the row gets its spawn button back and can join a multi-select
+  again, and spawning on it (or `assign_todo`) hands it to the new agent.
+  **Restart resumes the session**: Claude Code agents launch with
+  `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
+  (`RestartCommands`, the launch line in parts) spells the two commands a
+  manual start of an exited agent can run instead, for whichever session id
+  is current (`AgentSession` on the process; `spec.command` is never
+  swapped). `restart_launch` picks per start: `resume(<current id>)` (no
+  initial prompt) when `AgentAdapter::session_exists` finds the CLI's
+  transcript, else `fresh(<new UUID>)` — the original launch under a *new*
+  `--session-id`, since the CLI refuses an id it already used and `--resume`
+  fails without a transcript; the new id becomes current, so the agent stays
+  resumable. The chosen launch (`Relaunch`) is handed to `do_start`, which
+  makes its id current under the same lock only once the PTY spawned — a
+  concurrent start that loses with `ProcessAlreadyRunning` cannot overwrite
+  it. A resumed run that crashes within `RESUME_FAILURE_WINDOW` (5 s) marks
+  the id `resume_failed` in the exit handler, so the next start is fresh
+  instead of crash-looping on `--resume`. The transcript is `projects/*/<id>.jsonl` under
+  `$CLAUDE_CONFIG_DIR` or `~/.claude` — read from disk natively, and on a WSL
+  project checked inside the distro through its login shell
+  (`run_shell_ok_on`, off the async runtime), since that is where the CLI
+  runs.
+  A session flag the user put in `extra_args` (`--session-id`, `--resume`,
+  `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
+  all of it. The same `AgentSession` is what _Agent session memory_ carries
+  across an app restart. Sidebar rows distinguish being **open** in the work area (a subtle
   accent highlight, like agents/terminals) from being in a **Cmd/Ctrl+click
   multi-select** (a bolder accent fill — those rows are queued for the next
   agent).
@@ -406,6 +483,188 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
 
+- **Git board** (`issues.rs`): the project row's **Git** header button
+  (`GitButton.tsx`, a pill at the header's far end — the one action visible
+  at rest, so the hover-only ones reveal to its left without moving it — with
+  the open-card count, an accent fill while the board is open and a warning
+  dot on error; per-project section toggle "Git board", key `issues`, on by
+  default) opens a Kanban of the repo behind the project's `origin`
+  remote in the work area (`GitBoard.tsx`, `layoutStore.openBoard`, exclusive
+  with the process/to-do/scratchpad). `issues::board` returns a `Board {
+  provider, items, columns, source, hint, prCounts }`: issues and PRs/MRs as
+  `BoardItem`s, each already in a `Column { id, title, color }` (`BoardItem.
+  column` = a column id; `color` is a GitLab hex or a lowercase GitHub option
+  name, which the UI maps to `--board-<name>` tokens). **Columns** come from
+  the project's own board when the platform has one (`source` = its name),
+  else the defaults `open` / `inProgress` (open issue with a linked open PR —
+  GitHub `closingIssuesReferences`, GitLab `merge_requests_count > 0` — or an
+  in-progress label, plus draft PRs/MRs) / `review` / `done` (closed/merged
+  within `DONE_DAYS` = 14). Fixed system ids are reused either way: `open`
+  (lead: unplaced issues), `review` (unplaced open PR/MR, shown only when
+  non-empty with a project), `done`. *GitLab*: the `/boards` request (a 6th
+  parallel call; first board with a label list only, lists by `position`,
+  label-less lists skipped) gives `label:<name>` columns; an open card sits in
+  the first list whose label it carries. Any `/boards` failure or no usable
+  board → defaults, never an error. *GitHub*: a 6th `gh api graphql` call reads
+  the repo's first Project v2 (first 100 items) and its `Status` options as
+  `status:<optionId>` columns, items matched by number; it needs the
+  `read:project` scope, and when stderr says it is missing the board falls back
+  to defaults with `hint` = the `gh auth refresh -s read:project` command
+  (stderr is only inspected). Any other failure there → defaults, no hint.
+  `mine` (the
+  default) narrows issues to assigned-to-me and PRs/MRs to authored-by-me;
+  the counts (`prCounts`, all-time open/merged in the same scope) come from a
+  GraphQL `search … issueCount` on GitHub and `X-Total` on GitLab (`None` when
+  GitLab omits it). Each board is seven parallel calls (`std::thread::scope`),
+  lists capped at 100. The repo is detected via `detect` → `parse_remote`
+  (ssh/`ssh://`/https, `.git` stripped). Credentials come from **setups**
+  (`AgentSettings.issues.setups`, Settings → Issues): each an `IssueSetup
+  { id, name, provider: github|gitlab, url, account? }`, `url` normalized to
+  `scheme://host[:port][/path]` with the scheme **kept** (`http://` for an
+  instance without TLS; `https` when omitted) and the path kept minus a
+  trailing slash (a GitLab under `/gitlab`); `gitlab_target` cuts that path
+  off an HTTPS remote's project path (SSH remotes never carry it). A URL
+  copied from the browser is cut at GitLab's `/-/` (and loses `?`/`#`) on
+  save; a project path still left in it is not guessed away — the fetch's 404
+  says to check the setup's URL. GitLab calls never follow a
+  redirect (the token header would go along to the new host); a 3xx is a
+  "check the setup's URL" error. A project can pin one setup from the
+  board's picker (`issues.projects`, project root → setup id, app-side);
+  otherwise `pick` takes the first setup whose host matches the remote, and a
+  pinned setup for another host is `IssuesHostMismatch`. There is **no
+  zero-config**: with no setup at all `board`/`move_item`/`unassign_item`
+  fail with `IssuesNotConfigured` before spawning anything (not even the `git
+  remote` lookup), and `issueStore.refresh` does not even call the backend
+  then (the Git button shows no warning dot for it) — so a user who never set
+  up a board never pays for `git`/`gh` calls on every refresh; github.com
+  without a matching setup is `IssuesUnsupportedHost` like any other host.
+  GitHub goes through the user's own `gh` login
+  (`gh issue|pr list --repo host/owner/repo --search …`, `gh api graphql`,
+  binary resolved once by `platform::gh_binary()` and run via
+  `platform::gh_command()` + `run_gated` — in WSL-backend mode the distro's
+  `gh` (`wsl.exe -e <path>`, `GH_TOKEN` passed through `WSLENV` by
+  `platform::backend_env`), so probe and call never use different `gh`
+  logins); a setup's `account` picks a
+  logged-in `gh` account via `gh auth token --user`, handed to those `gh` calls
+  as `GH_TOKEN` — Podium stores no GitHub token. Self-hosted GitLab is fetched
+  from the setup's URL (`/api/v4/projects/:path/{issues,merge_requests}`,
+  `PRIVATE-TOKEN`, blocking reqwest + rustls; closed/merged lists filtered by
+  `updated_after`, then by the real `closed_at`/`merged_at`). **Temporary** —
+  Connect still runs on GitLab; removing it is `IssueProvider::Gitlab`, its
+  arm in `issues::board` and the `// ponytail: temporary` blocks. **Token
+  handling:** a GitLab token lives only in the OS keychain (`keyring`, service
+  `com.podium.app.gitlab`, account = setup id; on Linux the Secret Service
+  over D-Bus, so building there needs `libdbus-1-dev`); `issues_settings_get` reports
+  just `tokenSet`, the token is never returned over IPC, logged, or put in an
+  error, and the Settings field is never prefilled. Failures are typed
+  (`IssuesNotConfigured` / `IssuesNoRemote` / `IssuesGhUnavailable` / `IssuesUnsupportedHost` /
+  `IssuesHostMismatch` / `IssuesGitlabNotConfigured` / `IssuesGitlabAuth` /
+  `IssuesFetch`, the last also for rate limits) and never carry `gh`/`git`
+  stderr or a GitLab response body; the setup kinds link the board to Settings
+  → Issues (`settingsRequestStore`), as does its gear. Refresh is a frontend
+  concern (`issueStore`, which also caches the setups overview and refetches
+  every shown project when it changes, and holds the per-project Mine/All
+  scope — a switch mid-fetch refetches once the old answer lands): one
+  in-flight fetch per project, the stale board is kept on error, and
+  `startAutoRefresh` (mounted with the Git button, so its "N open" —
+  every card not in `done` — tooltip stays live) fetches immediately, every 5 min, and on window focus
+  when the last attempt is over 60 s old; errors show inline, never as a
+  toast. Those automatic fetches share one pace across projects — starts at
+  least 15 s apart (`AUTO_FETCH_SPACING_MS`), since a GitHub board costs ~6
+  of GitHub's 30 searches a minute — while a refresh the user asks for skips
+  it. A queued auto refresh is not `loading` (it waits *before* that), so a
+  manual refresh still runs and the queued one lapses; closing the project
+  drops it, and a project stuck on a local error (no remote, unsupported
+  host, …) takes no slot, except on a setups change, which paces every shown
+  project. A setups change during a fetch reruns it once that fetch is done,
+  and a section shown again refetches when its cache predates the last setups
+  change. A card click opens a read-only drawer (`IssueDetailPane`) beside the
+  columns; browser, "start agent" (`NewAgentModal` prefilled via
+  `initialPrompt`) and "turn into to-do" (`todoAdd` → `todoUpdate` →
+  `todoAddLink`, hidden while an active to-do already links the URL) are card
+  actions. GitLab MRs are referenced as `!n`, everything else `#n`.
+
+  **Cache** (`boards.rs`, `BoardStore`, like `TodoStore`): `Orchestrator::
+  issue_board` stores every successful board in one `boards.json` (app data
+  dir, atomic writes — serialised under the store lock, written after it is
+  released, an older snapshot never over a newer one — keyed by project
+  root, per scope `mine`/`all`) as a
+  `CachedBoard { board, fetchedAt }`; `cached_issue_board` /
+  `issues_board_cached` read it without network, so the UI paints at once. The
+  cache also keeps **columns stable**: when GitLab's `/boards` request *fails*
+  (not: answers without a label-list board) `fetch_gitlab` places cards in the
+  cached board's `label:` columns instead of the defaults. Project boards
+  always carry `review` and `done`. A fetch that started before a move or
+  unassign of that project landed is not stored (`BoardStore`'s per-root edit
+  counter, taken before the fetch); `issue_board` then serves the cache, which
+  has the edit, with its real `fetchedAt` (what `get_board` reports).
+  Closed issues and merged PRs are always in `done`, also on a GitHub Project
+  with a Status set, so `done` means closed on both providers.
+
+  **Drop rules** ride on the wire: `Column.accepts` (`("issue"|"pr")[]`) —
+  default board `open` [issue], `inProgress` [], `review` [], `done` [issue];
+  project board `open` [issue], every `label:*`/`status:*` [issue, pr],
+  `review` [pr], `done` [issue] — and `BoardItem.movable` (false for a PR/MR in
+  `done`). **PRs/MRs that close an issue on the same board are folded**: the
+  card is dropped and rides on the issue as `BoardItem.linked: LinkedPr[]`
+  (`{ number, title, url, draft, merged }`); a PR whose issue is not on the
+  board stays a card. GitHub uses `closingIssuesReferences`; GitLab makes no
+  extra calls and matches the MR description against the default closing
+  pattern (`closes|fixes|resolves|implements` + `#N` / `group/project#N`) plus
+  a source-branch segment that is `N`, optionally one letter, then `-…` or
+  nothing (`gl_closing`, a heuristic — upgrade path
+  `/merge_requests/:iid/closes_issues`).
+
+  **Moves** (`Orchestrator::move_board_item` → `issues::validate_move` then
+  `move_item`, blocking): validated against the cached board — of the scopes
+  holding the card, the most recently fetched, since its `done` decides
+  close/reopen (item there, column exists and accepts the kind, movable;
+  without a project board `open` is only reachable from `done`; already in
+  that column is a no-op success that syncs both scopes), refusals are
+  `CoreError::IssuesMove` (`issuesMove`, Podium-owned text). GitLab: one `PUT`
+  on the issue/MR — `add_labels`/`remove_labels` for `label:*` (other list
+  labels removed), all list labels removed for `open`/`review`,
+  `state_event=close` for `done`, plus `state_event=reopen` out of `done`.
+  GitHub: `gh issue close|reopen`; on a Project, GraphQL looks up the first
+  project's Status field and the card's item, adds it when missing, then
+  `updateProjectV2ItemFieldValue` (or `clearProjectV2ItemFieldValue` for
+  `open`/`review`); a missing token scope becomes the `gh auth refresh -s
+  project` message. On success both cached scopes are updated (`column`,
+  GitLab `labels`; `linked` untouched) and `PodiumEvent::BoardChanged` →
+  `board:changed`. MCP: `get_board` (cache if under 5 min old and not
+  `refresh`; no bodies; classified read-only) and `move_board_item` (same
+  path as the IPC command; **destructive** for the autonomy gate, since it
+  closes/reopens issues other people see).
+
+  **Unassign** (`Orchestrator::unassign_board_item` → `issues::
+  validate_unassign` then `unassign_item`): each board also carries `me` (the
+  signed-in login — a 7th parallel call, `gh api user` / GitLab `/user`, whose
+  failure only hides the action) and every `BoardItem.assignees`; the card and
+  drawer show "Unassign me" when `me` is among them. GitHub: `gh api --method
+  DELETE repos/:repo/issues/:n/assignees` (PRs too). GitLab: a fresh `GET` of
+  the issue/MR, then a `PUT` with the remaining `assignee_ids[]` (`0` = none),
+  so a co-assignee added since the fetch is kept. On success `me` leaves the
+  item's assignees in both cached scopes, an *issue* leaves the `mine` board
+  outright, and `board:changed` is published. IPC only, no MCP tool.
+
+  **Approvals**: open PRs/MRs (cards and linked pills) carry `approvals:
+  { by, required }`, shown as a `✓ n/required` badge (`approvalBadge`,
+  accented when `me` is among `by`). GitHub: `latestReviews` in state
+  `APPROVED` (`required` unknown → `None`). GitLab: one GraphQL call after the
+  lists (`/api/graphql`, same `PRIVATE-TOKEN`, `mergeRequests(iids:)` →
+  `approvedBy` + `approvalsRequired`), whose failure only hides the badges.
+  The **search** field (Cmd/Ctrl+F focuses it, Escape clears) filters every
+  column by ref, title, labels, author, assignees and linked PRs.
+  MR ↔ issue linking also takes a branch segment that is the issue number
+  (`issue/12661`, `issue/12661b`, `42-fix`), Connect's convention — not
+  `2fa-login`, `release/2026.10` or `hotfix/3.4.1`.
+
+  **GitLab connection retries** (`gitlab_send`): a request that fails before
+  any HTTP status (VPN/Wi-Fi not back yet after sleep — the focus refresh
+  fires right then — or a dropped connection) is retried twice (500 ms, 1.5 s);
+  the error names the reason (`timed out` / `connection failed`), never
+  reqwest's text. An HTTP status is never retried.
+
 - **Personal assistant** (`assistant.rs`): a workspace-wide chat panel backed
   by **one long-lived headless Claude Code child** — a plain piped process
   (`$SHELL -lic 'exec claude -p --input-format stream-json --output-format
@@ -420,7 +679,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   written to its stdin as one JSON line each; its stdout stream is parsed by
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
   `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
-  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered`) published
+  `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered` /
+  `responsesChanged`) published
   on the `EventBus` and forwarded to the webview as `assistant:event`.
   Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
@@ -438,8 +698,12 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   lookups go to `spawn_agent`, never its own Agent-tool subagents, which have
   no shell here), to keep agent updates to warnings and done-ness, how to stop
   agents safely (only the project in question; check the output for follow-up
-  work and complete the to-do first), and how to get a peer-refused external
-  write done (a fresh agent carrying the authorisation and `--allowedTools`).
+  work and complete the to-do first), and how to pass on a push go-ahead (a
+  message to an existing Claude Code agent, which accepts it once
+  `verify_sender` says the sender is the assistant, pushes, opens the PR/MR
+  and reports back with its URL; a fresh `claude-code` agent (no
+  `--allowedTools`) if it refuses, never reports a push, or is not Claude
+  Code).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
@@ -454,7 +718,8 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   this tool needs the user, and a gated call never runs. Instead it is parked as
   a `ProposalInfo` — carrying a closure that replays that very dispatch later —
   and the tool answers that a proposal is awaiting the user. `full` gates
-  nothing; `confirm-destructive` gates the stopping/archiving/removing tools;
+  nothing; `confirm-destructive` gates the stopping/archiving/removing tools
+  and `move_board_item`;
   `propose-all` gates everything that is not read-only (an *unknown* tool counts
   as state-changing, so a tool added later cannot slip through). Proposals live
   in memory (never expiring, but lost on restart) and surface as
@@ -462,7 +727,24 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event.
+  become a `toolFailed` event. The gate only sees Podium's own MCP tools,
+  so the CLI's own `SendMessage` — the way a push go-ahead is relayed — is
+  refused outright under `propose-all` instead: that mode adds it to the
+  session's `--disallowedTools`. A CLI flag cannot change in a running
+  session, so moving into or out of `propose-all`
+  (`Orchestrator::set_assistant_autonomy` →
+  `AssistantManager::set_send_message_blocked`) replaces the session,
+  resuming the conversation: at once when it is idle (dropped, respawned by
+  the next turn), or at the running turn's `TurnEnd` — never mid-turn — via
+  the output task, which carries a `SpawnCtx` to start its own replacement
+  before the next waiting item goes out (if that spawn fails, the waiting
+  items are reported undelivered and `exited` is published, as for any exit
+  nobody asked for). So the block applies from the next turn boundary: a
+  turn already running when `propose-all` is chosen can still `SendMessage`
+  until it ends. The mode loaded at startup is
+  applied with `preset_send_message_blocked`. The prompt, which never knows
+  the mode, says: if `SendMessage` is unavailable, use the fresh-agent route
+  (a `spawn_agent`, which gets the card).
 
   **Persistence** is one `assistant.json` in the app data dir (atomic writes,
   the same kind of store as `todos.json`): Claude's own session id plus the
@@ -587,6 +869,76 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   reply on its own task, so appending afterwards let a fast reply land
   *above* the message it answers, and a restart replayed the conversation out
   of order. It is idempotent, since a failed write re-queues the same item.
+
+  **Responses** (`responses.rs`) are the short "needs you" / "FYI" points the
+  assistant files, one per agent or to-do update, via the `add_response` MCP
+  tool — the identity prompt asks for it (pinned by a unit test); the detail
+  stays in its chat reply. One workspace-wide list, newest first, persisted in
+  `assistant-responses.json` (atomic writes, like `todos.json`) so items
+  survive a restart *and* the blank conversation every launch starts with —
+  they are the user's to clear. Agent, project and to-do names (and the
+  agent's colour) are resolved when the item is added, so an item about an
+  exited agent still reads right; a live agent's own project wins over a
+  mismatched `project_id`, and a context that is already gone (agent exited,
+  project closed, to-do removed) is dropped from the item rather than
+  refusing it. Agent and project names are capped at 40 chars, the to-do at
+  60, the source at 40. A newer item with the same `processId` or
+  `todoId` replaces the open one — except that an FYI never replaces an
+  open "needs you" (both stay), and an item about an agent is only replaced
+  by another agent's item (the same agent, or one on the same to-do, as
+  after `respawn_agent`), never by an agent-less one such as the sweep's; an
+  item with neither key never replaces anything. `add_response` is disabled in the agent route's tool router, so
+  it is neither listed nor runnable there (the list is the assistant's to
+  curate) — a guard against a confused agent, not a security
+  boundary: both routes share one bearer token, so an agent that deliberately
+  posts to `/mcp-assistant` gets through, exactly as it could reach every
+  other assistant-route tool; the OS user stays the trust boundary. It is
+  classified read-only, so the gate never parks it as a proposal, and capped
+  (newest 100 items, 500-char text) since the assistant writes it from
+  content it read. The nudges Podium sends name the agent's process id (and
+  the lingering-to-do sweep each to-do's and project's id) so the assistant
+  can pass them as the supersede key. Every change publishes a full
+  `responsesChanged` snapshot, never recorded in the transcript; nor is the
+  `add_response` call itself — `parse_stream_line` drops the exact
+  `mcp__podium__add_response` tool event, so neither the transcript nor the
+  chat shows an action row for it (the list already shows its result). The user either ticks an item
+  (`assistant_response_dismiss`, it is just removed) or replies
+  (`assistant_response_reply`): the reply is an ordinary user turn through
+  `send`'s path (`AssistantManager::send_reply`, so it queues like any
+  message) carrying the answered `ResponseItem` itself. The session sees it as
+  `[Reply to your Responses item — "<label>": "<item text>"]` + the reply
+  (label and text JSON-quoted, since an agent name or to-do text is
+  agent-controlled and must not be able to close the bracket), the
+  transcript stores it as a `reply` row (`"<label>\n<reply>"`), and a waiting
+  reply exposes `replyTo` (the label) on `QueuedMessage` and on
+  `queueItemDelivered`; editing a waiting reply changes only its text. The
+  item is taken off the list before the send (so a double submit cannot send
+  twice) and put back if the send fails — or if a queued reply never goes
+  out: dropped by the queue cap, withdrawn by the user
+  (`assistant_queue_remove`), or lost with the session (new conversation or
+  crash, both also named in the undelivered notice; at app shutdown
+  `AssistantManager::shutdown` restores them itself before killing the
+  child, since nothing after it is sure to run). That is why the
+  `ResponseStore` lives on the `AssistantStore`: the queue code needs it.
+  `restore` skips an item a *newer* one has since replaced (an older item
+  beside it never counts) and keeps the 100-item cap by dropping the oldest
+  other item, never the restored one. `add_response` refuses a `process_id`
+  that names a live terminal or service rather than an agent.
+  Snapshots are published under the store's lock, so they arrive in the order
+  the changes happened, and a write that fails leaves the list (and the
+  published snapshot) unchanged. The label is the non-empty parts of agent ·
+  project · to-do · source, or `Responses item`; it is computed in Rust
+  (`ResponseItem::label`) and added as `label` only at the wire boundary
+  (`LabelledResponse`, used by `assistant_responses_list`, the
+  `responsesChanged` event and `add_response`'s answer) — never written to
+  `assistant-responses.json` — so the frontend never re-derives it. (The
+  row shows the same parts with the agent styled apart, dropping blank ones
+  as `label()` does; its `nowrap` collapses whitespace inside a part.) The panel's `loadResponses` drops its result when a
+  snapshot landed while it was in flight. A half-typed reply is filed under
+  its item's id; when that item is replaced, the draft moves to the newest
+  item that replaced it (the backend's rule mirrored in `supersedes`), so
+  two items side by side never share one. The reply box takes focus only
+  when its Reply button is clicked.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so
@@ -792,7 +1144,8 @@ native launch never waits behind a slow distro start.
   every non-ConPTY Windows spawn in this crate uses it (`run_shell_ok`,
   `run_shell_stdout`, `git_command`, the WSL networking check and distro
   listing, the assistant's CLI child — a tokio `Command`, via `as_std_mut()`
-  — and Warp's `cmd /C start`). ConPTY-attached spawns (`process::pty`) are already windowless
+  — Warp's `cmd /C start`, and the Git board's `gh` calls via
+  `gh_command`, several per project on every board refresh). ConPTY-attached spawns (`process::pty`) are already windowless
   and need nothing. New code that spawns a plain `Command` on Windows must
   use it too.
 - **git** runs as `wsl.exe -d <distro> -e git` (`platform::git_command`), the
@@ -835,7 +1188,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `project_list`          | –                                           | `ProjectInfo[]`   |
 | `project_config_reload` | `{ projectId }`                             | `ProjectInfo`     |
 | `project_rename`        | `{ projectId, name? }` (blank clears)       | `ProjectInfo`     |
+| `project_set_color`     | `{ projectId, color? }` (`#rrggbb`, blank clears) | `ProjectInfo` |
 | `project_reorder`       | `{ ordered: string[] }` (project ids)       | `ProjectInfo[]`   |
+| `project_set_sections`  | `{ projectId, sections: ProjectSections }`  | `ProjectInfo`     |
 | `project_just_recipes`  | `{ projectId }`                             | `string[]`        |
 | `project_open_in_warp`  | `{ projectId }`                             | –                 |
 | `recents_list`          | –                                           | `RecentProject[]` |
@@ -893,6 +1248,14 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `scratchpad_set_archived` | `{ projectId, id, archived }`             | `ScratchpadInfo`  |
 | `scratchpad_remove`     | `{ projectId, id }`                         | –                 |
 | `scratchpad_unassign`   | `{ projectId, id }`                         | `ScratchpadInfo`  |
+| `issues_board`          | `{ projectId, mine }`                       | `Board`           |
+| `issues_board_cached`   | `{ projectId, mine }`                       | `CachedBoard \| null` (`{ board, fetchedAt }`, no network) |
+| `issues_board_move`     | `{ projectId, kind: "issue"\|"pr", number, column }` | – (refusals: `issuesMove`; UI follows `board:changed`) |
+| `issues_board_unassign` | `{ projectId, kind: "issue"\|"pr", number }` | – (removes the signed-in user from the assignees; refusals: `issuesMove`; UI follows `board:changed`) |
+| `issues_settings_get`   | –                                           | `IssuesOverview` (`{ setups, projects }`, never a token) |
+| `issues_setup_save`     | `{ id?, name, provider, url, account?, token? }` (token omitted = keep, blank = delete) | `IssuesOverview` |
+| `issues_setup_remove`   | `{ id }`                                    | `IssuesOverview`  |
+| `issues_project_setup_set` | `{ projectId, setupId? }` (omitted = match by host) | `IssuesOverview` |
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
@@ -913,6 +1276,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_queue_send_now` | `{ id }` (waiting user message)          | –                 |
 | `assistant_queue_remove` | `{ id }`                                   | –                 |
 | `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
+| `assistant_responses_list` | –                                        | `ResponseItem[]` (newest first) |
+| `assistant_response_dismiss` | `{ id }` (unknown id: `responseNotFound`) | –              |
+| `assistant_response_reply` | `{ id, text }`                           | `bool` — as `assistant_send` |
 | `window_confirm_close`  | –                                           | –                 |
 
 `window_confirm_close` is the frontend's answer to the app-quit close guard:
@@ -950,7 +1316,7 @@ output never travels this path): `process:added` / `process:removed` /
 `process:updated` `{projectId, processId}`, `process:status`
 `{projectId, processId, status}`, `project:opened` / `project:updated` /
 `project:closed` / `todo:changed` / `scratchpad:changed` /
-`worktree:changed` `{projectId}`, plus `assistant:event`
+`worktree:changed` / `board:changed` `{projectId}`, plus `assistant:event`
 (the assistant's chat stream — a bare, `type`-tagged `AssistantEvent`).
 
 > ⚠️ **Field casing for the frontend:** everything on the wire is
@@ -1223,9 +1589,10 @@ Conversations that touch no code (questions, exploration) need no branch.
 - **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
   Windows, each building natively (cross-compiling Tauri is painful). macOS
   packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
-  packages the NSIS `.exe`. Runs on `workflow_dispatch`, pushes to `main` and
-  any pushed `v*` tag, uploading each OS's installer as an artifact; on a tag
-  ref it also attaches the `.dmg`/`.exe` to that tag's GitHub Release.
+  packages the NSIS `.exe`. Runs on `workflow_dispatch` and pushes to `main`,
+  uploading each OS's installer as an artifact; on a tag ref (the release
+  job's dispatch) it also attaches the `.dmg`/`.exe` to that tag's GitHub
+  Release. There is deliberately **no tag trigger** (see below).
 - **Releasing is automatic: every merge to `main` is a release.** The
   `release` job in `ci.yml` runs after the test jobs on each push to `main`
   (its own non-cancelling `release` concurrency group, and the workflow never
@@ -1237,11 +1604,25 @@ Conversations that touch no code (questions, exploration) need no branch.
   merged PR carries that label (`major` wins). It renames `## [Unreleased]`
   to `## [X.Y.Z] - date` (`scripts/changelog.sh release`), runs
   `sync-version.sh --set` and `cargo update --workspace` (Cargo.lock), commits
-  `Release vX.Y.Z` to `main` as `github-actions[bot]`, pushes it with the
-  annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release with the
-  section as notes, and dispatches `build.yml` on the tag (a `GITHUB_TOKEN`
-  push triggers no workflows — that also prevents a loop). **Never bump the
-  version or create a tag by hand**; `just version` is for emergencies only.
+  `Release vX.Y.Z [skip ci]` to `main` as `github-actions[bot]`, pushes it
+  with the annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release
+  with the section as notes, and dispatches `build.yml` on the tag — the one
+  installer build per release. **Never bump the version or create a tag by
+  hand**; `just version` is for emergencies only.
+- **Release push = deploy key.** `main`'s ruleset (PR required, linear
+  history, no force-push/deletion) can only be bypassed by the admin role and
+  `DeployKey`; GitHub refuses the Actions app as a bypass actor on a
+  user-owned repo, so a `GITHUB_TOKEN` push is rejected with `GH013`. The
+  release job therefore checks out with `ssh-key: secrets.RELEASE_DEPLOY_KEY`
+  (the private half of a write-enabled deploy key; the owner creates both)
+  and pushes over SSH. Its first step fails with an `::error::` naming the
+  setup commands when the secret is missing. A deploy-key push, unlike a
+  `GITHUB_TOKEN` one, *does* trigger workflows: `[skip ci]` keeps the release
+  commit from re-running `ci.yml` (and `build.yml`'s `main` trigger), and
+  since GitHub's docs don't say whether it also covers the tag in the same
+  push, `build.yml` has no tag trigger at all — the explicit dispatch is the
+  only build, so a release gets exactly one. Rotating the key = new deploy
+  key + `gh secret set RELEASE_DEPLOY_KEY`, then delete the old key.
   The script tests (`scripts/*.test.sh`) run in the `changelog` job.
 - **Not yet set up:** signed/notarized releases.
 

@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use podium_core::assistant::{AssistantEvent, AssistantPolling, TranscriptRole};
 use podium_core::{
-    AssistantConfig, Attachment, CoreError, McpConnectInfo, Orchestrator, PendingId, PodiumEvent,
-    ProactivityConfig, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
+    AssistantConfig, Attachment, AutonomyMode, CoreError, McpConnectInfo, Orchestrator, PendingId,
+    PodiumEvent, ProactivityConfig, ProcessId, ProcessKind, ProcessSpec, ProcessStatus,
+    RestartPolicy,
 };
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
@@ -52,10 +53,39 @@ done
 const DYING_CLAUDE: &str = "#!/bin/sh\nexit 1\n";
 
 /// A fake CLI that records the arguments Podium launched it with, so the
-/// spawn flags can be asserted without a real Claude Code.
+/// spawn flags can be asserted without a real Claude Code. Written to a temp
+/// file and renamed into place: `recorded_argv` reads `argv.txt` as soon as
+/// it exists, and a direct write could be caught half-way.
 const ARGV_RECORDING_CLAUDE: &str = r#"#!/bin/sh
-printf '%s\n' "$@" > "$(dirname "$0")/argv.txt"
+dir="$(dirname "$0")"
+printf '%s\n' "$@" > "$dir/argv.txt.tmp"
+mv "$dir/argv.txt.tmp" "$dir/argv.txt"
 sleep 5
+"#;
+
+/// A fake CLI that appends the `--disallowedTools` value it was launched
+/// with to `disallowed.txt` and its `--resume` id (`-` when none) to
+/// `resumed.txt` — one line per spawn — then echoes each turn back
+/// (`echo:<text>`), taking a second over any turn whose text starts with
+/// "slow". For asserting when an autonomy change replaces the session.
+const SPAWN_RECORDING_CLAUDE: &str = r#"#!/bin/sh
+prev=
+resume=-
+for a in "$@"; do
+  if [ "$prev" = "--disallowedTools" ]; then
+    printf '%s\n' "$a" >> "$(dirname "$0")/disallowed.txt"
+  fi
+  if [ "$prev" = "--resume" ]; then resume=$a; fi
+  prev=$a
+done
+printf '%s\n' "$resume" >> "$(dirname "$0")/resumed.txt"
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r line; do
+  text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+  case "$text" in slow*) sleep 1 ;; esac
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"echo:%s"}]}}\n' "$text"
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+done
 "#;
 
 /// A fake CLI that echoes each turn's own text back as its prose reply
@@ -129,11 +159,14 @@ done
 
 /// A fake CLI that appends every turn's raw stdin line to `stdin.jsonl` next
 /// to it, so a test can inspect exactly what content blocks a turn carried —
-/// for asserting an attachment reaches the child's stdin intact.
+/// for asserting an attachment reaches the child's stdin intact. Each append
+/// is a copy renamed into place, so `recorded_stdin` never reads half a line.
 const RECORDS_STDIN_CLAUDE: &str = r#"#!/bin/sh
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+dir="$(dirname "$0")"
 while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$(dirname "$0")/stdin.jsonl"
+  { cat "$dir/stdin.jsonl" 2>/dev/null; printf '%s\n' "$line"; } > "$dir/stdin.jsonl.tmp"
+  mv "$dir/stdin.jsonl.tmp" "$dir/stdin.jsonl"
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}'
   echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 done
@@ -504,6 +537,182 @@ async fn the_memory_file_is_injected_into_the_session_prompt() {
     let argv = std::fs::read_to_string(dir.path().join("argv.txt")).expect("read argv");
     assert!(argv.contains("# Your memory"), "{argv}");
     assert!(argv.contains("Ships on Fridays"), "{argv}");
+    orch.shutdown().await;
+}
+
+/// The `--disallowedTools` value of every session spawned so far, in order.
+fn spawned_disallowed(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("disallowed.txt"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The `--resume` id of every session spawned so far (`-` = none), in order.
+fn spawned_resumed(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("resumed.txt"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+const OPEN: &str = "Edit,Write,NotebookEdit,Bash";
+const BLOCKED: &str = "Edit,Write,NotebookEdit,Bash,SendMessage";
+
+#[tokio::test]
+async fn propose_all_also_refuses_send_message() {
+    let (orch, dir) = setup(ARGV_RECORDING_CLAUDE);
+    orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
+        .expect("set autonomy");
+
+    orch.assistant_send("hello").await.expect("send");
+    let args = recorded_argv(dir.path()).await;
+
+    // SendMessage is the CLI's own tool, which Podium's gate never sees: a
+    // push go-ahead sent that way would skip the card propose-all promises.
+    assert_eq!(
+        arg_after(&args, "--disallowedTools"),
+        Some("Edit,Write,NotebookEdit,Bash,SendMessage".to_string())
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_autonomy_change_replaces_an_idle_session_only_when_send_message_flips() {
+    let (orch, dir) = setup(SPAWN_RECORDING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let turn_end = |e: &AssistantEvent| matches!(e, AssistantEvent::TurnEnd { .. });
+
+    orch.assistant_send("one").await.expect("send");
+    collect_until(&mut rx, turn_end).await;
+
+    // full ↔ confirm-destructive leaves SendMessage alone: same session.
+    orch.set_assistant_autonomy(AutonomyMode::Full)
+        .await
+        .expect("set autonomy");
+    orch.assistant_send("two").await.expect("send");
+    collect_until(&mut rx, turn_end).await;
+    assert_eq!(spawned_disallowed(dir.path()).len(), 1);
+
+    // Into propose-all: the idle session is replaced before the next turn.
+    orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
+        .expect("set autonomy");
+    orch.assistant_send("three").await.expect("send");
+    let turn = collect_until(&mut rx, turn_end).await;
+    assert!(turn.contains(&AssistantEvent::Message {
+        text: "echo:three".to_string()
+    }));
+    assert_eq!(
+        spawned_disallowed(dir.path()),
+        vec![OPEN.to_string(), BLOCKED.to_string()]
+    );
+    // The replacement picks the same conversation back up.
+    assert_eq!(spawned_resumed(dir.path()), ["-", "fake-session"]);
+
+    // And back out of propose-all: SendMessage returns, again resuming.
+    orch.set_assistant_autonomy(AutonomyMode::Full)
+        .await
+        .expect("set autonomy");
+    orch.assistant_send("four").await.expect("send");
+    collect_until(&mut rx, turn_end).await;
+    assert_eq!(
+        spawned_disallowed(dir.path()),
+        vec![OPEN.to_string(), BLOCKED.to_string(), OPEN.to_string()]
+    );
+    assert_eq!(
+        spawned_resumed(dir.path()),
+        ["-", "fake-session", "fake-session"]
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stored_propose_all_applies_to_the_first_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("agents.json"),
+        r#"{"assistant":{"autonomy":"propose-all"}}"#,
+    )
+    .expect("write settings");
+    let orch = setup_in(dir.path(), SPAWN_RECORDING_CLAUDE);
+    orch.set_agent_settings_path(dir.path().join("agents.json"));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("one").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert_eq!(spawned_disallowed(dir.path()), vec![BLOCKED.to_string()]);
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_respawn_at_turn_end_reports_the_waiting_messages() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).expect("mkdir");
+    let orch = Orchestrator::new();
+    orch.configure_assistant(AssistantConfig {
+        command: write_fake(dir.path(), SPAWN_RECORDING_CLAUDE)
+            .to_string_lossy()
+            .into_owned(),
+        cwd: Some(work.clone()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("slow turn").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Started { .. })).await;
+    orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
+        .expect("set autonomy");
+    assert!(!orch.assistant_send("queued").await.expect("send"));
+    // The replacement cannot start without its working directory.
+    std::fs::remove_dir(&work).expect("rmdir");
+
+    let seen = collect_until(&mut rx, |e| matches!(e, AssistantEvent::Exited)).await;
+    assert!(
+        seen.iter().any(|e| matches!(e,
+            AssistantEvent::QueueNotice { text } if text.contains("queued"))),
+        "{seen:?}"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_autonomy_change_mid_turn_waits_for_the_turn_to_end() {
+    let (orch, dir) = setup(SPAWN_RECORDING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let turn_end = |e: &AssistantEvent| matches!(e, AssistantEvent::TurnEnd { .. });
+
+    orch.assistant_send("slow turn").await.expect("send");
+    // The fake records its flags before it announces itself.
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Started { .. })).await;
+    orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
+        .expect("set autonomy");
+    // The running turn is never cut off for it.
+    assert_eq!(spawned_disallowed(dir.path()).len(), 1);
+    let delivered = orch.assistant_send("queued").await.expect("send");
+    assert!(!delivered, "the second message waits for the slow turn");
+
+    // The slow turn finishes in the old session; the waiting message then
+    // goes to a replacement that refuses SendMessage.
+    let first = collect_until(&mut rx, turn_end).await;
+    assert!(first.contains(&AssistantEvent::Message {
+        text: "echo:slow turn".to_string()
+    }));
+    let second = collect_until(&mut rx, turn_end).await;
+    assert!(second.contains(&AssistantEvent::Message {
+        text: "echo:queued".to_string()
+    }));
+    assert_eq!(
+        spawned_disallowed(dir.path()),
+        vec![OPEN.to_string(), BLOCKED.to_string()]
+    );
+    assert_eq!(spawned_resumed(dir.path()), ["-", "fake-session"]);
     orch.shutdown().await;
 }
 
@@ -961,7 +1170,8 @@ async fn queued_messages_are_delivered_one_per_turn_in_order() {
     // announced so the UI can promote its waiting row into the ordinary log.
     let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
     assert!(turn2.contains(&AssistantEvent::QueueItemDelivered {
-        text: "second".to_string()
+        text: "second".to_string(),
+        reply_to: None,
     }));
     assert!(turn2.contains(&AssistantEvent::Message {
         text: "echo:second".to_string()
@@ -1012,7 +1222,7 @@ async fn a_message_sent_during_podiums_own_turn_reports_itself_as_queued() {
     let delivered = turn
         .iter()
         .filter(|e| {
-            matches!(e, AssistantEvent::QueueItemDelivered { text } if text == "start the release")
+            matches!(e, AssistantEvent::QueueItemDelivered { text, .. } if text == "start the release")
         })
         .count();
     assert_eq!(delivered, 1, "{turn:?}");
@@ -1613,5 +1823,360 @@ async fn a_zero_interval_turns_the_external_sweep_off() {
         !dir.path().join("argv.txt").exists(),
         "swept with the interval set to 0"
     );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_to_a_responses_item_reaches_the_session_and_clears_the_item() {
+    use podium_core::{ResponseId, ResponseKind};
+
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "Merge the PR now or wait for review?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    // Refused before anything is sent: the item stays.
+    let blank = orch.reply_assistant_response(item.id, "   ").await;
+    assert!(
+        matches!(blank, Err(CoreError::InvalidInput(_))),
+        "{blank:?}"
+    );
+    let unknown = orch
+        .reply_assistant_response(ResponseId::new(), "merge it")
+        .await;
+    assert!(
+        matches!(unknown, Err(CoreError::ResponseNotFound)),
+        "{unknown:?}"
+    );
+    assert_eq!(orch.assistant_responses().len(), 1);
+
+    let delivered = orch
+        .reply_assistant_response(item.id, "merge it")
+        .await
+        .expect("reply");
+    assert!(delivered, "an idle session takes the reply straight away");
+    assert!(orch.assistant_responses().is_empty());
+
+    let lines = recorded_stdin(dir.path(), 1).await;
+    assert_eq!(
+        lines[0].pointer("/message/content/0/text").and_then(|t| t.as_str()),
+        Some("[Reply to your Responses item — \"GitHub\": \"Merge the PR now or wait for review?\"]\n\nmerge it")
+    );
+    let first = &orch.assistant_transcript()[0];
+    assert_eq!(first.role, TranscriptRole::Reply);
+    assert_eq!(first.text, "GitHub\nmerge it");
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reply_sent_behind_a_running_turn_queues_and_is_announced_as_a_reply() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "CSV or XLSX for the export?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    orch.assistant_send("first").await.expect("send first");
+    let delivered = orch
+        .reply_assistant_response(item.id, "XLSX")
+        .await
+        .expect("reply");
+    assert!(
+        !delivered,
+        "the first turn is in flight, so the reply waits"
+    );
+    // Taken off the list at once — it is on its way — and a second submit
+    // of the same reply finds nothing to send.
+    assert!(orch.assistant_responses().is_empty());
+    assert!(matches!(
+        orch.reply_assistant_response(item.id, "XLSX").await,
+        Err(CoreError::ResponseNotFound)
+    ));
+
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    let turn2 = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(
+        turn2.contains(&AssistantEvent::QueueItemDelivered {
+            text: "XLSX".to_string(),
+            reply_to: Some("GitHub".to_string()),
+        }),
+        "{turn2:?}"
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn every_change_to_the_responses_list_publishes_a_snapshot() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let is_snapshot = |e: &AssistantEvent| matches!(e, AssistantEvent::ResponsesChanged { .. });
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Merged.",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+    let added = collect_until(&mut rx, is_snapshot).await;
+    assert!(
+        matches!(added.last(), Some(AssistantEvent::ResponsesChanged { items }) if items.len() == 1)
+    );
+
+    orch.dismiss_assistant_response(item.id).expect("dismiss");
+    let dismissed = collect_until(&mut rx, is_snapshot).await;
+    assert!(
+        matches!(dismissed.last(), Some(AssistantEvent::ResponsesChanged { items }) if items.is_empty())
+    );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_item_about_an_agent_that_is_gone_keeps_its_key_but_not_a_name() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let gone = ProcessId::new();
+    let item = orch
+        .add_assistant_response(ResponseKind::Fyi, "Finished.", Some(gone), None, None, None)
+        .expect("an exited agent is no reason to drop the item");
+    assert_eq!(item.agent, None);
+    assert_eq!(item.process_id, Some(gone));
+
+    // Still the supersede key: the next update about it replaces this one.
+    orch.add_assistant_response(ResponseKind::Fyi, "Merged.", Some(gone), None, None, None)
+        .expect("add response");
+    let texts: Vec<String> = orch
+        .assistant_responses()
+        .into_iter()
+        .map(|i| i.text)
+        .collect();
+    assert_eq!(texts, vec!["Merged.".to_string()]);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_item_whose_project_or_to_do_is_gone_is_kept_without_that_name() {
+    use podium_core::{ProjectId, ResponseKind};
+
+    let (orch, dir) = setup(ECHOING_CLAUDE);
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project, "review the onboarding copy", None)
+        .expect("add todo");
+    orch.remove_todo(project, todo.id).expect("remove todo");
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Done.",
+            None,
+            Some(project),
+            Some(todo.id),
+            None,
+        )
+        .expect("a removed to-do is no reason to drop the item");
+    assert_eq!(item.todo, None);
+    assert_eq!(item.todo_id, Some(todo.id));
+    assert!(item.project.is_some());
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Done.",
+            None,
+            Some(ProjectId::new()),
+            None,
+            None,
+        )
+        .expect("a closed project is no reason to drop the item");
+    assert_eq!(item.project, None);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_live_agents_own_project_wins_over_a_mismatched_project_id() {
+    use podium_core::ResponseKind;
+
+    let (orch, dir) = setup(ECHOING_CLAUDE);
+    let agents_dir = dir.path().join("agents-project");
+    let other_dir = dir.path().join("other-project");
+    std::fs::create_dir_all(&agents_dir).expect("mkdir");
+    std::fs::create_dir_all(&other_dir).expect("mkdir");
+    let project = orch
+        .open_project(agents_dir.clone())
+        .await
+        .expect("open project");
+    let other = orch.open_project(other_dir).await.expect("open other");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", &agents_dir))
+        .await
+        .expect("add agent");
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Done.",
+            Some(agent),
+            Some(other),
+            None,
+            None,
+        )
+        .expect("add response");
+    assert_eq!(item.agent.as_deref(), Some("fix-login"));
+    assert_eq!(item.project.as_deref(), Some("agents-project"));
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_lingering_to_do_sweep_names_each_to_do_by_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project, "review the onboarding copy", None)
+        .expect("add todo");
+    // Older than `lingering_after` by the time the watcher looks.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("review the onboarding copy"), "{notice}");
+    // The ids `add_response` needs to key an item to this to-do, so the next
+    // sweep replaces it rather than filing a duplicate.
+    assert!(notice.contains(&format!("to-do {}", todo.id)), "{notice}");
+    assert!(notice.contains(&format!("project {project}")), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_withdrawn_waiting_reply_puts_its_item_back() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "CSV or XLSX for the export?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    orch.assistant_send("hang").await.expect("send first");
+    assert!(!orch
+        .reply_assistant_response(item.id, "XLSX")
+        .await
+        .expect("reply"));
+    assert!(orch.assistant_responses().is_empty());
+
+    let queued = collect_until(
+        &mut rx,
+        |e| matches!(e, AssistantEvent::QueueChanged { items } if !items.is_empty()),
+    )
+    .await;
+    let Some(AssistantEvent::QueueChanged { items }) = queued.last() else {
+        unreachable!()
+    };
+    orch.assistant_queue_remove(items[0].id)
+        .await
+        .expect("withdraw");
+    assert_eq!(orch.assistant_responses(), vec![item]);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_waiting_reply_lost_with_the_conversation_puts_its_item_back() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::NeedsYou,
+            "CSV or XLSX for the export?",
+            None,
+            None,
+            None,
+            Some("GitHub"),
+        )
+        .expect("add response");
+
+    orch.assistant_send("hang").await.expect("send first");
+    assert!(!orch
+        .reply_assistant_response(item.id, "XLSX")
+        .await
+        .expect("reply"));
+    orch.assistant_new_conversation().await;
+    assert_eq!(orch.assistant_responses(), vec![item]);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_response_about_a_terminal_is_refused() {
+    use podium_core::ResponseKind;
+
+    let (orch, dir) = setup(ECHOING_CLAUDE);
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let terminal = orch
+        .add_process(
+            project,
+            ProcessSpec {
+                kind: ProcessKind::Terminal,
+                ..agent_spec("sleep 30", dir.path())
+            },
+        )
+        .await
+        .expect("add terminal");
+
+    let refused =
+        orch.add_assistant_response(ResponseKind::Fyi, "Done.", Some(terminal), None, None, None);
+    assert!(
+        matches!(refused, Err(CoreError::InvalidInput(_))),
+        "{refused:?}"
+    );
+    assert!(orch.assistant_responses().is_empty());
+
     orch.shutdown().await;
 }

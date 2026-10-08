@@ -3,10 +3,14 @@ name: Build
 # Build installable desktop bundles.
 # - workflow_dispatch: build on demand from the Actions tab.
 # - push to main: every merge to main produces the artifact.
-# - push of a v* tag: a release tag also produces the artifact.
-# - CI's release job dispatches this on the new vX.Y.Z tag (a tag pushed with
-#   GITHUB_TOKEN does not fire the tag trigger); on a tag ref the installers are
-#   also attached to that tag's GitHub Release.
+# - CI's release job dispatches this on the new vX.Y.Z tag; on a tag ref the
+#   installers are also attached to that tag's GitHub Release.
+#
+# Deliberately no `tags` trigger: the release job pushes commit + tag with a
+# deploy key, which does fire workflows. The commit carries [skip ci], but
+# GitHub's docs don't say whether that also suppresses the tag push, so a tag
+# trigger could mean zero or two builds per release. The explicit dispatch is
+# exactly one. A hand-pushed tag builds with `gh workflow run build.yml --ref vX.Y.Z`.
 #
 # Matrix over macOS (.dmg) and Windows (NSIS .exe). Cross-compiling is painful,
 # so each OS builds natively on its own runner.
@@ -15,8 +19,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
 
 jobs:
   build:

@@ -11,23 +11,25 @@ use tokio::sync::broadcast;
 
 use crate::agent::session_memory::{self, RememberedSession, SessionMemoryStore};
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
-use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo};
+use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo, RestartCommands};
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
     ProposalInfo, TranscriptEntry,
 };
+use crate::boards::{BoardStore, CachedBoard};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
+use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ResponseId, ScratchpadId};
 use crate::platform::WslBackend;
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
-use crate::project::{self, ConfiguredProcess};
+use crate::project::{self, ConfiguredProcess, ProjectSections};
+use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
@@ -46,6 +48,14 @@ const DEFAULT_ADAPTER_ID: &str = "claude-code";
 
 const LOCK_POISONED: &str = "orchestrator lock poisoned";
 
+/// Longest Responses item text kept; the rest is clipped.
+const MAX_RESPONSE_TEXT_CHARS: usize = 500;
+
+/// A resumed agent that crashes within this long after starting is taken to
+/// have failed to resume (the CLI refusing the session), so its next start is
+/// fresh instead of the same `--resume` again.
+const RESUME_FAILURE_WINDOW: Duration = Duration::from_secs(5);
+
 /// Read-only snapshot of an open project, for listing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +70,11 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// Which optional sidebar sections the project shows.
+    pub sections: ProjectSections,
+    /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`;
+    /// `None` keeps the theme accent.
+    pub color: Option<String>,
     /// True only in WSL-backend mode, for a Windows-drive project that runs
     /// natively because of the `nativeDriveProjects` opt-in. The terminal
     /// shell setting is meant for the backend's shell, so the UI leaves it
@@ -79,6 +94,10 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// Which optional sidebar sections are shown (persisted in `workspace.json`).
+    sections: ProjectSections,
+    /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`.
+    color: Option<String>,
     /// The backend this project runs on, decided once at open from its root
     /// ([`crate::platform::wsl_for`]) and used for everything in it — agent
     /// launch quoting, the PTY spawn, the launch gate, worktree git, the
@@ -99,6 +118,8 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            sections: self.sections,
+            color: self.color.clone(),
             native_in_wsl_mode: crate::platform::wsl().is_some() && self.wsl.is_none(),
         }
     }
@@ -121,15 +142,40 @@ struct ManagedProcess {
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
-    /// The session id this agent was resumed with, kept so an idle restored
-    /// session (no newer session file) is still remembered on shutdown.
-    resumed_session_id: Option<String>,
-    /// The CLI session name the agent runs under (`-n`) — how its session is
-    /// found again at shutdown. `None` when it went unnamed.
-    session_name: Option<String>,
     /// The per-spawn args it was started with (`args_override`), remembered
     /// with its session so a restore runs on the same model.
     spawn_args: Option<Vec<String>>,
+    /// For an agent: how a manual start after it exited is spelled, and the
+    /// CLI session it is on (see [`AgentSession`]). `None` for everything
+    /// else.
+    session: Option<AgentSession>,
+    /// The colour an exited agent gave up, which its next start takes back
+    /// unless another live agent holds it by then.
+    last_color: Option<String>,
+}
+
+/// An agent's CLI session: the commands a restart picks from
+/// ([`LaunchPlan::restart`]) and the id of the session it is on — the
+/// process id at spawn, a new one after each fresh restart. `spec.command`
+/// itself is never swapped, so the choice is made afresh every start.
+#[derive(Clone)]
+struct AgentSession {
+    commands: RestartCommands,
+    id: String,
+    /// The current run resumed `id` (rather than starting it fresh).
+    resumed: bool,
+    /// Resuming `id` crashed right away (see [`RESUME_FAILURE_WINDOW`]), so
+    /// it is not tried again: the next start is fresh.
+    resume_failed: bool,
+}
+
+/// What a restart of an exited agent runs, from [`restart_launch`]. The
+/// session it names becomes the agent's current one only once the start has
+/// succeeded, so a start that loses a race cannot overwrite the winner's.
+struct Relaunch {
+    command: String,
+    session_id: String,
+    resumed: bool,
 }
 
 impl ManagedProcess {
@@ -163,8 +209,9 @@ struct Inner {
     order: Vec<ProjectId>,
     processes: HashMap<ProcessId, ManagedProcess>,
     /// Which agent process is working on which to-do. Runtime-only (process
-    /// ids do not survive a restart), so it is never persisted; cleared when
-    /// the agent exits, is removed, or its project closes.
+    /// ids do not survive a restart), so it is never persisted. An agent that
+    /// exits keeps its entries (a restart picks the work back up); they are
+    /// cleared when the agent is removed or its project closes.
     todo_assignments: HashMap<TodoId, ProcessId>,
     /// Which agent process is working on which scratchpad. Mirrors
     /// `todo_assignments` exactly (runtime-only, cleared the same way).
@@ -199,17 +246,16 @@ pub struct Orchestrator {
     todos: TodoStore,
     /// Per-project scratchpads, keyed by project root (survives restarts).
     scratchpads: ScratchpadStore,
+    /// The last Git board per project and scope (survives restarts).
+    boards: BoardStore,
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
     /// Agent sessions to resume on the next open of their project, keyed by
     /// root (`AgentSettings.remember_sessions`).
     session_memory: SessionMemoryStore,
-    /// Test override for Claude Code's config dir (`projects/`, `sessions/`);
-    /// `None` resolves [`crate::platform::claude_config_dir`] at use time,
-    /// since this struct is built before the WSL backend is known.
-    claude_config_dir: Mutex<Option<PathBuf>>,
-    /// The workspace-wide personal assistant session (chat panel).
+    /// The workspace-wide personal assistant session (chat panel). Also
+    /// holds the Responses list ([`Self::responses`]).
     assistant: AssistantManager,
 }
 
@@ -236,9 +282,9 @@ impl Orchestrator {
             mcp: Mutex::new(None),
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
+            boards: BoardStore::new(),
             agent_settings: AgentSettingsStore::new(),
             session_memory: SessionMemoryStore::new(),
-            claude_config_dir: Mutex::new(None),
         }
     }
 
@@ -260,10 +306,29 @@ impl Orchestrator {
         self.todos.set_path(path);
     }
 
+    /// Point the Git board cache at its backing file (app data dir) and load
+    /// it. Until this is called, boards are cached in memory only.
+    pub fn set_boards_path(&self, path: PathBuf) {
+        self.boards.set_path(path);
+    }
+
     /// Point the scratchpad store at its backing file (app data dir) and
     /// load it. Until this is called, scratchpads are held in memory only.
     pub fn set_scratchpads_path(&self, path: PathBuf) {
         self.scratchpads.set_path(path);
+    }
+
+    /// Point the Responses list at its backing file (app data dir) and load
+    /// it. Until this is called, items are held in memory only.
+    pub fn set_responses_path(&self, path: PathBuf) {
+        self.responses().set_path(path);
+    }
+
+    /// The assistant's Responses list (survives restarts and new
+    /// conversations). Kept in the assistant's store so its queue can put
+    /// back the item of a reply it never delivered.
+    fn responses(&self) -> &ResponseStore {
+        self.assistant.store().responses()
     }
 
     /// Point the assistant at its CLI binary, working directory and the dir
@@ -369,12 +434,21 @@ impl Orchestrator {
     }
 
     /// Change the assistant's autonomy mode; returns what was stored.
-    pub fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AutonomyMode> {
-        Ok(self
+    ///
+    /// Moving into or out of `propose-all` also flips whether the assistant's
+    /// CLI session may use `SendMessage` — the one way it could reach an
+    /// agent without passing the gate — which replaces the session (see
+    /// [`AssistantManager::set_send_message_blocked`]).
+    pub async fn set_assistant_autonomy(&self, mode: AutonomyMode) -> CoreResult<AutonomyMode> {
+        let stored = self
             .agent_settings
             .set_assistant_autonomy(mode)?
             .assistant
-            .autonomy)
+            .autonomy;
+        self.assistant
+            .set_send_message_blocked(stored == AutonomyMode::ProposeAll)
+            .await;
+        Ok(stored)
     }
 
     /// Whether Podium may nudge the assistant unprompted (Settings →
@@ -577,39 +651,145 @@ impl Orchestrator {
         self.assistant.interrupt(mcp).await
     }
 
+    /// The assistant's Responses list, newest first.
+    pub fn assistant_responses(&self) -> Vec<ResponseItem> {
+        self.responses().list()
+    }
+
+    /// File one Responses item (the assistant's `add_response`). Agent,
+    /// project and to-do names are resolved now, so the item still reads
+    /// right after the agent exits or the project closes. The project comes
+    /// from the agent when it is live, else from `project_id`. A `todo_id`
+    /// is refused without a `project_id` or `process_id` to find it by; a
+    /// project or to-do that is gone (including an agent that exited, so
+    /// there is no project to look in) is dropped from the item rather than
+    /// refusing it.
+    /// A newer item about the same agent or to-do replaces the open one.
+    /// An agent that is already gone keeps its id as the supersede key but
+    /// loses its name: it may well have exited between the nudge and this
+    /// call, which is no reason to drop the item.
+    pub fn add_assistant_response(
+        &self,
+        kind: ResponseKind,
+        text: &str,
+        process_id: Option<ProcessId>,
+        project_id: Option<ProjectId>,
+        todo_id: Option<TodoId>,
+        source: Option<&str>,
+    ) -> CoreResult<ResponseItem> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "response text must not be blank".to_string(),
+            ));
+        }
+        if todo_id.is_some() && project_id.is_none() && process_id.is_none() {
+            return Err(CoreError::InvalidInput(
+                "todo_id needs project_id (or the process_id of an agent)".to_string(),
+            ));
+        }
+        let process =
+            process_id.and_then(|id| self.list_processes(None).into_iter().find(|p| p.id == id));
+        // Responses are about agents: a terminal's or service's id would key
+        // and label the item after the wrong thing. (An id that is gone is
+        // fine — see above.)
+        if process
+            .as_ref()
+            .is_some_and(|p| !matches!(p.kind, ProcessKind::Agent { .. }))
+        {
+            return Err(CoreError::InvalidInput(
+                "process_id must be an agent's".to_string(),
+            ));
+        }
+        // A live agent's own project wins over `project_id`: the agent is
+        // what the item is about, so a mismatched id would mislabel it.
+        let project_id = process.as_ref().map(|p| p.project_id).or(project_id);
+        // Context that has gone (project closed, to-do removed) is dropped,
+        // not an error — like a vanished agent, it is no reason to lose the
+        // item; the ids still work as supersede keys.
+        let project =
+            project_id.and_then(|id| self.list_projects().into_iter().find(|p| p.id == id));
+        let todo = match (todo_id, &project) {
+            (Some(id), Some(project)) => self.todos.get(project.id, &project.root, id),
+            _ => None,
+        };
+        let item = ResponseItem {
+            id: ResponseId::new(),
+            kind,
+            // Capped like the list itself: the assistant writes these from
+            // content it read, and the panel row is meant to be a line or two.
+            text: crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS),
+            // Names are capped like the to-do and source: they travel into
+            // the label a reply carries back to the session.
+            project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent: process
+                .as_ref()
+                .map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent_color: process.as_ref().and_then(|p| p.color.clone()),
+            todo: todo.map(|t| crate::assistant::truncate(&t.text, 60)),
+            source: source
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| crate::assistant::truncate(s, 40)),
+            process_id,
+            todo_id,
+            created_at: Utc::now(),
+        };
+        self.responses()
+            .add(item.clone(), |items| self.publish_responses(items))?;
+        Ok(item)
+    }
+
+    /// Mark one Responses item as read: it is simply removed.
+    pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
+        self.responses()
+            .remove(id, |items| self.publish_responses(items))?;
+        Ok(())
+    }
+
+    /// Answer one Responses item: `text` goes to the assistant as the user's
+    /// message, carrying which item it answers, and the item is removed.
+    /// Taken off the list *before* sending, so a double submit finds nothing
+    /// the second time instead of sending the reply twice; a send that fails
+    /// puts it back to try again. Returns delivered-or-queued, as
+    /// [`assistant_send`](Self::assistant_send).
+    pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
+        if text.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "reply must not be blank".to_string(),
+            ));
+        }
+        let item = self
+            .responses()
+            .remove(id, |items| self.publish_responses(items))?;
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        match self.assistant.send_reply(text, item.clone(), mcp).await {
+            Ok(delivered) => Ok(delivered),
+            Err(e) => {
+                self.responses()
+                    .restore(item, |items| self.publish_responses(items));
+                Err(e)
+            }
+        }
+    }
+
+    fn publish_responses(&self, items: &[ResponseItem]) {
+        crate::assistant::publish_responses(&self.events, items);
+    }
+
     /// Point the global agent settings at their backing file (app data dir)
     /// and load them. Until this is called, settings are held in memory only.
     pub fn set_agent_settings_path(&self, path: PathBuf) {
         self.agent_settings.set_path(path);
+        // The assistant's first session must already match the stored mode.
+        self.assistant
+            .preset_send_message_blocked(self.assistant_autonomy() == AutonomyMode::ProposeAll);
     }
 
     /// Point the remembered-sessions store at its backing file (app data
     /// dir) and load it. Until this is called it is in-memory only.
     pub fn set_session_memory_path(&self, path: PathBuf) {
         self.session_memory.set_path(path);
-    }
-
-    /// Override Claude Code's config dir, where session files are looked up
-    /// (tests).
-    pub fn set_claude_config_dir(&self, path: PathBuf) {
-        *self.claude_config_dir.lock().expect(LOCK_POISONED) = Some(path);
-    }
-
-    fn claude_config_dir_override(&self) -> Option<PathBuf> {
-        self.claude_config_dir.lock().expect(LOCK_POISONED).clone()
-    }
-
-    /// Claude Code's config dir: the test override, else the backend's own
-    /// (`~/.claude`, or the distro's in WSL mode). May start a `wsl.exe` the
-    /// first time in WSL mode — never call it on the exit path.
-    async fn claude_config_dir(&self) -> Option<PathBuf> {
-        match self.claude_config_dir_override() {
-            Some(dir) => Some(dir),
-            None => tokio::task::spawn_blocking(crate::platform::claude_config_dir)
-                .await
-                .ok()
-                .flatten(),
-        }
     }
 
     /// A snapshot of the global agent settings.
@@ -629,18 +809,11 @@ impl Orchestrator {
     }
 
     /// Toggle whether agent sessions are remembered across app restarts.
-    ///
     /// Turning it off forgets every session captured so far, so none of them
-    /// can come back when it is turned on again. Turning it on resolves
-    /// Claude Code's config dir in the background, so the capture at
-    /// shutdown never waits on a `wsl.exe` start.
+    /// can come back when it is turned on again.
     pub fn set_agent_remember_sessions(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let settings = self.agent_settings.set_remember_sessions(enabled)?;
-        if enabled {
-            if self.claude_config_dir_override().is_none() {
-                std::thread::spawn(crate::platform::claude_config_dir);
-            }
-        } else {
+        if !enabled {
             self.session_memory.clear_all()?;
         }
         Ok(settings)
@@ -726,6 +899,8 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        sections: ProjectSections::default(),
+                        color: None,
                         wsl: crate::platform::wsl_for(&path),
                     },
                 );
@@ -778,16 +953,12 @@ impl Orchestrator {
             });
         }
         for pid in auto_start {
-            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false) {
+            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false, None) {
                 tracing::warn!(process_id = %pid, "auto-start failed: {e}");
             }
         }
         if self.agent_settings.get().remember_sessions {
-            // Also warms the WSL-mode lookup, so the capture at shutdown
-            // never has to start `wsl.exe` on the exit path.
-            let config_dir = self.claude_config_dir().await;
-            self.restore_remembered_sessions(id, &path, config_dir.as_deref())
-                .await;
+            self.restore_remembered_sessions(id, &path).await;
         }
         // Dropped even with the toggle off, so old sessions never resurface later.
         if let Err(e) = self.session_memory.clear(&path) {
@@ -796,34 +967,33 @@ impl Orchestrator {
         Ok(id)
     }
 
-    /// Respawn every agent remembered for `root`, each via `--resume`, on
-    /// the args it was started with and owning its to-dos/scratchpads again.
-    /// Best-effort per entry; the caller clears the list afterwards.
-    async fn restore_remembered_sessions(
-        &self,
-        project_id: ProjectId,
-        root: &Path,
-        config_dir: Option<&Path>,
-    ) {
-        let projects_root = config_dir.map(|d| d.join("projects"));
+    /// Respawn every agent remembered for `root` on the session it was on,
+    /// through the same resume path as a manual restart ([`restart_launch`]),
+    /// on the args it was started with and owning its to-dos/scratchpads
+    /// again. Best-effort per entry; the caller clears the list afterwards.
+    async fn restore_remembered_sessions(&self, project_id: ProjectId, root: &Path) {
+        let wsl = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            project_backend(&inner, project_id)
+        };
         let now = Utc::now();
         for entry in self.session_memory.list(root) {
             if entry.is_expired(now) {
                 continue;
             }
-            // Without resume support this would be a fresh agent with no context.
-            if !self.adapter_supports_resume(&entry.adapter_id) {
-                continue;
-            }
-            // The file is user-writable; never hand `--resume` a non-UUID.
+            // The file is user-writable and the id lands unquoted on a shell
+            // line: never hand `--resume` anything but a UUID.
             if !session_memory::is_valid_session_id(&entry.session_id) {
                 tracing::warn!("skipping a remembered agent session with an invalid id");
                 continue;
             }
-            // Pruned by Claude Code's retention: resuming would exit at once.
-            if projects_root.as_deref().is_some_and(|pr| {
-                !session_memory::session_file_exists(pr, &entry.cwd, &entry.session_id)
-            }) {
+            // No transcript (pruned by Claude Code's retention, or an adapter
+            // that cannot resume): a fresh agent without its context and
+            // without a prompt would be of no use, so it is not respawned.
+            if !self
+                .session_stored(&entry.adapter_id, &entry.session_id, wsl)
+                .await
+            {
                 continue;
             }
             // The to-dos/scratchpads are re-assigned, not handed over: a
@@ -856,9 +1026,28 @@ impl Orchestrator {
         }
     }
 
+    /// Whether adapter `adapter_id`'s CLI has a stored conversation for
+    /// `session_id` on backend `wsl` ([`AgentAdapter::session_exists`]). The
+    /// check reads the disk — or, on WSL, runs a login shell in the distro —
+    /// so it runs off the async runtime. Callers must not hold the lock.
+    async fn session_stored(
+        &self,
+        adapter_id: &str,
+        session_id: &str,
+        wsl: Option<&'static WslBackend>,
+    ) -> bool {
+        let Some(adapter) = self.adapters.by_id(adapter_id) else {
+            return false;
+        };
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || adapter.session_exists(&session_id, wsl))
+            .await
+            .unwrap_or(false)
+    }
+
     /// Give a restored agent back the to-dos and scratchpads its previous
     /// session owned — those that still exist, are not archived (or done),
-    /// and nobody else has claimed in the meantime.
+    /// and no live agent has claimed in the meantime.
     fn reassign_restored(
         &self,
         project_id: ProjectId,
@@ -890,22 +1079,18 @@ impl Orchestrator {
             (
                 todos
                     .into_iter()
-                    .filter(|id| assigned_agent_of(&inner, *id).is_none())
+                    .filter(|id| !assigned_agent_of(&inner, *id).is_some_and(|a| a.active))
                     .collect::<Vec<_>>(),
                 scratchpads
                     .into_iter()
-                    .filter(|id| scratchpad_assigned_agent_of(&inner, *id).is_none())
+                    .filter(|id| {
+                        !scratchpad_assigned_agent_of(&inner, *id).is_some_and(|a| a.active)
+                    })
                     .collect::<Vec<_>>(),
             )
         };
         self.assign_todos(project_id, process_id, &todos);
         self.assign_scratchpads(project_id, process_id, &scratchpads);
-    }
-
-    fn adapter_supports_resume(&self, adapter_id: &str) -> bool {
-        self.adapters
-            .by_id(adapter_id)
-            .is_some_and(|a| a.supports_resume())
     }
 
     /// Close a project, stopping and removing all of its processes.
@@ -972,7 +1157,93 @@ impl Orchestrator {
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
-            handle.name_override = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            handle.name_override = normalize_project_name(name);
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set or clear a project's badge colour. `None` or blank clears it; anything
+    /// but a `#rrggbb` hex is refused, since the value lands in a CSS property.
+    pub fn set_project_color(
+        &self,
+        id: ProjectId,
+        color: Option<String>,
+    ) -> CoreResult<ProjectInfo> {
+        let color = normalize_project_color(color)?;
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.color = color;
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Re-apply a project's persisted overrides (display name, badge colour,
+    /// section toggles) after `open_project`, publishing one `ProjectUpdated`
+    /// for all rather than one per override. `None` leaves that override
+    /// unset (sections: the default). A stored
+    /// colour that is not `#rrggbb` (a hand-edited `workspace.json`) is
+    /// dropped (and logged) so the name still applies.
+    pub fn restore_project_overrides(
+        &self,
+        id: ProjectId,
+        name: Option<String>,
+        color: Option<String>,
+        sections: Option<ProjectSections>,
+    ) -> CoreResult<ProjectInfo> {
+        let color = color.and_then(|c| {
+            normalize_project_color(Some(c)).unwrap_or_else(|e| {
+                tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
+                None
+            })
+        });
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            // Only what was stored: a project with just stored sections must
+            // not lose its name or colour.
+            if name.is_some() {
+                handle.name_override = normalize_project_name(name);
+            }
+            if color.is_some() {
+                handle.color = color;
+            }
+            if let Some(sections) = sections {
+                handle.sections = sections;
+            }
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set which optional sidebar sections a project shows. Presentation only:
+    /// nothing is stopped or deleted. Returns the updated snapshot.
+    pub fn set_project_sections(
+        &self,
+        id: ProjectId,
+        sections: ProjectSections,
+    ) -> CoreResult<ProjectInfo> {
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.sections = sections;
             handle.info(id)
         };
         self.events
@@ -1111,12 +1382,12 @@ impl Orchestrator {
                 ));
             }
             // Block claiming a to-do already owned by a *different* live agent
-            // (a stale assignment whose process is gone resolves to `None`, so
-            // it can be reclaimed; re-claiming your own is idempotent).
-            if let Some(existing) = assigned_agent_of(&inner, todo_id) {
-                if existing.process_id != process_id {
-                    return Err(CoreError::TodoAlreadyAssigned);
-                }
+            // (one that exited or is gone can be reclaimed; re-claiming your
+            // own is idempotent).
+            if assigned_agent_of(&inner, todo_id)
+                .is_some_and(|a| a.active && a.process_id != process_id)
+            {
+                return Err(CoreError::TodoAlreadyAssigned);
             }
             inner.todo_assignments.insert(todo_id, process_id);
             info.assigned_agent = assigned_agent_of(&inner, todo_id);
@@ -1625,7 +1896,7 @@ impl Orchestrator {
             });
         }
         for pid in auto_start {
-            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false) {
+            if let Err(e) = do_start(&self.inner, &self.events, self.supervisor, pid, false, None) {
                 tracing::warn!(process_id = %pid, "auto-start failed: {e}");
             }
         }
@@ -1740,7 +2011,7 @@ impl Orchestrator {
                 .filter(|p| p.project_id == project_id)
                 .map(|p| p.spec.name.clone())
                 .collect();
-            let color = pick_session_color(&inner, project_id);
+            let color = pick_session_color(&inner, project_id, None);
             (
                 handle.root.clone(),
                 handle.wsl,
@@ -1853,7 +2124,7 @@ impl Orchestrator {
             .unwrap_or(&[]);
         let merged_args = settings::merge_args(global.merge_mode, global_args, &agents.extra_args);
         let command_override = ov.and_then(|o| o.command.as_deref());
-        let launch_ctx = AgentLaunchCtx {
+        let plan = adapter.build_launch(&AgentLaunchCtx {
             project_id,
             process_id,
             project_root: &root,
@@ -1866,10 +2137,28 @@ impl Orchestrator {
             worktree,
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && !worktree,
-            resume_session_id: resume_session_id.as_deref(),
+        })?;
+        let mut session = plan.restart.map(|commands| AgentSession {
+            commands,
+            id: process_id.to_string(),
+            resumed: false,
+            resume_failed: false,
+        });
+        // A restore starts on the remembered session, spelled exactly as a
+        // restart that found it stored. Without session flags (the user's own
+        // args pick the session now) there is nothing to resume it with.
+        let relaunch = match (resume_session_id, session.as_mut()) {
+            (Some(id), Some(session)) => {
+                session.id = id;
+                Some(restart_launch(session, true))
+            }
+            (Some(_), None) => {
+                return Err(CoreError::InvalidInput(
+                    "this agent's launch cannot resume a session".to_string(),
+                ))
+            }
+            (None, _) => None,
         };
-        let plan = adapter.build_launch(&launch_ctx)?;
-        let session_name = adapter.session_name(&launch_ctx);
         let spec = ProcessSpec {
             name,
             command: plan.command,
@@ -1897,8 +2186,7 @@ impl Orchestrator {
             }
             insert_process(&mut inner, process_id, project_id, spec, false);
             if let Some(p) = inner.processes.get_mut(&process_id) {
-                p.resumed_session_id = resume_session_id;
-                p.session_name = session_name;
+                p.session = session;
                 p.spawn_args = args_override;
             }
         }
@@ -1906,7 +2194,14 @@ impl Orchestrator {
             project_id,
             process_id,
         });
-        do_start(&self.inner, &self.events, self.supervisor, process_id, true)?;
+        do_start(
+            &self.inner,
+            &self.events,
+            self.supervisor,
+            process_id,
+            true,
+            relaunch,
+        )?;
         // Link the agent to the to-dos/scratchpads it was spawned for so the
         // UI can show who is working on what (also emits TodosChanged /
         // ScratchpadsChanged for the project).
@@ -1960,6 +2255,262 @@ impl Orchestrator {
             .filter(|(_, p)| project_id.is_none_or(|pid| p.project_id == pid))
             .map(|(id, p)| p.info(*id))
             .collect()
+    }
+
+    /// The Git board (issues + PRs/MRs, all-time PR/MR counts) of the repo
+    /// behind the project's `origin` remote, via the project's chosen setup
+    /// (or the one matching the remote's host); `mine` narrows it to the
+    /// user's own. Returns it with the time it was fetched. Shells out — call
+    /// from a blocking-friendly context.
+    pub fn issue_board(&self, project_id: ProjectId, mine: bool) -> CoreResult<CachedBoard> {
+        let root = self.project_root(project_id)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        // Taken before the fetch: a move landing meanwhile wins over its result.
+        let edits = self.boards.edits(&root);
+        // Either scope's last board tells GitLab where the columns were.
+        let cached = self
+            .boards
+            .get(&root, mine)
+            .or_else(|| self.boards.get(&root, !mine));
+        let board = crate::issues::board(
+            &root,
+            &issues.setups,
+            selected,
+            mine,
+            cached.as_ref().map(|c| &c.board),
+        )?;
+        if let Some(stored) = self.boards.put(&root, mine, board.clone(), edits) {
+            return Ok(stored);
+        }
+        // A move/unassign of this project landed mid-fetch, so this board
+        // predates it: serve the cache (which has the edit), with its own
+        // fetch time; the next refresh catches up.
+        Ok(self.boards.get(&root, mine).unwrap_or_else(|| CachedBoard {
+            board,
+            fetched_at: Utc::now(),
+        }))
+    }
+
+    /// The last successfully fetched board of this scope, if any. No network.
+    pub fn cached_issue_board(
+        &self,
+        project_id: ProjectId,
+        mine: bool,
+    ) -> CoreResult<Option<CachedBoard>> {
+        Ok(self.boards.get(&self.project_root(project_id)?, mine))
+    }
+
+    /// Move a card to another column of the project's Git board, on the
+    /// platform itself (GitLab labels/state, GitHub close/reopen/Project
+    /// Status). Validated against the cached board, so it needs one: of the
+    /// scopes holding the card, the most recently fetched — the best word on
+    /// whether it is open or closed, which decides close/reopen. A card
+    /// already in `column` there is a no-op success (the other scope was
+    /// stale), not a refusal. On success both cached scopes are updated and
+    /// `BoardChanged` published. Shells out / blocks — call from a
+    /// blocking-friendly context.
+    pub fn move_board_item(
+        &self,
+        project_id: ProjectId,
+        kind: crate::ItemKind,
+        number: u64,
+        column: &str,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let cached = self
+            .newest_board_with(&root, kind, number)
+            .or_else(|| self.boards.get(&root, true))
+            .or_else(|| self.boards.get(&root, false))
+            .ok_or_else(|| CoreError::IssuesMove("Refresh the board first.".to_string()))?;
+        let board = &cached.board;
+        let item = crate::issues::validate_move(board, kind, number, column)?;
+        if item.column == column {
+            self.boards.apply_move(&root, kind, number, column, None);
+            self.events
+                .publish(PodiumEvent::BoardChanged { project_id });
+            return Ok(());
+        }
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        let labels =
+            crate::issues::move_item(&root, &issues.setups, selected, board, item, column)?;
+        self.boards
+            .apply_move(&root, kind, number, column, labels.as_deref());
+        self.events
+            .publish(PodiumEvent::BoardChanged { project_id });
+        Ok(())
+    }
+
+    /// Of the cached scopes holding the card, the most recently fetched: the
+    /// best word on its state when the two disagree.
+    fn newest_board_with(
+        &self,
+        root: &Path,
+        kind: crate::ItemKind,
+        number: u64,
+    ) -> Option<CachedBoard> {
+        [true, false]
+            .into_iter()
+            .filter_map(|mine| self.boards.get(root, mine))
+            .filter(|c| {
+                c.board
+                    .items
+                    .iter()
+                    .any(|i| i.kind == kind && i.number == number)
+            })
+            .max_by_key(|c| c.fetched_at)
+    }
+
+    /// Unassign the signed-in user from a card of the project's Git board, on
+    /// the platform itself. Validated against the cached board (which knows
+    /// who you are), so it needs one. On success both cached scopes are
+    /// updated and `BoardChanged` published. Blocks — call from a
+    /// blocking-friendly context.
+    pub fn unassign_board_item(
+        &self,
+        project_id: ProjectId,
+        kind: crate::ItemKind,
+        number: u64,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let cached = self.newest_board_with(&root, kind, number).ok_or_else(|| {
+            CoreError::IssuesMove(
+                "That card is not on the board. Refresh the board first.".to_string(),
+            )
+        })?;
+        let (item, me) = crate::issues::validate_unassign(&cached.board, kind, number)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        crate::issues::unassign_item(&root, &issues.setups, selected, item, me)?;
+        self.boards.apply_unassign(&root, kind, number, me);
+        self.events
+            .publish(PodiumEvent::BoardChanged { project_id });
+        Ok(())
+    }
+
+    /// Settings → Issues: every setup (with whether a GitLab token is stored —
+    /// never the token) plus each project's pick. Touches the keychain.
+    pub fn issues_overview(&self) -> crate::issues::IssuesOverview {
+        let issues = self.agent_settings().issues;
+        crate::issues::IssuesOverview {
+            setups: issues
+                .setups
+                .into_iter()
+                .map(|setup| crate::issues::IssueSetupInfo {
+                    token_set: setup.provider == crate::issues::IssueProvider::Gitlab
+                        && crate::issues::gitlab_token_present(&setup.id),
+                    setup,
+                })
+                .collect(),
+            projects: issues.projects,
+        }
+    }
+
+    /// Add a setup (`id: None`) or replace the one with that id. The URL is
+    /// normalized (scheme kept, `https` by default); a blank name falls back to
+    /// the host. `token` (GitLab only): `None` keeps the stored one, blank
+    /// deletes it, anything else replaces it.
+    pub fn save_issue_setup(
+        &self,
+        id: Option<String>,
+        name: String,
+        provider: crate::issues::IssueProvider,
+        url: String,
+        account: Option<String>,
+        token: Option<String>,
+    ) -> CoreResult<crate::issues::IssuesOverview> {
+        let url = crate::issues::normalize_url(&url).ok_or_else(|| {
+            CoreError::InvalidInput(
+                "enter a valid http(s) URL, without a user:token@ part".to_string(),
+            )
+        })?;
+        let name = match name.trim() {
+            "" => crate::issues::url_host(&url).to_string(),
+            n => n.to_string(),
+        };
+        let github = provider == crate::issues::IssueProvider::Github;
+        let setup = crate::issues::IssueSetup {
+            id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            name,
+            provider,
+            url,
+            account: account
+                .map(|a| a.trim().to_string())
+                .filter(|a| github && !a.is_empty()),
+        };
+        if let Some(token) = token.filter(|_| !github) {
+            crate::issues::gitlab_token_set(&setup.id, &token)?;
+        }
+        let mut issues = self.agent_settings().issues;
+        // Turned from GitLab into GitHub: its token has no use any more.
+        let was_gitlab = issues
+            .setups
+            .iter()
+            .any(|s| s.id == setup.id && s.provider == crate::IssueProvider::Gitlab);
+        if github && was_gitlab {
+            if let Err(e) = crate::issues::gitlab_token_set(&setup.id, "") {
+                tracing::warn!("could not delete a GitLab token no longer in use: {e}");
+            }
+        }
+        match issues.setups.iter_mut().find(|s| s.id == setup.id) {
+            Some(existing) => *existing = setup,
+            None => issues.setups.push(setup),
+        }
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
+    }
+
+    /// Remove a setup, its keychain token, and any project's pick of it.
+    pub fn remove_issue_setup(&self, id: &str) -> CoreResult<crate::issues::IssuesOverview> {
+        let mut issues = self.agent_settings().issues;
+        // Only a GitLab setup has a token. A keychain that will not delete it
+        // must not keep the setup alive: log it and remove the setup anyway.
+        let gitlab = issues
+            .setups
+            .iter()
+            .any(|s| s.id == id && s.provider == crate::IssueProvider::Gitlab);
+        if gitlab {
+            if let Err(e) = crate::issues::gitlab_token_set(id, "") {
+                tracing::warn!("could not delete a removed setup's GitLab token: {e}");
+            }
+        }
+        issues.setups.retain(|s| s.id != id);
+        issues.projects.retain(|_, pick| pick != id);
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
+    }
+
+    /// Pin a project to one setup; `None` goes back to matching by host.
+    pub fn set_project_issue_setup(
+        &self,
+        project_id: ProjectId,
+        setup_id: Option<String>,
+    ) -> CoreResult<crate::issues::IssuesOverview> {
+        let root = self.project_root(project_id)?;
+        let mut issues = self.agent_settings().issues;
+        match setup_id {
+            Some(id) => {
+                if !issues.setups.iter().any(|s| s.id == id) {
+                    return Err(CoreError::InvalidInput("unknown issue setup".to_string()));
+                }
+                issues.projects.insert(root, id);
+            }
+            None => {
+                issues.projects.remove(&root);
+            }
+        }
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
     }
 
     /// The project's Podium-managed git worktrees, with `in_use` marking the
@@ -2104,8 +2655,42 @@ impl Orchestrator {
     /// Manually start a process. Cancels any pending supervised restart and
     /// resets the backoff/breaker state: an explicit user start is a fresh
     /// beginning.
+    ///
+    /// An agent that ran before picks its CLI session back up when the CLI
+    /// has it stored, and otherwise starts a fresh session (see
+    /// [`restart_launch`]). Its first start always runs `spec.command`.
     pub async fn start_process(&self, id: ProcessId) -> CoreResult<()> {
-        do_start(&self.inner, &self.events, self.supervisor, id, true)
+        let restart = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            match (&proc.spec.kind, &proc.session) {
+                (ProcessKind::Agent { adapter }, Some(session))
+                    if matches!(proc.status, ProcessStatus::Exited { .. }) =>
+                {
+                    Some((
+                        adapter.clone(),
+                        session.clone(),
+                        project_backend(&inner, proc.project_id),
+                    ))
+                }
+                _ => None,
+            }
+        };
+        let relaunch = match restart {
+            Some((adapter, session, wsl)) => {
+                let stored = self.session_stored(&adapter, &session.id, wsl).await;
+                Some(restart_launch(&session, stored))
+            }
+            None => None,
+        };
+        do_start(
+            &self.inner,
+            &self.events,
+            self.supervisor,
+            id,
+            true,
+            relaunch,
+        )
     }
 
     /// Stop a stuck agent and put a fresh one on the same work, with the
@@ -2349,32 +2934,17 @@ impl Orchestrator {
         }
     }
 
-    /// Remember each running resumable agent's Claude Code session id for the
-    /// next open of its project, with the to-dos/scratchpads it owns and the
-    /// args it was started with. The id comes from, in order: Claude Code's
-    /// live `sessions/` registry, matched on the agent's session name (it
-    /// follows `/clear`); the transcript carrying that name as its title;
-    /// the id the agent was itself resumed with. There is deliberately no
-    /// "newest session file in the cwd" guess — that would adopt a `claude`
-    /// session the user runs themselves in the same repo.
+    /// Remember each running agent's current CLI session ([`AgentSession`]:
+    /// the id it was launched or last restarted on) for the next open of its
+    /// project, with the to-dos/scratchpads it owns and the args it was
+    /// started with. An agent without a Podium-assigned session — an adapter
+    /// that cannot resume (Auggie), or one whose own args pick the session
+    /// (`--resume`, `--continue`, …) — is not remembered.
     ///
-    /// Runs on the app's exit path, so it never starts a process: in WSL mode
-    /// it only uses a config dir resolved earlier (project open, or turning
-    /// the setting on), and every entry goes out in one write.
+    /// Runs on the app's exit path, so it reads nothing from disk and starts
+    /// no process; every entry goes out in one write.
     fn capture_agent_sessions(&self) {
-        struct Candidate {
-            root: PathBuf,
-            cwd: PathBuf,
-            adapter_id: String,
-            name: String,
-            since: DateTime<Utc>,
-            resumed: Option<String>,
-            session_name: Option<String>,
-            args: Option<Vec<String>>,
-            todo_ids: Vec<TodoId>,
-            scratchpad_ids: Vec<ScratchpadId>,
-        }
-        let candidates: Vec<Candidate> = {
+        let entries: Vec<(PathBuf, RememberedSession)> = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             inner
                 .processes
@@ -2383,91 +2953,25 @@ impl Orchestrator {
                     let ProcessKind::Agent { adapter } = &p.spec.kind else {
                         return None;
                     };
-                    let ProcessStatus::Running { since, .. } = p.status else {
-                        return None;
-                    };
-                    if !self.adapter_supports_resume(adapter) {
+                    if !matches!(p.status, ProcessStatus::Running { .. }) {
                         return None;
                     }
-                    Some(Candidate {
-                        root: inner.projects.get(&p.project_id)?.root.clone(),
-                        cwd: p.spec.cwd.clone(),
-                        adapter_id: adapter.clone(),
-                        name: p.spec.name.clone(),
-                        since,
-                        resumed: p.resumed_session_id.clone(),
-                        session_name: p.session_name.clone(),
-                        args: p.spawn_args.clone(),
-                        todo_ids: owned_by(&inner.todo_assignments, *id),
-                        scratchpad_ids: owned_by(&inner.scratchpad_assignments, *id),
-                    })
+                    let session = p.session.as_ref()?;
+                    Some((
+                        inner.projects.get(&p.project_id)?.root.clone(),
+                        RememberedSession {
+                            adapter_id: adapter.clone(),
+                            name: p.spec.name.clone(),
+                            session_id: session.id.clone(),
+                            updated_at: Utc::now(),
+                            todo_ids: owned_by(&inner.todo_assignments, *id),
+                            scratchpad_ids: owned_by(&inner.scratchpad_assignments, *id),
+                            args: p.spawn_args.clone(),
+                        },
+                    ))
                 })
                 .collect()
         };
-        if candidates.is_empty() {
-            return;
-        }
-        let config_dir = self
-            .claude_config_dir_override()
-            .or_else(crate::platform::claude_config_dir_if_resolved);
-        let mut entries = Vec::with_capacity(candidates.len());
-        for c in candidates {
-            let by_name = c.session_name.as_deref().zip(config_dir.as_deref());
-            let found = by_name
-                .and_then(|(name, dir)| {
-                    session_memory::find_live_session_id(&dir.join("sessions"), name).or_else(
-                        || {
-                            session_memory::find_titled_session_id_in(
-                                &dir.join("projects"),
-                                &c.cwd,
-                                name,
-                                c.since.into(),
-                            )
-                        },
-                    )
-                })
-                .or_else(|| {
-                    c.resumed
-                        .clone()
-                        .filter(|id| session_memory::is_valid_session_id(id))
-                });
-            let Some(session_id) = found else {
-                // Not silent: an unnamed session (no MCP server at spawn) or
-                // an unresolved config dir is otherwise indistinguishable
-                // from the feature not working.
-                tracing::warn!(
-                    named = c.session_name.is_some(),
-                    config_dir = config_dir.is_some(),
-                    "no Claude Code session found for a running agent; it will not be resumed"
-                );
-                continue;
-            };
-            // Two agents resolving to one session (a `--name` the user set
-            // in the default args names them all alike) would come back as
-            // two terminals on the same conversation; the first keeps it.
-            if entries
-                .iter()
-                .any(|(_, e): &(PathBuf, RememberedSession)| e.session_id == session_id)
-            {
-                tracing::warn!(
-                    "two running agents resolved to one Claude Code session; remembering it once"
-                );
-                continue;
-            }
-            entries.push((
-                c.root,
-                RememberedSession {
-                    adapter_id: c.adapter_id,
-                    name: c.name,
-                    cwd: c.cwd,
-                    session_id,
-                    updated_at: Utc::now(),
-                    todo_ids: c.todo_ids,
-                    scratchpad_ids: c.scratchpad_ids,
-                    args: c.args,
-                },
-            ));
-        }
         if let Err(e) = self.session_memory.remember_all(entries) {
             tracing::warn!("remembering agent sessions failed: {e}");
         }
@@ -2484,8 +2988,9 @@ fn owned_by<K: Copy>(assignments: &HashMap<K, ProcessId>, process_id: ProcessId)
 }
 
 /// Everything one agent spawn takes. [`Orchestrator::spawn_agent`] keeps its
-/// flat public signature; internally a restore also needs a resume id, and a
-/// struct keeps that from growing yet another positional argument.
+/// flat public signature; internally a restore also needs the session to
+/// resume, and a struct keeps that from growing yet another positional
+/// argument.
 struct AgentSpawn {
     project_id: ProjectId,
     adapter_id: Option<String>,
@@ -2497,6 +3002,28 @@ struct AgentSpawn {
     worktree_name: Option<String>,
     args_override: Option<Vec<String>>,
     resume_session_id: Option<String>,
+}
+
+/// Trim a project display name; blank means "none".
+pub fn normalize_project_name(name: Option<String>) -> Option<String> {
+    name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
+}
+
+/// Trim and lowercase a project badge colour; blank means "none". Anything
+/// but `#rrggbb` is refused, since the value lands in a CSS property.
+fn normalize_project_color(color: Option<String>) -> CoreResult<Option<String>> {
+    let color = color
+        .map(|c| c.trim().to_lowercase())
+        .filter(|c| !c.is_empty());
+    if let Some(c) = &color {
+        let hex = c.strip_prefix('#').unwrap_or("");
+        if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(CoreError::InvalidInput(format!(
+                "project colour must be #rrggbb, got {c:?}"
+            )));
+        }
+    }
+    Ok(color)
 }
 
 /// Insert config-defined processes; returns (added, auto-start subset).
@@ -2533,10 +3060,11 @@ const SESSION_COLORS: [&str; 8] = [
 ];
 
 /// Pick a session colour not currently used by another live agent in the
-/// project; once the palette is exhausted, cycle by the used count.
+/// project — `preferred` when it is free; once the palette is exhausted,
+/// cycle by the used count.
 // ponytail: two concurrent spawns could momentarily pick the same colour —
 // cosmetic only, and the max is 8 agents = palette size, so it's rare.
-fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
+fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&str>) -> String {
     let used: HashSet<&str> = inner
         .processes
         .values()
@@ -2547,9 +3075,9 @@ fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
         })
         .filter_map(|p| p.spec.color.as_deref())
         .collect();
-    SESSION_COLORS
-        .iter()
-        .copied()
+    preferred
+        .into_iter()
+        .chain(SESSION_COLORS.iter().copied())
         .find(|c| !used.contains(c))
         .unwrap_or(SESSION_COLORS[used.len() % SESSION_COLORS.len()])
         .to_string()
@@ -2563,6 +3091,7 @@ fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
         process_id,
         name: p.spec.name.clone(),
         color: p.spec.color.clone(),
+        active: p.is_active(),
     })
 }
 
@@ -2577,6 +3106,7 @@ fn scratchpad_assigned_agent_of(
         process_id,
         name: p.spec.name.clone(),
         color: p.spec.color.clone(),
+        active: p.is_active(),
     })
 }
 
@@ -2591,7 +3121,7 @@ struct ClearedAssignments {
 }
 
 /// Drop every to-do/scratchpad assignment pointing at `process_id` (called
-/// when an agent exits, is removed, or its project closes). Returns the
+/// when an agent is removed — an exited agent keeps its assignments). Returns the
 /// affected projects, split by kind, so the caller can emit `TodosChanged`
 /// and/or `ScratchpadsChanged` once per project — without firing an event for
 /// a kind that had nothing to clear.
@@ -2838,9 +3368,9 @@ fn insert_process(
             restart: RestartState::default(),
             started_at: None,
             waiting_since: None,
-            resumed_session_id: None,
-            session_name: None,
             spawn_args: None,
+            session: None,
+            last_color: None,
         },
     );
 }
@@ -2854,6 +3384,7 @@ fn do_start(
     supervisor: SupervisorConfig,
     id: ProcessId,
     manual: bool,
+    relaunch: Option<Relaunch>,
 ) -> CoreResult<()> {
     // The project's backend, read under a short lock of its own: the gate
     // below depends on it, and must be taken before `inner`.
@@ -2870,6 +3401,22 @@ fn do_start(
     // command (sync ones on the main thread included) needs.
     let launch_gate = crate::platform::wsl_launch_guard_for(wsl);
     let mut guard = inner.lock().expect(LOCK_POISONED);
+    // An agent that lost its colour on exit takes it back if no live agent
+    // holds it now, else gets a new one picked exactly as at spawn.
+    let new_color = match guard.processes.get(&id) {
+        Some(p)
+            if p.spec.color.is_none()
+                && !p.is_active()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. }) =>
+        {
+            Some(pick_session_color(
+                &guard,
+                p.project_id,
+                p.last_color.as_deref(),
+            ))
+        }
+        _ => None,
+    };
     let proc = guard
         .processes
         .get_mut(&id)
@@ -2883,8 +3430,13 @@ fn do_start(
     }
     proc.user_stopped = false;
     let project_id = proc.project_id;
+    // A restart's command runs this once; `spec.command` stays as spawned.
+    let restart_spec = relaunch.as_ref().map(|r| ProcessSpec {
+        command: r.command.clone(),
+        ..proc.spec.clone()
+    });
     let pty = PtyProcess::spawn(
-        &proc.spec,
+        restart_spec.as_ref().unwrap_or(&proc.spec),
         wsl,
         launch_gate.as_ref(),
         None,
@@ -2905,6 +3457,16 @@ fn do_start(
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
     proc.started_at = Some(Instant::now());
+    // Only now that the launch is running does its session become current.
+    if let (Some(r), Some(session)) = (relaunch, proc.session.as_mut()) {
+        session.resume_failed &= r.session_id == session.id;
+        session.id = r.session_id;
+        session.resumed = r.resumed;
+    }
+    let recolored = new_color.is_some();
+    if recolored {
+        proc.spec.color = new_color;
+    }
     // Publish while still holding the lock: the exit callback also takes
     // the lock, so an instantly-exiting child's Exited event can never be
     // observed before this Running event.
@@ -2913,7 +3475,57 @@ fn do_start(
         process_id: id,
         status,
     });
+    if recolored {
+        publish_color_change(&guard, events, id, project_id);
+    }
     Ok(())
+}
+
+/// The command a manual start of an exited agent runs, and the session id it
+/// is on afterwards: the current session resumed when the CLI has its
+/// transcript, else a fresh session under a **new** id. Never the current id
+/// again: the CLI refuses an id it already used, so a transcript the check
+/// failed to find must not make the agent unstartable — and the new id keeps
+/// the agent resumable from then on.
+/// A resume that already failed right away is not tried again
+/// ([`AgentSession::resume_failed`]), so the agent never crash-loops on it.
+fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
+    if stored && !session.resume_failed {
+        Relaunch {
+            command: session.commands.resume(&session.id),
+            session_id: session.id.clone(),
+            resumed: true,
+        }
+    } else {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        Relaunch {
+            command: session.commands.fresh(&session_id),
+            session_id,
+            resumed: false,
+        }
+    }
+}
+
+/// Whether an agent run that just exited was a resume that failed: it
+/// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
+fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
+    session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
+}
+
+/// Tell the UI an agent's colour changed: its own row (`ProcessUpdated`
+/// re-lists processes) and the to-dos/scratchpads it owns, which carry the
+/// colour on their assignment.
+fn publish_color_change(inner: &Inner, events: &EventBus, id: ProcessId, project_id: ProjectId) {
+    events.publish(PodiumEvent::ProcessUpdated {
+        project_id,
+        process_id: id,
+    });
+    if inner.todo_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::TodosChanged { project_id });
+    }
+    if inner.scratchpad_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::ScratchpadsChanged { project_id });
+    }
 }
 
 /// Handler run on the PTY wait-thread when the child exits. A non-zero exit
@@ -2931,7 +3543,7 @@ fn make_exit_handler(
     // (all `do_start` callers run inside the runtime).
     let rt = tokio::runtime::Handle::current();
     Box::new(move |code| {
-        let (status, restart, cleared) = {
+        let restart = {
             let mut guard = inner.lock().expect(LOCK_POISONED);
             let Some(p) = guard.processes.get_mut(&id) else {
                 return;
@@ -2945,10 +3557,13 @@ fn make_exit_handler(
             };
             p.status = status.clone();
             p.pty = None;
-            let ran_long = p
-                .started_at
-                .take()
-                .is_some_and(|s| s.elapsed() >= supervisor.backoff_reset_after);
+            let ran_for = p.started_at.take().map(|s| s.elapsed());
+            if let Some(session) = p.session.as_mut() {
+                if resume_failed(session, crashed, ran_for) {
+                    session.resume_failed = true;
+                }
+            }
+            let ran_long = ran_for.is_some_and(|d| d >= supervisor.backoff_reset_after);
             if ran_long {
                 p.restart.reset_backoff();
             }
@@ -2970,27 +3585,26 @@ fn make_exit_handler(
             } else {
                 None
             };
-            // An exited agent that is not being restarted no longer works on
-            // its to-dos/scratchpads; drop the assignments so the UI stops
-            // showing it.
-            let cleared = if restart.is_none() {
-                clear_agent_assignments(&mut guard, id)
-            } else {
-                ClearedAssignments::default()
-            };
-            (status, restart, cleared)
+            // An exited agent that is not being restarted keeps its
+            // to-dos/scratchpads (a restart picks the work back up) but loses
+            // its colour, so the UI shows it as no longer live. The next
+            // start takes it back if it is still free.
+            let decolored = restart.is_none()
+                && matches!(p.spec.kind, ProcessKind::Agent { .. })
+                && p.spec.color.is_some();
+            if decolored {
+                p.last_color = p.spec.color.take();
+            }
+            events.publish(PodiumEvent::ProcessStatusChanged {
+                project_id,
+                process_id: id,
+                status,
+            });
+            if decolored {
+                publish_color_change(&guard, &events, id, project_id);
+            }
+            restart
         };
-        events.publish(PodiumEvent::ProcessStatusChanged {
-            project_id,
-            process_id: id,
-            status,
-        });
-        for pid in cleared.todos {
-            events.publish(PodiumEvent::TodosChanged { project_id: pid });
-        }
-        for pid in cleared.scratchpads {
-            events.publish(PodiumEvent::ScratchpadsChanged { project_id: pid });
-        }
         if let Some((delay, generation)) = restart {
             schedule_restart(&rt, inner, events, supervisor, id, delay, generation);
         }
@@ -3023,7 +3637,7 @@ fn schedule_restart(
                 }
                 p.restart.clear_pending();
             }
-            if let Err(e) = do_start(&task_inner, &events, supervisor, id, false) {
+            if let Err(e) = do_start(&task_inner, &events, supervisor, id, false, None) {
                 tracing::warn!(process_id = %id, "supervised restart failed: {e}");
             }
         })
@@ -3040,6 +3654,78 @@ fn schedule_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restart_resumes_a_stored_session_and_otherwise_starts_fresh() {
+        let session = AgentSession {
+            commands: RestartCommands {
+                bin: "claude".to_string(),
+                prompt: Some("'fix the login bug'".to_string()),
+                tail: String::new(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            },
+            id: "0f0e0d0c".to_string(),
+            resumed: false,
+            resume_failed: false,
+        };
+        let resume = restart_launch(&session, true);
+        assert_eq!(resume.command, "claude --resume 0f0e0d0c");
+        assert_eq!(resume.session_id, "0f0e0d0c");
+        assert!(resume.resumed);
+
+        // Not found: a new id, never the current one the CLI may still know.
+        let fresh = restart_launch(&session, false);
+        assert_ne!(fresh.session_id, session.id);
+        assert!(!fresh.resumed);
+        assert_eq!(
+            fresh.command,
+            format!(
+                "claude 'fix the login bug' --session-id {}",
+                fresh.session_id
+            )
+        );
+
+        // A resume that already failed is not tried again, transcript or not.
+        let failed = AgentSession {
+            resume_failed: true,
+            ..session
+        };
+        let next = restart_launch(&failed, true);
+        assert!(!next.resumed);
+        assert_ne!(next.session_id, failed.id);
+    }
+
+    #[test]
+    fn only_a_resume_that_crashes_right_away_counts_as_failed() {
+        let session = |resumed| AgentSession {
+            commands: RestartCommands {
+                bin: "claude".to_string(),
+                prompt: None,
+                tail: String::new(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            },
+            id: "0f0e0d0c".to_string(),
+            resumed,
+            resume_failed: false,
+        };
+        let quick = Some(Duration::from_secs(1));
+        let long = Some(RESUME_FAILURE_WINDOW + Duration::from_secs(1));
+        assert!(resume_failed(&session(true), true, quick));
+        assert!(
+            !resume_failed(&session(true), false, quick),
+            "clean exit or user stop"
+        );
+        assert!(
+            !resume_failed(&session(true), true, long),
+            "ran a while first"
+        );
+        assert!(
+            !resume_failed(&session(false), true, quick),
+            "a fresh start"
+        );
+    }
 
     fn todo(text: &str, description: Option<&str>) -> TodoInfo {
         TodoInfo {
@@ -3235,6 +3921,66 @@ mod tests {
         assert_eq!(ids, vec![idc, ida, idb], "list reflects the new order");
     }
 
+    #[tokio::test]
+    async fn issue_setups_save_normalize_and_pin_per_project() {
+        use crate::issues::IssueProvider;
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        // GitHub needs no keychain: account kept, URL normalized, name defaults to host.
+        let o = orch
+            .save_issue_setup(
+                None,
+                " ".into(),
+                IssueProvider::Github,
+                "GitHub.com/".into(),
+                Some(" octo-fictional ".into()),
+                Some("ignored for GitHub".into()),
+            )
+            .unwrap();
+        let setup = &o.setups[0];
+        assert_eq!(setup.setup.url, "https://github.com");
+        assert_eq!(setup.setup.name, "github.com");
+        assert_eq!(setup.setup.account.as_deref(), Some("octo-fictional"));
+        assert!(!setup.token_set);
+        assert!(matches!(
+            orch.save_issue_setup(
+                None,
+                "x".into(),
+                IssueProvider::Github,
+                "ftp://nope".into(),
+                None,
+                None
+            ),
+            Err(CoreError::InvalidInput(_))
+        ));
+
+        // Editing by id replaces in place.
+        let sid = setup.setup.id.clone();
+        let o = orch
+            .save_issue_setup(
+                Some(sid.clone()),
+                "Personal".into(),
+                IssueProvider::Github,
+                "https://github.com".into(),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(o.setups.len(), 1);
+        assert_eq!(o.setups[0].setup.name, "Personal");
+
+        let root = orch.project_root(id).unwrap();
+        let o = orch.set_project_issue_setup(id, Some(sid.clone())).unwrap();
+        assert_eq!(o.projects.get(&root), Some(&sid));
+        assert!(orch
+            .set_project_issue_setup(id, Some("missing".into()))
+            .is_err());
+        let o = orch.set_project_issue_setup(id, None).unwrap();
+        assert!(o.projects.is_empty());
+    }
+
     // A `\\?\`-prefixed root breaks agent spawn on Windows: it becomes the
     // agent's `cwd` (`process::pty::PtyProcess::spawn` → portable-pty's
     // `CommandBuilder::cwd`), and `CreateProcessW`'s `lpCurrentDirectory`
@@ -3320,6 +4066,134 @@ mod tests {
         let cleared = orch.rename_project(id, Some("   ".to_string())).unwrap();
         assert_eq!(cleared.name, original.name);
         assert_eq!(cleared.icon_initials, original.icon_initials);
+    }
+
+    #[tokio::test]
+    async fn set_project_sections_updates_info_and_emits() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let opened = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(opened.sections, ProjectSections::default());
+
+        let mut rx = orch.subscribe_events();
+        let sections = ProjectSections {
+            scratchpads: false,
+            ..ProjectSections::default()
+        };
+        let info = orch.set_project_sections(id, sections).unwrap();
+        assert!(!info.sections.scratchpads);
+        assert!(info.sections.todos);
+        let listed = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(listed.sections, sections);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PodiumEvent::ProjectUpdated { project_id }) if project_id == id
+        ));
+        assert!(matches!(
+            orch.set_project_sections(ProjectId::new(), sections),
+            Err(CoreError::ProjectNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn project_color_sets_validates_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        let info = orch
+            .set_project_color(id, Some(" #3E63DD ".to_string()))
+            .unwrap();
+        assert_eq!(info.color.as_deref(), Some("#3e63dd"));
+
+        for bad in ["red", "#12345", "#1234567", "#gggggg", "3e63dd"] {
+            assert!(
+                orch.set_project_color(id, Some(bad.to_string())).is_err(),
+                "{bad}"
+            );
+        }
+        let still = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(
+            still.color.as_deref(),
+            Some("#3e63dd"),
+            "a refused value keeps the old one"
+        );
+
+        let cleared = orch.set_project_color(id, Some("  ".to_string())).unwrap();
+        assert_eq!(cleared.color, None);
+    }
+
+    #[tokio::test]
+    async fn restore_project_overrides_applies_both_in_one_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut rx = orch.subscribe_events();
+
+        let info = orch
+            .restore_project_overrides(
+                id,
+                Some("Webshop".into()),
+                Some("#E5484D".into()),
+                Some(ProjectSections {
+                    scratchpads: false,
+                    ..ProjectSections::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(info.name, "Webshop");
+        assert_eq!(info.color.as_deref(), Some("#e5484d"));
+        assert!(!info.sections.scratchpads, "sections ride along");
+
+        let mut updates = 0;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, PodiumEvent::ProjectUpdated { project_id } if project_id == id) {
+                updates += 1;
+            }
+        }
+        assert_eq!(
+            updates, 1,
+            "one ProjectUpdated for name + colour + sections"
+        );
+
+        let info = orch
+            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()), None)
+            .unwrap();
+        assert_eq!(info.name, "Shop", "a bad stored colour keeps the name");
+        assert_eq!(
+            info.color.as_deref(),
+            Some("#e5484d"),
+            "a bad stored colour is ignored, not applied"
+        );
+
+        // Only sections stored: the name and colour stay as they are.
+        let info = orch
+            .restore_project_overrides(
+                id,
+                None,
+                None,
+                Some(ProjectSections {
+                    todos: false,
+                    ..ProjectSections::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(info.name, "Shop");
+        assert_eq!(info.color.as_deref(), Some("#e5484d"));
+        assert!(!info.sections.todos);
     }
 
     #[tokio::test]
@@ -3575,382 +4449,350 @@ mod tests {
         assert!(rx.try_recv().is_err(), "list must not publish an event");
     }
 
-    /// An orchestrator persisting under `data`, with Claude Code resolved to
-    /// a script that just sleeps and the session lookup rooted in `data`.
+    /// Agent adapter for the session-memory tests: every launch prints its
+    /// session flag and id as `<flag><id>` and then stays up, and the CLI
+    /// "has a transcript" only for the ids in `stored`. With `fail_resume`,
+    /// a `--resume` launch exits non-zero at once, like a CLI refusing it.
     #[cfg(unix)]
-    fn session_memory_orch(data: &Path) -> Orchestrator {
-        use std::os::unix::fs::PermissionsExt;
-        let script = data.join("fake-claude");
-        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let orch = Orchestrator::new();
+    struct MemoryAdapter {
+        stored: Mutex<Vec<String>>,
+        fail_resume: bool,
+    }
+
+    #[cfg(unix)]
+    impl MemoryAdapter {
+        fn new(fail_resume: bool) -> Arc<Self> {
+            Arc::new(Self {
+                stored: Mutex::new(Vec::new()),
+                fail_resume,
+            })
+        }
+
+        fn store(&self, session_id: &str) {
+            self.stored.lock().unwrap().push(session_id.to_string());
+        }
+    }
+
+    #[cfg(unix)]
+    impl crate::agent::AgentAdapter for MemoryAdapter {
+        fn id(&self) -> &'static str {
+            "memory"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Memory"
+        }
+
+        fn binary(&self) -> &'static str {
+            "memory-agent"
+        }
+
+        fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<crate::agent::LaunchPlan> {
+            let (bin, tail) = if self.fail_resume {
+                (
+                    r#"f() { printf '<%s>' "$@"; [ "$1" != --resume ] || exit 3; sleep 30; }; f"#,
+                    "",
+                )
+            } else {
+                (r#"printf '<%s>'"#, "; sleep 30")
+            };
+            let restart = RestartCommands {
+                bin: bin.to_string(),
+                prompt: None,
+                tail: tail.to_string(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            };
+            Ok(crate::agent::LaunchPlan {
+                command: restart.fresh(&ctx.process_id.to_string()),
+                env: Vec::new(),
+                restart: Some(restart),
+            })
+        }
+
+        fn session_exists(&self, session_id: &str, _wsl: Option<&WslBackend>) -> bool {
+            self.stored.lock().unwrap().iter().any(|s| s == session_id)
+        }
+
+        fn is_available(&self, _wsl: Option<&WslBackend>) -> bool {
+            true
+        }
+    }
+
+    /// An orchestrator on `adapter`, persisting under `data`.
+    #[cfg(unix)]
+    fn memory_orch(data: &Path, adapter: Arc<MemoryAdapter>) -> Orchestrator {
+        let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter]));
         orch.set_agent_settings_path(data.join("agents.json"));
-        orch.set_session_memory_path(data.join("sessions.json"));
+        orch.set_session_memory_path(data.join("session_memory.json"));
         orch.set_todos_path(data.join("todos.json"));
         orch.set_scratchpads_path(data.join("scratchpads.json"));
-        orch.set_claude_config_dir(data.join("claude"));
-        // As in the app: with the MCP wiring in place each agent is stamped
-        // with its `-n podium-<tag>` session name. Nothing listens here; the
-        // fake CLI never connects.
-        orch.set_mcp_connect_info(McpConnectInfo {
-            url: "http://127.0.0.1:9/".to_string(),
-            token: "fictional-token".to_string(),
-            config_dir: data.join("mcp"),
-        });
-        orch.set_agent_override(
-            "claude-code",
-            Some(script.to_string_lossy().into_owned()),
-            Vec::new(),
-        )
-        .unwrap();
         orch
     }
 
-    /// Stand in for Claude Code writing its session file for `cwd`; `body`
-    /// is the file content (e.g. a custom-title line).
     #[cfg(unix)]
-    fn write_session_file_with(data: &Path, cwd: &Path, id: &str, body: &str) {
-        // Written after the agent started, like a live session.
-        std::thread::sleep(Duration::from_millis(20));
-        let dir = data
-            .join("claude")
-            .join("projects")
-            .join(crate::agent::session_memory::sanitize_cwd(cwd));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{id}.jsonl")), body).unwrap();
-    }
-
-    #[cfg(unix)]
-    fn write_session_file(data: &Path, cwd: &Path, id: &str) {
-        write_session_file_with(data, cwd, id, "{}");
-    }
-
-    /// A session file carrying the custom-title line Claude Code writes for
-    /// the agent `process`'s `-n podium-<tag>` name.
-    #[cfg(unix)]
-    fn write_titled_session_file(data: &Path, cwd: &Path, id: &str, process: ProcessId) {
-        let title = crate::agent::peer_session_name(&crate::agent::peer_tag(&process.to_string()));
-        let body = format!(
-            "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\",\"sessionId\":\"{id}\"}}\n"
-        );
-        write_session_file_with(data, cwd, id, &body);
-    }
-
-    #[cfg(unix)]
-    async fn spawn_named(orch: &Orchestrator, project: ProjectId, name: &str) -> ProcessId {
+    async fn spawn_memory_agent(
+        orch: &Orchestrator,
+        project: ProjectId,
+        name: &str,
+        todo_ids: Vec<TodoId>,
+        args: Option<Vec<String>>,
+    ) -> ProcessId {
         orch.spawn_agent(
             project,
-            Some("claude-code".to_string()),
+            Some("memory".to_string()),
             Some(name.to_string()),
             None,
-            Vec::new(),
+            todo_ids,
             Vec::new(),
             false,
             None,
-            None,
+            args,
         )
         .await
         .unwrap()
     }
 
-    // Only the #[cfg(unix)] session-memory tests below use these.
+    /// Wait until agent `id` printed a launch line `<flag><session id>` that
+    /// satisfies `done`, and return it.
+    #[cfg(unix)]
+    async fn wait_for_launch(
+        orch: &Orchestrator,
+        id: ProcessId,
+        done: impl Fn(&str, &str) -> bool,
+    ) -> (String, String) {
+        let mut last = (String::new(), String::new());
+        for _ in 0..200 {
+            let out = orch.tail_text(id, 4096).await.unwrap();
+            if let Some(at) = out.rfind("<--") {
+                let mut parts = out[at + 1..].split('>');
+                let flag = parts.next().unwrap_or("").to_string();
+                let session = parts.next().unwrap_or("").trim_start_matches('<');
+                last = (flag, session.to_string());
+                // A whole UUID, so a half-flushed line is never taken.
+                if last.1.len() == 36 && done(&last.0, &last.1) {
+                    return last;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("launch never matched, last saw {last:?}");
+    }
+
+    #[cfg(unix)]
+    fn remembered(session_id: &str, updated_at: DateTime<Utc>) -> RememberedSession {
+        RememberedSession {
+            adapter_id: "memory".to_string(),
+            name: "agent-1".to_string(),
+            session_id: session_id.to_string(),
+            updated_at,
+            todo_ids: Vec::new(),
+            scratchpad_ids: Vec::new(),
+            args: None,
+        }
+    }
+
     #[cfg(unix)]
     const SESS_1: &str = "00000000-0000-4000-8000-000000000001";
-    #[cfg(unix)]
-    const SESS_2: &str = "00000000-0000-4000-8000-000000000002";
-    #[cfg(unix)]
-    const SESS_3: &str = "00000000-0000-4000-8000-000000000003";
-    #[cfg(unix)]
-    const SESS_4: &str = "00000000-0000-4000-8000-000000000004";
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
-    async fn remembered_session_resumes_with_resume_flag_on_next_open() {
+    async fn a_remembered_session_resumes_on_the_next_open() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        let agent = spawn_named(&orch, id, "agent-1").await;
-        write_titled_session_file(data.path(), &root, SESS_1, agent);
+        let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
+        let session = agent.to_string();
+        wait_for_launch(&orch, agent, |flag, s| {
+            flag == "--session-id" && s == session
+        })
+        .await;
         orch.shutdown().await;
+        let listed = orch.session_memory.list(&root);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, session, "the Podium-assigned id");
 
-        let restarted = session_memory_orch(data.path());
+        // The next run: the CLI has the transcript, so the agent comes back
+        // on that session through the restart path's `--resume`.
+        adapter.store(&session);
+        let restarted = memory_orch(data.path(), adapter);
         let id = restarted.open_project(root.clone()).await.unwrap();
         let procs = restarted.list_processes(Some(id));
-        let resumed = procs
-            .iter()
-            .find(|p| p.name == "agent-1")
-            .expect("remembered agent respawned");
-        assert!(
-            resumed.command.contains(&format!("--resume {SESS_1}")),
-            "command: {}",
-            resumed.command
-        );
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].name, "agent-1");
+        wait_for_launch(&restarted, procs[0].id, |flag, s| {
+            flag == "--resume" && s == session
+        })
+        .await;
+        {
+            let inner = restarted.inner.lock().unwrap();
+            let s = inner.processes[&procs[0].id].session.as_ref().unwrap();
+            assert_eq!(s.id, session);
+            assert!(s.resumed);
+        }
         assert!(
             restarted.session_memory.list(&root).is_empty(),
             "restored entries are cleared"
         );
-        restarted.shutdown().await;
-    }
 
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn toggle_off_skips_restore_even_with_remembered_sessions() {
-        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        orch.set_agent_remember_sessions(true).unwrap();
-        let id = orch.open_project(root.clone()).await.unwrap();
-        let agent = spawn_named(&orch, id, "agent-1").await;
-        write_titled_session_file(data.path(), &root, SESS_2, agent);
-        orch.shutdown().await;
-        assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
-
-        let restarted = session_memory_orch(data.path());
-        restarted.set_agent_remember_sessions(false).unwrap();
-        let id = restarted.open_project(root.clone()).await.unwrap();
-        assert!(
-            restarted.list_processes(Some(id)).is_empty(),
-            "no agent auto-spawns with the toggle off"
-        );
-        assert!(
-            restarted.session_memory.list(&root).is_empty(),
-            "entries are dropped on open even with the toggle off"
-        );
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn idle_restored_session_is_remembered_again_on_shutdown() {
-        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        orch.set_agent_remember_sessions(true).unwrap();
-        let id = orch.open_project(root.clone()).await.unwrap();
-        let agent = spawn_named(&orch, id, "agent-1").await;
-        write_titled_session_file(data.path(), &root, SESS_4, agent);
-        orch.shutdown().await;
-
-        // Restored, then quit without the session file being touched again.
-        let restarted = session_memory_orch(data.path());
-        restarted.open_project(root.clone()).await.unwrap();
+        // Quit again: still the same conversation, so it is remembered again.
         restarted.shutdown().await;
         let listed = restarted.session_memory.list(&root);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, SESS_4);
+        assert_eq!(listed[0].session_id, session);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
-    async fn agents_sharing_a_cwd_each_get_their_own_session_by_title() {
+    async fn a_session_the_cli_no_longer_has_is_not_restored() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
+        let orch = memory_orch(data.path(), MemoryAdapter::new(false));
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        let first = spawn_named(&orch, id, "agent-1").await;
-        let second = spawn_named(&orch, id, "agent-2").await;
-        write_titled_session_file(data.path(), &root, SESS_1, first);
-        write_titled_session_file(data.path(), &root, SESS_2, second);
-        orch.shutdown().await;
-
-        let listed = orch.session_memory.list(&root);
-        let id_of = |name: &str| {
-            listed
-                .iter()
-                .find(|e| e.name == name)
-                .map(|e| e.session_id.clone())
-        };
-        assert_eq!(id_of("agent-1").as_deref(), Some(SESS_1));
-        assert_eq!(id_of("agent-2").as_deref(), Some(SESS_2));
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn a_session_without_the_agents_title_is_not_remembered() {
-        // The user's own `claude` in the same repo, newer than the agent's
-        // spawn: a lone agent there must not adopt it.
-        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        orch.set_agent_remember_sessions(true).unwrap();
-        let id = orch.open_project(root.clone()).await.unwrap();
-        spawn_named(&orch, id, "agent-1").await;
-        write_session_file(data.path(), &root, SESS_3);
-        orch.shutdown().await;
-        assert!(orch.session_memory.list(&root).is_empty());
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn pruned_session_is_not_restored() {
-        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        orch.set_agent_remember_sessions(true).unwrap();
-        let id = orch.open_project(root.clone()).await.unwrap();
-        let agent = spawn_named(&orch, id, "agent-1").await;
-        write_titled_session_file(data.path(), &root, SESS_1, agent);
+        spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
         orch.shutdown().await;
         assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
-        // Claude Code's retention removes the session file in between.
-        std::fs::remove_dir_all(data.path().join("claude").join("projects")).unwrap();
 
-        let restarted = session_memory_orch(data.path());
+        // Pruned by the CLI's retention in between: nothing to resume.
+        let restarted = memory_orch(data.path(), MemoryAdapter::new(false));
         let id = restarted.open_project(root.clone()).await.unwrap();
         assert!(restarted.list_processes(Some(id)).is_empty());
         assert!(restarted.session_memory.list(&root).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
-    async fn invalid_remembered_session_id_is_not_restored() {
+    async fn a_restore_that_fails_to_resume_starts_fresh_next_time() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        // A tampered file: an id that would read as a flag, with a matching
-        // session file so only the id check can reject it.
-        write_session_file(data.path(), &root, "-x");
+        let adapter = MemoryAdapter::new(true);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        orch.set_agent_remember_sessions(true).unwrap();
         orch.session_memory
-            .remember(
-                &root,
-                RememberedSession {
-                    adapter_id: "claude-code".to_string(),
-                    name: "agent-1".to_string(),
-                    cwd: root.clone(),
-                    session_id: "-x".to_string(),
-                    updated_at: Utc::now(),
-                    todo_ids: Vec::new(),
-                    scratchpad_ids: Vec::new(),
-                    args: None,
-                },
-            )
+            .remember(&root, remembered(SESS_1, Utc::now()))
             .unwrap();
-
-        let restarted = session_memory_orch(data.path());
-        restarted.set_agent_remember_sessions(true).unwrap();
-        let id = restarted.open_project(root.clone()).await.unwrap();
-        assert!(restarted.list_processes(Some(id)).is_empty());
+        let id = orch.open_project(root.clone()).await.unwrap();
+        let agent = orch.list_processes(Some(id))[0].id;
+        // The resume exits at once, so the restart path's failure window
+        // marks it, exactly as for a restarted agent.
+        let resume_failed = || {
+            orch.inner.lock().unwrap().processes[&agent]
+                .session
+                .as_ref()
+                .is_some_and(|s| s.resume_failed)
+        };
+        for _ in 0..200 {
+            if resume_failed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(resume_failed());
+        orch.start_process(agent).await.unwrap();
+        wait_for_launch(&orch, agent, |flag, s| {
+            flag == "--session-id" && s != SESS_1
+        })
+        .await;
+        orch.shutdown().await;
     }
 
-    /// Stand in for Claude Code's live registry entry for the agent
-    /// `process`: its session name and its *current* session id.
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
-    fn write_live_session(data: &Path, process: ProcessId, id: &str) {
-        let name = crate::agent::peer_session_name(&crate::agent::peer_tag(&process.to_string()));
-        write_live_session_named(data, &name, id);
-    }
-
-    #[cfg(unix)]
-    fn write_live_session_named(data: &Path, name: &str, id: &str) {
-        let dir = data.join("claude").join("sessions");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("4242.json"),
-            format!("{{\"pid\":4242,\"sessionId\":\"{id}\",\"name\":\"{name}\",\"updatedAt\":1}}"),
-        )
-        .unwrap();
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn the_live_session_wins_over_the_titled_transcript_after_clear() {
-        // `/clear` started a new session: the titled transcript is the old
-        // one, the live registry names the current one.
+    async fn toggle_off_skips_restore_even_with_remembered_sessions() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        orch.set_agent_remember_sessions(true).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        orch.session_memory
+            .remember(&root, remembered(SESS_1, Utc::now()))
+            .unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        let agent = spawn_named(&orch, id, "agent-1").await;
-        write_titled_session_file(data.path(), &root, SESS_1, agent);
-        write_session_file(data.path(), &root, SESS_2);
-        write_live_session(data.path(), agent, SESS_2);
-        orch.shutdown().await;
-
-        let listed = orch.session_memory.list(&root);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, SESS_2);
+        assert!(
+            orch.list_processes(Some(id)).is_empty(),
+            "no agent auto-spawns with the toggle off"
+        );
+        assert!(
+            orch.session_memory.list(&root).is_empty(),
+            "entries are dropped on open even with the toggle off"
+        );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
-    async fn a_users_own_session_name_finds_the_session_but_only_once() {
-        // `--name` in the default args: Podium stamps nothing, the user's
-        // name is what the session is registered under — and it names
-        // every agent alike, so the one session is remembered once.
+    async fn turning_the_setting_off_forgets_every_captured_session() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        let script = data.path().join("fake-claude");
-        orch.set_agent_override(
-            "claude-code",
-            Some(script.to_string_lossy().into_owned()),
-            vec!["--name".to_string(), "fictional-name".to_string()],
-        )
-        .unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        orch.session_memory
+            .remember(&root, remembered(SESS_1, Utc::now()))
+            .unwrap();
+        // Off, then on again before the project ever reopens.
+        orch.set_agent_remember_sessions(false).unwrap();
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        spawn_named(&orch, id, "agent-1").await;
-        spawn_named(&orch, id, "agent-2").await;
-        write_live_session_named(data.path(), "fictional-name", SESS_3);
-        orch.shutdown().await;
-
-        let listed = orch.session_memory.list(&root);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, SESS_3);
+        assert!(orch.list_processes(Some(id)).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(unix)]
+    async fn an_expired_or_invalid_remembered_session_is_not_restored() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        // Both "stored", so only the age and id checks can reject them.
+        adapter.store(SESS_1);
+        adapter.store("-x");
+        let orch = memory_orch(data.path(), adapter);
+        orch.set_agent_remember_sessions(true).unwrap();
+        let expired = Utc::now() - session_memory::MAX_AGE - chrono::TimeDelta::hours(1);
+        orch.session_memory
+            .remember_all(vec![
+                (root.clone(), remembered(SESS_1, expired)),
+                // A tampered file: an id that would read as a flag.
+                (root.clone(), remembered("-x", Utc::now())),
+            ])
+            .unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        assert!(orch.list_processes(Some(id)).is_empty());
+        assert!(orch.session_memory.list(&root).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
     async fn a_restored_agent_owns_its_todos_and_keeps_its_args() {
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
         let owned = orch.add_todo(id, "Fictional task", None).unwrap();
         let finished = orch.add_todo(id, "Fictional finished task", None).unwrap();
         let pad = orch.add_scratchpad(id, "you").unwrap();
-        let agent = orch
-            .spawn_agent(
-                id,
-                Some("claude-code".to_string()),
-                Some("agent-1".to_string()),
-                None,
-                vec![owned.id],
-                Vec::new(),
-                false,
-                None,
-                Some(vec!["--model".to_string(), "opus".to_string()]),
-            )
-            .await
-            .unwrap();
+        let args = vec!["--model".to_string(), "opus".to_string()];
+        let agent =
+            spawn_memory_agent(&orch, id, "agent-1", vec![owned.id], Some(args.clone())).await;
         orch.assign_todo(id, finished.id, agent).unwrap();
         orch.assign_scratchpads(id, agent, &[pad.id]);
-        write_live_session(data.path(), agent, SESS_1);
-        write_session_file(data.path(), &root, SESS_1);
         orch.shutdown().await;
         // Done before the restart: nothing left to own.
         orch.set_todo_done(id, finished.id, true).unwrap();
 
-        let restarted = session_memory_orch(data.path());
+        adapter.store(&agent.to_string());
+        let restarted = memory_orch(data.path(), adapter);
         let id = restarted.open_project(root.clone()).await.unwrap();
-        let resumed = restarted
-            .list_processes(Some(id))
-            .into_iter()
-            .find(|p| p.name == "agent-1")
-            .expect("remembered agent respawned");
-        assert!(
-            resumed.command.contains("--model opus"),
-            "command: {}",
-            resumed.command
-        );
-        assert!(
-            !resumed.command.contains("Fictional task"),
-            "a resume must not be handed the to-do as a new prompt: {}",
-            resumed.command
+        let resumed = restarted.list_processes(Some(id))[0].id;
+        assert_eq!(
+            restarted.inner.lock().unwrap().processes[&resumed].spawn_args,
+            Some(args)
         );
         let todos = restarted.list_todos(id).unwrap();
         let owner = |tid| {
@@ -3960,7 +4802,7 @@ mod tests {
                 .and_then(|t| t.assigned_agent.as_ref())
                 .map(|a| a.process_id)
         };
-        assert_eq!(owner(owned.id), Some(resumed.id));
+        assert_eq!(owner(owned.id), Some(resumed));
         assert_eq!(owner(finished.id), None);
         let pads = restarted.list_scratchpads(id).unwrap();
         assert_eq!(
@@ -3968,61 +4810,47 @@ mod tests {
                 .find(|s| s.id == pad.id)
                 .and_then(|s| s.assigned_agent.as_ref())
                 .map(|a| a.process_id),
-            Some(resumed.id)
+            Some(resumed)
         );
         restarted.shutdown().await;
     }
 
-    #[tokio::test]
+    /// The real Claude Code adapter: an agent whose own args pick the
+    /// session has no Podium-assigned one, so there is nothing to remember.
+    #[tokio::test(flavor = "multi_thread")]
     #[cfg(unix)]
-    async fn turning_the_setting_off_forgets_every_captured_session() {
+    async fn an_agent_whose_args_pick_the_session_is_not_remembered() {
+        use std::os::unix::fs::PermissionsExt;
         let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
+        let script = data.path().join("fake-claude");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let orch = Orchestrator::new();
+        orch.set_agent_settings_path(data.path().join("agents.json"));
+        orch.set_session_memory_path(data.path().join("session_memory.json"));
+        orch.set_agent_override(
+            "claude-code",
+            Some(script.to_string_lossy().into_owned()),
+            vec!["--continue".to_string()],
+        )
+        .unwrap();
         orch.set_agent_remember_sessions(true).unwrap();
         let id = orch.open_project(root.clone()).await.unwrap();
-        let agent = spawn_named(&orch, id, "agent-1").await;
-        write_titled_session_file(data.path(), &root, SESS_1, agent);
+        orch.spawn_agent(
+            id,
+            Some("claude-code".to_string()),
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         orch.shutdown().await;
-        assert_eq!(orch.session_memory.list(&root).len(), 1, "captured");
-
-        // Off, then on again before the project ever reopens.
-        let restarted = session_memory_orch(data.path());
-        restarted.set_agent_remember_sessions(false).unwrap();
-        restarted.set_agent_remember_sessions(true).unwrap();
-        let id = restarted.open_project(root.clone()).await.unwrap();
-        assert!(restarted.list_processes(Some(id)).is_empty());
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn an_expired_remembered_session_is_not_restored() {
-        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let root = dunce::canonicalize(project.path()).unwrap();
-        let orch = session_memory_orch(data.path());
-        write_session_file(data.path(), &root, SESS_1);
-        orch.session_memory
-            .remember(
-                &root,
-                RememberedSession {
-                    adapter_id: "claude-code".to_string(),
-                    name: "agent-1".to_string(),
-                    cwd: root.clone(),
-                    session_id: SESS_1.to_string(),
-                    updated_at: Utc::now()
-                        - crate::agent::session_memory::MAX_AGE
-                        - chrono::TimeDelta::hours(1),
-                    todo_ids: Vec::new(),
-                    scratchpad_ids: Vec::new(),
-                    args: None,
-                },
-            )
-            .unwrap();
-
-        let restarted = session_memory_orch(data.path());
-        restarted.set_agent_remember_sessions(true).unwrap();
-        let id = restarted.open_project(root.clone()).await.unwrap();
-        assert!(restarted.list_processes(Some(id)).is_empty());
-        assert!(restarted.session_memory.list(&root).is_empty());
+        assert!(orch.session_memory.list(&root).is_empty());
     }
 }

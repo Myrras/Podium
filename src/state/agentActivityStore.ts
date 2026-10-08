@@ -84,7 +84,8 @@ function computeActivity(
  */
 function isViewingAgent(processId: ProcessId): boolean {
   if (!document.hasFocus()) return false;
-  if (useLayoutStore.getState().openTodo !== null) return false;
+  const layout = useLayoutStore.getState();
+  if (layout.openTodo !== null || layout.openBoard !== null) return false;
   return useProcessStore.getState().activeProcessId === processId;
 }
 

@@ -20,6 +20,12 @@ pub struct AssignedAgent {
     /// The agent's display name, for showing in the UI without a lookup.
     pub name: String,
     /// The session's subtle UI colour, so the item can be tinted to match the
-    /// agent that owns it. `None` for legacy/edge cases where no colour was set.
+    /// agent that owns it. `None` once the agent exited (it gets a new one on
+    /// restart).
     pub color: Option<String>,
+    /// Whether the owning agent is running. An exited agent keeps the link so
+    /// a restart picks the work back up, but it no longer *owns* the item:
+    /// another agent may be put on it (spawn or `assign_todo`), which takes
+    /// it over.
+    pub active: bool,
 }

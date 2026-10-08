@@ -25,16 +25,24 @@ One window, three columns:
 ### Projects
 
 Open a folder and it stays. The sidebar is a **persistent workspace**: every
-open project is remembered and re-opened at launch. Projects can be
-**renamed** (double-click the name) and **reordered** (drag the grip in the
-project header) — both survive a restart. A project whose folder has moved is
-never silently dropped; its error toast offers "Remove from workspace"
-instead.
+open project is remembered and re-opened at launch. Projects can be **renamed**
+(double-click the name), **recoloured** (click the initials badge to pick a
+colour; right-click it to go back to the theme's accent) and **reordered** (drag
+the grip in the project header) — all survive a restart. A project whose folder
+has moved is never silently dropped; its error toast offers "Remove from
+workspace" instead.
 
 Each project also gets an **Open in Warp** action and a **Commands** modal
 that lists the `just` recipes it finds in the project's `justfile` alongside
 your own saved per-project commands — one click runs any of them in a fresh
 terminal.
+
+The **Sections** button in a project header hides or shows its To-do's,
+Terminals, Worktrees, Scratchpads and Git board, per project. Hiding is
+presentation only: terminals keep running and agents still see everything
+over MCP.
+Both actions above live on the Terminals header, so they go away with that
+section. With Worktrees off, a worktree's terminals are listed under Terminals.
 
 ### Processes, terminals and supervision
 
@@ -69,7 +77,16 @@ on, a request to work inside a **git worktree**, and per-spawn CLI args
 
 Every agent gets a **session colour** from an 8-hue palette, avoiding colours
 live agents already hold. Its sidebar row and the to-dos it owns are tinted
-the same colour, so you can see at a glance who is on what. The row also
+the same colour, so you can see at a glance who is on what. A stopped agent
+loses its colour (its to-dos stay linked, tinted grey, but you can start
+another agent on them, which takes them over); restarting it gives it its
+colour back (or a new one if another agent took it meanwhile) and, for
+Claude Code, **resumes its conversation** instead of
+starting an empty one (if Claude Code no longer has that conversation, or
+resuming it fails straight away, the agent starts a fresh one from its
+original prompt). If you put another agent on a stopped agent's to-dos and
+then restart the stopped one too, it resumes its own conversation and may
+still think it is working on them. The row also
 shows an activity state: **working…** (sustained output in the last 2.5 s —
 a single redraw does not count, and it works whether or not you ever opened
 the terminal), **idle**, or **needs input** — the last one is read off the
@@ -110,6 +127,52 @@ Warp, run the Commands modal against it, or be removed. Removal is refused
 while a process is running in it or while it has uncommitted changes (unless
 forced); the branch is always kept.
 
+### Git board
+
+The **Git** pill at the right end of a project's header (it shows how many
+cards are open) opens a Kanban board of the repo
+behind its `origin` remote. If the repo has its own board (a GitLab issue
+board with label lists, or a GitHub Project with a Status field), its columns
+are used; otherwise there are four:
+
+- **Open** — open issues nobody is visibly on yet.
+- **In progress** — open issues with a linked PR/MR or an in-progress label
+  (`In progress`, `workflow::In Progress`, `doing`, `wip`), and draft PRs/MRs.
+- **In review** — open, non-draft PRs/MRs.
+- **Done (14d)** — issues closed and PRs/MRs merged in the last 14 days.
+
+GitHub Project columns need the `read:project` scope; if it is missing the
+board says so and shows the default columns until you run
+`gh auth refresh -s read:project`.
+
+**Mine** (the default) shows issues assigned to you and PRs/MRs you opened;
+**All** shows the whole repo. The header counts all-time open and merged
+PRs (GitHub) or MRs (GitLab) in the same scope. Clicking a card opens its
+description beside the board; each card can open in the browser, start an
+agent on it, or become a to-do with the link pinned.
+
+Drag a card to another column to move it on GitHub/GitLab itself: GitLab
+labels (or close/reopen), GitHub close/reopen or your Project's Status (which
+needs the `project` scope: `gh auth refresh -s project`). Columns only take
+what makes sense — merged PRs/MRs stay put. A PR/MR that closes an issue on
+the board is shown on that issue's card instead of as a card of its own; on
+GitLab, an MR whose closed issue is not on the board lands on an issue it
+mentions (`Onderdeel van #N`), so sub-issue MRs show on the parent. The
+last board is kept on disk, so it appears at once, and agents can read and
+move cards through the MCP tools.
+
+The board stays off until you add a setup in Settings → Issues: before
+that Podium fetches nothing (no `git`/`gh` calls in the background) and the
+board just points you to Settings. GitHub works through your own `gh` login
+(a setup can pick which `gh` account), github.com included; self-hosted
+GitLab needs a personal access token with the `api` scope (moving cards and
+unassigning write to GitLab), which lives only in the OS keychain (editing the
+setup offers **Clear token**). A GitLab served under a path
+(`https://host/gitlab`) keeps that path in the setup URL; the setup URL is
+the GitLab itself, not a project page. In WSL-backend mode the distro's `gh`
+and its login are used. The board refreshes every 5 minutes, on window focus after a minute, and on
+demand; a failed refresh keeps the last board with the error inline.
+
 ### The personal assistant
 
 A workspace-wide chat panel backed by a long-lived headless Claude Code
@@ -121,7 +184,12 @@ whether agents are done, no recap of what they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
-  becomes a card you confirm or reject.
+  becomes a card you confirm or reject. Under `propose-all` the assistant
+  also cannot message an agent directly, so a push go-ahead goes through a
+  new agent you confirm; switching into or out of that mode restarts its
+  session (between turns, keeping the conversation). The block applies from
+  the next turn boundary: a turn already running when you switch can still
+  message an agent until it ends.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
@@ -131,10 +199,28 @@ whether agents are done, no recap of what they did.
 - **External sweep** — every 10 minutes by default, it checks the sources you
   enabled (Slack, Teams — through your *own* MCP servers) and stays silent
   when there is nothing to report.
+- **Responses** — when an agent reports back, the assistant also files the
+  essential point as a *Needs you* or *FYI* item in a collapsible list pinned
+  above the chat (agent, project, to-do, age); the details stay in its chat
+  reply. Tick an item off, or reply inline — the reply goes to the assistant
+  as your message and shows in the chat as a one-line "Re: …". A newer item
+  about the same agent or to-do replaces the old one, and open items survive
+  restarts and new conversations.
 - **Start my day** — one button for a prioritised summary of open work across
   all projects.
 - **Queue** — one turn runs at a time; anything you send mid-turn waits, and
   can be edited, removed or pushed into the running turn.
+- **Push go-ahead** — tell the assistant a Claude Code agent may push, and
+  it messages that agent instead of starting a new one; the agent pushes its
+  own branch (`git push -u origin HEAD`), opens its PR/MR in the same
+  repository (`gh pr create` / `glab mr create`) and reports back with the
+  link; an agent on main or master pushes nothing and says so. Spawned
+  agents may do both without a prompt. Force, delete, tag, mirror and
+  explicit main/master pushes, pushes to another URL and PRs/MRs against
+  another repository are blocked in their plain spellings — a push written
+  another way (`git -C … push`, an alias) falls back to the normal prompt.
+  Passing your own `--settings` in an agent's args turns this off for that
+  agent.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 
@@ -143,9 +229,10 @@ whether agents are done, no recap of what they did.
 ### Built-in MCP server
 
 Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
-and exposes **31 tools** over it: process inspection and control, agent
+and exposes **34 tools** over it: process inspection and control, agent
 spawning (and respawning a stuck agent with the answer in its prompt), the
-full to-do, scratchpad and worktree surfaces, assistant memory, and sender
+full to-do, scratchpad and worktree surfaces, the Git board (`get_board`,
+`move_board_item`), assistant memory and Responses items, and sender
 verification for cross-session messages.
 
 Agents Podium spawns get the URL + token automatically. External clients go
@@ -205,8 +292,9 @@ you added by hand alone.
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
-| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — resumes a running Claude Code agent's conversation after a restart, with its to-dos and model; off by default, Claude Code only, kept for 14 days, forgotten when turned off |
+| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
+| **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
 
 ## Windows with a WSL backend
@@ -285,6 +373,15 @@ last) line, so a multi-line draft still navigates normally.
 **Mouse**
 
 - **Double-click** a project name, process name or to-do title to rename it.
+- **Click** a project's initials badge to give it its own colour;
+  **right-click** it (or press **Delete** while it has focus) to reset it to
+  the theme's accent.
+- **Click** a subsection title (To-dos, Agents, Terminals, …) to collapse it to
+  one line with a count; the collapse/expand-all button in the project header
+  does every subsection of that project at once. Remembered across restarts.
+  A collapsed Agents, Processes, Terminals or Worktrees header shows a pulsing
+  blue dot when a row it hides needs your input, and a multi-select of to-dos
+  or scratchpads keeps its "Start agent" bar while its section is folded.
 - **⌘/Ctrl+click** a to-do or scratchpad title, or an agent/process row, to
   add it to a multi-select; **Shift+click** to extend the range over a list.
   Selected rows become chips above the assistant's composer, so your next

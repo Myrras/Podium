@@ -12,15 +12,106 @@ when it merges.
 
 ### Added
 
-- **Agents can pick up where they left off after a restart.** A new setting,
-  Settings → Agents → Remember agent sessions (off by default), remembers
-  each running Claude Code agent's conversation when you quit Podium and
-  resumes it the next time that project opens — still owning its to-dos and
-  scratchpads, and on the model it was started with. A conversation you
-  `/clear`ed resumes from after the clear. Only sessions Podium itself
-  started are resumed, never a `claude` session you ran yourself in the same
-  folder. A remembered session is dropped after 14 days, and turning the
-  setting off forgets them all. Auggie agents are not resumed.
+- **Agents can pick up where they left off after you quit Podium.** A new
+  setting, Settings → Agents → Remember agent sessions (off by default),
+  remembers each running Claude Code agent's conversation when you quit and
+  resumes it the next time that project opens — the same way restarting a
+  stopped agent resumes it — still owning its to-dos and scratchpads, and on
+  the model it was started with. A conversation Claude Code no longer has is
+  skipped, a remembered session is dropped after 14 days, and turning the
+  setting off forgets them all. Auggie agents, and agents whose own args pick
+  the session, are not resumed.
+
+## [3.0.0] - 2026-10-08
+
+### Added
+
+- **A Git board per project.** A Kanban board of the repo's GitHub or GitLab
+  issues and PRs/MRs, opened from the Git button in the project header. It
+  uses the repo's own board columns when there are any. Drag a card to another
+  column to move, close or reopen it on GitHub/GitLab itself, and switch
+  between your own items (Mine) and the whole repo (All). Set it up once in
+  Settings → Issues.
+- **Choose which sections a project shows.** The Sections button in the
+  project header turns the sidebar's To-do's, Terminals, Worktrees,
+  Scratchpads and Git board on or off per project; hiding one deletes nothing.
+
+## [2.6.0] - 2026-10-08
+
+### Added
+
+- **The agent that did the work pushes it.** Tell the assistant an agent may
+  push, and it passes that go-ahead on to the agent itself instead of starting
+  a fresh one: the agent pushes its own branch, opens the PR/MR in the same
+  repository and reports back with the link. An agent on main or master does
+  not push. Force, delete, tag and explicit main/master pushes, pushes
+  elsewhere, PRs/MRs against another repository and reading a local file into
+  a PR/MR body (`--body-file`, `-F`, `--description-file`, `--attach`) or
+  choosing glab's source branch (`-s`, `--source-branch`) are blocked in
+  their plain spellings. Under the `propose-all` autonomy mode the
+  assistant can no longer message an agent directly (it would skip the
+  confirmation card), so switching into or out of that mode restarts its
+  session between turns, keeping the conversation.
+
+## [2.5.0] - 2026-10-08
+
+### Added
+
+- **A Responses list in the assistant panel.** When an agent reports back, the
+  assistant pins its essential point above the chat — *Needs you* when you have
+  to decide or act, *FYI* when it is only news — with the agent, project, to-do
+  and how long ago. Tick an item off, or reply right there: your answer goes to
+  the assistant as your message. A newer update about the same agent or to-do
+  replaces the old one, and open items survive restarts.
+
+## [2.4.0] - 2026-10-08
+
+### Changed
+
+- **Restarting a stopped agent picks up its own conversation.** A Claude Code
+  agent you stop and start again resumes the session it was in, instead of
+  starting over with its original prompt. If Claude Code no longer has that
+  conversation, or resuming it fails straight away, the agent starts a fresh
+  one rather than failing to start.
+- **A stopped agent gives up its session colour.** Its row and its to-dos turn
+  neutral grey while it is stopped. Restarting it gives its colour back, or a
+  new one if another agent took it in the meantime.
+- **A stopped agent's to-dos can be picked up again.** They stay linked to it,
+  so a restart carries on where it left off, but they get their "start an
+  agent" button back and can be multi-selected again — starting a new agent
+  on one hands it to that agent. Restarting the stopped agent afterwards
+  resumes its own conversation, so it may still think it is on that to-do.
+
+## [2.3.0] - 2026-10-08
+
+### Added
+
+- **Give each project its own badge colour.** Click a project's initials
+  badge in the sidebar to pick a colour, so projects are easy to tell apart;
+  the initials switch to black or white, whichever reads better. Right-click
+  the badge (or press Delete while it has focus) to go back to the theme
+  accent. The colour is remembered across restarts.
+
+## [2.2.0] - 2026-10-08
+
+### Added
+
+- **Fold a project's sidebar sections away.** Click a subsection title
+  (To-dos, Agents, Processes, Terminals, Worktrees, Scratchpads) to collapse
+  it to one line with a count; a collapsed section still flags a row that
+  needs your input. A new button on the project header collapses or expands
+  every section of that project at once. What you folded is remembered per
+  project across restarts, and adding something to a collapsed section opens
+  it again.
+
+## [2.1.4] - 2026-10-08
+
+### Fixed
+
+- **Messages waiting to be sent stay visible.** A long conversation with the
+  assistant could squeeze the "thinking" indicator and the queued messages at
+  the bottom of the panel down to nothing, hiding what was about to be sent.
+  They now keep their space however long the transcript gets.
 
 ## [2.1.3] - 2026-10-08
 

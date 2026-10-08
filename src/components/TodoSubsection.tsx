@@ -40,6 +40,8 @@ import {
   CommentIcon,
   TodoIcon,
 } from "./icons";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 
@@ -59,6 +61,11 @@ interface TodoRowProps {
   onSpawn: (e: React.MouseEvent) => void;
   onArchive: () => void;
 }
+
+/** Whether a running agent owns the to-do. A stopped owner keeps its link
+ * (tinted grey) but no longer blocks spawning on it or selecting it. */
+const ownedByLiveAgent = (todo: TodoInfo) =>
+  todo.assignedAgent?.active === true;
 
 /** One to-do: a checkbox, a click-to-open title, and hover actions. */
 function TodoRow({
@@ -81,8 +88,11 @@ function TodoRow({
       data-open={open ? "true" : undefined}
       data-assigned={assigned ? "true" : undefined}
       style={
-        assigned?.color
-          ? ({ "--session-color": assigned.color } as React.CSSProperties)
+        // A stopped owner has no colour: the link stays, tinted neutral grey.
+        assigned
+          ? ({
+              "--session-color": assigned.color ?? "var(--text-faint)",
+            } as React.CSSProperties)
           : undefined
       }
     >
@@ -111,9 +121,9 @@ function TodoRow({
             </span>
           )}
         </button>
-        {/* Once assigned, a to-do is owned by one session — no spawning a
-            second agent on it. */}
-        {!assigned && (
+        {/* While its agent runs, a to-do is owned by that one session — no
+            spawning a second agent on it. */}
+        {!ownedByLiveAgent(todo) && (
           <button
             type="button"
             className={styles.action}
@@ -141,6 +151,8 @@ function TodoRow({
 
 interface TodoSubsectionProps {
   projectId: ProjectId;
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
   /** Open the to-do detail dialog (hosted by the sidebar). */
   onOpenTodo: (projectId: ProjectId, todoId: TodoId) => void;
   /**
@@ -157,6 +169,7 @@ interface TodoSubsectionProps {
 
 export function TodoSubsection({
   projectId,
+  projectRoot,
   onOpenTodo,
   onPickAgent,
 }: TodoSubsectionProps) {
@@ -195,11 +208,11 @@ export function TodoSubsection({
   }, [projectId, refresh]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
-  // Assigned to-dos can't be part of a selection (they're owned already).
+  // To-dos a running agent owns can't be part of a selection.
   const selectedIds = useMemo(
     () =>
       todos
-        .filter((t) => selected.has(t.id) && !t.assignedAgent)
+        .filter((t) => selected.has(t.id) && !ownedByLiveAgent(t))
         .map((t) => t.id),
     [todos, selected],
   );
@@ -244,9 +257,10 @@ export function TodoSubsection({
   // selection (and its anchor) intact — clearing is done via the selection
   // bar's clear button or by toggling rows off.
   const activateTodo = (e: React.MouseEvent, todoId: TodoId) => {
-    // An assigned to-do is owned by a session — no multi-select on it; any
-    // click just opens it.
-    if (todos.find((t) => t.id === todoId)?.assignedAgent) {
+    // A to-do a running agent owns is that session's — no multi-select on
+    // it; any click just opens it.
+    const clicked = todos.find((t) => t.id === todoId);
+    if (clicked && ownedByLiveAgent(clicked)) {
       onOpenTodo(projectId, todoId);
       return;
     }
@@ -262,9 +276,9 @@ export function TodoSubsection({
         const [lo, hi] = from <= to ? [from, to] : [to, from];
         addSelectedItems(
           todos
-            // Skip assigned rows — they can't join a selection.
+            // Skip owned rows — they can't join a selection.
             .slice(lo, hi + 1)
-            .filter((t) => !t.assignedAgent)
+            .filter((t) => !ownedByLiveAgent(t))
             .map((t) => ({ kind: "todo" as const, projectId, id: t.id })),
         );
         return;
@@ -287,11 +301,21 @@ export function TodoSubsection({
     anchorRef.current = null;
   };
 
+  const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, "todos");
+
   return (
-    <div className={sidebarStyles.subsection}>
+    <div
+      className={sidebarStyles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={sidebarStyles.sectionHeader}>
-        <TodoIcon className={sidebarStyles.panelIcon} />
-        <span className={sidebarStyles.panelTitle}>To-dos</span>
+        <SectionTitle
+          title="To-dos"
+          Icon={TodoIcon}
+          count={todos.length}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
         <button
           type="button"
           className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
@@ -309,12 +333,15 @@ export function TodoSubsection({
           className={sidebarStyles.addBtn}
           aria-label="New to-do"
           title="New to-do"
-          onClick={() => setAdding(true)}
+          onClick={() => {
+            setCollapsed(false);
+            setAdding(true);
+          }}
         >
           <AddIcon size={13} />
         </button>
       </div>
-      {todos.length > 0 || adding ? (
+      {collapsed ? null : todos.length > 0 || adding ? (
         <div className={styles.rows}>
           {todos.map((todo) => (
             <TodoRow
@@ -356,6 +383,8 @@ export function TodoSubsection({
       ) : (
         <div className={sidebarStyles.placeholder}>No to-dos yet.</div>
       )}
+      {/* Stays visible while collapsed: the selection outlives the fold, so
+          its "Start agent" / Clear actions must too. */}
       {selectedIds.length >= 2 && (
         <div className={styles.selectionBar}>
           <button

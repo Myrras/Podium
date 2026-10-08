@@ -21,6 +21,9 @@ vi.mock("../ipc/commands", () => ({
   assistantInterrupt: vi.fn(() => Promise.resolve()),
   assistantNewConversation: vi.fn(() => Promise.resolve()),
   assistantTranscript: vi.fn(() => Promise.resolve([])),
+  assistantResponsesList: vi.fn(() => Promise.resolve([])),
+  assistantResponseDismiss: vi.fn(() => Promise.resolve()),
+  assistantResponseReply: vi.fn(() => Promise.resolve(true)),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
       return e as { kind: string; message: string };
@@ -39,8 +42,12 @@ import {
   assistantQueueEdit,
   assistantQueueRemove,
   assistantQueueSendNow,
+  assistantResponseDismiss,
+  assistantResponseReply,
+  assistantResponsesList,
   assistantSend,
 } from "../ipc/commands";
+import type { ResponseItem } from "../ipc/types";
 
 const notifyAssistant = vi.fn();
 vi.mock("../lib/notify", () => ({
@@ -50,6 +57,24 @@ vi.mock("../lib/notify", () => ({
 
 import { useLayoutStore } from "./layoutStore";
 import { useAssistantStore } from "./assistantStore";
+
+function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
+  return {
+    id: "r-1",
+    kind: "needsYou",
+    text: "CSV or XLSX for the export?",
+    project: "Webshop",
+    agent: "Invoice export",
+    agentColor: "#30a46c",
+    todo: "Export invoices",
+    source: null,
+    processId: "proc-1",
+    todoId: "todo-1",
+    createdAt: "2026-01-01T10:00:00Z",
+    label: "Invoice export · Webshop · Export invoices",
+    ...overrides,
+  };
+}
 
 describe("assistantStore", () => {
   beforeEach(() => {
@@ -87,6 +112,131 @@ describe("assistantStore", () => {
       polling: { intervalMinutes: 10, slack: true, teams: true },
       pending: [],
       turnReplyText: null,
+      responses: [],
+    });
+  });
+
+  describe("responses", () => {
+    beforeEach(() => {
+      vi.mocked(assistantResponsesList).mockReset();
+      vi.mocked(assistantResponsesList).mockResolvedValue([]);
+      vi.mocked(assistantResponseDismiss).mockReset();
+      vi.mocked(assistantResponseDismiss).mockResolvedValue(undefined);
+      vi.mocked(assistantResponseReply).mockReset();
+      vi.mocked(assistantResponseReply).mockResolvedValue(true);
+    });
+
+    it("loads the list and mirrors responsesChanged snapshots", async () => {
+      vi.mocked(assistantResponsesList).mockResolvedValueOnce([responseItem()]);
+      await useAssistantStore.getState().loadResponses();
+      expect(useAssistantStore.getState().responses).toHaveLength(1);
+
+      useAssistantStore
+        .getState()
+        .apply({ type: "responsesChanged", items: [] });
+      expect(useAssistantStore.getState().responses).toEqual([]);
+    });
+
+    it("drops a fetched list when a snapshot landed while it was in flight", async () => {
+      let resolve!: (items: ResponseItem[]) => void;
+      vi.mocked(assistantResponsesList).mockReturnValueOnce(
+        new Promise((r) => (resolve = r)),
+      );
+      const loading = useAssistantStore.getState().loadResponses();
+      const newer = responseItem({ id: "r-2", text: "newer" });
+      useAssistantStore
+        .getState()
+        .apply({ type: "responsesChanged", items: [newer] });
+      resolve([responseItem()]);
+      await loading;
+      expect(useAssistantStore.getState().responses).toEqual([newer]);
+    });
+
+    it("dismisses optimistically and reloads the backend's list on failure", async () => {
+      useAssistantStore.setState({ responses: [responseItem()] });
+
+      await useAssistantStore.getState().dismissResponse("r-1");
+      expect(assistantResponseDismiss).toHaveBeenCalledWith("r-1");
+      expect(useAssistantStore.getState().responses).toEqual([]);
+
+      // Superseded meanwhile: the backend now holds a newer item, and the
+      // failure must not bring the stale one back over it.
+      const newer = responseItem({ id: "r-2", text: "newer" });
+      useAssistantStore.setState({ responses: [responseItem()] });
+      vi.mocked(assistantResponsesList).mockResolvedValueOnce([newer]);
+      vi.mocked(assistantResponseDismiss).mockRejectedValueOnce({
+        kind: "responseNotFound",
+        message: "no such item",
+      });
+      await useAssistantStore.getState().dismissResponse("r-1");
+      expect(useAssistantStore.getState().responses).toEqual([newer]);
+      expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
+        role: "notice",
+        text: "no such item",
+      });
+    });
+
+    it("adds a reply row when the reply is delivered", async () => {
+      useAssistantStore.setState({ responses: [responseItem()] });
+
+      const ok = await useAssistantStore
+        .getState()
+        .replyResponse("r-1", "  XLSX, VAT split per rate ");
+
+      expect(ok).toBe(true);
+      expect(assistantResponseReply).toHaveBeenCalledWith(
+        "r-1",
+        "XLSX, VAT split per rate",
+      );
+      expect(useAssistantStore.getState().busy).toBe(true);
+      expect(
+        useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
+      ).toEqual([
+        [
+          "reply",
+          "Invoice export · Webshop · Export invoices\nXLSX, VAT split per rate",
+        ],
+      ]);
+    });
+
+    it("adds no row for a queued reply, and none for a blank one", async () => {
+      useAssistantStore.setState({ responses: [responseItem()] });
+      vi.mocked(assistantResponseReply).mockResolvedValueOnce(false);
+
+      expect(
+        await useAssistantStore.getState().replyResponse("r-1", "later"),
+      ).toBe(true);
+      expect(await useAssistantStore.getState().replyResponse("r-1", " ")).toBe(
+        false,
+      );
+      expect(assistantResponseReply).toHaveBeenCalledOnce();
+      expect(useAssistantStore.getState().messages).toEqual([]);
+    });
+
+    it("reports a failed reply as a notice", async () => {
+      vi.mocked(assistantResponseReply).mockRejectedValueOnce({
+        kind: "responseNotFound",
+        message: "no such item",
+      });
+
+      expect(
+        await useAssistantStore.getState().replyResponse("r-1", "hello"),
+      ).toBe(false);
+      expect(useAssistantStore.getState().messages.slice(-1)[0]?.role).toBe(
+        "notice",
+      );
+    });
+
+    it("promotes a delivered waiting reply into a reply row", () => {
+      useAssistantStore.getState().apply({
+        type: "queueItemDelivered",
+        text: "XLSX",
+        replyTo: "Invoice export · Webshop",
+      });
+
+      expect(
+        useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
+      ).toEqual([["reply", "Invoice export · Webshop\nXLSX"]]);
     });
   });
 
@@ -277,6 +427,7 @@ describe("assistantStore", () => {
             kind: "user",
             text: "start the release",
             attachments: [],
+            replyTo: null,
           },
         ],
       });
@@ -290,11 +441,25 @@ describe("assistantStore", () => {
     it("mirrors a queueChanged snapshot exactly", () => {
       useAssistantStore.getState().apply({
         type: "queueChanged",
-        items: [{ id: "p-1", kind: "user", text: "waiting", attachments: [] }],
+        items: [
+          {
+            id: "p-1",
+            kind: "user",
+            text: "waiting",
+            attachments: [],
+            replyTo: null,
+          },
+        ],
       });
 
       expect(useAssistantStore.getState().pending).toEqual([
-        { id: "p-1", kind: "user", text: "waiting", attachments: [] },
+        {
+          id: "p-1",
+          kind: "user",
+          text: "waiting",
+          attachments: [],
+          replyTo: null,
+        },
       ]);
     });
 
@@ -313,13 +478,20 @@ describe("assistantStore", () => {
       useAssistantStore.setState({
         busy: false,
         pending: [
-          { id: "p-1", kind: "user", text: "its turn came", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "its turn came",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
 
       useAssistantStore.getState().apply({
         type: "queueItemDelivered",
         text: "its turn came",
+        replyTo: null,
       });
 
       expect(useAssistantStore.getState().busy).toBe(true);
@@ -331,7 +503,13 @@ describe("assistantStore", () => {
     it("edits a waiting message optimistically and rolls back on failure", async () => {
       useAssistantStore.setState({
         pending: [
-          { id: "p-1", kind: "user", text: "first draft", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "first draft",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
 
@@ -353,7 +531,13 @@ describe("assistantStore", () => {
     it("ignores a blank edit rather than sending it", async () => {
       useAssistantStore.setState({
         pending: [
-          { id: "p-1", kind: "user", text: "first draft", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "first draft",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
 
@@ -366,7 +550,13 @@ describe("assistantStore", () => {
     it("removes a waiting message optimistically and rolls back on failure", async () => {
       useAssistantStore.setState({
         pending: [
-          { id: "p-1", kind: "user", text: "withdraw me", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "withdraw me",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
 
@@ -376,7 +566,13 @@ describe("assistantStore", () => {
 
       useAssistantStore.setState({
         pending: [
-          { id: "p-2", kind: "user", text: "keep me", attachments: [] },
+          {
+            id: "p-2",
+            kind: "user",
+            text: "keep me",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
       vi.mocked(assistantQueueRemove).mockRejectedValueOnce({
@@ -385,7 +581,13 @@ describe("assistantStore", () => {
       });
       await useAssistantStore.getState().removePending("p-2");
       expect(useAssistantStore.getState().pending).toEqual([
-        { id: "p-2", kind: "user", text: "keep me", attachments: [] },
+        {
+          id: "p-2",
+          kind: "user",
+          text: "keep me",
+          attachments: [],
+          replyTo: null,
+        },
       ]);
     });
 
@@ -406,7 +608,15 @@ describe("assistantStore", () => {
 
     it("drops the local queue on a fresh conversation", async () => {
       useAssistantStore.setState({
-        pending: [{ id: "p-1", kind: "user", text: "stale", attachments: [] }],
+        pending: [
+          {
+            id: "p-1",
+            kind: "user",
+            text: "stale",
+            attachments: [],
+            replyTo: null,
+          },
+        ],
       });
 
       await useAssistantStore.getState().newConversation();
@@ -524,7 +734,11 @@ describe("assistantStore", () => {
 
     it("resets the reply tracked per turn when a queued message is delivered", () => {
       apply({ type: "message", text: "first turn's reply" });
-      apply({ type: "queueItemDelivered", text: "next queued message" });
+      apply({
+        type: "queueItemDelivered",
+        text: "next queued message",
+        replyTo: null,
+      });
       apply({ type: "turnEnd", error: null, notify: true });
 
       // The stale reply from before the queued turn started must not leak

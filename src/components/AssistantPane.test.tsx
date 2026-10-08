@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import css from "./AssistantPane.module.css?raw";
+
 // The file picker is a Tauri plugin: mocked so the picker button resolves
 // to fixture paths instead of opening a real dialog.
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -23,6 +25,7 @@ vi.mock("../ipc/commands", () => ({
   assistantQueueRemove: vi.fn(() => Promise.resolve()),
   assistantQueueSendNow: vi.fn(() => Promise.resolve()),
   assistantInterrupt: vi.fn(() => Promise.resolve()),
+  assistantResponsesList: vi.fn(() => Promise.resolve([])),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
       return e as { kind: string; message: string };
@@ -45,6 +48,7 @@ import {
   assistantQueueRemove,
   assistantQueueSendNow,
   assistantResolveProposal,
+  assistantResponsesList,
   assistantSend,
   assistantTranscript,
 } from "../ipc/commands";
@@ -83,6 +87,8 @@ describe("AssistantPane", () => {
     vi.mocked(assistantQueueSendNow).mockResolvedValue(undefined);
     vi.mocked(assistantInterrupt).mockReset();
     vi.mocked(assistantInterrupt).mockResolvedValue(undefined);
+    vi.mocked(assistantResponsesList).mockReset();
+    vi.mocked(assistantResponsesList).mockResolvedValue([]);
     vi.mocked(openFileDialog).mockReset();
     vi.mocked(openFileDialog).mockResolvedValue(null);
     useAssistantStore.setState({
@@ -93,6 +99,7 @@ describe("AssistantPane", () => {
       memory: null,
       hydrated: false,
       pending: [],
+      responses: [],
     });
   });
 
@@ -171,6 +178,54 @@ describe("AssistantPane", () => {
       screen.getByText("The turn failed: error_max_turns"),
     ).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("loads the Responses list on mount and shows it above the log", async () => {
+    vi.mocked(assistantResponsesList).mockResolvedValue([
+      {
+        id: "r-1",
+        kind: "fyi",
+        text: "Finished, PR open for review.",
+        project: "Docs site",
+        agent: "Search index",
+        agentColor: null,
+        todo: null,
+        source: null,
+        processId: "proc-1",
+        todoId: null,
+        createdAt: new Date().toISOString(),
+        label: "Search index · Docs site",
+      },
+    ]);
+    render(<AssistantPane />);
+
+    expect(
+      await screen.findByText("Finished, PR open for review."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Responses" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a reply naming the item it answers", () => {
+    useAssistantStore.setState({
+      messages: [
+        {
+          id: 1,
+          role: "reply",
+          text: "Invoice export · Webshop\nXLSX, with the VAT column split out",
+        },
+      ],
+    });
+    render(<AssistantPane />);
+
+    expect(
+      screen.getByText("Re: Invoice export · Webshop"),
+    ).toBeInTheDocument();
+    // The reply is shown in full (it wraps), so it needs no hover title.
+    expect(
+      screen.getByText("XLSX, with the VAT column split out"),
+    ).toBeInTheDocument();
   });
 
   it("demotes a proactive nudge instead of showing it as a message to the user", () => {
@@ -381,6 +436,16 @@ describe("AssistantPane", () => {
   });
 
   describe("the pending queue", () => {
+    // jsdom does no layout, so this pins the rule itself. The tail is a
+    // scroll container inside the `.log` flex column; without
+    // `flex-shrink: 0` its automatic min-height is 0 and a long transcript
+    // squeezes it to nothing, hiding every waiting message.
+    it("never lets the transcript squeeze the tail away", () => {
+      const tail = /(?:^|\n)\.tail\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+      expect(tail).toMatch(/overflow-y:\s*auto/);
+      expect(tail).toMatch(/flex-shrink:\s*0/);
+    });
+
     it("shows nothing when the queue is empty", () => {
       render(<AssistantPane />);
       expect(screen.queryByLabelText("Edit waiting message")).toBeNull();
@@ -395,6 +460,7 @@ describe("AssistantPane", () => {
             kind: "user",
             text: "queued while busy",
             attachments: [],
+            replyTo: null,
           },
         ],
       });
@@ -408,6 +474,26 @@ describe("AssistantPane", () => {
       ).toBeInTheDocument();
     });
 
+    it("prefixes a waiting reply with the item it answers", () => {
+      useAssistantStore.setState({
+        pending: [
+          {
+            id: "p-1",
+            kind: "user",
+            text: "Drop it",
+            attachments: [],
+            replyTo: "Checkout fix · Webshop",
+          },
+        ],
+      });
+      render(<AssistantPane />);
+
+      expect(
+        screen.getByText(/Re: Checkout fix · Webshop/),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Drop it")).toBeInTheDocument();
+    });
+
     it("does not offer edit/remove for a nudge or notice waiting its turn", () => {
       useAssistantStore.setState({
         pending: [
@@ -416,6 +502,7 @@ describe("AssistantPane", () => {
             kind: "nudge",
             text: "[Podium] an agent finished",
             attachments: [],
+            replyTo: null,
           },
         ],
       });
@@ -432,7 +519,13 @@ describe("AssistantPane", () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
         pending: [
-          { id: "p-1", kind: "user", text: "first draft", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "first draft",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
       render(<AssistantPane />);
@@ -449,7 +542,13 @@ describe("AssistantPane", () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
         pending: [
-          { id: "p-1", kind: "user", text: "send me now", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "send me now",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
       render(<AssistantPane />);
@@ -463,7 +562,13 @@ describe("AssistantPane", () => {
       const user = userEvent.setup();
       useAssistantStore.setState({
         pending: [
-          { id: "p-1", kind: "user", text: "withdraw me", attachments: [] },
+          {
+            id: "p-1",
+            kind: "user",
+            text: "withdraw me",
+            attachments: [],
+            replyTo: null,
+          },
         ],
       });
       render(<AssistantPane />);
@@ -496,6 +601,7 @@ describe("AssistantPane", () => {
             kind: "user",
             text: "queued while busy",
             attachments: [],
+            replyTo: null,
           },
         ],
       });

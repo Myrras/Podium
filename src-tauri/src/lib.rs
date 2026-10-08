@@ -156,6 +156,16 @@ pub fn run() {
             state
                 .orchestrator
                 .set_scratchpads_path(app.path().app_data_dir()?.join("scratchpads.json"));
+            // The last Git board per project and scope, so it paints at once.
+            state
+                .orchestrator
+                .set_boards_path(app.path().app_data_dir()?.join("boards.json"));
+            // The assistant's Responses list outlives a restart (and the
+            // blank conversation every launch starts with): items are the
+            // user's to clear.
+            state
+                .orchestrator
+                .set_responses_path(app.path().app_data_dir()?.join("assistant-responses.json"));
             // Global agent settings (command override + default args per
             // adapter, merge mode) persist in the app data dir too.
             state
@@ -233,6 +243,8 @@ pub fn run() {
             commands::project::project_list,
             commands::project::project_config_reload,
             commands::project::project_rename,
+            commands::project::project_set_sections,
+            commands::project::project_set_color,
             commands::project::project_reorder,
             commands::project::project_just_recipes,
             commands::project::project_open_in_warp,
@@ -270,6 +282,9 @@ pub fn run() {
             commands::assistant::assistant_queue_send_now,
             commands::assistant::assistant_queue_remove,
             commands::assistant::assistant_interrupt,
+            commands::assistant::assistant_responses_list,
+            commands::assistant::assistant_response_dismiss,
+            commands::assistant::assistant_response_reply,
             commands::backend::backend_settings_get,
             commands::backend::backend_settings_set_wsl_distro,
             commands::backend::backend_settings_set_native_drive_projects,
@@ -309,6 +324,14 @@ pub fn run() {
             commands::scratchpad::scratchpad_remove,
             commands::scratchpad::scratchpad_unassign,
             commands::window::window_confirm_close,
+            commands::issues::issues_board,
+            commands::issues::issues_board_cached,
+            commands::issues::issues_board_move,
+            commands::issues::issues_board_unassign,
+            commands::issues::issues_settings_get,
+            commands::issues::issues_setup_save,
+            commands::issues::issues_setup_remove,
+            commands::issues::issues_project_setup_set,
             commands::worktree::worktree_list,
             commands::worktree::worktree_remove,
             commands::worktree::worktree_open_in_warp,

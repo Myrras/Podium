@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod assistant;
 pub mod backend;
+pub mod issues;
 pub mod mcp;
 pub mod process;
 pub mod project;

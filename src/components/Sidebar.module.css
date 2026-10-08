@@ -61,6 +61,25 @@
   background: var(--surface-hover);
 }
 
+/* The caret's button: the header's keyboard-reachable expand/collapse
+   toggle. The icon inside rotates, not the button, so the global
+   button:active press transform cannot fight the rotation. */
+.caretButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.caretButton:hover:not(:disabled) {
+  background: none;
+}
+
 /* The caret icon wrapper rotates 90° when the group is expanded. */
 .caretWrap {
   display: flex;
@@ -75,6 +94,8 @@
 
 /* Square initials badge for a project (from podium.yml or derived). */
 .projectBadge {
+  position: relative;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -263,6 +284,54 @@
   color: var(--text);
 }
 
+/* Sections popover: the strip (and its trigger) stays visible while open.
+   The popover hangs off the header, outside the clipping strip. */
+.projectActions[data-open] {
+  opacity: 1;
+}
+
+.projectActions[data-open] .projectAction {
+  pointer-events: auto;
+}
+
+.sectionsPopover {
+  position: absolute;
+  top: 100%;
+  right: var(--sp-3);
+  cursor: default;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 140px;
+  padding: var(--sp-2);
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.sectionsItem {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The global input rule (width: 100%, padding) would stretch the checkbox
+   and push its label out of the popover. */
+.sectionsItem input {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+
 /* ── Group body ────────────────────────────────────────────────────────────── */
 /*
  * Grid trick for smooth height animation from auto → 0 without JS.
@@ -317,6 +386,59 @@
   color: var(--text-faint);
   flex-shrink: 0;
   user-select: none;
+}
+
+/* Caret + icon + title: the click target that collapses the subsection. */
+.sectionToggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The global `button:hover:not(:disabled)` / `button:active:not(:disabled)`
+ * (0,2,1) would paint a full-width hover bar and shrink the title on press;
+ * matching their pseudo-classes outranks them, so the title only recolours. */
+.sectionToggle:hover:not(:disabled) {
+  background: none;
+  color: var(--text-muted);
+}
+
+.sectionToggle:active:not(:disabled) {
+  transform: none;
+}
+
+.sectionCount {
+  font-weight: 400;
+}
+
+/* A collapsed subsection with a hidden row waiting on the user: the same blue
+ * pulsing dot a row shows for "needs input", so it is not lost behind the
+ * count. Opacity-only animation, neutralised by the reduced-motion guard. */
+.sectionWaiting {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: sectionWaitingPulse 0.9s var(--ease-in-out) infinite;
+}
+
+@keyframes sectionWaitingPulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .panelIcon {
@@ -414,4 +536,76 @@
 .addProjectBtn:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/*
+ * Git board button: the one header action visible at rest, so it gets a pill
+ * of its own at the row's far end — the hover-only actions reveal to its
+ * left, never shifting it. Icon + open-card count; accent while open.
+ */
+.gitButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  margin-left: var(--sp-1);
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.gitButton:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.gitButton[data-open="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.gitButton[data-error="true"]::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* The picker input is invisible over the badge, so its keyboard focus is
+   drawn on the badge itself. */
+.projectBadge:has(.badgeColorInput:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Invisible native colour input covering the badge: clicking the badge opens
+   the platform picker, and it stays keyboard-focusable. */
+.badgeColorInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
 }

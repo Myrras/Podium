@@ -19,6 +19,7 @@ import {
   ArrowUp,
   Bold,
   Bot,
+  CircleDot,
   Brain,
   Code,
   Code2,
@@ -37,6 +38,7 @@ import {
   Minimize2,
   NotebookPen,
   Quote,
+  Reply,
   SquareTerminal,
   Strikethrough,
   Table2,
@@ -62,11 +64,15 @@ import {
   CircleCheck,
   Info,
   Pencil,
+  SlidersHorizontal,
   Tag,
   Trash2,
   ExternalLink,
   GitBranch,
+  GitPullRequest,
+  SquareKanban,
   GripVertical,
+  UserMinus,
   Paperclip,
   Image as ImageGlyph,
   File as FileGlyph,
@@ -98,6 +104,7 @@ export const SendIcon = icon(ArrowUp, { size: 15 });
 export const AttachIcon = icon(Paperclip, { size: 15 });
 export const ImageAttachmentIcon = icon(ImageGlyph, { size: 14 });
 export const FileAttachmentIcon = icon(FileGlyph, { size: 14 });
+export const ReplyIcon = icon(Reply);
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.
 export const AgentIcon = icon(Bot);
@@ -122,11 +129,16 @@ export const LinkIcon = icon(Link, { size: 13 });
 export const ArchiveIcon = icon(Archive, { size: 13 });
 export const UnarchiveIcon = icon(ArchiveRestore, { size: 13 });
 export const EditIcon = icon(Pencil, { size: 13 });
+export const SectionsIcon = icon(SlidersHorizontal, { size: 13 });
 export const TagIcon = icon(Tag, { size: 12 });
 export const DeleteIcon = icon(Trash2, { size: 13 });
+export const IssueIcon = icon(CircleDot);
+export const PrIcon = icon(GitPullRequest);
+export const BoardIcon = icon(SquareKanban);
 export const BranchIcon = icon(GitBranch, { size: 13 });
 export const ExternalLinkIcon = icon(ExternalLink, { size: 13 });
 export const GripIcon = icon(GripVertical, { size: 14 });
+export const UnassignIcon = icon(UserMinus, { size: 13 });
 
 // Scratchpad formatting toolbar (Tiptap commands) + fullscreen toggle.
 export const BoldIcon = icon(Bold, { size: 15 });

@@ -365,13 +365,12 @@ pub fn wsl_networking_mode() -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    last_non_empty_line(&String::from_utf8_lossy(&output.stdout))
+    parse_networking_mode(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// The last non-empty line of a command's output, trimmed: the answer when
-/// something (a chatty shell profile, a banner) may print ahead of it. Used
-/// for `wslinfo --networking-mode` and the distro's Claude config dir.
-fn last_non_empty_line(stdout: &str) -> Option<String> {
+/// The mode out of `wslinfo --networking-mode` output: its last non-empty
+/// line, trimmed — should anything still print ahead of it.
+fn parse_networking_mode(stdout: &str) -> Option<String> {
     stdout
         .lines()
         .map(str::trim)
@@ -656,67 +655,52 @@ fn git_binary() -> &'static str {
         .as_str()
 }
 
-/// Claude Code's config dir: `$CLAUDE_CONFIG_DIR` when that is set (Claude
-/// Code honours it), else `~/.claude`; `None` if neither can be resolved. It
-/// holds `projects/` (every session's transcript) and `sessions/` (one small
-/// file per live CLI process). Natively this is read from Podium's own
-/// environment — no shell round-trip. In WSL-backend mode agents run inside
-/// the distro, so their sessions live in the *distro's* config dir: that is
-/// asked of the distro's login shell once (resolved lazily, so never before
-/// [`init_wsl`]) and cached for the run.
-pub fn claude_config_dir() -> Option<std::path::PathBuf> {
-    match wsl() {
-        Some(w) => WSL_CLAUDE_CONFIG_DIR
-            .get_or_init(|| {
-                let out =
-                    run_shell_stdout(r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}""#)?;
-                wsl_claude_config_dir(w.distro(), &out)
-            })
-            .clone(),
-        None => claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir()),
+/// The `gh` binary, resolved once like [`git_binary`]; `None` when it is not
+/// installed (so callers can report that instead of a spawn failure). In
+/// WSL-backend mode it is the distro's `gh` (an absolute Linux path, since
+/// [`gh_command`] runs it without a login shell), so the probe and the call
+/// can never disagree on which `gh` — and which login — is used.
+pub fn gh_binary() -> Option<&'static str> {
+    static GH_PATH: OnceLock<Option<String>> = OnceLock::new();
+    GH_PATH
+        .get_or_init(|| {
+            if cfg!(unix) || wsl().is_some() {
+                // The last line: a chatty shell profile may print first.
+                run_shell_stdout(&command_exists_query("gh"))
+                    .and_then(|s| s.lines().last().map(|l| l.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+            } else {
+                run_shell_ok(&command_exists_query("gh")).then(|| "gh".to_string())
+            }
+        })
+        .as_deref()
+}
+
+/// A [`std::process::Command`] that runs `gh` (from [`gh_binary`]): directly
+/// natively, `wsl.exe -d <distro> -e <gh>` in WSL-backend mode — like
+/// [`git_command`], console window hidden. Run it through [`run_gated`], and
+/// set environment variables with [`backend_env`] so they reach Linux.
+pub fn gh_command(gh: &str) -> std::process::Command {
+    let mut cmd = match wsl() {
+        Some(w) => {
+            let mut cmd = std::process::Command::new("wsl.exe");
+            cmd.args(["-d", w.distro(), "-e", gh]);
+            cmd
+        }
+        None => std::process::Command::new(gh),
+    };
+    hide_console_window(&mut cmd);
+    cmd
+}
+
+/// Set `key=value` on `cmd`, and in WSL-backend mode also list `key` in
+/// `WSLENV`, without which `wsl.exe` does not pass it on to Linux.
+pub fn backend_env(cmd: &mut std::process::Command, key: &str, value: &str) {
+    cmd.env(key, value);
+    if wsl().is_some() {
+        let existing = std::env::var("WSLENV").ok();
+        cmd.env("WSLENV", wslenv_with(existing.as_deref(), [key]));
     }
-}
-
-/// [`claude_config_dir`] without ever starting a process: in WSL-backend mode
-/// only the cached answer, `None` until something resolved it. For the app's
-/// exit path, where a `wsl.exe` start that hangs would stall the quit —
-/// callers warm the cache earlier with [`claude_config_dir`] off that path.
-pub fn claude_config_dir_if_resolved() -> Option<std::path::PathBuf> {
-    match wsl() {
-        Some(_) => WSL_CLAUDE_CONFIG_DIR.get().cloned().flatten(),
-        None => claude_config_dir(),
-    }
-}
-
-static WSL_CLAUDE_CONFIG_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-
-/// The distro's Claude config dir as printed by its login shell, as a
-/// Windows path. The last non-empty line wins, so a chatty shell profile
-/// cannot end up in the answer; anything but an absolute Linux path is
-/// refused.
-fn wsl_claude_config_dir(distro: &str, stdout: &str) -> Option<std::path::PathBuf> {
-    let dir = last_non_empty_line(stdout).filter(|d| d.starts_with('/'))?;
-    Some(wsl_path::to_windows(distro, &dir))
-}
-
-fn claude_config_dir_from(
-    config_dir: Option<std::ffi::OsString>,
-    home: Option<std::path::PathBuf>,
-) -> Option<std::path::PathBuf> {
-    match config_dir.filter(|d| !d.is_empty()) {
-        Some(dir) => Some(std::path::PathBuf::from(dir)),
-        None => Some(home?.join(".claude")),
-    }
-}
-
-#[cfg(unix)]
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
-}
-
-#[cfg(windows)]
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
 }
 
 /// The `warp://` URI that opens a new Warp tab at `path` (percent-encoded).
@@ -811,51 +795,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wsl_claude_config_dir_is_the_distros() {
+    fn networking_mode_is_the_last_non_empty_line() {
         assert_eq!(
-            wsl_claude_config_dir("Ubuntu", "Welcome\n/home/me/.claude\n\n"),
-            Some(std::path::PathBuf::from(
-                r"\\wsl.localhost\Ubuntu\home\me\.claude"
-            ))
-        );
-        assert_eq!(
-            wsl_claude_config_dir("Ubuntu", "/mnt/c/claude-cfg\n"),
-            Some(std::path::PathBuf::from(r"C:\claude-cfg"))
-        );
-        assert_eq!(wsl_claude_config_dir("Ubuntu", ""), None);
-        assert_eq!(wsl_claude_config_dir("Ubuntu", "not a path\n"), None);
-    }
-
-    #[test]
-    fn claude_config_dir_prefers_the_env_override() {
-        use std::path::PathBuf;
-        let home = Some(PathBuf::from("home"));
-        assert_eq!(
-            claude_config_dir_from(Some("cfg".into()), home.clone()),
-            Some(PathBuf::from("cfg"))
-        );
-        assert_eq!(
-            claude_config_dir_from(Some("".into()), home.clone()),
-            Some(PathBuf::from("home").join(".claude"))
-        );
-        assert_eq!(
-            claude_config_dir_from(None, home),
-            Some(PathBuf::from("home").join(".claude"))
-        );
-        assert_eq!(claude_config_dir_from(None, None), None);
-    }
-
-    #[test]
-    fn last_non_empty_line_skips_anything_printed_ahead() {
-        assert_eq!(
-            last_non_empty_line("mirrored\n").as_deref(),
+            parse_networking_mode("mirrored\n").as_deref(),
             Some("mirrored")
         );
         assert_eq!(
-            last_non_empty_line("Welcome to Ubuntu\r\nnat\r\n\r\n").as_deref(),
+            parse_networking_mode("Welcome to Ubuntu\r\nnat\r\n\r\n").as_deref(),
             Some("nat")
         );
-        assert_eq!(last_non_empty_line(" \n"), None);
+        assert_eq!(parse_networking_mode(" \n"), None);
     }
 
     fn ubuntu() -> WslBackend {

@@ -61,8 +61,42 @@ pub enum CoreError {
     #[error("queued message not found: it was already delivered, removed, or lost when the session ended")]
     QueuedMessageNotFound,
 
+    #[error(
+        "response not found: it was already marked as read, answered, or replaced by a newer one"
+    )]
+    ResponseNotFound,
+
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
+
+    #[error("No Git board is set up: add one in Settings → Issues.")]
+    IssuesNotConfigured,
+
+    #[error("No GitHub or GitLab remote found.")]
+    IssuesNoRemote,
+
+    #[error("The GitHub CLI (gh) is missing or not logged in.")]
+    IssuesGhUnavailable,
+
+    #[error("No setup in Settings → Issues matches this remote's host.")]
+    IssuesUnsupportedHost,
+
+    #[error("The selected setup \"{setup}\" is not for {remote}, this project's remote host.")]
+    IssuesHostMismatch { setup: String, remote: String },
+
+    #[error("This GitLab setup has no token: add one in Settings → Issues.")]
+    IssuesGitlabNotConfigured,
+
+    #[error("GitLab rejected the token: check Settings → Issues.")]
+    IssuesGitlabAuth,
+
+    /// Podium-owned text only; the tool's own output is never included.
+    #[error("Could not fetch issues: {0}")]
+    IssuesFetch(String),
+
+    /// A refused or failed board move or unassign; Podium-owned text only.
+    #[error("{0}")]
+    IssuesMove(String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

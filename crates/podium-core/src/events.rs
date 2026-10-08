@@ -66,6 +66,11 @@ pub enum PodiumEvent {
     WorktreesChanged {
         project_id: ProjectId,
     },
+    /// A card moved on a project's Git board; the UI re-reads the cached
+    /// board via `issues_board_cached`.
+    BoardChanged {
+        project_id: ProjectId,
+    },
 }
 
 /// Fan-out bus for [`PodiumEvent`]s, backed by a tokio broadcast channel.
