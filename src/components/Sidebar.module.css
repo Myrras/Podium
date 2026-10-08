@@ -284,6 +284,54 @@
   color: var(--text);
 }
 
+/* Sections popover: the strip (and its trigger) stays visible while open.
+   The popover hangs off the header, outside the clipping strip. */
+.projectActions[data-open] {
+  opacity: 1;
+}
+
+.projectActions[data-open] .projectAction {
+  pointer-events: auto;
+}
+
+.sectionsPopover {
+  position: absolute;
+  top: 100%;
+  right: var(--sp-3);
+  cursor: default;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 140px;
+  padding: var(--sp-2);
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.sectionsItem {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The global input rule (width: 100%, padding) would stretch the checkbox
+   and push its label out of the popover. */
+.sectionsItem input {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+
 /* ── Group body ────────────────────────────────────────────────────────────── */
 /*
  * Grid trick for smooth height animation from auto → 0 without JS.
@@ -488,6 +536,58 @@
 .addProjectBtn:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/*
+ * Git board button: the one header action visible at rest, so it gets a pill
+ * of its own at the row's far end — the hover-only actions reveal to its
+ * left, never shifting it. Icon + open-card count; accent while open.
+ */
+.gitButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  margin-left: var(--sp-1);
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.gitButton:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.gitButton[data-open="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.gitButton[data-error="true"]::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 2px var(--surface);
 }
 
 /* The picker input is invisible over the badge, so its keyboard focus is

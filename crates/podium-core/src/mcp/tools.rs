@@ -249,6 +249,28 @@ pub struct SpawnAgentParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetBoardParams {
+    /// Project UUID whose Git board to read.
+    pub project_id: String,
+    /// Only the user's own issues/PRs (default false: the whole repo).
+    pub mine: Option<bool>,
+    /// Fetch from GitHub/GitLab even if the cached board is under 5 minutes old.
+    pub refresh: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveBoardItemParams {
+    /// Project UUID whose Git board the card is on.
+    pub project_id: String,
+    /// "issue" or "pr" (a GitHub PR or GitLab MR).
+    pub kind: String,
+    /// The issue/PR number (GitLab: the iid).
+    pub number: u64,
+    /// Target column id, from `get_board`.
+    pub column: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateWorktreeParams {
     /// Project UUID to create the worktree in.
     pub project_id: String,
@@ -447,6 +469,82 @@ impl PodiumTools {
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
+    }
+
+    #[tool(
+        description = "Read the project's Git board (issues and PRs/MRs in Kanban columns, GitHub or GitLab): provider, columns (id, title, accepts = the card kinds a column takes) and items (kind, number, title, url, labels, column, movable, draft, author, linked PRs; no descriptions). Served from the cache when under 5 minutes old, else fetched (`refresh` forces it). Call this before `move_board_item` to get the column ids."
+    )]
+    pub async fn get_board(
+        &self,
+        Parameters(p): Parameters<GetBoardParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let mine = p.mine.unwrap_or(false);
+        let refresh = p.refresh.unwrap_or(false);
+        let orch = Arc::clone(&self.orchestrator);
+        // One blocking task for the cache read and the fetch, like the IPC command.
+        let (board, fetched_at) = tokio::task::spawn_blocking(move || {
+            if !refresh {
+                if let Some(c) = orch.cached_issue_board(project_id, mine)? {
+                    if chrono::Utc::now() - c.fetched_at < chrono::Duration::minutes(5) {
+                        return Ok((c.board, c.fetched_at));
+                    }
+                }
+            }
+            orch.issue_board(project_id, mine)
+                .map(|c| (c.board, c.fetched_at))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("board task failed: {e}"), None))?
+        .map_err(core_error)?;
+        let items: Vec<_> = board
+            .items
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "kind": i.kind, "number": i.number, "title": i.title, "url": i.url,
+                    "labels": i.labels, "column": i.column, "movable": i.movable,
+                    "draft": i.draft, "author": i.author, "linked": i.linked,
+                })
+            })
+            .collect();
+        let columns: Vec<_> = board
+            .columns
+            .iter()
+            .map(|c| serde_json::json!({ "id": c.id, "title": c.title, "accepts": c.accepts }))
+            .collect();
+        json_result(&serde_json::json!({
+            "provider": board.provider, "source": board.source, "hint": board.hint,
+            "fetchedAt": fetched_at, "columns": columns, "items": items,
+        }))
+    }
+
+    #[tool(
+        description = "Move a card on the project's Git board to another column, on GitHub/GitLab itself (GitLab labels or close/reopen, GitHub close/reopen or Project Status). Call `get_board` first for the column ids and each column's `accepts`; merged PRs/MRs are not movable. The user's board updates live."
+    )]
+    pub async fn move_board_item(
+        &self,
+        Parameters(p): Parameters<MoveBoardItemParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project_id = parse_project_id(&p.project_id)?;
+        let kind = match p.kind.as_str() {
+            "issue" => crate::ItemKind::Issue,
+            "pr" => crate::ItemKind::Pr,
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("invalid kind: {other} (use \"issue\" or \"pr\")"),
+                    None,
+                ))
+            }
+        };
+        let orch = Arc::clone(&self.orchestrator);
+        tokio::task::spawn_blocking(move || {
+            orch.move_board_item(project_id, kind, p.number, &p.column)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("board task failed: {e}"), None))?
+        .map_err(core_error)?;
+        Ok(text_result("moved".to_string()))
     }
 
     #[tool(
@@ -1031,7 +1129,9 @@ impl ServerHandler for PodiumTools {
              to the user and every agent. For isolated code changes, \
              create_worktree/list_worktrees/remove_worktree manage git \
              worktrees under .podium/worktrees/ so an agent's edits don't \
-             touch the user's working tree."
+             touch the user's working tree. The project's Git board (issues and \
+             PRs/MRs in columns) is readable with get_board and cards move with \
+             move_board_item; call get_board first for the column ids."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

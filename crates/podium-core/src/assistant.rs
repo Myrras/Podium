@@ -241,6 +241,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "list_todos",
     "list_scratchpads",
     "list_worktrees",
+    "get_board",
     // A sender check that could be parked as a proposal would be no check at
     // all: the assistant would have to act on the message before hearing
     // back. Read-only in every mode.
@@ -264,6 +265,8 @@ const DESTRUCTIVE_TOOLS: &[&str] = &[
     "set_scratchpad_archived",
     "remove_scratchpad_tag",
     "remove_worktree",
+    // Closes/reopens real issues and moves cards on a board others see.
+    "move_board_item",
 ];
 
 /// How much the assistant may do on its own.

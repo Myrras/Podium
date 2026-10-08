@@ -30,9 +30,12 @@ schemars = "1"
 strip-ansi-escapes = "0.2"
 # CancellationToken for MCP server shutdown (already in-tree via rmcp).
 tokio-util = "0.7"
-# HTTP client for the stdio MCP bridge (`mcp/bridge.rs`). Localhost plain
-# HTTP only, so no TLS backend is needed.
-reqwest = { version = "0.13.3", default-features = false }
+# HTTP client: the stdio MCP bridge (`mcp/bridge.rs`, localhost plain HTTP) and
+# the self-hosted GitLab issues fetch (`issues.rs`, blocking, HTTPS). `rustls`
+# verifies against the platform trust store, so an internal CA works.
+reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls", "query"] }
+# OS keychain for the GitLab token (never in a Podium file).
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 # Encoding an image attachment read from disk into a `stream-json` content
 # block; already a dependency of `src-tauri` for terminal bytes.
 base64 = "0.22"
@@ -53,6 +56,12 @@ dunce = "1"
 # SIGKILL). Windows kills the ConPTY child via portable-pty's ChildKiller.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "process"] }
+
+# Linux: the GitLab token goes in the Secret Service (GNOME Keyring/KWallet)
+# over D-Bus, so it persists like on macOS/Windows. Building needs libdbus
+# headers (`libdbus-1-dev` / `dbus-devel`).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3"

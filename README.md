@@ -37,6 +37,13 @@ that lists the `just` recipes it finds in the project's `justfile` alongside
 your own saved per-project commands — one click runs any of them in a fresh
 terminal.
 
+The **Sections** button in a project header hides or shows its To-do's,
+Terminals, Worktrees, Scratchpads and Git board, per project. Hiding is
+presentation only: terminals keep running and agents still see everything
+over MCP.
+Both actions above live on the Terminals header, so they go away with that
+section. With Worktrees off, a worktree's terminals are listed under Terminals.
+
 ### Processes, terminals and supervision
 
 Three kinds of process, all in their own PTY with a real terminal view:
@@ -120,6 +127,52 @@ Warp, run the Commands modal against it, or be removed. Removal is refused
 while a process is running in it or while it has uncommitted changes (unless
 forced); the branch is always kept.
 
+### Git board
+
+The **Git** pill at the right end of a project's header (it shows how many
+cards are open) opens a Kanban board of the repo
+behind its `origin` remote. If the repo has its own board (a GitLab issue
+board with label lists, or a GitHub Project with a Status field), its columns
+are used; otherwise there are four:
+
+- **Open** — open issues nobody is visibly on yet.
+- **In progress** — open issues with a linked PR/MR or an in-progress label
+  (`In progress`, `workflow::In Progress`, `doing`, `wip`), and draft PRs/MRs.
+- **In review** — open, non-draft PRs/MRs.
+- **Done (14d)** — issues closed and PRs/MRs merged in the last 14 days.
+
+GitHub Project columns need the `read:project` scope; if it is missing the
+board says so and shows the default columns until you run
+`gh auth refresh -s read:project`.
+
+**Mine** (the default) shows issues assigned to you and PRs/MRs you opened;
+**All** shows the whole repo. The header counts all-time open and merged
+PRs (GitHub) or MRs (GitLab) in the same scope. Clicking a card opens its
+description beside the board; each card can open in the browser, start an
+agent on it, or become a to-do with the link pinned.
+
+Drag a card to another column to move it on GitHub/GitLab itself: GitLab
+labels (or close/reopen), GitHub close/reopen or your Project's Status (which
+needs the `project` scope: `gh auth refresh -s project`). Columns only take
+what makes sense — merged PRs/MRs stay put. A PR/MR that closes an issue on
+the board is shown on that issue's card instead of as a card of its own; on
+GitLab, an MR whose closed issue is not on the board lands on an issue it
+mentions (`Onderdeel van #N`), so sub-issue MRs show on the parent. The
+last board is kept on disk, so it appears at once, and agents can read and
+move cards through the MCP tools.
+
+The board stays off until you add a setup in Settings → Issues: before
+that Podium fetches nothing (no `git`/`gh` calls in the background) and the
+board just points you to Settings. GitHub works through your own `gh` login
+(a setup can pick which `gh` account), github.com included; self-hosted
+GitLab needs a personal access token with the `api` scope (moving cards and
+unassigning write to GitLab), which lives only in the OS keychain (editing the
+setup offers **Clear token**). A GitLab served under a path
+(`https://host/gitlab`) keeps that path in the setup URL; the setup URL is
+the GitLab itself, not a project page. In WSL-backend mode the distro's `gh`
+and its login are used. The board refreshes every 5 minutes, on window focus after a minute, and on
+demand; a failed refresh keeps the last board with the error inline.
+
 ### The personal assistant
 
 A workspace-wide chat panel backed by a long-lived headless Claude Code
@@ -176,10 +229,10 @@ whether agents are done, no recap of what they did.
 ### Built-in MCP server
 
 Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
-and exposes **32 tools** over it: process inspection and control, agent
+and exposes **34 tools** over it: process inspection and control, agent
 spawning (and respawning a stuck agent with the answer in its prompt), the
-full to-do, scratchpad and worktree surfaces, assistant memory and
-Responses items, and sender
+full to-do, scratchpad and worktree surfaces, the Git board (`get_board`,
+`move_board_item`), assistant memory and Responses items, and sender
 verification for cross-session messages.
 
 Agents Podium spawns get the URL + token automatically. External clients go
@@ -241,6 +294,7 @@ you added by hand alone.
 | **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree"             |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
+| **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
 
 ## Windows with a WSL backend

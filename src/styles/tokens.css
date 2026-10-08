@@ -62,6 +62,17 @@
   --radius-lg: 10px;
   --radius-xl: 12px; /* island corners (rounder than the 10px modal) */
 
+  /* Board accents (GitHub Project column colours, column markers). Tuned per
+     theme to read as small marks on --surface / --surface-2. */
+  --board-gray: #8b949e;
+  --board-blue: #58a6ff;
+  --board-green: #3fb950;
+  --board-yellow: #d29922;
+  --board-orange: #db6d28;
+  --board-red: #f85149;
+  --board-pink: #db61a2;
+  --board-purple: #a371f7;
+
   /* Elevation */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
@@ -146,6 +157,15 @@
   --success: #1a7f37;
   --info: #0969da;
 
+  --board-gray: #6e7781;
+  --board-blue: #0969da;
+  --board-green: #1a7f37;
+  --board-yellow: #9a6700;
+  --board-orange: #bc4c00;
+  --board-red: #cf222e;
+  --board-pink: #bf3989;
+  --board-purple: #8250df;
+
   --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.1);
   --shadow-md: 0 4px 16px rgba(31, 35, 40, 0.15);
   --shadow-lg: 0 12px 40px rgba(31, 35, 40, 0.2);
@@ -200,6 +220,15 @@
   --warning-bg: #f9f0c1;
   --success: #98971a;
   --info: #458588;
+
+  --board-gray: #928374;
+  --board-blue: #458588;
+  --board-green: #79740e;
+  --board-yellow: #b57614;
+  --board-orange: #af3a03;
+  --board-red: #9d0006;
+  --board-pink: #b16286;
+  --board-purple: #6f4e8a;
 
   --shadow-sm: 0 1px 2px rgba(60, 56, 54, 0.12);
   --shadow-md: 0 4px 16px rgba(60, 56, 54, 0.18);

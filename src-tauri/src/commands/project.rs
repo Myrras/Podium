@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, State};
 
-use podium_core::{ProjectId, ProjectInfo};
+use podium_core::{ProjectId, ProjectInfo, ProjectSections};
 
 use crate::commands::{recents, workspace};
 use crate::error::IpcError;
@@ -41,15 +41,15 @@ pub async fn project_open(
             tracing::warn!("failed to migrate legacy recents entry: {e}");
         }
     }
-    // Re-apply any persisted display-name override and badge colour before
-    // returning, so a renamed/recoloured project comes back that way after a
-    // restart. One read of workspace.json, one ProjectUpdated for both.
+    // Re-apply the persisted display-name override, badge colour and section
+    // toggles before returning, so a project comes back as it was left after a
+    // restart. One read of workspace.json, one ProjectUpdated for all three.
     match workspace::overrides_for(&app, &root) {
-        Ok((None, None)) => {}
-        Ok((name, color)) => {
+        Ok((None, None, None)) => {}
+        Ok((name, color, sections)) => {
             if let Err(e) = state
                 .orchestrator
-                .restore_project_overrides(id, name, color)
+                .restore_project_overrides(id, name, color, sections)
             {
                 tracing::warn!("failed to apply persisted project overrides: {e}");
             }
@@ -92,6 +92,24 @@ pub fn project_rename(
     };
     if let Err(e) = workspace::set_name(&app, &info.root, stored) {
         tracing::warn!("failed to persist project name: {e}");
+    }
+    Ok(info)
+}
+
+/// Set which optional sidebar sections a project shows. Persisted in
+/// `workspace.json`; a persist failure only means it won't survive a restart.
+#[tauri::command]
+pub fn project_set_sections(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    sections: ProjectSections,
+) -> Result<ProjectInfo, IpcError> {
+    let info = state
+        .orchestrator
+        .set_project_sections(project_id, sections)?;
+    if let Err(e) = workspace::set_sections(&app, &info.root, sections) {
+        tracing::warn!("failed to persist project sections: {e}");
     }
     Ok(info)
 }

@@ -165,6 +165,7 @@ export const useProcessStore = create<ProcessState>((set) => ({
     if (id !== null) {
       useLayoutStore.getState().clearOpenTodo();
       useLayoutStore.getState().clearOpenScratchpad();
+      useLayoutStore.getState().clearOpenBoard();
     }
     set({ activeProcessId: id });
   },
