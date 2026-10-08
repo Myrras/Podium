@@ -58,6 +58,7 @@ function project(id: string, name = id): ProjectInfo {
     configError: null,
     renamed: false,
     color: null,
+    nativeInWslMode: false,
   };
 }
 
@@ -114,6 +115,7 @@ describe("projectStore.restoreWorkspace", () => {
         configError: null,
         renamed: false,
         color: null,
+        nativeInWslMode: false,
       }),
     );
     projectListMock.mockResolvedValue([]);
@@ -156,6 +158,7 @@ describe("projectStore.renameProject", () => {
       ...project("a"),
       name: "Alpha",
       renamed: true,
+      nativeInWslMode: false,
     });
 
     await useProjectStore.getState().renameProject("a", "Alpha");

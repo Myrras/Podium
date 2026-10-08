@@ -135,7 +135,7 @@ podium/
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
 │  ├─ platform.rs              # the OS gap: login shell, quoting, probe, git command, WSL-backend switch
 │  ├─ platform/wsl_path.rs     # pure Windows <-> WSL path translation
-│  ├─ backend_settings.rs      # backend.json (the WSL distro), read once at startup
+│  ├─ backend_settings.rs      # backend.json (WSL distro + native-drive opt-in), read once at startup
 │  ├─ todo.rs                  # per-project to-dos (TodoInfo + persistent TodoStore)
 │  ├─ events.rs                # PodiumEvent + broadcast EventBus
 │  ├─ ids.rs                   # ProjectId / ProcessId / TodoId (UUID newtypes)
@@ -189,10 +189,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   running. Manual start fully resets both. Timings injectable
   (`SupervisorConfig`) so tests run in milliseconds.
 - **Agent adapters** (`agent/mod.rs`): the `AgentAdapter` trait turns an
-  `AgentLaunchCtx` (project root, prompt, MCP connect info, config
-  `extra_args`) into a `LaunchPlan { command, env }`. Availability is probed
-  via the login shell (`command -v`), so nvm/homebrew PATH edits are
-  honoured. Adding an agent CLI = new module + registry entry; no IPC or
+  `AgentLaunchCtx` (project root and its backend, prompt, MCP connect info,
+  config `extra_args`) into a `LaunchPlan { command, env }`. Availability is
+  probed via the login shell (`command -v`) of the backend the agent would
+  run on — cached once per backend per run, and `adapters_list` takes the
+  project — so nvm/homebrew PATH edits are honoured. Adding an agent CLI = new module + registry entry; no IPC or
   frontend change. Max **8 active agents per project** (recursion guard —
   agents can spawn agents over MCP).
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
@@ -322,7 +323,7 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   MCP tool before its first code change, named `worktreeName` when given, else
   a name the agent picks. So every worktree comes from `create_worktree`,
   whether at the start of a session or mid-session. Every worktree git call
-  runs `platform::git_command()` — natively a git path resolved once via
+  runs `platform::git_command(wsl)` (the project's backend) — natively a git path resolved once via
   the login shell, then reused (not a login shell per call, which was slow on
   heavy shell profiles); in WSL-backend mode the distro's git via `wsl.exe -e
   git` — rather than through the shell. `git worktree list
@@ -666,12 +667,37 @@ one lock acquisition, atomically, before the async `podium.yml` load.
 
 ### WSL-backend mode (Windows)
 
-`backend.json` (`backend_settings.rs`) holds an optional WSL distro. Setup
+`backend.json` (`backend_settings.rs`) holds an optional WSL distro plus
+the `nativeDriveProjects` opt-in (default off). Setup
 reads it **first thing** (`init_backend` in `src-tauri/src/lib.rs`) and fixes
 `platform::init_wsl` before the MCP server, the assistant or any project can
 spawn; changing it needs a restart. `platform::wsl()` is the switch:
 `Some(&WslBackend)` in WSL mode, always `None` off Windows (`init_wsl`
 ignores a configured distro there).
+
+**Per project, decided once.** By default every project runs on the
+configured backend, a Windows-drive one through `/mnt/<drive>`. With the
+`nativeDriveProjects` opt-in (`WslBackend::native_drive_projects`, Settings →
+General → Backend), `platform::wsl_for(root)` returns the backend only for a
+root inside a distro (`wsl_path::is_wsl_path` — `\\wsl.localhost\…`,
+`\\wsl$\…`) and `None` for a Windows-drive project, which then runs natively
+(cmd.exe, Windows git, Windows `claude`). The orchestrator resolves it **once,
+at project open** (`ProjectHandle::wsl`) and passes that one value down —
+`AgentLaunchCtx::wsl` for `build_launch` quoting and the `--mcp-config`
+spelling, `PtyProcess::spawn` for the shell and the direct agent launch,
+`wsl_launch_guard_for` for the gate, the `worktree::*` functions for git,
+`AdapterRegistry::infos` for the availability probe — so a launch quoted for
+one shell is never run by another. `ProjectInfo.nativeInWslMode` tells the
+frontend, which then leaves the terminal-shell setting (meant for the
+distro's shell) out of that project's terminals, and the default terminal
+command follows the same flag. The explicit-backend helpers are the
+`_in`/`_on(wsl, …)` variants (`login_shell_in`, `login_shell_on`,
+`quote_arg_in`, `backend_path_in`, `from_backend_path_in`, `run_shell_ok_on`,
+`command_exists_query_on`, `git_command`); the plain ones use the global
+`wsl()` and are for workspace-wide work only — the assistant and the MCP
+install. The launch gate is only taken for a `wsl.exe` start
+(`run_gated` checks the program, `do_start` the project's backend), so a
+native launch never waits behind a slow distro start.
 
 - **Not behind `cfg(windows)`.** Call sites branch at runtime on `wsl()`, so
   macOS/Linux CI compiles, lints and tests the WSL code. Pure helpers take
@@ -679,7 +705,7 @@ ignores a configured distro there).
   `WslBackend::for_tests`) so both modes are unit-testable anywhere; tests
   never call `init_wsl` (it is process-global).
 - **Shell, quoting and probe.** `login_shell()` is `wsl.exe -d <distro> -e bash
-  -lic`; `login_shell_in(cwd)` adds `--cd <linux path>`. `quote_arg` is POSIX
+  -lic`; `login_shell_in(wsl, cwd)` adds `--cd <linux path>`. `quote_arg` is POSIX
   (`quote_posix`), since bash parses the string. `command_exists_query` is
   `command -v`. Agents skip the Windows direct launch in `pty.rs` and take the
   shell path, like Unix.
@@ -706,8 +732,10 @@ ignores a configured distro there).
   long-lived ones (PTY, assistant; held until the PTY reader runs). Waiting
   for the gate gives up after 10 s with a warning and launches anyway, so one
   hung `wsl.exe` cannot stall everything behind it. **Never take the gate
-  under the orchestrator's `inner` lock**: `do_start` takes it first and
-  hands it to `PtyProcess::spawn` by reference, so it drops after `inner`.
+  under the orchestrator's `inner` lock**: `do_start` reads the project's
+  backend under a short lock of its own, takes the gate, then locks `inner`
+  and hands the gate to `PtyProcess::spawn` by reference, so it drops after
+  `inner`.
   New code that starts `wsl.exe` must use one of these. A no-op natively.
 - **No console flash.** A console-subsystem child (git, `wsl.exe`, `cmd.exe`,
   bash) spawned via a plain `Command`/`tokio::process::Command` from
@@ -738,8 +766,14 @@ ignores a configured distro there).
   One thread, because a burst of concurrent `wsl.exe` starts fails; without
   the variable the run fails instead of passing vacuously, and the localhost
   test skips with a message unless networking is mirrored. It covers
-  cwd/env, argv round-trip, stop, config paths, the localhost reachability
-  prerequisite, worktrees and interop.
+  cwd/env, a Windows-drive project running in the distro by default, argv
+  round-trip, stop, config paths, the localhost reachability prerequisite,
+  worktrees and interop. `tests/wsl_native_drives.rs` is its twin with the
+  `nativeDriveProjects` opt-in on (a separate binary, since the backend is
+  process-wide): a drive project's service runs under cmd.exe while a distro
+  project's still runs in WSL, and an agent's `build_launch` quoting
+  survives the real launch path on both (Windows direct launch, bash in the
+  distro). Run it the same way with `--test wsl_native_drives`.
 
 ### Tauri IPC contract
 
@@ -775,10 +809,11 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_write`         | `{ processId, dataB64 }`                    | –                 |
 | `process_resize`        | `{ processId, cols, rows }`                 | –                 |
 | `process_attach`        | `{ processId, channel: Channel<TermEvent> }`| –                 |
-| `backend_settings_get`  | –                                           | `BackendSettingsDto` (`{ wslDistro, activeWslDistro }`, empty = native) |
+| `backend_settings_get`  | –                                           | `BackendSettingsDto` (`{ wslDistro, activeWslDistro, nativeDriveProjects, activeNativeDriveProjects }`, empty distro = native) |
 | `backend_settings_set_wsl_distro` | `{ distro? }` (blank = native; must be installed — checked against `wsl.exe -l -q`; applies on restart) | `BackendSettingsDto` |
+| `backend_settings_set_native_drive_projects` | `{ enabled }` (WSL mode: run Windows-drive projects natively; applies on restart) | `BackendSettingsDto` |
 | `backend_wsl_networking_mode` | – (WSL mode only; the app warns when not `mirrored`) | `string \| null` |
-| `adapters_list`         | –                                           | `AdapterInfo[]`   |
+| `adapters_list`         | `{ projectId? }` (probe on that project's backend) | `AdapterInfo[]`   |
 | `agent_spawn`           | `{ projectId, adapterId?, name?, prompt?, todoIds?, scratchpadIds?, worktree?, worktreeName?, args? }` | `ProcessInfo` |
 | `agent_settings_get`    | –                                           | `AgentSettingsDto` |
 | `agent_settings_set_adapter` | `{ adapterId, command?, defaultArgs }` | `AgentSettingsDto` |

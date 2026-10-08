@@ -62,6 +62,7 @@ describe("CloseWarningModal", () => {
           configError: null,
           renamed: false,
           color: null,
+          nativeInWslMode: false,
         },
       ],
     });
