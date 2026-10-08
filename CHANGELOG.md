@@ -4,11 +4,11 @@ All notable **functional** (user-facing) changes to Podium are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Internal refactors, tooling, and chores are intentionally omitted. (Automated
-changelog generation from Conventional Commits via git-cliff is planned but not
-yet set up.)
+Internal refactors, tooling, and chores are intentionally omitted. Every pull
+request adds its entry under `## [Unreleased]`; the version number is assigned
+when it merges.
 
-## [2.2.0] - 2026-09-30
+## [Unreleased]
 
 ### Added
 
@@ -21,6 +21,15 @@ yet set up.)
   started are resumed, never a `claude` session you ran yourself in the same
   folder. A remembered session is dropped after 14 days, and turning the
   setting off forgets them all. Auggie agents are not resumed.
+
+## [2.1.3] - 2026-10-08
+
+### Changed
+
+- **Every merge ships a release.** Each change that lands on `main` now becomes
+  a numbered version right away, with downloadable macOS and Windows installers
+  attached to its GitHub Release — no more waiting for a release to be cut by
+  hand.
 
 ## [2.1.2] - 2026-09-30
 
