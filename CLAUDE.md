@@ -244,16 +244,23 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   / `ListAgents`. Two things make that work, both set per session so the
   user's own `~/.claude/settings.json` is never touched:
   - **`crossSessionInbound: "accept"`**, passed inline via `--settings`
-    (`agent::PEER_INBOUND_SETTINGS`; an agent gets
-    `agent::AGENT_SESSION_SETTINGS`, which adds an allow rule for a plain
-    `git push` and ask rules for force/tag/mirror/delete pushes — so a push
-    go-ahead the assistant relays by message can run in the existing
-    session, where no peer message could approve a prompt). Without it the CLI decides per message
+    (`agent::PEER_INBOUND_SETTINGS`). Without it the CLI decides per message
     from the two sessions' permission-mode classes, and the assistant
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
     A `--settings` the user put in `extra_args` wins over Podium's.
+  - **Push rules.** A Claude Code agent's `--settings`
+    (`agent::agent_session_settings`, built on the same inbound setting)
+    also allows `Bash(git push:*)`, so a push go-ahead the assistant relays
+    by message can run in the existing session — no peer message can
+    approve a prompt. `PUSH_DENY_RULES` (deny beats allow) block force,
+    `+refspec`, delete (`-d`, `--delete`, `:branch`), mirror/prune/all,
+    tag pushes and main/master as the destination, wherever the flag sits
+    (mid-pattern `*`). They match command text only: `git -C … push`,
+    aliases, flag clusters like `-vf` and an implicit push of a checked-out
+    main slip past (see the code comment). With the user's own `--settings`
+    none of this applies, and the identity prompt drops the go-ahead.
   - **A Podium-stamped session name**, `podium-<tag>` where the tag is the
     first 8 hex of the session's id (`-n`, `agent::peer_session_name`). The
     assistant's tag is a random per-app-run UUID prefix, not a fixed literal
@@ -393,9 +400,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   no shell here), to keep agent updates to warnings and done-ness, how to stop
   agents safely (only the project in question; check the output for follow-up
   work and complete the to-do first), and how to pass on a push go-ahead (a
-  message to the existing agent, which accepts it once `verify_sender` says
-  the sender is the assistant; a fresh agent with `--allowedTools` only if it
-  refuses).
+  message to an existing Claude Code agent, which accepts it once
+  `verify_sender` says the sender is the assistant and reports back; a fresh
+  agent with `--allowedTools` if it refuses, never reports a push, or is
+  not Claude Code).
   All of that is wording, not a gate — pinned by unit tests so a later prompt
   edit cannot quietly drop it.
 
