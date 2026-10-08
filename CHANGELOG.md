@@ -22,6 +22,8 @@ when it merges.
   project header turns the sidebar's To-do's, Terminals, Worktrees,
   Scratchpads and Git board on or off per project; hiding one deletes nothing.
 
+## [2.1.4] - 2026-10-08
+
 ### Fixed
 
 - **Messages waiting to be sent stay visible.** A long conversation with the
