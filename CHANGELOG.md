@@ -18,7 +18,8 @@ when it merges.
   repository and reports back with the link. An agent on main or master does
   not push. Force, delete, tag and explicit main/master pushes, pushes
   elsewhere, PRs/MRs against another repository and reading a local file into
-  a PR/MR body (`--body-file`, `-F`, `--description-file`, `--attach`) are
+  a PR/MR body (`--body-file`, `-F`, `--description-file`, `--attach`) or
+  choosing glab's source branch (`-s`) are
   blocked in their plain spellings. Under the `propose-all` autonomy mode the
   assistant can no longer message an agent directly (it would skip the
   confirmation card), so switching into or out of that mode restarts its

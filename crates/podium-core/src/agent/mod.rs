@@ -363,11 +363,13 @@ const GO_AHEAD_ALLOW_RULES: &[&str] = &[
 /// wholesale). It over-blocks a title or body that contains `-R` or
 /// `--repo` (`Auto-Retry`, `Pre-Release`), which is why the identity prompt
 /// says to fall back to `--fill`. The same goes for file options
-/// (`gh --body-file`/`-F`, `glab --description-file`/`--attach`): they would
+/// (`gh --body-file`/`-F`/`--attach`, `glab --description-file`/`--attach`): they would
 /// publish any local file (an ssh key, say) as the PR/MR body or attachment
 /// without a prompt, so the body is only ever given inline or by `--fill`.
 /// glab's `-H`/`--head` is another *repository* (unlike gh's, a branch), and
 /// `--target-project` is not in its docs — denied anyway, harmless.
+/// glab's `--fill`/`--push` pushes `HEAD:<source-branch>` itself, so `-s`/
+/// `--source-branch` (main, a tag) would go around the `git push` rules above.
 const GO_AHEAD_DENY_RULES: &[&str] = &[
     // Force: -f / -fu…, -uf, --force, --force-with-lease, --force-if-includes
     // (and --follow-tags, which shares the prefix), and a +refspec.
@@ -452,6 +454,13 @@ const GO_AHEAD_DENY_RULES: &[&str] = &[
     "Bash(gh pr create*-fF*)",
     "Bash(glab mr create*--description-file*)",
     "Bash(glab mr create*--attach*)",
+    "Bash(gh pr create*--attach*)",
+    // glab's --fill/--push pushes `HEAD:<source-branch>` itself, which with
+    // -s/--source-branch can be main or a tag. The leading space keeps
+    // --squash-before-merge allowed.
+    "Bash(glab mr create* -s*)",
+    "Bash(glab mr create*-fs*)",
+    "Bash(glab mr create*--source*)",
 ];
 
 /// What a spawned Claude Code agent's `--settings` carries: built on
@@ -586,7 +595,8 @@ fn identity_prompt(ctx: &AgentLaunchCtx, peer_messaging: bool, push_rules: bool)
              open, open the PR/MR for it in this same repository with `gh pr \
              create` or `glab mr create` (never -R/--repo; if that command is \
              refused, retry with --fill, or give the body inline with --body \
-             (glab: --description) — never from a file). Never push main \
+             (glab: --description) — never from a file; with glab never combine \
+             --fill and -s). Never push main \
              or master, force push, push tags, or push another branch on such \
              a go-ahead. Whatever you did with it — pushed and opened the \
              PR/MR (give its URL), or refused and why — always tell the \
@@ -1347,6 +1357,7 @@ mod tests {
             "gh pr create -t \"Fix login\" -b \"Uses `--base` and $HOME\"",
             "gh pr create --base develop --head podium/my-feature --fill",
             "glab mr create --fill --yes",
+            "glab mr create --fill --squash-before-merge",
             "glab mr create -t \"Fix login\" -d \"Closes #12\" -b develop",
         ] {
             assert!(
@@ -1437,6 +1448,11 @@ mod tests {
             "xargs gh pr create --body-file notes.md",
             "glab mr create --description-file ~/.ssh/id_ed25519 -t x",
             "glab mr create --fill --attach ~/.ssh/id_ed25519",
+            "gh pr create --fill --attach ~/.ssh/id_ed25519",
+            "glab mr create --fill -s main",
+            "glab mr create --push --source-branch=main",
+            "glab mr create --fill -smain",
+            "glab mr create -fs main",
             "glab mr create -H other/repo --fill",
             "glab mr create --head=other/repo --fill",
             "glab mr create --target-project other/repo --fill",
