@@ -299,6 +299,12 @@ last) line, so a multi-line draft still navigates normally.
 **Mouse**
 
 - **Double-click** a project name, process name or to-do title to rename it.
+- **Click** a subsection title (To-dos, Agents, Terminals, …) to collapse it to
+  one line with a count; the collapse/expand-all button in the project header
+  does every subsection of that project at once. Remembered across restarts.
+  A collapsed Agents, Processes, Terminals or Worktrees header shows a pulsing
+  blue dot when a row it hides needs your input, and a multi-select of to-dos
+  or scratchpads keeps its "Start agent" bar while its section is folded.
 - **⌘/Ctrl+click** a to-do or scratchpad title, or an agent/process row, to
   add it to a multi-select; **Shift+click** to extend the range over a list.
   Selected rows become chips above the assistant's composer, so your next

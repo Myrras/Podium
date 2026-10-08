@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { TodoInfo } from "../ipc/types";
+import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSelectionStore } from "../lib/selection";
@@ -19,6 +20,7 @@ import { TodoSubsection } from "./TodoSubsection";
 const initialTodo = useTodoStore.getState();
 const initialProcess = useProcessStore.getState();
 const initialProject = useProjectStore.getState();
+const initialLayout = useLayoutStore.getState();
 
 const PROJECT = "proj-1";
 
@@ -72,6 +74,7 @@ function titleOf(text: string): HTMLElement {
 
 describe("TodoSubsection multi-select", () => {
   beforeEach(() => {
+    useLayoutStore.setState(initialLayout, true);
     useTodoStore.setState(initialTodo, true);
     useProcessStore.setState(initialProcess, true);
     useProjectStore.setState(initialProject, true);
@@ -83,6 +86,7 @@ describe("TodoSubsection multi-select", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -99,6 +103,7 @@ describe("TodoSubsection multi-select", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={onOpenTodo}
         onPickAgent={vi.fn()}
       />,
@@ -120,6 +125,7 @@ describe("TodoSubsection multi-select", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={onOpenTodo}
         onPickAgent={vi.fn()}
       />,
@@ -150,6 +156,7 @@ describe("TodoSubsection multi-select", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={onOpenTodo}
         onPickAgent={vi.fn()}
       />,
@@ -178,6 +185,7 @@ describe("TodoSubsection multi-select", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -192,11 +200,34 @@ describe("TodoSubsection multi-select", () => {
     });
   });
 
+  it("keeps the selection bar when the subsection is collapsed", () => {
+    seed([todo("a", "Todo A"), todo("b", "Todo B")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(titleOf("Todo A"), { metaKey: true });
+    fireEvent.click(titleOf("Todo B"), { metaKey: true });
+    fireEvent.click(
+      screen.getByRole("button", { name: "To-dos", expanded: true }),
+    );
+
+    // The rows fold away, but the selection is still live and actionable.
+    expect(screen.queryByText("Todo A")).not.toBeInTheDocument();
+    expect(screen.getByText("Start agent on 2 to-dos")).toBeInTheDocument();
+  });
+
   it("hides the bar with only one selected", () => {
     seed([todo("a", "Todo A"), todo("b", "Todo B")]);
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -222,6 +253,7 @@ describe("TodoSubsection spawn button", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={onPickAgent}
       />,
@@ -241,6 +273,7 @@ describe("TodoSubsection spawn button", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={onPickAgent}
       />,
@@ -261,6 +294,7 @@ describe("TodoSubsection spawn button", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -277,6 +311,7 @@ describe("TodoSubsection spawn button", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -313,6 +348,7 @@ describe("TodoSubsection assigned to-dos", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={vi.fn()}
         onPickAgent={vi.fn()}
       />,
@@ -337,6 +373,7 @@ describe("TodoSubsection assigned to-dos", () => {
     render(
       <TodoSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         onOpenTodo={onOpenTodo}
         onPickAgent={vi.fn()}
       />,
