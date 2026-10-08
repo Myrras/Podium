@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-08
+
 ### Added
 
 - **A Git board per project.** A Kanban board of the repo's GitHub or GitLab
