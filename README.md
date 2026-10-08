@@ -25,11 +25,12 @@ One window, three columns:
 ### Projects
 
 Open a folder and it stays. The sidebar is a **persistent workspace**: every
-open project is remembered and re-opened at launch. Projects can be
-**renamed** (double-click the name) and **reordered** (drag the grip in the
-project header) — both survive a restart. A project whose folder has moved is
-never silently dropped; its error toast offers "Remove from workspace"
-instead.
+open project is remembered and re-opened at launch. Projects can be **renamed**
+(double-click the name), **recoloured** (click the initials badge to pick a
+colour; right-click it to go back to the theme's accent) and **reordered** (drag
+the grip in the project header) — all survive a restart. A project whose folder
+has moved is never silently dropped; its error toast offers "Remove from
+workspace" instead.
 
 Each project also gets an **Open in Warp** action and a **Commands** modal
 that lists the `just` recipes it finds in the project's `justfile` alongside
@@ -285,6 +286,9 @@ last) line, so a multi-line draft still navigates normally.
 **Mouse**
 
 - **Double-click** a project name, process name or to-do title to rename it.
+- **Click** a project's initials badge to give it its own colour;
+  **right-click** it (or press **Delete** while it has focus) to reset it to
+  the theme's accent.
 - **Click** a subsection title (To-dos, Agents, Terminals, …) to collapse it to
   one line with a count; the collapse/expand-all button in the project header
   does every subsection of that project at once. Remembered across restarts.

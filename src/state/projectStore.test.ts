@@ -6,6 +6,7 @@ vi.mock("../ipc/commands", () => ({
   projectOpen: vi.fn(),
   projectList: vi.fn(() => Promise.resolve([])),
   projectRename: vi.fn(),
+  projectSetColor: vi.fn(),
   projectReorder: vi.fn(),
   recentsList: vi.fn(() => Promise.resolve([])),
   workspaceList: vi.fn(),
@@ -32,6 +33,7 @@ import {
   projectOpen,
   projectRename,
   projectReorder,
+  projectSetColor,
   workspaceList,
   workspaceRemove,
 } from "../ipc/commands";
@@ -43,6 +45,7 @@ const projectOpenMock = vi.mocked(projectOpen);
 const projectListMock = vi.mocked(projectList);
 const projectRenameMock = vi.mocked(projectRename);
 const projectReorderMock = vi.mocked(projectReorder);
+const projectSetColorMock = vi.mocked(projectSetColor);
 const workspaceListMock = vi.mocked(workspaceList);
 const workspaceRemoveMock = vi.mocked(workspaceRemove);
 const toastErrorMock = vi.mocked(toastError);
@@ -56,6 +59,7 @@ function project(id: string, name = id): ProjectInfo {
     iconInitials: "",
     configError: null,
     renamed: false,
+    color: null,
     nativeInWslMode: false,
   };
 }
@@ -112,6 +116,7 @@ describe("projectStore.restoreWorkspace", () => {
         iconInitials: "",
         configError: null,
         renamed: false,
+        color: null,
         nativeInWslMode: false,
       }),
     );
@@ -164,6 +169,28 @@ describe("projectStore.renameProject", () => {
     const [p] = useProjectStore.getState().projects;
     expect(p.name).toBe("Alpha");
     expect(p.renamed).toBe(true);
+  });
+});
+
+describe("projectStore.setProjectColor", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useProjectStore.setState(
+      { projects: [project("a")], activeProjectId: null, recents: [] },
+      false,
+    );
+  });
+
+  it("replaces the project with the recoloured snapshot", async () => {
+    projectSetColorMock.mockResolvedValue({
+      ...project("a"),
+      color: "#3e63dd",
+    });
+
+    await useProjectStore.getState().setProjectColor("a", "#3e63dd");
+
+    expect(projectSetColorMock).toHaveBeenCalledWith("a", "#3e63dd");
+    expect(useProjectStore.getState().projects[0].color).toBe("#3e63dd");
   });
 });
 
