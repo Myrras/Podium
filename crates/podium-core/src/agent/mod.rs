@@ -152,6 +152,16 @@ pub trait AgentAdapter: Send + Sync {
         false
     }
 
+    /// The session the running CLI process `pid` is on right now, as the CLI
+    /// itself records it — Claude Code moves to a new id on `/clear`, which
+    /// Podium's own `--session-id` bookkeeping never sees. `None` when it is
+    /// not known; the caller then keeps the id it has. Reads at most one
+    /// small file and never starts a process, so it is cheap enough to call
+    /// under a lock and on the app's exit path.
+    fn live_session(&self, _pid: u32, _wsl: Option<&WslBackend>) -> Option<String> {
+        None
+    }
+
     /// Whether the binary resolves on the user's login-shell `PATH` of
     /// backend `wsl` — the one the agent would launch on (see
     /// [`crate::platform::wsl_for`]). Probed via that login shell (`command
@@ -257,6 +267,16 @@ impl AgentAdapter for CliAdapter {
                 .is_some_and(|q| crate::platform::run_shell_ok_on(wsl, &q)),
             None => claude_config_dir().is_some_and(|dir| claude_session_in(&dir, session_id)),
         }
+    }
+
+    // ponytail: native only. On a WSL project the pid Podium holds is
+    // `wsl.exe`'s, not the CLI's inside the distro, and the registry lives
+    // there too; there a `/clear`ed agent resumes its pre-clear conversation.
+    fn live_session(&self, pid: u32, wsl: Option<&WslBackend>) -> Option<String> {
+        if self.session_flags.is_none() || wsl.is_some() {
+            return None;
+        }
+        claude_live_session_in(&claude_config_dir()?, pid)
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
@@ -400,6 +420,23 @@ fn claude_session_in(config_dir: &Path, session_id: &str) -> bool {
     fs::read_dir(config_dir.join("projects"))
         .map(|dirs| dirs.flatten().any(|d| d.path().join(&file).is_file()))
         .unwrap_or(false)
+}
+
+/// The `sessionId` Claude Code's live registry holds for CLI process `pid`:
+/// `<config_dir>/sessions/<pid>.json`, written while the CLI runs (and
+/// removed when it exits cleanly), and following `/clear` to the new id. The
+/// agent's PTY child *is* the CLI — the login shell execs a lone command —
+/// so Podium's pid is the one the file is named after. Not validated here.
+fn claude_live_session_in(config_dir: &Path, pid: u32) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LiveSession {
+        session_id: String,
+    }
+    let raw = fs::read_to_string(config_dir.join("sessions").join(format!("{pid}.json"))).ok()?;
+    serde_json::from_str::<LiveSession>(&raw)
+        .ok()
+        .map(|s| s.session_id)
 }
 
 /// Shell test, for a POSIX login shell (the WSL distro's), that succeeds when
@@ -1119,6 +1156,33 @@ mod tests {
         assert_eq!(plan.command, "auggie");
         assert!(plan.restart.is_none());
         assert!(!AUGGIE.session_exists(&ctx.process_id.to_string(), None));
+    }
+
+    #[test]
+    fn the_live_registry_names_the_session_a_cli_process_is_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            claude_live_session_in(dir.path(), 4242),
+            None,
+            "no registry"
+        );
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).expect("mkdir");
+        let id = ProcessId::new().to_string();
+        fs::write(
+            sessions.join("4242.json"),
+            format!(
+                r#"{{"pid":4242,"sessionId":"{id}","name":"podium-0f0e0d0c","kind":"interactive"}}"#
+            ),
+        )
+        .expect("write");
+        assert_eq!(claude_live_session_in(dir.path(), 4242), Some(id));
+        // Another process, or a file that is not the registry's.
+        assert_eq!(claude_live_session_in(dir.path(), 4243), None);
+        fs::write(sessions.join("4243.json"), "not json").expect("write");
+        assert_eq!(claude_live_session_in(dir.path(), 4243), None);
+        // Auggie keeps no such registry.
+        assert_eq!(AUGGIE.live_session(4242, None), None);
     }
 
     #[test]

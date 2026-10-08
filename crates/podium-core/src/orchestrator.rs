@@ -163,11 +163,14 @@ struct ManagedProcess {
 
 /// An agent's CLI session: the commands a restart picks from
 /// ([`LaunchPlan::restart`]) and the id of the session it is on — the
-/// process id at spawn, a new one after each fresh restart. `spec.command`
-/// itself is never swapped, so the choice is made afresh every start.
+/// process id at spawn, a new one after each fresh restart, and the CLI's
+/// own after a `/clear` (see [`follow_live_session`]). `spec.command` itself
+/// is never swapped, so the choice is made afresh every start.
 #[derive(Clone)]
 struct AgentSession {
     commands: RestartCommands,
+    /// The adapter that launched it, asked for the CLI's live session.
+    adapter: Arc<dyn crate::agent::AgentAdapter>,
     id: String,
     /// The current run resumed `id` (rather than starting it fresh).
     resumed: bool,
@@ -2204,6 +2207,7 @@ impl Orchestrator {
         })?;
         let mut session = plan.restart.map(|commands| AgentSession {
             commands,
+            adapter: Arc::clone(&adapter),
             id: process_id.to_string(),
             resumed: false,
             resume_failed: false,
@@ -2870,6 +2874,9 @@ impl Orchestrator {
     pub async fn stop_process(&self, id: ProcessId) -> CoreResult<()> {
         let (project_id, pty) = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            // While the CLI still runs: a clean exit removes what says which
+            // session a `/clear` moved it to.
+            follow_live_session(&mut inner, id);
             let proc = inner
                 .processes
                 .get_mut(&id)
@@ -3018,11 +3025,16 @@ impl Orchestrator {
     /// that cannot resume (Auggie), or one whose own args pick the session
     /// (`--resume`, `--continue`, …) — is not remembered.
     ///
-    /// Runs on the app's exit path, so it reads nothing from disk and starts
-    /// no process; every entry goes out in one write.
+    /// Each agent's id first follows a `/clear` ([`follow_live_session`]).
+    /// Runs on the app's exit path, so it reads at most one small file per
+    /// agent and starts no process; every entry goes out in one write.
     fn capture_agent_sessions(&self) {
         let mut entries: Vec<(u64, PathBuf, RememberedSession)> = {
-            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let ids: Vec<ProcessId> = inner.processes.keys().copied().collect();
+            for id in ids {
+                follow_live_session(&mut inner, id);
+            }
             inner
                 .processes
                 .iter()
@@ -3604,6 +3616,41 @@ fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
     }
 }
 
+/// Follow a `/clear`: move agent `id`'s [`AgentSession`] to the session its
+/// CLI process says it is on now ([`AgentAdapter::live_session`]), when that
+/// is a valid id other than the current one. Called while the process is
+/// still there to ask — before a user stop signals it, in the exit handler
+/// (a crash can leave the registry behind; a clean exit removes it), and at
+/// the shutdown capture — so a restart and a remembered session pick up the
+/// conversation the agent was actually in. Anything else keeps the id.
+///
+/// [`AgentAdapter::live_session`]: crate::agent::AgentAdapter::live_session
+fn follow_live_session(inner: &mut Inner, id: ProcessId) {
+    let Some(p) = inner.processes.get(&id) else {
+        return;
+    };
+    let wsl = project_backend(inner, p.project_id);
+    let Some(p) = inner.processes.get_mut(&id) else {
+        return;
+    };
+    let (Some(pty), Some(session)) = (p.pty.as_ref(), p.session.as_mut()) else {
+        return;
+    };
+    let Some(live) = session
+        .adapter
+        .live_session(pty.pid(), wsl)
+        .filter(|live| session_memory::is_valid_session_id(live))
+    else {
+        return;
+    };
+    if live != session.id {
+        session.id = live;
+        // Neither was the new session resumed, nor did resuming it fail.
+        session.resumed = false;
+        session.resume_failed = false;
+    }
+}
+
 /// Whether an agent run that just exited was a resume that failed: it
 /// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
 fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
@@ -3654,13 +3701,18 @@ fn make_exit_handler(
                 at: Utc::now(),
             };
             p.status = status.clone();
-            p.pty = None;
             let ran_for = p.started_at.take().map(|s| s.elapsed());
             if let Some(session) = p.session.as_mut() {
                 if resume_failed(session, crashed, ran_for) {
                     session.resume_failed = true;
                 }
             }
+            // Before the PTY (and with it the pid) is dropped.
+            follow_live_session(&mut guard, id);
+            let Some(p) = guard.processes.get_mut(&id) else {
+                return;
+            };
+            p.pty = None;
             let ran_long = ran_for.is_some_and(|d| d >= supervisor.backoff_reset_after);
             if ran_long {
                 p.restart.reset_backoff();
@@ -3763,6 +3815,7 @@ mod tests {
                 new_flag: "--session-id",
                 resume_flag: "--resume",
             },
+            adapter: Arc::new(crate::agent::CLAUDE_CODE),
             id: "0f0e0d0c".to_string(),
             resumed: false,
             resume_failed: false,
@@ -3804,6 +3857,7 @@ mod tests {
                 new_flag: "--session-id",
                 resume_flag: "--resume",
             },
+            adapter: Arc::new(crate::agent::CLAUDE_CODE),
             id: "0f0e0d0c".to_string(),
             resumed,
             resume_failed: false,
@@ -4562,6 +4616,8 @@ mod tests {
         slow: Mutex<Option<String>>,
         entered: tokio::sync::Notify,
         release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        /// The fake live registry: the session each CLI pid says it is on.
+        live: Mutex<HashMap<u32, String>>,
     }
 
     impl MemoryAdapter {
@@ -4573,6 +4629,7 @@ mod tests {
                 slow: Mutex::new(None),
                 entered: tokio::sync::Notify::new(),
                 release: Mutex::new(None),
+                live: Mutex::new(HashMap::new()),
             })
         }
 
@@ -4633,9 +4690,34 @@ mod tests {
             self.stored.lock().unwrap().iter().any(|s| s == session_id)
         }
 
+        fn live_session(&self, pid: u32, _wsl: Option<&WslBackend>) -> Option<String> {
+            self.live.lock().unwrap().get(&pid).cloned()
+        }
+
         fn is_available(&self, _wsl: Option<&WslBackend>) -> bool {
             true
         }
+    }
+
+    /// The pid of running agent `id`.
+    fn pid_of(orch: &Orchestrator, id: ProcessId) -> u32 {
+        match orch.inner.lock().unwrap().processes[&id].status {
+            ProcessStatus::Running { pid, .. } => pid,
+            ref other => panic!("not running: {other:?}"),
+        }
+    }
+
+    async fn wait_for_exit(orch: &Orchestrator, id: ProcessId) {
+        for _ in 0..400 {
+            if matches!(
+                orch.inner.lock().unwrap().processes[&id].status,
+                ProcessStatus::Exited { .. }
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("agent never exited");
     }
 
     /// An orchestrator on `adapter`, persisting under `data`.
@@ -5220,6 +5302,93 @@ mod tests {
         assert_eq!(kept.len(), 1, "kept for the next open");
         assert_eq!(kept[0].session_id, SESS_1);
         orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_restart_after_a_clear_resumes_the_new_session() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        let id = orch.open_project(root).await.unwrap();
+        let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
+        // `/clear`: the CLI moved on to a new session.
+        adapter
+            .live
+            .lock()
+            .unwrap()
+            .insert(pid_of(&orch, agent), SESS_2.to_string());
+        adapter.store(SESS_2);
+        orch.stop_process(agent).await.unwrap();
+        wait_for_exit(&orch, agent).await;
+        orch.start_process(agent).await.unwrap();
+        wait_for_launch(&orch, agent, |flag, s| flag == "--resume" && s == SESS_2).await;
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn an_agent_that_exits_on_its_own_follows_its_clear_too() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        let id = orch.open_project(root).await.unwrap();
+        let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
+        let pid = pid_of(&orch, agent);
+        adapter.live.lock().unwrap().insert(pid, SESS_2.to_string());
+        adapter.store(SESS_2);
+        // Killed from outside, as a crash would: the exit handler asks.
+        let killed = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        wait_for_exit(&orch, agent).await;
+        assert_eq!(
+            orch.inner.lock().unwrap().processes[&agent]
+                .session
+                .as_ref()
+                .unwrap()
+                .id,
+            SESS_2
+        );
+        orch.start_process(agent).await.unwrap();
+        wait_for_launch(&orch, agent, |flag, s| flag == "--resume" && s == SESS_2).await;
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn the_quit_remembers_the_session_a_clear_moved_to() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        let cleared = spawn_memory_agent(&orch, id, "cleared", Vec::new(), None).await;
+        let invalid = spawn_memory_agent(&orch, id, "invalid", Vec::new(), None).await;
+        let unknown = spawn_memory_agent(&orch, id, "unknown", Vec::new(), None).await;
+        {
+            let mut live = adapter.live.lock().unwrap();
+            live.insert(pid_of(&orch, cleared), SESS_2.to_string());
+            // A registry entry that is no session id keeps the current one.
+            live.insert(pid_of(&orch, invalid), "-x".to_string());
+        }
+        orch.shutdown().await;
+        let listed = orch.session_memory.list(&root);
+        let id_of = |name: &str| {
+            listed
+                .iter()
+                .find(|e| e.name == name)
+                .map(|e| e.session_id.clone())
+                .unwrap()
+        };
+        assert_eq!(id_of("cleared"), SESS_2);
+        assert_eq!(id_of("invalid"), invalid.to_string());
+        assert_eq!(id_of("unknown"), unknown.to_string());
     }
 
     /// The real Claude Code adapter: an agent whose own args pick the

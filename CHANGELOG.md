@@ -20,7 +20,10 @@ when it merges.
   the model it was started with. A conversation Claude Code no longer has is
   skipped, a remembered session is dropped after 14 days, and turning the
   setting off forgets them all. Auggie agents, and agents whose own args pick
-  the session, are not resumed.
+  the session, are not resumed. Both this and restarting a stopped agent now
+  follow a `/clear` to the conversation after it, instead of going back to
+  the one before — except for an agent that ended itself with `/exit`, and on
+  WSL projects.
 
 ## [3.0.0] - 2026-10-08
 
