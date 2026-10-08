@@ -253,7 +253,7 @@ you added by hand alone.
 
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro |
+| **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree"             |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
 | **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
@@ -294,8 +294,26 @@ your `.bashrc`/`.profile` PATH setup applies. Terminals open your distro
 shell. **Settings → MCP → install** registers the bridge with the distro's
 `claude`/`auggie`. Clear the field and restart to go back to native Windows.
 
-Limits: it's one global setting (no per-project choice), projects must live in
-that distro, and **Open in Warp** is unchanged.
+**Projects on a Windows drive.** By default a project opened from `C:\…`
+(or any other drive) runs in the distro too, through `/mnt/c/…`. If you would
+rather keep those on Windows, turn on **Run Windows-drive projects natively**
+under the distro field (it appears once a distro is set) and restart: a
+drive project then runs its services, terminals, agents and git on Windows
+itself (cmd.exe, Windows git, the Windows `claude`), while projects inside the
+distro (`\\wsl.localhost\…`) keep running in WSL. With it on:
+
+- install the agent CLIs on Windows as well — the **New agent** dialog
+  checks for them where that project's agents will actually run;
+- new terminals in a drive project open PowerShell, whatever the **Shell**
+  setting says (that setting is for the distro's shell);
+- `podium.yml` commands in a drive project are `cmd.exe` syntax, not bash.
+
+The personal assistant and the MCP install always use the configured
+backend.
+
+Limits: the distro is one global setting, **Settings → Agents** reports the
+CLIs found in the configured backend (the distro), and **Open in Warp** is
+unchanged.
 
 ## Things you'd otherwise never find
 

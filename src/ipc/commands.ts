@@ -241,9 +241,14 @@ export function processResize(
 // Agents
 // ---------------------------------------------------------------------------
 
-/** List the supported agent adapters (probes binary availability). */
-export function adaptersList(): Promise<AdapterInfo[]> {
-  return invoke("adapters_list");
+/**
+ * List the supported agent adapters, probing binary availability on the
+ * backend an agent in `projectId` would run on (the configured backend when
+ * omitted — in WSL mode a natively-run Windows-drive project finds the
+ * Windows CLIs, a distro project the distro's).
+ */
+export function adaptersList(projectId?: ProjectId): Promise<AdapterInfo[]> {
+  return invoke("adapters_list", { projectId: projectId ?? null });
 }
 
 /** Spawn (add + immediately start) an agent in a project. */
@@ -287,6 +292,16 @@ export function backendSettingsSetWslDistro(
   return invoke("backend_settings_set_wsl_distro", {
     distro: distro.trim() || null,
   });
+}
+
+/**
+ * Save the WSL-mode opt-in that runs Windows-drive projects natively instead
+ * of in the distro. Applies on the next launch. Returns the refreshed settings.
+ */
+export function backendSettingsSetNativeDriveProjects(
+  enabled: boolean,
+): Promise<BackendSettingsDto> {
+  return invoke("backend_settings_set_native_drive_projects", { enabled });
 }
 
 /** Global agent settings (command override + default args) + adapter catalog. */

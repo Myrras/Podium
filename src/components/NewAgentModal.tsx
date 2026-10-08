@@ -70,7 +70,9 @@ export function NewAgentModal({
     // Fetch the catalog and the configured default together so the dropdown
     // lands on the user's default agent (Settings → Agents), not just the
     // first available one.
-    Promise.all([adaptersList(), agentSettingsGet()])
+    // Probed on this project's backend: in WSL mode a natively-run
+    // Windows-drive project and a distro project find different CLIs.
+    Promise.all([adaptersList(projectId ?? undefined), agentSettingsGet()])
       .then(([list, settings]) => {
         if (cancelled) return;
         setAdapters(list);
@@ -90,7 +92,7 @@ export function NewAgentModal({
     return () => {
       cancelled = true;
     };
-  }, [open, initialName, initialPrompt]);
+  }, [open, initialName, initialPrompt, projectId]);
 
   // Seed the args field with the selected adapter's default args (Settings →
   // Agents) whenever the adapter changes, so the user starts from the defaults

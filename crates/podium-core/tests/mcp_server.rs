@@ -41,7 +41,7 @@ async fn start_server(config_dir: std::path::PathBuf) -> (Arc<Orchestrator>, Mcp
     (orch, server)
 }
 
-/// One raw HTTP/1.1 POST to `<base_url>/mcp`; returns (status, full response).
+/// One raw HTTP/1.0 POST to `<base_url>/mcp`; returns (status, full response).
 async fn http_post_mcp(base_url: &str, token: Option<&str>, body: &str) -> (u16, String) {
     http_post_mcp_with_session(base_url, token, None, body).await
 }
@@ -85,8 +85,12 @@ async fn http_post_inner(
     let session = session_id
         .map(|s| format!("Mcp-Session-Id: {s}\r\n"))
         .unwrap_or_default();
+    // HTTP/1.0 so the server answers with a close-delimited body rather than
+    // chunked encoding: chunk-size lines would otherwise sit between the
+    // bytes of the payload, and where the chunks fall is not ours to control
+    // (a local filter on the loopback path can re-chunk a response).
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {path} HTTP/1.0\r\nHost: {addr}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\n{auth}{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -99,6 +103,15 @@ async fn http_post_inner(
         .expect("timely response")
         .expect("read response");
     let text = String::from_utf8_lossy(&response).into_owned();
+    let head = text
+        .split_once("\r\n\r\n")
+        .map_or(text.as_str(), |(h, _)| h);
+    assert!(
+        !head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked"),
+        "expected a close-delimited HTTP/1.0 body, got a chunked one"
+    );
     let status = text
         .split_whitespace()
         .nth(1)
@@ -125,7 +138,7 @@ fn extract_session_id(response: &str) -> String {
 
 /// The JSON-RPC payload of a raw HTTP response. The server answers either
 /// `application/json` (a plain body) or `text/event-stream` (one `data: `
-/// line per SSE event, chunked-encoded) — either way, the payload we want is
+/// line per SSE event) — either way, the payload we want is
 /// the first `{...}` JSON object in the response.
 fn extract_json_body(response: &str) -> serde_json::Value {
     let start = response.find('{').expect("json object in body");
@@ -737,7 +750,7 @@ impl AgentAdapter for FakeAgentAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }
@@ -1352,7 +1365,7 @@ impl AgentAdapter for PromptEchoAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }
@@ -1848,7 +1861,7 @@ impl AgentAdapter for EchoAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }
@@ -1877,7 +1890,7 @@ impl AgentAdapter for BetaAdapter {
         })
     }
 
-    fn is_available(&self) -> bool {
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
         true
     }
 }

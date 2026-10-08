@@ -150,7 +150,8 @@
 }
 
 .projectHeader:hover .dragHandle,
-.projectHeader:focus-within .dragHandle {
+.projectHeader:focus-visible .dragHandle,
+.projectHeader:has(:focus-visible) .dragHandle {
   opacity: 1;
   pointer-events: auto;
 }
@@ -173,10 +174,72 @@
 }
 
 /*
- * Project row actions (rename / reload / remove). Hidden at rest so the
- * sidebar reads as project names only; the slot stays reserved (opacity,
- * not display) so revealing them never reflows the row.
+ * The name and its hover actions share one slot. The actions strip is
+ * absolutely positioned at the slot's right edge and overlays the end of
+ * the name on hover, so at rest the name gets the full width and revealing
+ * the actions never reflows the row. Because the strip lives inside the
+ * slot, it can never reach the caret, the badge or the podium.yml error
+ * icon after the slot: when the slot is narrower than the strip, the strip
+ * is clipped from its left (Rename goes first; Remove stays at the edge,
+ * away from the caret). New project actions go inside the strip, so they
+ * never cost the name any width either.
  */
+.nameSlot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.projectActions {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 100%;
+  overflow: hidden;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding-left: var(--sp-4);
+  /* The opaque part masks the name text underneath. */
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--surface-hover) var(--sp-4)
+  );
+  opacity: 0;
+  /* The strip itself never takes the pointer, only its buttons do: a click,
+     double-click (rename) or hover (the root-path tooltip) on the fade still
+     reaches the name underneath. */
+  pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+/*
+ * Revealed on hover and on keyboard focus only. Not :focus-within: clicking
+ * the header to collapse it focuses it, and the strip would then linger
+ * after the mouse left. The header paints its hover background on keyboard
+ * focus too, so the strip's opaque fade always matches what is under it.
+ */
+.projectHeader:hover .projectActions,
+.projectHeader:focus-visible .projectActions,
+.projectHeader:has(:focus-visible) .projectActions {
+  opacity: 1;
+}
+
+.projectHeader:hover .projectAction,
+.projectHeader:focus-visible .projectAction,
+.projectHeader:has(:focus-visible) .projectAction {
+  pointer-events: auto;
+}
+
+.projectHeader:focus-visible,
+.projectHeader:has(:focus-visible) {
+  background: var(--surface-hover);
+}
+
 .projectAction {
   display: flex;
   align-items: center;
@@ -190,18 +253,9 @@
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
-  opacity: 0;
-  pointer-events: none;
   transition:
     background var(--dur-1) var(--ease-out),
-    color var(--dur-1) var(--ease-out),
-    opacity var(--dur-1) var(--ease-out);
-}
-
-.projectHeader:hover .projectAction,
-.projectHeader:focus-within .projectAction {
-  opacity: 1;
-  pointer-events: auto;
+    color var(--dur-1) var(--ease-out);
 }
 
 .projectAction:hover {
@@ -209,22 +263,21 @@
   color: var(--text);
 }
 
-/* Sections popover: keeps its trigger visible while open. */
-.sectionsWrap {
-  position: relative;
-  display: flex;
-  flex-shrink: 0;
+/* Sections popover: the strip (and its trigger) stays visible while open.
+   The popover hangs off the header, outside the clipping strip. */
+.projectActions[data-open] {
+  opacity: 1;
 }
 
-.sectionsWrap[data-open] .projectAction {
-  opacity: 1;
+.projectActions[data-open] .projectAction {
   pointer-events: auto;
 }
 
 .sectionsPopover {
   position: absolute;
   top: 100%;
-  right: 0;
+  right: var(--sp-3);
+  cursor: default;
   z-index: 20;
   display: flex;
   flex-direction: column;

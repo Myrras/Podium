@@ -68,6 +68,7 @@ describe("CloseWarningModal", () => {
             scratchpads: true,
             issues: false,
           },
+          nativeInWslMode: false,
         },
       ],
     });

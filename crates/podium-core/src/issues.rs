@@ -333,8 +333,11 @@ pub fn parse_remote(url: &str) -> Option<(String, String)> {
 
 /// `(host, path)` of the project's `origin` remote.
 pub fn detect(root: &Path) -> CoreResult<(String, String)> {
-    let root_arg = crate::platform::backend_path(root).map_err(|_| CoreError::IssuesNoRemote)?;
-    let mut cmd = crate::platform::git_command();
+    // The project's own backend, as the orchestrator decides it at open.
+    let wsl = crate::platform::wsl_for(root);
+    let root_arg =
+        crate::platform::backend_path_in(wsl, root).map_err(|_| CoreError::IssuesNoRemote)?;
+    let mut cmd = crate::platform::git_command(wsl);
     cmd.arg("-C")
         .arg(root_arg)
         .args(["remote", "get-url", "origin"])

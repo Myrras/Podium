@@ -27,10 +27,10 @@ import type {
   WorktreeInfo,
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
+import { terminalShellFor } from "../lib/terminalShell";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
-import { useSettingsStore } from "../state/settingsStore";
 import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
@@ -183,7 +183,10 @@ function ProjectGroup({
     WorktreeInfo | null | undefined
   >(undefined);
   const [sectionsOpen, setSectionsOpen] = useState(false);
+  // The trigger lives in the hover strip, the popover outside it (the strip
+  // clips): an outside click is one that hits neither.
   const sectionsRef = useRef<HTMLDivElement>(null);
+  const sectionsTriggerRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -195,7 +198,11 @@ function ProjectGroup({
   useEffect(() => {
     if (!sectionsOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (!sectionsRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        !sectionsRef.current?.contains(target) &&
+        !sectionsTriggerRef.current?.contains(target)
+      ) {
         setSectionsOpen(false);
       }
     };
@@ -234,8 +241,7 @@ function ProjectGroup({
 
   const addTerminal = async () => {
     setActiveProject(project.id);
-    // Blank = backend platform default ($SHELL -i / PowerShell).
-    const shell = useSettingsStore.getState().terminal.shell.trim();
+    const shell = terminalShellFor(project.nativeInWslMode);
     const info = await addProcess(project.id, {
       name: `Terminal ${terminals.length + 1}`,
       kind: "terminal",
@@ -319,39 +325,104 @@ function ProjectGroup({
         <span className={styles.projectBadge} aria-hidden>
           {project.iconInitials}
         </span>
-        {editing ? (
-          <input
-            ref={inputRef}
-            className={styles.projectNameInput}
-            value={draft}
-            aria-label={`Rename ${project.name}`}
-            placeholder={project.name}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitRename();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelRename();
-              }
-            }}
-          />
-        ) : (
-          <span
-            className={styles.projectName}
-            title={project.root}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              startEditing();
-            }}
-          >
-            {project.name}
-          </span>
-        )}
+        {/* The name and its hover actions share one slot: the actions
+            overlay the end of the name instead of reserving their width,
+            and stay inside the slot so they never cover the caret, the
+            badge or the podium.yml error icon. */}
+        <div className={styles.nameSlot}>
+          {editing ? (
+            <input
+              ref={inputRef}
+              className={styles.projectNameInput}
+              value={draft}
+              aria-label={`Rename ${project.name}`}
+              placeholder={project.name}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+            />
+          ) : (
+            <span
+              className={styles.projectName}
+              title={project.root}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEditing();
+              }}
+            >
+              {project.name}
+            </span>
+          )}
+          {/* Hidden while renaming so they never cover the input. */}
+          {!editing && (
+            <div
+              className={styles.projectActions}
+              data-open={sectionsOpen ? "true" : undefined}
+            >
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Rename ${project.name}`}
+                title="Rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startEditing();
+                }}
+              >
+                <EditIcon size={12} />
+              </button>
+              <button
+                ref={sectionsTriggerRef}
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Sections for ${project.name}`}
+                aria-haspopup="true"
+                aria-expanded={sectionsOpen}
+                title="Sections"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSectionsOpen((o) => !o);
+                }}
+              >
+                <SectionsIcon size={12} />
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Reload podium.yml for ${project.name}`}
+                title="Reload podium.yml"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void reloadProjectConfig(project.id);
+                }}
+              >
+                <RestartIcon size={12} />
+              </button>
+              <button
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Remove ${project.name} from sidebar`}
+                title="Remove from sidebar"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void closeProject(project.id);
+                }}
+              >
+                <CloseIcon size={12} />
+              </button>
+            </div>
+          )}
+        </div>
         {project.configError && (
           <span
             className={styles.configError}
@@ -362,101 +433,45 @@ function ProjectGroup({
             <ErrorIcon size={13} />
           </span>
         )}
-        {!editing && (
-          <button
-            type="button"
-            className={styles.projectAction}
-            aria-label={`Rename ${project.name}`}
-            title="Rename"
-            onClick={(e) => {
-              e.stopPropagation();
-              startEditing();
-            }}
-          >
-            <EditIcon size={12} />
-          </button>
-        )}
-        <div
-          ref={sectionsRef}
-          className={styles.sectionsWrap}
-          data-open={sectionsOpen ? "true" : undefined}
-        >
-          <button
-            type="button"
-            className={styles.projectAction}
+        {/* Outside the hover strip, which clips; anchored to the header. */}
+        {sectionsOpen && (
+          <div
+            ref={sectionsRef}
+            className={styles.sectionsPopover}
+            role="group"
             aria-label={`Sections for ${project.name}`}
-            aria-haspopup="true"
-            aria-expanded={sectionsOpen}
-            title="Sections"
-            onClick={(e) => {
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
               e.stopPropagation();
-              setSectionsOpen((o) => !o);
+              if (e.key === "Escape") setSectionsOpen(false);
             }}
           >
-            <SectionsIcon size={12} />
-          </button>
-          {sectionsOpen && (
-            <div
-              className={styles.sectionsPopover}
-              role="group"
-              aria-label={`Sections for ${project.name}`}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === "Escape") setSectionsOpen(false);
-              }}
-            >
-              {SECTION_TOGGLES.map(({ key, label }) => (
-                <label key={key} className={styles.sectionsItem}>
-                  <input
-                    type="checkbox"
-                    checked={project.sections[key]}
-                    onChange={(e) => {
-                      const on = e.target.checked;
-                      void setProjectSections(project.id, { [key]: on });
-                      // Hiding the Git section unmounts its button (and the
-                      // board's auto-refresh): close the board with it.
-                      const layout = useLayoutStore.getState();
-                      if (
-                        key === "issues" &&
-                        !on &&
-                        layout.openBoard?.projectId === project.id
-                      ) {
-                        layout.clearOpenBoard();
-                      }
-                    }}
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-        <button
-          type="button"
-          className={styles.projectAction}
-          aria-label={`Reload podium.yml for ${project.name}`}
-          title="Reload podium.yml"
-          onClick={(e) => {
-            e.stopPropagation();
-            void reloadProjectConfig(project.id);
-          }}
-        >
-          <RestartIcon size={12} />
-        </button>
-        <button
-          type="button"
-          className={styles.projectAction}
-          aria-label={`Remove ${project.name} from sidebar`}
-          title="Remove from sidebar"
-          onClick={(e) => {
-            e.stopPropagation();
-            void closeProject(project.id);
-          }}
-        >
-          <CloseIcon size={12} />
-        </button>
-        {/* Last, so the hover-only actions reveal to its left and it never moves. */}
+            {SECTION_TOGGLES.map(({ key, label }) => (
+              <label key={key} className={styles.sectionsItem}>
+                <input
+                  type="checkbox"
+                  checked={project.sections[key]}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    void setProjectSections(project.id, { [key]: on });
+                    // Hiding the Git section unmounts its button (and the
+                    // board's auto-refresh): close the board with it.
+                    const layout = useLayoutStore.getState();
+                    if (
+                      key === "issues" &&
+                      !on &&
+                      layout.openBoard?.projectId === project.id
+                    ) {
+                      layout.clearOpenBoard();
+                    }
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        )}
+        {/* Last, outside the hover strip, so it is always shown and never moves. */}
         {project.sections.issues && <GitButton projectId={project.id} />}
       </div>
       <div
@@ -513,6 +528,7 @@ function ProjectGroup({
           {project.sections.worktrees && (
             <WorktreeSubsection
               projectId={project.id}
+              nativeInWslMode={project.nativeInWslMode}
               terminals={terminals}
               onOpenCommands={(wt) => {
                 setActiveProject(project.id);

@@ -61,6 +61,7 @@ function project(id: string, name = id): ProjectInfo {
       scratchpads: true,
       issues: false,
     },
+    nativeInWslMode: false,
   };
 }
 
@@ -123,6 +124,7 @@ describe("projectStore.restoreWorkspace", () => {
           scratchpads: true,
           issues: false,
         },
+        nativeInWslMode: false,
       }),
     );
     projectListMock.mockResolvedValue([]);
@@ -172,6 +174,7 @@ describe("projectStore.renameProject", () => {
         scratchpads: true,
         issues: false,
       },
+      nativeInWslMode: false,
     });
 
     await useProjectStore.getState().renameProject("a", "Alpha");

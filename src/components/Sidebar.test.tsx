@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The stores pull in the IPC layer; jsdom has no Tauri bridge.
 vi.mock("@tauri-apps/api/core", () => ({
@@ -15,6 +15,7 @@ import type { ProcessInfo, ProjectInfo, WorktreeInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
+import { useSettingsStore } from "../state/settingsStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { Sidebar } from "./Sidebar";
 
@@ -38,6 +39,7 @@ function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
       scratchpads: true,
       issues: false,
     },
+    nativeInWslMode: false,
     ...overrides,
   };
 }
@@ -192,6 +194,47 @@ describe("Sidebar project header", () => {
     expect(useLayoutStore.getState().openBoard).toBeNull();
   });
 
+  it("drops the hover actions while renaming so they never cover the input", () => {
+    // The actions overlay the end of the name (CSS-only, not asserted here);
+    // while renaming they are not rendered at all.
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+    expect(
+      screen.getByRole("button", { name: "Reload podium.yml for Webshop" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Webshop" }));
+
+    expect(
+      screen.getByRole("textbox", { name: "Rename Webshop" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Reload podium.yml for Webshop" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the podium.yml error icon outside the slot the hover actions overlay", () => {
+    // The strip is clipped to the name's slot (CSS-only, not asserted here),
+    // so the error icon — whose tooltip is the only place the error text
+    // shows — must sit after that slot, not inside it.
+    useProjectStore.setState({
+      projects: [project({ configError: "unknown field `procesess`" })],
+    });
+    render(<Sidebar />);
+
+    const rename = screen.getByRole("button", { name: "Rename Webshop" });
+    const name = screen.getByText("Webshop");
+    const error = screen.getByRole("img", { name: "podium.yml error" });
+    const slot = name.parentElement!;
+
+    expect(slot).toContainElement(rename);
+    expect(slot).not.toContainElement(error);
+    expect(
+      slot.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(error).toHaveAttribute("title", "unknown field `procesess`");
+  });
+
   it("keeps the drag handle draggable in the DOM regardless of hover state", () => {
     // jsdom never evaluates :hover, so this asserts the element the CSS
     // reveals on hover is present and draggable at rest — the actual
@@ -248,5 +291,38 @@ describe("Sidebar project header", () => {
     // empty hint instead of listing it a second time.
     await screen.findByText("worktree-shell");
     expect(screen.getByText("No terminals yet.")).toBeInTheDocument();
+  });
+
+  describe("new terminal shell", () => {
+    const initialSettings = useSettingsStore.getState();
+    afterEach(() => useSettingsStore.setState(initialSettings, true));
+
+    async function addTerminalIn(p: ProjectInfo) {
+      useSettingsStore.setState({
+        terminal: { ...initialSettings.terminal, shell: "zsh" },
+      });
+      useProjectStore.setState({ projects: [p] });
+      render(<Sidebar />);
+      fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("process_add", expect.anything()),
+      );
+      const call = vi
+        .mocked(invoke)
+        .mock.calls.find(([cmd]) => cmd === "process_add");
+      return (call?.[1] as { spec: { command?: string } }).spec;
+    }
+
+    it("launches the configured shell", async () => {
+      const spec = await addTerminalIn(project());
+      expect(spec.command).toBe("zsh");
+    });
+
+    it("leaves it out for a Windows-drive project running natively in WSL mode", async () => {
+      // The setting names the distro's shell; `cmd /C zsh` would fail, so
+      // the backend's native default (PowerShell) opens instead.
+      const spec = await addTerminalIn(project({ nativeInWslMode: true }));
+      expect(spec.command).toBeUndefined();
+    });
   });
 });
