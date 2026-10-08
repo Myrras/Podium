@@ -77,6 +77,10 @@ uuid_newtype!(
     /// edited or withdrawn before it is delivered.
     PendingId
 );
+uuid_newtype!(
+    /// Identifies one item on the assistant's Responses list.
+    ResponseId
+);
 
 #[cfg(test)]
 mod tests {

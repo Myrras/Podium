@@ -20,13 +20,14 @@ use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
 use crate::ids::{CommentId, LinkId, TodoId};
-use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId};
+use crate::ids::{PendingId, ProcessId, ProjectId, ProposalId, ResponseId, ScratchpadId};
 use crate::platform::WslBackend;
 use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 use crate::project::{self, ConfiguredProcess};
+use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
@@ -44,6 +45,9 @@ const MAX_AGENTS_PER_PROJECT: usize = 8;
 const DEFAULT_ADAPTER_ID: &str = "claude-code";
 
 const LOCK_POISONED: &str = "orchestrator lock poisoned";
+
+/// Longest Responses item text kept; the rest is clipped.
+const MAX_RESPONSE_TEXT_CHARS: usize = 500;
 
 /// A resumed agent that crashes within this long after starting is taken to
 /// have failed to resume (the CLI refusing the session), so its next start is
@@ -235,7 +239,8 @@ pub struct Orchestrator {
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
-    /// The workspace-wide personal assistant session (chat panel).
+    /// The workspace-wide personal assistant session (chat panel). Also
+    /// holds the Responses list ([`Self::responses`]).
     assistant: AssistantManager,
 }
 
@@ -288,6 +293,19 @@ impl Orchestrator {
     /// load it. Until this is called, scratchpads are held in memory only.
     pub fn set_scratchpads_path(&self, path: PathBuf) {
         self.scratchpads.set_path(path);
+    }
+
+    /// Point the Responses list at its backing file (app data dir) and load
+    /// it. Until this is called, items are held in memory only.
+    pub fn set_responses_path(&self, path: PathBuf) {
+        self.responses().set_path(path);
+    }
+
+    /// The assistant's Responses list (survives restarts and new
+    /// conversations). Kept in the assistant's store so its queue can put
+    /// back the item of a reply it never delivered.
+    fn responses(&self) -> &ResponseStore {
+        self.assistant.store().responses()
     }
 
     /// Point the assistant at its CLI binary, working directory and the dir
@@ -599,6 +617,132 @@ impl Orchestrator {
     pub async fn assistant_interrupt(&self) -> CoreResult<()> {
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.interrupt(mcp).await
+    }
+
+    /// The assistant's Responses list, newest first.
+    pub fn assistant_responses(&self) -> Vec<ResponseItem> {
+        self.responses().list()
+    }
+
+    /// File one Responses item (the assistant's `add_response`). Agent,
+    /// project and to-do names are resolved now, so the item still reads
+    /// right after the agent exits or the project closes. The project comes
+    /// from the agent when it is live, else from `project_id`. A `todo_id`
+    /// is refused without a `project_id` or `process_id` to find it by; a
+    /// project or to-do that is gone (including an agent that exited, so
+    /// there is no project to look in) is dropped from the item rather than
+    /// refusing it.
+    /// A newer item about the same agent or to-do replaces the open one.
+    /// An agent that is already gone keeps its id as the supersede key but
+    /// loses its name: it may well have exited between the nudge and this
+    /// call, which is no reason to drop the item.
+    pub fn add_assistant_response(
+        &self,
+        kind: ResponseKind,
+        text: &str,
+        process_id: Option<ProcessId>,
+        project_id: Option<ProjectId>,
+        todo_id: Option<TodoId>,
+        source: Option<&str>,
+    ) -> CoreResult<ResponseItem> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "response text must not be blank".to_string(),
+            ));
+        }
+        if todo_id.is_some() && project_id.is_none() && process_id.is_none() {
+            return Err(CoreError::InvalidInput(
+                "todo_id needs project_id (or the process_id of an agent)".to_string(),
+            ));
+        }
+        let process =
+            process_id.and_then(|id| self.list_processes(None).into_iter().find(|p| p.id == id));
+        // Responses are about agents: a terminal's or service's id would key
+        // and label the item after the wrong thing. (An id that is gone is
+        // fine — see above.)
+        if process
+            .as_ref()
+            .is_some_and(|p| !matches!(p.kind, ProcessKind::Agent { .. }))
+        {
+            return Err(CoreError::InvalidInput(
+                "process_id must be an agent's".to_string(),
+            ));
+        }
+        // A live agent's own project wins over `project_id`: the agent is
+        // what the item is about, so a mismatched id would mislabel it.
+        let project_id = process.as_ref().map(|p| p.project_id).or(project_id);
+        // Context that has gone (project closed, to-do removed) is dropped,
+        // not an error — like a vanished agent, it is no reason to lose the
+        // item; the ids still work as supersede keys.
+        let project =
+            project_id.and_then(|id| self.list_projects().into_iter().find(|p| p.id == id));
+        let todo = match (todo_id, &project) {
+            (Some(id), Some(project)) => self.todos.get(project.id, &project.root, id),
+            _ => None,
+        };
+        let item = ResponseItem {
+            id: ResponseId::new(),
+            kind,
+            // Capped like the list itself: the assistant writes these from
+            // content it read, and the panel row is meant to be a line or two.
+            text: crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS),
+            // Names are capped like the to-do and source: they travel into
+            // the label a reply carries back to the session.
+            project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent: process
+                .as_ref()
+                .map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent_color: process.as_ref().and_then(|p| p.color.clone()),
+            todo: todo.map(|t| crate::assistant::truncate(&t.text, 60)),
+            source: source
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| crate::assistant::truncate(s, 40)),
+            process_id,
+            todo_id,
+            created_at: Utc::now(),
+        };
+        self.responses()
+            .add(item.clone(), |items| self.publish_responses(items))?;
+        Ok(item)
+    }
+
+    /// Mark one Responses item as read: it is simply removed.
+    pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
+        self.responses()
+            .remove(id, |items| self.publish_responses(items))?;
+        Ok(())
+    }
+
+    /// Answer one Responses item: `text` goes to the assistant as the user's
+    /// message, carrying which item it answers, and the item is removed.
+    /// Taken off the list *before* sending, so a double submit finds nothing
+    /// the second time instead of sending the reply twice; a send that fails
+    /// puts it back to try again. Returns delivered-or-queued, as
+    /// [`assistant_send`](Self::assistant_send).
+    pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
+        if text.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "reply must not be blank".to_string(),
+            ));
+        }
+        let item = self
+            .responses()
+            .remove(id, |items| self.publish_responses(items))?;
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        match self.assistant.send_reply(text, item.clone(), mcp).await {
+            Ok(delivered) => Ok(delivered),
+            Err(e) => {
+                self.responses()
+                    .restore(item, |items| self.publish_responses(items));
+                Err(e)
+            }
+        }
+    }
+
+    fn publish_responses(&self, items: &[ResponseItem]) {
+        crate::assistant::publish_responses(&self.events, items);
     }
 
     /// Point the global agent settings at their backing file (app data dir)

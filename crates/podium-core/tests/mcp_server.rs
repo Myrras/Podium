@@ -13,9 +13,9 @@ use podium_core::mcp::tools::{
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
-    AdapterRegistry, AgentAdapter, AgentLaunchCtx, AutonomyMode, CoreError, CoreResult, LaunchPlan,
-    Orchestrator, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ProjectId, RestartCommands,
-    RestartPolicy, TodoId,
+    AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
+    CoreResult, LaunchPlan, Orchestrator, PodiumEvent, ProcessId, ProcessKind, ProcessSpec,
+    ProcessStatus, ProjectId, RestartCommands, RestartPolicy, TodoId,
 };
 // Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
 #[cfg(unix)]
@@ -308,6 +308,8 @@ async fn tools_list_includes_scratchpad_tools() {
             "{name} missing from tools/list: {tools:?}"
         );
     }
+    // The assistant's own tool: only its route lists it.
+    assert!(!tools.contains(&"add_response"), "{tools:?}");
 
     server.stop();
 }
@@ -2695,6 +2697,7 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("list_scratchpads", true, false),
     ("list_worktrees", true, false),
     ("verify_sender", true, false),
+    ("add_response", true, false),
     ("spawn_agent", false, false),
     ("start_process", false, false),
     ("stop_process", false, true),
@@ -2854,6 +2857,108 @@ async fn verify_sender_answers_from_podiums_own_registry() {
         "an exited session must not verify"
     );
 
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_response_files_an_item_and_is_refused_on_the_agent_route() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let (project_id, todo_id) = project_with_todo(&orch, dir.path()).await;
+    let server = mcp::start(Arc::clone(&orch), dir.path().join("mcp"))
+        .await
+        .expect("mcp server starts");
+    let mut events = orch.subscribe_events();
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+
+    let answer = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        2,
+        "add_response",
+        serde_json::json!({
+            "kind": "needsYou",
+            "text": "Pick a copy variant for the welcome screen.",
+            "project_id": project_id.to_string(),
+            "todo_id": todo_id.to_string(),
+        }),
+    )
+    .await;
+    let item: serde_json::Value = serde_json::from_str(&answer).expect("json item");
+    assert_eq!(item["kind"], "needsYou");
+    assert_eq!(
+        item["label"],
+        format!(
+            "{} · review the onboarding copy",
+            item["project"].as_str().unwrap()
+        )
+    );
+    assert_eq!(item["todo"], "review the onboarding copy");
+    assert!(item["project"].is_string(), "{item}");
+
+    let listed = orch.assistant_responses();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].todo_id, Some(todo_id));
+    let snapshot = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::ResponsesChanged { items },
+            }) = events.recv().await
+            {
+                return items;
+            }
+        }
+    })
+    .await
+    .expect("responsesChanged published");
+    assert_eq!(snapshot, listed);
+
+    // An agent cannot write to the user's list.
+    let agent = open_session(&server, "/mcp").await;
+    let (status, response) = http_post_path(
+        server.url(),
+        "/mcp",
+        Some(server.token()),
+        Some(&agent),
+        &tools_call_request(
+            3,
+            "add_response",
+            serde_json::json!({ "kind": "fyi", "text": "done" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("tool not found")),
+        "{body}"
+    );
+    assert_eq!(orch.assistant_responses().len(), 1);
+
+    // The assistant's route lists it.
+    let (status, response) = http_post_path(
+        server.url(),
+        ASSISTANT_PATH,
+        Some(server.token()),
+        Some(&assistant),
+        &tools_list_request(4),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    assert!(
+        body["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .any(|t| t["name"] == "add_response"),
+        "{body}"
+    );
+
+    server.stop();
     orch.shutdown().await;
 }
 
@@ -3199,6 +3304,5 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     let owner = todo_owner(&orch).expect("owned");
     assert_eq!(owner.process_id, successor);
     assert!(owner.active);
-
     orch.shutdown().await;
 }

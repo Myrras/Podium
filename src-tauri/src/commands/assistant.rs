@@ -3,13 +3,16 @@
 //! autonomy, proactivity, external-poll and
 //! message-queue settings, deciding on a proposed action, and managing the
 //! pending-input queue (edit/remove a waiting message, interrupt the running
-//! turn). Replies (and the outcome of a proposal, and queue changes) stream
-//! back as global `assistant:event` events (see `events.rs`).
+//! turn), and the Responses list (read, mark as read, reply). Replies (and the
+//! outcome of a proposal, queue and Responses changes) stream back as global
+//! `assistant:event` events (see `events.rs`).
 
 use tauri::State;
 
 use podium_core::assistant::AssistantPolling;
-use podium_core::{Attachment, AutonomyMode, PendingId, ProposalId, TranscriptEntry};
+use podium_core::{
+    Attachment, AutonomyMode, LabelledResponse, PendingId, ProposalId, ResponseId, TranscriptEntry,
+};
 
 use crate::error::IpcError;
 use crate::state::AppState;
@@ -190,4 +193,42 @@ pub async fn assistant_queue_remove(
 pub async fn assistant_interrupt(state: State<'_, AppState>) -> Result<(), IpcError> {
     state.orchestrator.assistant_interrupt().await?;
     Ok(())
+}
+
+/// The assistant's Responses list, newest first.
+#[tauri::command]
+pub async fn assistant_responses_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<LabelledResponse>, IpcError> {
+    Ok(state
+        .orchestrator
+        .assistant_responses()
+        .into_iter()
+        .map(LabelledResponse::from)
+        .collect())
+}
+
+/// Mark one Responses item as read (removes it).
+#[tauri::command]
+pub async fn assistant_response_dismiss(
+    state: State<'_, AppState>,
+    id: ResponseId,
+) -> Result<(), IpcError> {
+    state.orchestrator.dismiss_assistant_response(id)?;
+    Ok(())
+}
+
+/// Answer one Responses item: the reply goes to the assistant as the user's
+/// message and the item is removed. Returns delivered-or-queued, as
+/// `assistant_send`.
+#[tauri::command]
+pub async fn assistant_response_reply(
+    state: State<'_, AppState>,
+    id: ResponseId,
+    text: String,
+) -> Result<bool, IpcError> {
+    Ok(state
+        .orchestrator
+        .reply_assistant_response(id, &text)
+        .await?)
 }
