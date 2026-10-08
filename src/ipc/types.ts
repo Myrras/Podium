@@ -278,6 +278,8 @@ export interface AgentSettingsDto {
   defaultAdapter: string;
   /** Whether agents are asked to offer a git worktree before editing code. */
   suggestWorktree: boolean;
+  /** Whether a running agent's session is remembered and resumed across app restarts. */
+  rememberSessions: boolean;
   adapters: AgentAdapterConfig[];
 }
 

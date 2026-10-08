@@ -48,6 +48,7 @@ const sampleDto: AgentSettingsDto = {
   mergeMode: "merge",
   defaultAdapter: "",
   suggestWorktree: true,
+  rememberSessions: false,
   adapters: [
     {
       id: "claude-code",
@@ -100,6 +101,7 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
     case "agent_settings_set_default_adapter":
     case "agent_settings_set_merge_mode":
     case "agent_settings_set_suggest_worktree":
+    case "agent_settings_set_remember_sessions":
       return Promise.resolve(sampleDto);
     case "issues_settings_get":
     case "issues_setup_save":
@@ -248,6 +250,23 @@ describe("SettingsModal — Agents tab", () => {
       expect(invoke).toHaveBeenCalledWith(
         "agent_settings_set_suggest_worktree",
         { enabled: false },
+      ),
+    );
+  });
+
+  it("persists the remember-sessions toggle when flipped", async () => {
+    await openAgentsTab();
+    const toggle = screen.getByRole("switch", {
+      name: "Remember agent sessions",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "false"); // default off
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remember_sessions",
+        { enabled: true },
       ),
     );
   });

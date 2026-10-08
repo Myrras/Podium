@@ -100,6 +100,9 @@ pub struct AgentSettingsDto {
     pub default_adapter: String,
     /// Whether agents are asked to offer a git worktree before editing code.
     pub suggest_worktree: bool,
+    /// Whether a running agent's session is remembered and resumed across
+    /// app restarts.
+    pub remember_sessions: bool,
     pub adapters: Vec<AgentAdapterConfig>,
 }
 
@@ -127,6 +130,7 @@ fn build_settings_dto(orchestrator: &Orchestrator) -> AgentSettingsDto {
         merge_mode: settings.merge_mode,
         default_adapter: settings.default_adapter.unwrap_or_default(),
         suggest_worktree: settings.suggest_worktree,
+        remember_sessions: settings.remember_sessions,
         adapters,
     }
 }
@@ -194,6 +198,20 @@ pub async fn agent_settings_set_suggest_worktree(
     enabled: bool,
 ) -> Result<AgentSettingsDto, IpcError> {
     state.orchestrator.set_agent_suggest_worktree(enabled)?;
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || build_settings_dto(&orchestrator))
+        .await
+        .map_err(|e| IpcError::new("io", format!("adapter probe task failed: {e}")))
+}
+
+/// Toggle whether agent sessions are remembered across app restarts.
+/// Returns the refreshed settings.
+#[tauri::command]
+pub async fn agent_settings_set_remember_sessions(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AgentSettingsDto, IpcError> {
+    state.orchestrator.set_agent_remember_sessions(enabled)?;
     let orchestrator = Arc::clone(&state.orchestrator);
     tauri::async_runtime::spawn_blocking(move || build_settings_dto(&orchestrator))
         .await

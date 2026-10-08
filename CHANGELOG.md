@@ -10,6 +10,22 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **Agents can pick up where they left off after you quit Podium.** A new
+  setting, Settings → Agents → Remember agent sessions (off by default),
+  remembers each running Claude Code agent's conversation when you quit and
+  resumes it the next time that project opens — the same way restarting a
+  stopped agent resumes it — still owning its to-dos and scratchpads, and on
+  the model it was started with. A conversation Claude Code no longer has is
+  skipped, a remembered session is dropped after 14 days, and turning the
+  setting off forgets them all. Auggie agents, and agents whose own args pick
+  the session, are not resumed. Both this and restarting a stopped agent now
+  follow a `/clear` to the conversation after it, instead of going back to
+  the one before — on macOS and Linux when Podium starts `claude` itself (not
+  through a wrapper command, a shell function or fish), and not for an agent
+  that ended itself with `/exit`; not on Windows or WSL.
+
 ## [3.0.0] - 2026-10-08
 
 ### Added

@@ -68,6 +68,12 @@ pub struct AgentSettings {
     /// `agents.json` written before this field existed).
     #[serde(default = "default_true")]
     pub suggest_worktree: bool,
+    /// Whether a running agent's Claude Code session id is captured on app
+    /// quit and resumed (`--resume`) the next time its project is opened.
+    /// Defaults off — unlike `suggest_worktree` this reads outside Podium's
+    /// own data dir and auto-launches processes at startup, so it is opt-in.
+    #[serde(default)]
+    pub remember_sessions: bool,
     /// The personal assistant's preferences. It is not an adapter-driven
     /// agent, but it is the same kind of global, cross-project setting, so it
     /// shares this document rather than adding a second one-field file.
@@ -103,6 +109,7 @@ impl Default for AgentSettings {
             default_adapter: None,
             overrides: BTreeMap::new(),
             suggest_worktree: true,
+            remember_sessions: false,
             assistant: AssistantSettings::default(),
             issues: IssueSettings::default(),
         }
@@ -184,6 +191,14 @@ impl AgentSettingsStore {
     pub fn set_suggest_worktree(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.suggest_worktree = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Toggle whether agent sessions are remembered across app restarts.
+    pub fn set_remember_sessions(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.remember_sessions = enabled;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -469,6 +484,26 @@ mod tests {
         let reloaded = AgentSettingsStore::new();
         reloaded.set_path(file);
         assert!(!reloaded.get().suggest_worktree);
+    }
+
+    #[test]
+    fn remember_sessions_defaults_off_and_persists() {
+        assert!(!AgentSettings::default().remember_sessions);
+        // A legacy file without the field loads as disabled (opt-in, unlike
+        // suggest_worktree's opt-out default).
+        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
+        assert!(!legacy.remember_sessions);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agents.json");
+        let store = AgentSettingsStore::new();
+        store.set_path(file.clone());
+        let updated = store.set_remember_sessions(true).unwrap();
+        assert!(updated.remember_sessions);
+
+        let reloaded = AgentSettingsStore::new();
+        reloaded.set_path(file);
+        assert!(reloaded.get().remember_sessions);
     }
 
     #[test]

@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 34 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **96 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **97 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -80,7 +80,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 96 commands.
+  IPC wrappers over all 97 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -212,6 +212,68 @@ atomically, before the async `podium.yml` load.
   project — so nvm/homebrew PATH edits are honoured. Adding an agent CLI = new module + registry entry; no IPC or
   frontend change. Max **8 active agents per project** (recursion guard —
   agents can spawn agents over MCP).
+- **Agent session memory** (`agent/session_memory.rs`, setting
+  `remember_sessions` in `agents.json`, default off) builds on _Restart
+  resumes the session_ (see To-dos below): `session_memory.json` in the app
+  data dir, keyed by project root. `Orchestrator::shutdown()` is the only
+  place a session is captured: each still-running agent with an `AgentSession`
+  is remembered under that session's **current id** — the Podium-assigned
+  `--session-id`, or the one its last restart moved it to — with its name, the
+  to-dos/scratchpads it owns, its per-spawn `args_override` and its
+  `worktree`/`worktree_name` request (`ManagedProcess.spawn_*`, so the
+  restored identity prompt matches), in spawn order (`ManagedProcess.seq`, a
+  per-run insertion counter a restart keeps) so a restore keeps the sidebar
+  order, all in one write. Before that, each id follows a `/clear` (see
+  _Restart resumes the session_); read outside the lock and within 200 ms, and
+  no process starts on that exit path. An agent without an `AgentSession` is
+  **not** remembered: Auggie (no session flags), and an agent whose own
+  `extra_args` pick the session (`--resume`, `--continue`, …) — a restore
+  would put Podium's `--resume` next to the user's flag.
+
+  The next `open_project` on that root, with the setting on, restores the
+  entries one at a time, oldest first: `front` peeks at the oldest, and only
+  once its outcome is known — restored, or skipped — does `remove` drop
+  exactly that entry (matched on the whole entry, so a fresh capture of the
+  same session survives) in one write. A failed save is logged and never
+  cancels the restore. An app that exits part-way (a quit, a crash) therefore
+  still has the entry in flight and the rest next time, and `remember_all`
+  dedupes on the session id, so a leftover cannot turn into a duplicate. Each
+  is respawned through the restart path: `spawn_agent_inner` with
+  `AgentSpawn.resume_session_id` sets the new process's `AgentSession.id` to
+  the remembered id and hands `restart_launch(…, stored = true)` — the
+  `--resume` line, no prompt — to `do_start`, so a resume that crashes within
+  `RESUME_FAILURE_WINDOW` gets `resume_failed` and its next start is fresh,
+  exactly as for a restart. Before that, an entry is skipped when it is older
+  than 14 days (`session_memory::MAX_AGE`, for a project that kept failing to
+  open), is not a hyphenated UUID (the file is user-writable and the id lands
+  unquoted on the shell line), or `AgentAdapter::session_exists` (disk, or the
+  WSL distro's login shell — `Orchestrator::session_stored`, shared with
+  `start_process`) no longer finds it: a pruned session would only come back
+  as a fresh agent without context or prompt.
+
+  A `worktree` request whose named worktree already exists under
+  `.podium/worktrees/` (`worktree::exists`) is dropped, and so is the "suggest
+  worktree" offer (`AgentSpawn.suggest_worktree = false`), so the agent
+  neither makes a `-2` copy nor asks about one. `exists` matches the slug
+  only: a worktree `create` de-duplicated to `<slug>-2`, or another agent's
+  under the same slug, is taken as is. An unnamed request cannot be matched
+  and is passed on. After the spawn the agent is re-assigned the
+  to-dos/scratchpads that still exist, are not done/archived and no live agent
+  claimed (re-assigned, not handed over: a composed prompt would land in the
+  resumed conversation as a new message).
+
+  `shutdown()` sets `Inner.shutting_down` first, under the lock. From then on
+  `spawn_agent_inner` (before it inserts a row) and `do_start` refuse with
+  `CoreError::ShuttingDown` under that same lock, so nothing — a restore in
+  flight, a supervised restart — launches after the stop sweep; a start
+  refused after the insert removes its row again, so no never-started row is
+  left. The restore loop stops at the flag. A spawn refused with
+  `ShuttingDown`, `ProjectNotFound` or `AgentLimitReached` stops it too,
+  leaving that entry and the rest on the list for the next open. With the
+  setting off, opening a project drops its list (`clear`), and turning the
+  setting off clears every root. The MCP server is started synchronously in
+  `setup` so a restored agent never spawns before the MCP connect info (its
+  `--mcp-config`, `-n` and identity) is set.
 - **Built-in MCP server** (`mcp/`): rmcp streamable-HTTP nested in axum on
   `127.0.0.1:0` (ephemeral port) behind a **per-run bearer token**. Tools:
   `list_projects`, `list_processes`, `get_process_status`,
@@ -373,9 +435,40 @@ atomically, before the async `podium.yml` load.
   project checked inside the distro through its login shell
   (`run_shell_ok_on`, off the async runtime), since that is where the CLI
   runs.
+  **`/clear` is followed**: after `/clear` the CLI goes on under a new session
+  id it picks itself, so `AgentSession.id` would still name the pre-clear
+  conversation. `AgentAdapter::live_session` reads Claude Code's live
+  registry, `<config>/sessions/<pid>.json`, for the PTY child (`LiveProcess`:
+  pid, spawn time, cwd) and trusts the record only when its own `pid` matches,
+  its `startedAt` is no earlier than the spawn (less 5 s of slack; the spawn
+  time is `ManagedProcess.started_wall`, a wall-clock stamp, since an
+  `Instant` does not count a laptop's sleep) and its `cwd`, when present, is
+  the agent's — so a stale record from a reused pid is ignored. The PTY child
+  is the CLI only when the login shell execs it: a lone command, which zsh and
+  bash do (verified against a running Podium); not behind a wrapper
+  `command_override`, a shell function or fish, nor on native Windows
+  (`cmd.exe` is the child) or WSL (Podium holds `wsl.exe`'s pid) — there
+  `live_session` finds nothing (or answers `None` outright) and the agent
+  keeps the pre-clear id. `read_live_session` takes the new id only when it is
+  a valid UUID other than the current one, and only once Claude Code has
+  stored the new conversation (`session_exists`; one not yet written to would
+  only make the next start fresh); there is no newest-file guess. The read
+  happens outside the lock: `live_probe` collects pid, spawn time, cwd,
+  adapter, backend and the current id under it, and `apply_live_session` moves
+  the session under it again only if the same run (pid) is still on the same
+  id, clearing `resumed`/`resume_failed`. It is asked while the CLI is still
+  there: in `stop_process` before the signal (a clean exit removes the
+  record), in the exit handler on the wait thread, after the resume-failure
+  check (a crash or kill leaves the record behind), and in the shutdown
+  capture — stop and capture read off the runtime, all agents at once, giving
+  up after `LIVE_SESSION_TIMEOUT` (200 ms): a read over 200 ms is skipped
+  (logged at debug) and the id kept. The exit handler has no such deadline — a
+  hung file system holds back only that agent's `Exited`. An agent that exits
+  cleanly on its own (`/exit`) therefore resumes its pre-clear conversation.
   A session flag the user put in `extra_args` (`--session-id`, `--resume`,
   `--continue`, `--fork-session`, `--from-pr`, `=`-forms included) disables
-  all of it. Sidebar rows distinguish being **open** in the work area (a subtle
+  all of it. The same `AgentSession` is what _Agent session memory_ carries
+  across an app restart. Sidebar rows distinguish being **open** in the work area (a subtle
   accent highlight, like agents/terminals) from being in a **Cmd/Ctrl+click
   multi-select** (a bolder accent fill — those rows are queued for the next
   agent).
@@ -1185,6 +1278,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `agent_settings_set_default_adapter` | `{ adapterId? }` (blank clears) | `AgentSettingsDto` |
 | `agent_settings_set_merge_mode` | `{ mode }`                       | `AgentSettingsDto` |
 | `agent_settings_set_suggest_worktree` | `{ enabled }`             | `AgentSettingsDto` |
+| `agent_settings_set_remember_sessions` | `{ enabled }`            | `AgentSettingsDto` |
 | `mcp_status`            | –                                           | `{ running, url? }` (token-free by design) |
 | `mcp_clients_status`    | –                                           | `McpClientInfo[]` |
 | `mcp_client_install`    | `{ clientId }`                              | `McpClientInfo[]` |
