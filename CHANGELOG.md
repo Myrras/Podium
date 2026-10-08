@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-08
+
 ### Added
 
 - **The agent that did the work pushes it.** Tell the assistant an agent may
