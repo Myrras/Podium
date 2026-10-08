@@ -19,8 +19,8 @@ when it merges.
   not push. Force, delete, tag and explicit main/master pushes, pushes
   elsewhere, PRs/MRs against another repository and reading a local file into
   a PR/MR body (`--body-file`, `-F`, `--description-file`, `--attach`) or
-  choosing glab's source branch (`-s`) are
-  blocked in their plain spellings. Under the `propose-all` autonomy mode the
+  choosing glab's source branch (`-s`, `--source-branch`) are blocked in
+  their plain spellings. Under the `propose-all` autonomy mode the
   assistant can no longer message an agent directly (it would skip the
   confirmation card), so switching into or out of that mode restarts its
   session between turns, keeping the conversation.

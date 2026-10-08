@@ -83,10 +83,10 @@ use crate::ids::{PendingId, ProjectId, ProposalId};
 /// work to spawned agents instead of touching the filesystem itself.
 const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash";
 
-/// [`DISALLOWED_TOOLS`] under `propose-all`, plus `SendMessage`: that is the
+/// Added to [`DISALLOWED_TOOLS`] under `propose-all`: `SendMessage` is the
 /// CLI's own tool, so Podium's autonomy gate never sees it, and a relayed
 /// push go-ahead would otherwise skip the confirm card the mode promises.
-const DISALLOWED_UNDER_PROPOSE_ALL: &str = "Edit,Write,NotebookEdit,Bash,SendMessage";
+const DISALLOWED_UNDER_PROPOSE_ALL_EXTRA: &str = "SendMessage";
 
 const LOCK_POISONED: &str = "assistant config lock poisoned";
 
@@ -1457,9 +1457,9 @@ fn spawn_session(ctx: SpawnCtx) -> CoreResult<Session> {
          --settings {} -n {}{}{} --append-system-prompt {}",
         crate::platform::quote_arg(&config.command)?,
         if send_message_blocked {
-            DISALLOWED_UNDER_PROPOSE_ALL
+            format!("{DISALLOWED_TOOLS},{DISALLOWED_UNDER_PROPOSE_ALL_EXTRA}")
         } else {
-            DISALLOWED_TOOLS
+            DISALLOWED_TOOLS.to_string()
         },
         crate::platform::quote_arg(&crate::agent::peer_inbound_settings())?,
         crate::platform::quote_arg(&crate::agent::peer_session_name(&ctx.peer_tag))?,

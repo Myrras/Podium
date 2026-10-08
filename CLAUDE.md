@@ -270,9 +270,9 @@ atomically, before the async `podium.yml` load.
     plus `-R`/`--repo` on `gh`/`glab`, wherever the flag sits (mid-pattern
     `*`; long git options cut to their shortest unambiguous prefix), and
     every way to read a local file into the PR/MR — `gh --body-file`/`-F`,
-    `glab --description-file`/`--attach`, `gh --attach` — which would publish e.g. an ssh
-    key without a prompt (the prompt's retry is `--fill`, or `--body`
-    inline), plus glab's other-repository flags `-H`/`--head` and
+    `glab --description-file`/`--attach`, `gh --attach` — which would
+    publish e.g. an ssh key without a prompt (the prompt's retry is
+    `--fill`, or `--body` inline), plus glab's other-repository flags `-H`/`--head` and
     `--target-p…` (not in its docs; denied anyway), and glab's
     `-s`/`--source-branch`: glab `--fill`/`--push` pushes
     `HEAD:<source-branch>` itself, around the git push rules. They

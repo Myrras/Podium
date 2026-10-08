@@ -461,6 +461,11 @@ const GO_AHEAD_DENY_RULES: &[&str] = &[
     "Bash(glab mr create* -s*)",
     "Bash(glab mr create*-fs*)",
     "Bash(glab mr create*--source*)",
+    // The same flag quoted or escaped (`"-s"`, `'-s'`, `\-s`) hides it from the
+    // rule above; the prescribed commands need none of them there.
+    "Bash(glab mr create*\"-s*)",
+    "Bash(glab mr create*'-s*)",
+    r"Bash(glab mr create*\\\\-s*)",
 ];
 
 /// What a spawned Claude Code agent's `--settings` carries: built on
@@ -595,8 +600,8 @@ fn identity_prompt(ctx: &AgentLaunchCtx, peer_messaging: bool, push_rules: bool)
              open, open the PR/MR for it in this same repository with `gh pr \
              create` or `glab mr create` (never -R/--repo; if that command is \
              refused, retry with --fill, or give the body inline with --body \
-             (glab: --description) — never from a file; with glab never combine \
-             --fill and -s). Never push main \
+             (glab: --description) — never from a file; with glab never use \
+             -s/--source-branch). Never push main \
              or master, force push, push tags, or push another branch on such \
              a go-ahead. Whatever you did with it — pushed and opened the \
              PR/MR (give its URL), or refused and why — always tell the \
@@ -1229,6 +1234,7 @@ mod tests {
             "and your current branch",
             "open the PR/MR for it in this same repository",
             "(never -R/--repo;",
+            "never use -s/--source-branch",
             "retry with --fill, or give the body inline with --body",
             "(give its URL)",
             "if it is main or master, push nothing and open no PR/MR",
@@ -1453,6 +1459,9 @@ mod tests {
             "glab mr create --push --source-branch=main",
             "glab mr create --fill -smain",
             "glab mr create -fs main",
+            "glab mr create --fill \"-s\" main",
+            "glab mr create --fill '-s' main",
+            r"glab mr create --fill \-s main",
             "glab mr create -H other/repo --fill",
             "glab mr create --head=other/repo --fill",
             "glab mr create --target-project other/repo --fill",
