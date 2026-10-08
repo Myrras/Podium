@@ -26,6 +26,7 @@ function item(overrides: Partial<ResponseItem> = {}): ResponseItem {
     processId: "proc-1",
     todoId: "todo-1",
     createdAt: new Date(NOW - 2 * 60_000).toISOString(),
+    label: "Checkout fix · Webshop · Fix the checkout loop",
     ...overrides,
   };
 }
@@ -154,6 +155,39 @@ describe("ResponsesSection", () => {
 
     await act(async () => finish(true));
     expect(screen.queryByLabelText("Reply text")).not.toBeInTheDocument();
+  });
+
+  it("carries a half-typed reply over to the item that replaces its row", async () => {
+    const user = userEvent.setup();
+    render(<ResponsesSection />);
+
+    await user.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    await user.type(screen.getByLabelText("Reply text"), "Keep it for");
+    // A newer item about the same agent supersedes r-1.
+    act(() =>
+      useAssistantStore.setState({
+        responses: [item({ id: "r-3", text: "Redirect still needed?" })],
+      }),
+    );
+
+    expect(screen.getByText("Redirect still needed?")).toBeInTheDocument();
+    expect(screen.getByLabelText("Reply text")).toHaveValue("Keep it for");
+  });
+
+  it("keeps the ages current", () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      useAssistantStore.setState({
+        responses: [item({ createdAt: new Date(NOW).toISOString() })],
+      });
+      render(<ResponsesSection />);
+      expect(screen.getByText("now")).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(5 * 60_000));
+      expect(screen.getByText("5m")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

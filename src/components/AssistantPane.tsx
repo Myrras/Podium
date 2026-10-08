@@ -773,7 +773,9 @@ function PendingRow({ item }: { item: QueuedMessage }) {
       ) : (
         <span className={styles.pendingText}>
           {item.replyTo && (
-            <span className={styles.replyLabel}>Re: {item.replyTo} </span>
+            <>
+              <span className={styles.replyLabel}>Re: {item.replyTo}</span>{" "}
+            </>
           )}
           {item.text}
         </span>

@@ -580,7 +580,9 @@ impl Orchestrator {
     /// File one Responses item (the assistant's `add_response`). Agent,
     /// project and to-do names are resolved now, so the item still reads
     /// right after the agent exits or the project closes. The project comes
-    /// from `project_id`, else from the agent; a to-do needs one of the two.
+    /// from the agent when it is live, else from `project_id`; a to-do needs
+    /// one of the two. A project or to-do that is gone is dropped from the
+    /// item rather than refusing it.
     /// A newer item about the same agent or to-do replaces the open one.
     /// An agent that is already gone keeps its id as the supersede key but
     /// loses its name: it may well have exited between the nudge and this
@@ -600,29 +602,24 @@ impl Orchestrator {
                 "response text must not be blank".to_string(),
             ));
         }
+        if todo_id.is_some() && project_id.is_none() && process_id.is_none() {
+            return Err(CoreError::InvalidInput(
+                "todo_id needs project_id (or the process_id of an agent)".to_string(),
+            ));
+        }
         let process =
             process_id.and_then(|id| self.list_processes(None).into_iter().find(|p| p.id == id));
-        let project_id = project_id.or(process.as_ref().map(|p| p.project_id));
-        let project = project_id
-            .map(|id| {
-                self.list_projects()
-                    .into_iter()
-                    .find(|p| p.id == id)
-                    .ok_or(CoreError::ProjectNotFound)
-            })
-            .transpose()?;
+        // A live agent's own project wins over `project_id`: the agent is
+        // what the item is about, so a mismatched id would mislabel it.
+        let project_id = process.as_ref().map(|p| p.project_id).or(project_id);
+        // Context that has gone (project closed, to-do removed) is dropped,
+        // not an error — like a vanished agent, it is no reason to lose the
+        // item; the ids still work as supersede keys.
+        let project =
+            project_id.and_then(|id| self.list_projects().into_iter().find(|p| p.id == id));
         let todo = match (todo_id, &project) {
-            (None, _) => None,
-            (Some(_), None) => {
-                return Err(CoreError::InvalidInput(
-                    "todo_id needs project_id (or the process_id of a live agent)".to_string(),
-                ))
-            }
-            (Some(id), Some(project)) => Some(
-                self.todos
-                    .get(project.id, &project.root, id)
-                    .ok_or(CoreError::TodoNotFound)?,
-            ),
+            (Some(id), Some(project)) => self.todos.get(project.id, &project.root, id),
+            _ => None,
         };
         let item = ResponseItem {
             id: ResponseId::new(),
@@ -630,8 +627,12 @@ impl Orchestrator {
             // Capped like the list itself: the assistant writes these from
             // content it read, and the panel row is meant to be a line or two.
             text: crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS),
-            project: project.map(|p| p.name),
-            agent: process.as_ref().map(|p| p.name.clone()),
+            // Names are capped like the to-do and source: they travel into
+            // the label a reply carries back to the session.
+            project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent: process
+                .as_ref()
+                .map(|p| crate::assistant::truncate(&p.name, 40)),
             agent_color: process.as_ref().and_then(|p| p.color.clone()),
             todo: todo.map(|t| crate::assistant::truncate(&t.text, 60)),
             source: source

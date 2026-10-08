@@ -552,7 +552,11 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   survive a restart *and* the blank conversation every launch starts with —
   they are the user's to clear. Agent, project and to-do names (and the
   agent's colour) are resolved when the item is added, so an item about an
-  exited agent still reads right. A newer item with the same `processId` or
+  exited agent still reads right; a live agent's own project wins over a
+  mismatched `project_id`, and a context that is already gone (agent exited,
+  project closed, to-do removed) is dropped from the item rather than
+  refusing it. Agent and project names are capped at 40 chars, the to-do at
+  60, the source at 40. A newer item with the same `processId` or
   `todoId` replaces the open one; an item with neither key never replaces
   anything. `add_response` is refused on the agent route (the list is the
   assistant's to curate) — a guard against a confused agent, not a security
@@ -568,7 +572,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   (`assistant_response_reply`): the reply is an ordinary user turn through
   `send`'s path (`AssistantManager::send_reply`, so it queues like any
   message) carrying a `ReplyTo { label, question }`. The session sees it as
-  `[Reply to your Responses item — <label>: "<item text>"]` + the reply, the
+  `[Reply to your Responses item — "<label>": "<item text>"]` + the reply
+  (label and text JSON-quoted, since an agent name or to-do text is
+  agent-controlled and must not be able to close the bracket), the
   transcript stores it as a `reply` row (`"<label>\n<reply>"`), and a waiting
   reply exposes `replyTo` (the label) on `QueuedMessage` and on
   `queueItemDelivered`; editing a waiting reply changes only its text. The
@@ -576,8 +582,14 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   twice) and put back if the send fails; a queued reply that never goes out
   (the conversation ended) is named with its item in the undelivered notice.
   Snapshots are published under the store's lock, so they arrive in the order
-  the changes happened. The label is the non-empty parts of agent ·
-  project · to-do · source, or `Responses item`.
+  the changes happened, and a write that fails leaves the list (and the
+  published snapshot) unchanged. The label is the non-empty parts of agent ·
+  project · to-do · source, or `Responses item`; it is computed in Rust
+  (`ResponseItem::label`) and serialized as `label`, so the frontend never
+  re-derives it. The panel's `loadResponses` drops its result when a
+  snapshot landed while it was in flight, and a half-typed reply is filed
+  under the item's agent and to-do too, so it carries over to the item that
+  replaces its row.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so

@@ -56,7 +56,7 @@ vi.mock("../lib/notify", () => ({
 }));
 
 import { useLayoutStore } from "./layoutStore";
-import { responseLabel, useAssistantStore } from "./assistantStore";
+import { useAssistantStore } from "./assistantStore";
 
 function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
   return {
@@ -71,6 +71,7 @@ function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
     processId: "proc-1",
     todoId: "todo-1",
     createdAt: "2026-01-01T10:00:00Z",
+    label: "Invoice export · Webshop · Export invoices",
     ...overrides,
   };
 }
@@ -125,28 +126,6 @@ describe("assistantStore", () => {
       vi.mocked(assistantResponseReply).mockResolvedValue(true);
     });
 
-    it("labels an item by its non-empty parts, with a fallback", () => {
-      expect(responseLabel(responseItem())).toBe(
-        "Invoice export · Webshop · Export invoices",
-      );
-      expect(
-        responseLabel(
-          responseItem({
-            agent: null,
-            project: null,
-            todo: null,
-            source: "Slack",
-          }),
-        ),
-      ).toBe("Slack");
-      expect(
-        responseLabel(responseItem({ agent: null, project: null, todo: null })),
-      ).toBe("Responses item");
-      expect(
-        responseLabel(responseItem({ agent: "checkout\n  fix", todo: null })),
-      ).toBe("checkout fix · Webshop");
-    });
-
     it("loads the list and mirrors responsesChanged snapshots", async () => {
       vi.mocked(assistantResponsesList).mockResolvedValueOnce([responseItem()]);
       await useAssistantStore.getState().loadResponses();
@@ -156,6 +135,21 @@ describe("assistantStore", () => {
         .getState()
         .apply({ type: "responsesChanged", items: [] });
       expect(useAssistantStore.getState().responses).toEqual([]);
+    });
+
+    it("drops a fetched list when a snapshot landed while it was in flight", async () => {
+      let resolve!: (items: ResponseItem[]) => void;
+      vi.mocked(assistantResponsesList).mockReturnValueOnce(
+        new Promise((r) => (resolve = r)),
+      );
+      const loading = useAssistantStore.getState().loadResponses();
+      const newer = responseItem({ id: "r-2", text: "newer" });
+      useAssistantStore
+        .getState()
+        .apply({ type: "responsesChanged", items: [newer] });
+      resolve([responseItem()]);
+      await loading;
+      expect(useAssistantStore.getState().responses).toEqual([newer]);
     });
 
     it("dismisses optimistically and reloads the backend's list on failure", async () => {

@@ -504,6 +504,11 @@ export interface ResponseItem {
   todoId: TodoId | null;
   /** RFC 3339 timestamp. */
   createdAt: string;
+  /**
+   * The non-empty parts of agent, project, to-do and source joined with
+   * " · " (`ResponseItem::label`) — the name a reply carries to the session.
+   */
+  label: string;
 }
 
 /**

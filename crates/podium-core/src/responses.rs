@@ -17,7 +17,8 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::{CoreError, CoreResult};
 use crate::ids::{ProcessId, ResponseId, TodoId};
@@ -41,8 +42,10 @@ pub enum ResponseKind {
     Fyi,
 }
 
-/// One item on the Responses list.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One item on the Responses list. Serializes with a computed `label`
+/// ([`ResponseItem::label`]) so the panel shows the same name a reply
+/// carries back to the session; reading it back ignores that field.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseItem {
     pub id: ResponseId,
@@ -63,6 +66,27 @@ pub struct ResponseItem {
     /// Supersede key: a newer item about the same to-do replaces this one.
     pub todo_id: Option<TodoId>,
     pub created_at: DateTime<Utc>,
+}
+
+// Hand-written only to add `label`; the round-trip test catches a field
+// added to the struct but not here.
+impl Serialize for ResponseItem {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut st = s.serialize_struct("ResponseItem", 13)?;
+        st.serialize_field("id", &self.id)?;
+        st.serialize_field("kind", &self.kind)?;
+        st.serialize_field("text", &self.text)?;
+        st.serialize_field("project", &self.project)?;
+        st.serialize_field("agent", &self.agent)?;
+        st.serialize_field("agentColor", &self.agent_color)?;
+        st.serialize_field("todo", &self.todo)?;
+        st.serialize_field("source", &self.source)?;
+        st.serialize_field("processId", &self.process_id)?;
+        st.serialize_field("todoId", &self.todo_id)?;
+        st.serialize_field("createdAt", &self.created_at)?;
+        st.serialize_field("label", &self.label())?;
+        st.end()
+    }
 }
 
 impl ResponseItem {
@@ -137,12 +161,11 @@ impl ResponseStore {
     /// past [`MAX_ITEMS`], the oldest.
     pub fn add(&self, item: ResponseItem, changed: impl FnOnce(&[ResponseItem])) -> CoreResult<()> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        inner.items.retain(|old| !old.superseded_by(&item));
-        inner.items.insert(0, item);
-        inner.items.truncate(MAX_ITEMS);
-        save(&inner)?;
-        changed(&inner.items);
-        Ok(())
+        let mut items = inner.items.clone();
+        items.retain(|old| !old.superseded_by(&item));
+        items.insert(0, item);
+        items.truncate(MAX_ITEMS);
+        commit(&mut inner, items, changed)
     }
 
     /// Take one item off the list.
@@ -157,9 +180,9 @@ impl ResponseStore {
             .iter()
             .position(|i| i.id == id)
             .ok_or(CoreError::ResponseNotFound)?;
-        let item = inner.items.remove(index);
-        save(&inner)?;
-        changed(&inner.items);
+        let mut items = inner.items.clone();
+        let item = items.remove(index);
+        commit(&mut inner, items, changed)?;
         Ok(item)
     }
 
@@ -176,8 +199,10 @@ impl ResponseStore {
             .iter()
             .position(|i| i.created_at < item.created_at)
             .unwrap_or(inner.items.len());
+        // Kept in memory even if the write fails: this undoes a reply that
+        // never got through, and losing the item is worse than a stale file.
         inner.items.insert(at, item);
-        let _ = save(&inner);
+        let _ = save(inner.path.as_deref(), &inner.items);
         changed(&inner.items);
     }
 }
@@ -192,14 +217,27 @@ fn load(path: &std::path::Path) -> Vec<ResponseItem> {
     })
 }
 
-fn save(inner: &Inner) -> CoreResult<()> {
-    let Some(path) = &inner.path else {
+/// Save `items` and only then make them the list and announce them: a
+/// failed write leaves memory matching the file, and nothing published.
+fn commit(
+    inner: &mut Inner,
+    items: Vec<ResponseItem>,
+    changed: impl FnOnce(&[ResponseItem]),
+) -> CoreResult<()> {
+    save(inner.path.as_deref(), &items)?;
+    inner.items = items;
+    changed(&inner.items);
+    Ok(())
+}
+
+fn save(path: Option<&std::path::Path>, items: &[ResponseItem]) -> CoreResult<()> {
+    let Some(path) = path else {
         return Ok(());
     };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_string_pretty(&inner.items)
+    let json = serde_json::to_string_pretty(items)
         .map_err(|e| CoreError::InvalidInput(format!("failed to encode responses: {e}")))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json)?;
@@ -381,7 +419,36 @@ mod tests {
     }
 
     #[test]
-    fn items_serialize_camel_case() {
+    fn a_failed_save_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("data");
+        let store = ResponseStore::new();
+        store.set_path(sub.join("assistant-responses.json"));
+        let kept = add(&store, item(None, None, "kept"))[0].id;
+        // A file where the data dir should be: every later write fails.
+        std::fs::remove_dir_all(&sub).unwrap();
+        std::fs::write(&sub, "").unwrap();
+
+        assert!(store
+            .add(item(None, None, "lost"), |_| panic!("nothing was saved"))
+            .is_err());
+        assert!(store.remove(kept, |_| panic!("nothing was saved")).is_err());
+        assert_eq!(texts(&store.list()), vec!["kept"]);
+    }
+
+    #[test]
+    fn items_serialize_camel_case_with_a_label_and_read_back() {
+        let full = ResponseItem {
+            agent_color: Some("#7aa2f7".to_string()),
+            todo: Some("Fix the login redirect".to_string()),
+            source: Some("Slack".to_string()),
+            ..item(Some(ProcessId::new()), Some(TodoId::new()), "x")
+        };
+        let json = serde_json::to_value(&full).unwrap();
+        assert_eq!(json["label"], full.label());
+        // Every field survives the trip, so none was left out of `serialize`.
+        assert_eq!(serde_json::from_value::<ResponseItem>(json).unwrap(), full);
+
         let json = serde_json::to_value(item(None, None, "x")).unwrap();
         assert_eq!(json["kind"], "fyi");
         assert!(json.get("agentColor").is_some());

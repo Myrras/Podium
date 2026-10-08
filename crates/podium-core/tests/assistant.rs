@@ -1658,7 +1658,7 @@ async fn a_reply_to_a_responses_item_reaches_the_session_and_clears_the_item() {
     let lines = recorded_stdin(dir.path(), 1).await;
     assert_eq!(
         lines[0].pointer("/message/content/0/text").and_then(|t| t.as_str()),
-        Some("[Reply to your Responses item — GitHub: \"Merge the PR now or wait for review?\"]\n\nmerge it")
+        Some("[Reply to your Responses item — \"GitHub\": \"Merge the PR now or wait for review?\"]\n\nmerge it")
     );
     let first = &orch.assistant_transcript()[0];
     assert_eq!(first.role, TranscriptRole::Reply);
@@ -1767,6 +1767,84 @@ async fn an_item_about_an_agent_that_is_gone_keeps_its_key_but_not_a_name() {
         .map(|i| i.text)
         .collect();
     assert_eq!(texts, vec!["Merged.".to_string()]);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_item_whose_project_or_to_do_is_gone_is_kept_without_that_name() {
+    use podium_core::{ProjectId, ResponseKind};
+
+    let (orch, dir) = setup(ECHOING_CLAUDE);
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let todo = orch
+        .add_todo(project, "review the onboarding copy", None)
+        .expect("add todo");
+    orch.remove_todo(project, todo.id).expect("remove todo");
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Done.",
+            None,
+            Some(project),
+            Some(todo.id),
+            None,
+        )
+        .expect("a removed to-do is no reason to drop the item");
+    assert_eq!(item.todo, None);
+    assert_eq!(item.todo_id, Some(todo.id));
+    assert!(item.project.is_some());
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Done.",
+            None,
+            Some(ProjectId::new()),
+            None,
+            None,
+        )
+        .expect("a closed project is no reason to drop the item");
+    assert_eq!(item.project, None);
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_live_agents_own_project_wins_over_a_mismatched_project_id() {
+    use podium_core::ResponseKind;
+
+    let (orch, dir) = setup(ECHOING_CLAUDE);
+    let agents_dir = dir.path().join("agents-project");
+    let other_dir = dir.path().join("other-project");
+    std::fs::create_dir_all(&agents_dir).expect("mkdir");
+    std::fs::create_dir_all(&other_dir).expect("mkdir");
+    let project = orch
+        .open_project(agents_dir.clone())
+        .await
+        .expect("open project");
+    let other = orch.open_project(other_dir).await.expect("open other");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", &agents_dir))
+        .await
+        .expect("add agent");
+
+    let item = orch
+        .add_assistant_response(
+            ResponseKind::Fyi,
+            "Done.",
+            Some(agent),
+            Some(other),
+            None,
+            None,
+        )
+        .expect("add response");
+    assert_eq!(item.agent.as_deref(), Some("fix-login"));
+    assert_eq!(item.project.as_deref(), Some("agents-project"));
 
     orch.shutdown().await;
 }

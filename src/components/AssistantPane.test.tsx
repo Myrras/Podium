@@ -192,6 +192,7 @@ describe("AssistantPane", () => {
         processId: "proc-1",
         todoId: null,
         createdAt: new Date().toISOString(),
+        label: "Search index · Docs site",
       },
     ]);
     render(<AssistantPane />);

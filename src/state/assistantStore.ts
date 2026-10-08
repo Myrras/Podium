@@ -79,21 +79,10 @@ export type ChatRole =
   | "reply";
 
 /**
- * What a Responses item is about, as one line: the non-empty parts of
- * agent, project, to-do and source joined with " · ". Mirrors the backend's
- * own label rule, so an optimistic reply row reads exactly like the one the
- * transcript replays later.
+ * Bumped on every `responsesChanged` snapshot, so a `loadResponses` fetch
+ * that started before one can tell its answer is stale.
  */
-export function responseLabel(item: ResponseItem): string {
-  return (
-    [item.agent, item.project, item.todo, item.source]
-      // Whitespace collapsed per part, as the backend does: the label is the
-      // first line of a reply row, so a newline in a name must not split it.
-      .map((part) => (part ?? "").split(/\s+/).filter(Boolean).join(" "))
-      .filter(Boolean)
-      .join(" · ") || "Responses item"
-  );
-}
+let responsesSnapshotGen = 0;
 
 /** A gated action awaiting (or carrying) the user's decision. */
 export interface ChatProposal {
@@ -241,8 +230,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   turnReplyText: null,
   responses: [],
   loadResponses: async () => {
+    const gen = responsesSnapshotGen;
     try {
-      set({ responses: await assistantResponsesList() });
+      const responses = await assistantResponsesList();
+      // A snapshot that landed while this was in flight is newer.
+      if (gen === responsesSnapshotGen) set({ responses });
     } catch {
       // An empty list is a fine fallback; the next snapshot corrects it.
     }
@@ -265,7 +257,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const trimmed = text.trim();
     if (!trimmed) return false;
     const item = get().responses.find((r) => r.id === id);
-    const label = item ? responseLabel(item) : "Responses item";
+    const label = item?.label ?? "Responses item";
     try {
       // Same delivered-or-queued answer as `send`: a queued reply shows as a
       // waiting row instead. The item itself leaves via `responsesChanged`.
@@ -534,7 +526,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }));
     }
   },
-  apply: (event) =>
+  apply: (event) => {
+    if (event.type === "responsesChanged") responsesSnapshotGen++;
     set((s) => {
       switch (event.type) {
         case "message":
@@ -657,5 +650,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "responsesChanged":
           return { responses: event.items };
       }
-    }),
+    });
+  },
 }));
