@@ -19,6 +19,8 @@ when it merges.
   not push. Force, delete, tag and explicit main/master pushes, pushes
   elsewhere and PRs/MRs against another repository stay blocked.
 
+## [2.1.4] - 2026-10-08
+
 ### Fixed
 
 - **Messages waiting to be sent stay visible.** A long conversation with the
