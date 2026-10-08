@@ -29,6 +29,7 @@ import {
 } from "../ipc/commands";
 import { toastError } from "../state/toastStore";
 import { useProcessStore } from "../state/processStore";
+import { useSettingsStore } from "../state/settingsStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { WorktreeSubsection } from "./WorktreeSubsection";
 
@@ -39,6 +40,7 @@ const processStartMock = vi.mocked(processStart);
 
 const PROJECT = "proj-1";
 const initialProcess = useProcessStore.getState();
+const initialSettings = useSettingsStore.getState();
 
 function wt(name: string): WorktreeInfo {
   return {
@@ -70,10 +72,12 @@ function terminal(
 function renderSubsection(
   terminals: ProcessInfo[] = [],
   onOpenCommands = vi.fn(),
+  nativeInWslMode = false,
 ) {
   render(
     <WorktreeSubsection
       projectId={PROJECT}
+      nativeInWslMode={nativeInWslMode}
       terminals={terminals}
       onOpenCommands={onOpenCommands}
     />,
@@ -86,6 +90,7 @@ describe("WorktreeSubsection", () => {
     vi.clearAllMocks();
     useWorktreeStore.setState({ worktreesByProject: {} }, false);
     useProcessStore.setState(initialProcess, true);
+    useSettingsStore.setState(initialSettings, true);
   });
 
   it("renders nothing when the project has no worktrees", async () => {
@@ -93,6 +98,7 @@ describe("WorktreeSubsection", () => {
     const { container } = render(
       <WorktreeSubsection
         projectId={PROJECT}
+        nativeInWslMode={false}
         terminals={[]}
         onOpenCommands={vi.fn()}
       />,
@@ -123,6 +129,40 @@ describe("WorktreeSubsection", () => {
       }),
     );
     expect(processStartMock).toHaveBeenCalledWith("t1");
+  });
+
+  describe("worktree terminal shell", () => {
+    async function openTerminalWithZsh(nativeInWslMode: boolean) {
+      useSettingsStore.setState({
+        terminal: { ...initialSettings.terminal, shell: "zsh" },
+      });
+      worktreeListMock.mockResolvedValue([wt("fix-login")]);
+      processAddMock.mockResolvedValue(
+        terminal("t1", "Terminal (fix-login)", "fix-login"),
+      );
+      processStartMock.mockResolvedValue();
+      renderSubsection([], vi.fn(), nativeInWslMode);
+
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Open terminal in fix-login",
+        }),
+      );
+      await waitFor(() => expect(processAddMock).toHaveBeenCalled());
+      return processAddMock.mock.calls[0][1];
+    }
+
+    it("launches the configured shell", async () => {
+      const spec = await openTerminalWithZsh(false);
+      expect(spec.command).toBe("zsh");
+    });
+
+    it("leaves it out for a Windows-drive project running natively in WSL mode", async () => {
+      // Same guard as the project-level "New terminal": the setting names
+      // the distro's shell, and `cmd /C zsh` would fail natively.
+      const spec = await openTerminalWithZsh(true);
+      expect(spec.command).toBeUndefined();
+    });
   });
 
   it("opens the worktree in Warp", async () => {

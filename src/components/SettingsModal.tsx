@@ -22,6 +22,7 @@ import {
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
   backendSettingsGet,
+  backendSettingsSetNativeDriveProjects,
   backendSettingsSetWslDistro,
   mcpClientInstall,
   mcpClientsStatus,
@@ -70,9 +71,17 @@ const FONT_SIZE_MAX = 24;
 
 // Placeholder for the terminal-shell field: the platform default the backend
 // falls back to when the field is blank. In WSL-backend mode that is the
-// distro's `$SHELL`, as on Unix.
-function defaultShellHint(wslActive: boolean): string {
-  return isWindows && !wslActive ? "powershell (default)" : "$SHELL (default)";
+// distro's `$SHELL`, as on Unix — except for Windows-drive projects running
+// natively (opt-in), whose terminals always open PowerShell.
+function defaultShellHint(
+  wslActive: boolean,
+  nativeDriveProjects: boolean,
+): string {
+  if (isWindows && !wslActive) return "powershell (default)";
+  if (wslActive && nativeDriveProjects) {
+    return "$SHELL (default; PowerShell for C:\\ projects)";
+  }
+  return "$SHELL (default)";
 }
 
 /** Checkbox toggle row with label and optional helper text. */
@@ -741,6 +750,7 @@ function GeneralTab() {
   // Fetched once here for both the shell hint and the Backend section.
   const backend = useBackendSettings();
   const wslActive = (backend.saved?.activeWslDistro ?? "") !== "";
+  const nativeDrives = backend.saved?.activeNativeDriveProjects ?? false;
 
   return (
     <>
@@ -822,7 +832,7 @@ function GeneralTab() {
             id="terminal-shell"
             type="text"
             value={settings.terminal.shell}
-            placeholder={defaultShellHint(wslActive)}
+            placeholder={defaultShellHint(wslActive, nativeDrives)}
             onChange={(e) =>
               settings.set("terminal", { shell: e.target.value })
             }
@@ -831,7 +841,8 @@ function GeneralTab() {
             Command new terminals launch. Leave blank for the system default
             (your login shell on macOS/Linux and in WSL mode, PowerShell on
             Windows). Examples: <code>pwsh</code>, <code>cmd</code>,{" "}
-            <code>bash</code>, <code>wsl</code>.
+            <code>bash</code>, <code>wsl</code>. In WSL mode it is not applied
+            to Windows-drive projects that run natively — those open PowerShell.
           </small>
         </div>
       </section>
@@ -903,7 +914,19 @@ function BackendSettings({
   };
 
   const restartNeeded =
-    saved !== null && saved.wslDistro !== saved.activeWslDistro;
+    saved !== null &&
+    (saved.wslDistro !== saved.activeWslDistro ||
+      (saved.wslDistro !== "" &&
+        saved.nativeDriveProjects !== saved.activeNativeDriveProjects));
+
+  const setNativeDrives = (enabled: boolean) => {
+    backendSettingsSetNativeDriveProjects(enabled)
+      .then((d) => {
+        onSaved(d);
+        setSaveError(null);
+      })
+      .catch((e) => setSaveError(toIpcError(e).message));
+  };
 
   return (
     <section className={styles.section}>
@@ -927,6 +950,16 @@ function BackendSettings({
           <code>Ubuntu</code>). Leave blank to run natively on Windows. Takes
           effect after restarting Podium.
         </small>
+      </div>
+      {draft.trim() !== "" && (
+        <SettingToggle
+          label="Run Windows-drive projects natively"
+          help="Projects on a drive (C:\…) use Windows tools — cmd.exe, Windows git and agent CLIs — instead of running in the distro via /mnt/c. Projects inside the distro (\\wsl.localhost\…) are unaffected. Takes effect after restarting Podium."
+          value={saved?.nativeDriveProjects ?? false}
+          onChange={setNativeDrives}
+        />
+      )}
+      <div className={styles.field}>
         {restartNeeded && (
           <small className={styles.rowHelp} role="status">
             Restart Podium to apply this change.

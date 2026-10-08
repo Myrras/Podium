@@ -3,12 +3,15 @@
 //! `podium/<name>` branch, so an agent's changes never touch the user's
 //! working tree.
 //!
-//! Git is invoked directly via `platform::git_command()` (natively a path
-//! resolved once through the login shell, then reused; in WSL-backend mode
-//! the distro's git via `wsl.exe -e git`, with paths translated both ways)
-//! rather than re-spawning a login shell on every call — list/create/remove
-//! can each fire several git calls, and a login shell per call is slow on
-//! heavy shell profiles. stderr never reaches a `CoreError` message (it can
+//! Git is invoked directly via `platform::git_command(wsl)` (natively a
+//! path resolved once through the login shell, then reused; on the WSL
+//! backend the distro's git via `wsl.exe -e git`, with paths translated both
+//! ways) rather than re-spawning a login shell on every call —
+//! list/create/remove can each fire several git calls, and a login shell per
+//! call is slow on heavy shell profiles. Every public function takes the
+//! project's backend (`wsl`, decided once at project open — see
+//! `platform::wsl_for`) and threads it through, rather than re-deriving it
+//! per call. stderr never reaches a `CoreError` message (it can
 //! contain repo paths), but is logged via `tracing::warn!` on failure so the
 //! real cause is diagnosable.
 //! There is no persistence, and `list` has no events (`git worktree list
@@ -20,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::error::{CoreError, CoreResult};
+use crate::platform::WslBackend;
 
 /// Read-only snapshot of one Podium-managed worktree.
 #[derive(Debug, Clone, Serialize)]
@@ -45,8 +49,8 @@ const MAX_SLUG_LEN: usize = 40;
 /// contain repo paths), but is logged via `tracing` so the real cause of a
 /// failure (e.g. "dubious ownership", git missing, wrong cwd) is visible in
 /// the app logs instead of collapsing into a generic error.
-fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let root_arg = match crate::platform::backend_path(root) {
+fn git(wsl: Option<&WslBackend>, root: &Path, args: &[&str]) -> Option<String> {
+    let root_arg = match crate::platform::backend_path_in(wsl, root) {
         Ok(path) => path,
         Err(e) => {
             // WSL-backend mode and a root outside the backend distro.
@@ -54,7 +58,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
             return None;
         }
     };
-    let mut cmd = crate::platform::git_command();
+    let mut cmd = crate::platform::git_command(wsl);
     cmd.arg("-C")
         .arg(root_arg)
         .args(args)
@@ -77,8 +81,8 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 /// The current branch checked out at `cwd`, or `None` when it is not a git
 /// repository or is in a detached HEAD (`rev-parse` yields the literal
 /// `HEAD`). Shells out to git — call from a blocking-friendly context.
-pub fn current_branch(cwd: &Path) -> Option<String> {
-    let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?
+pub fn current_branch(wsl: Option<&WslBackend>, cwd: &Path) -> Option<String> {
+    let branch = git(wsl, cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
         .to_string();
     if branch.is_empty() || branch == "HEAD" {
@@ -89,8 +93,8 @@ pub fn current_branch(cwd: &Path) -> Option<String> {
 
 /// `root` must be (inside) a git repository; also covers "git not
 /// installed", which probes the same way.
-fn ensure_git_repo(root: &Path) -> CoreResult<()> {
-    if git(root, &["rev-parse", "--git-dir"]).is_none() {
+fn ensure_git_repo(wsl: Option<&WslBackend>, root: &Path) -> CoreResult<()> {
+    if git(wsl, root, &["rev-parse", "--git-dir"]).is_none() {
         return Err(CoreError::NotAGitRepo);
     }
     Ok(())
@@ -126,12 +130,12 @@ fn worktrees_dir(root: &Path) -> PathBuf {
 /// Make git ignore `.podium/` via `.git/info/exclude` (never `.gitignore` —
 /// that file belongs to the user). Idempotent: appends only when no
 /// `.podium` line is present yet.
-fn ensure_excluded(root: &Path) -> CoreResult<()> {
-    let common = git(root, &["rev-parse", "--git-common-dir"])
+fn ensure_excluded(wsl: Option<&WslBackend>, root: &Path) -> CoreResult<()> {
+    let common = git(wsl, root, &["rev-parse", "--git-common-dir"])
         .ok_or(CoreError::NotAGitRepo)?
         .trim()
         .to_string();
-    let common = crate::platform::from_backend_path(&common);
+    let common = crate::platform::from_backend_path_in(wsl, &common);
     let common = if common.is_absolute() {
         common
     } else {
@@ -159,8 +163,8 @@ fn ensure_excluded(root: &Path) -> CoreResult<()> {
 
 /// Whether the checkout at `path` has uncommitted changes (untracked files
 /// count as dirty).
-fn is_dirty(path: &Path) -> bool {
-    git(path, &["status", "--porcelain"])
+fn is_dirty(wsl: Option<&WslBackend>, path: &Path) -> bool {
+    git(wsl, path, &["status", "--porcelain"])
         .map(|out| !out.trim().is_empty())
         .unwrap_or(false)
 }
@@ -169,14 +173,14 @@ fn is_dirty(path: &Path) -> bool {
 /// `-3`, … when the directory — or a leftover `podium/<name>` branch —
 /// already exists) at `.podium/worktrees/<name>`, on a fresh `podium/<name>`
 /// branch off HEAD.
-pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
+pub fn create(wsl: Option<&WslBackend>, root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
     // `dunce::canonicalize`, not `std::fs::canonicalize` — see the comment
     // on the equivalent call in `orchestrator::Orchestrator::open_project`.
     // The worktree path built from `root` here becomes the agent's spawn
     // `cwd`, so a `\\?\`-prefixed root would break agent launches on Windows
     // the same way.
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    ensure_git_repo(&root)?;
+    ensure_git_repo(wsl, &root)?;
     let slug = slugify(name)?;
     let dir = worktrees_dir(&root);
     let mut candidate = slug.clone();
@@ -186,6 +190,7 @@ pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
         // A leftover `podium/<name>` branch (checkout removed, branch kept)
         // bumps the name too.
         let branch_taken = git(
+            wsl,
             &root,
             &[
                 "rev-parse",
@@ -201,12 +206,12 @@ pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
         n += 1;
         candidate = format!("{slug}-{n}");
     }
-    ensure_excluded(&root)?;
+    ensure_excluded(wsl, &root)?;
     let path = dir.join(&candidate);
     std::fs::create_dir_all(&dir)?;
-    let path_str = crate::platform::backend_path(&path)?;
+    let path_str = crate::platform::backend_path_in(wsl, &path)?;
     let branch = format!("podium/{candidate}");
-    if git(&root, &["worktree", "add", &path_str, "-b", &branch]).is_none() {
+    if git(wsl, &root, &["worktree", "add", &path_str, "-b", &branch]).is_none() {
         return Err(CoreError::Git(
             "git worktree add failed (does the repository have at least one commit?)".to_string(),
         ));
@@ -222,10 +227,10 @@ pub fn create(root: &Path, name: &str) -> CoreResult<WorktreeInfo> {
 /// List the Podium-managed worktrees (paths under `.podium/worktrees/`),
 /// parsed out of `git worktree list --porcelain`. `in_use` is always
 /// `false` here — the orchestrator fills it in from its process table.
-pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
+pub fn list(wsl: Option<&WslBackend>, root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    ensure_git_repo(&root)?;
-    let out = git(&root, &["worktree", "list", "--porcelain"])
+    ensure_git_repo(wsl, &root)?;
+    let out = git(wsl, &root, &["worktree", "list", "--porcelain"])
         .ok_or_else(|| CoreError::Git("git worktree list failed".to_string()))?;
     let base = worktrees_dir(&root);
     let mut infos = Vec::new();
@@ -236,7 +241,7 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
         let mut branch: Option<String> = None;
         for line in block.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
-                path = worktree_path(crate::platform::wsl(), p, &base);
+                path = worktree_path(wsl, p, &base);
             } else if let Some(b) = line.strip_prefix("branch ") {
                 branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
             } else if line == "detached" {
@@ -265,11 +270,7 @@ pub fn list(root: &Path) -> CoreResult<Vec<WorktreeInfo>> {
 /// keeping however the user opened the project (`\\wsl$\…` or
 /// `\\wsl.localhost\…`, any casing), which a plain translation back would
 /// not.
-fn worktree_path(
-    wsl: Option<&crate::platform::WslBackend>,
-    p: &str,
-    base: &Path,
-) -> Option<PathBuf> {
+fn worktree_path(wsl: Option<&WslBackend>, p: &str, base: &Path) -> Option<PathBuf> {
     let Some(wsl) = wsl else {
         let path = PathBuf::from(p);
         return path.starts_with(base).then_some(path);
@@ -287,27 +288,28 @@ fn worktree_path(
 /// and counts as removed; uncommitted changes are refused unless `force`.
 /// The `podium/<name>` branch is intentionally kept — commits are never
 /// thrown away here.
-pub fn remove(root: &Path, name: &str, force: bool) -> CoreResult<()> {
+pub fn remove(wsl: Option<&WslBackend>, root: &Path, name: &str, force: bool) -> CoreResult<()> {
     let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let entry = list(&root)?
+    let entry = list(wsl, &root)?
         .into_iter()
         .find(|w| w.name == name)
         .ok_or(CoreError::WorktreeNotFound)?;
     if !entry.path.exists() {
         // The checkout is already gone; drop git's stale bookkeeping.
-        let _ = git(&root, &["worktree", "prune"]);
+        let _ = git(wsl, &root, &["worktree", "prune"]);
         return Ok(());
     }
-    if !force && is_dirty(&entry.path) {
+    if !force && is_dirty(wsl, &entry.path) {
         return Err(CoreError::WorktreeDirty);
     }
     if git(
+        wsl,
         &root,
         &[
             "worktree",
             "remove",
             "--force",
-            &crate::platform::backend_path(&entry.path)?,
+            &crate::platform::backend_path_in(wsl, &entry.path)?,
         ],
     )
     .is_none()
@@ -394,7 +396,7 @@ mod tests {
     #[cfg(windows)]
     fn create_worktree_path_has_no_verbatim_prefix_on_windows() {
         let repo = init_repo();
-        let wt = create(repo.path(), "Fix Login").expect("create");
+        let wt = create(None, repo.path(), "Fix Login").expect("create");
         assert!(
             !wt.path.to_string_lossy().starts_with(r"\\?\"),
             "worktree path must not be a verbatim path: {:?}",
@@ -416,7 +418,7 @@ mod tests {
     #[test]
     fn create_makes_worktree_branch_and_exclude() {
         let repo = init_repo();
-        let wt = create(repo.path(), "Fix Login").expect("create");
+        let wt = create(None, repo.path(), "Fix Login").expect("create");
         assert_eq!(wt.name, "fix-login");
         assert_eq!(wt.branch, "podium/fix-login");
         assert!(wt.path.is_dir());
@@ -436,8 +438,8 @@ mod tests {
     #[test]
     fn exclude_append_is_idempotent() {
         let repo = init_repo();
-        create(repo.path(), "one").unwrap();
-        create(repo.path(), "two").unwrap();
+        create(None, repo.path(), "one").unwrap();
+        create(None, repo.path(), "two").unwrap();
         let root = std::fs::canonicalize(repo.path()).unwrap();
         let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
         let hits = exclude.lines().filter(|l| l.trim() == ".podium/").count();
@@ -447,20 +449,20 @@ mod tests {
     #[test]
     fn create_dedupes_against_dir_and_leftover_branch() {
         let repo = init_repo();
-        let first = create(repo.path(), "task").unwrap();
+        let first = create(None, repo.path(), "task").unwrap();
         assert_eq!(first.name, "task");
-        let second = create(repo.path(), "task").unwrap();
+        let second = create(None, repo.path(), "task").unwrap();
         assert_eq!(second.name, "task-2");
         // Remove task-2's checkout; its branch stays → next create skips it.
-        remove(repo.path(), "task-2", false).unwrap();
-        let third = create(repo.path(), "task").unwrap();
+        remove(None, repo.path(), "task-2", false).unwrap();
+        let third = create(None, repo.path(), "task").unwrap();
         assert_eq!(third.name, "task-3");
     }
 
     #[test]
     fn list_only_reports_podium_worktrees() {
         let repo = init_repo();
-        create(repo.path(), "mine").unwrap();
+        create(None, repo.path(), "mine").unwrap();
         // A non-Podium worktree elsewhere must not show up.
         let other = tempfile::tempdir().unwrap();
         run(
@@ -473,7 +475,7 @@ mod tests {
                 "not-podium",
             ],
         );
-        let listed = list(repo.path()).unwrap();
+        let listed = list(None, repo.path()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "mine");
         assert_eq!(listed[0].branch, "podium/mine");
@@ -483,14 +485,14 @@ mod tests {
     #[test]
     fn remove_refuses_dirty_unless_forced() {
         let repo = init_repo();
-        let wt = create(repo.path(), "dirty").unwrap();
+        let wt = create(None, repo.path(), "dirty").unwrap();
         // An untracked file counts as dirty.
         std::fs::write(wt.path.join("scratch.txt"), "wip\n").unwrap();
         assert!(matches!(
-            remove(repo.path(), "dirty", false),
+            remove(None, repo.path(), "dirty", false),
             Err(CoreError::WorktreeDirty)
         ));
-        remove(repo.path(), "dirty", true).unwrap();
+        remove(None, repo.path(), "dirty", true).unwrap();
         assert!(!wt.path.exists());
         // The branch survives removal.
         let branches = git_stdout(repo.path(), &["branch", "--list", "podium/dirty"]);
@@ -500,11 +502,11 @@ mod tests {
     #[test]
     fn remove_clean_worktree_and_missing_name() {
         let repo = init_repo();
-        create(repo.path(), "clean").unwrap();
-        remove(repo.path(), "clean", false).unwrap();
-        assert!(list(repo.path()).unwrap().is_empty());
+        create(None, repo.path(), "clean").unwrap();
+        remove(None, repo.path(), "clean", false).unwrap();
+        assert!(list(None, repo.path()).unwrap().is_empty());
         assert!(matches!(
-            remove(repo.path(), "clean", false),
+            remove(None, repo.path(), "clean", false),
             Err(CoreError::WorktreeNotFound)
         ));
     }
@@ -512,30 +514,36 @@ mod tests {
     #[test]
     fn remove_prunes_a_manually_deleted_checkout() {
         let repo = init_repo();
-        let wt = create(repo.path(), "gone").unwrap();
+        let wt = create(None, repo.path(), "gone").unwrap();
         std::fs::remove_dir_all(&wt.path).unwrap();
-        remove(repo.path(), "gone", false).unwrap();
-        assert!(list(repo.path()).unwrap().is_empty());
+        remove(None, repo.path(), "gone", false).unwrap();
+        assert!(list(None, repo.path()).unwrap().is_empty());
     }
 
     #[test]
     fn current_branch_reports_head_and_worktree_branches() {
         let repo = init_repo();
-        assert_eq!(current_branch(repo.path()).as_deref(), Some("main"));
-        let wt = create(repo.path(), "feature").unwrap();
-        assert_eq!(current_branch(&wt.path).as_deref(), Some("podium/feature"));
+        assert_eq!(current_branch(None, repo.path()).as_deref(), Some("main"));
+        let wt = create(None, repo.path(), "feature").unwrap();
+        assert_eq!(
+            current_branch(None, &wt.path).as_deref(),
+            Some("podium/feature")
+        );
         // A non-git dir has no branch.
         let plain = tempfile::tempdir().unwrap();
-        assert_eq!(current_branch(plain.path()), None);
+        assert_eq!(current_branch(None, plain.path()), None);
     }
 
     #[test]
     fn non_git_dir_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
-            create(dir.path(), "x"),
+            create(None, dir.path(), "x"),
             Err(CoreError::NotAGitRepo)
         ));
-        assert!(matches!(list(dir.path()), Err(CoreError::NotAGitRepo)));
+        assert!(matches!(
+            list(None, dir.path()),
+            Err(CoreError::NotAGitRepo)
+        ));
     }
 }
