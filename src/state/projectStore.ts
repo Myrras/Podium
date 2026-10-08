@@ -18,6 +18,7 @@ import {
   workspaceRemove,
 } from "../ipc/commands";
 import type { ProjectId, ProjectInfo, RecentProject } from "../ipc/types";
+import { useLayoutStore } from "./layoutStore";
 import { toastError, useToastStore } from "./toastStore";
 
 /**
@@ -188,6 +189,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       toastError("Could not close project", toIpcError(e).message);
       return;
     }
+    // Closing removes it from the workspace for good; its collapse state goes
+    // with it (a failed open, by contrast, keeps it — see `restoreWorkspace`).
+    const root = get().projects.find((p) => p.id === id)?.root;
+    if (root !== undefined) useLayoutStore.getState().forgetProject(root);
     set((s) => {
       const projects = s.projects.filter((p) => p.id !== id);
       return {

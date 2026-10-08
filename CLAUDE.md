@@ -1179,9 +1179,10 @@ Conversations that touch no code (questions, exploration) need no branch.
 - **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
   Windows, each building natively (cross-compiling Tauri is painful). macOS
   packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
-  packages the NSIS `.exe`. Runs on `workflow_dispatch`, pushes to `main` and
-  any pushed `v*` tag, uploading each OS's installer as an artifact; on a tag
-  ref it also attaches the `.dmg`/`.exe` to that tag's GitHub Release.
+  packages the NSIS `.exe`. Runs on `workflow_dispatch` and pushes to `main`,
+  uploading each OS's installer as an artifact; on a tag ref (the release
+  job's dispatch) it also attaches the `.dmg`/`.exe` to that tag's GitHub
+  Release. There is deliberately **no tag trigger** (see below).
 - **Releasing is automatic: every merge to `main` is a release.** The
   `release` job in `ci.yml` runs after the test jobs on each push to `main`
   (its own non-cancelling `release` concurrency group, and the workflow never
@@ -1193,11 +1194,25 @@ Conversations that touch no code (questions, exploration) need no branch.
   merged PR carries that label (`major` wins). It renames `## [Unreleased]`
   to `## [X.Y.Z] - date` (`scripts/changelog.sh release`), runs
   `sync-version.sh --set` and `cargo update --workspace` (Cargo.lock), commits
-  `Release vX.Y.Z` to `main` as `github-actions[bot]`, pushes it with the
-  annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release with the
-  section as notes, and dispatches `build.yml` on the tag (a `GITHUB_TOKEN`
-  push triggers no workflows — that also prevents a loop). **Never bump the
-  version or create a tag by hand**; `just version` is for emergencies only.
+  `Release vX.Y.Z [skip ci]` to `main` as `github-actions[bot]`, pushes it
+  with the annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release
+  with the section as notes, and dispatches `build.yml` on the tag — the one
+  installer build per release. **Never bump the version or create a tag by
+  hand**; `just version` is for emergencies only.
+- **Release push = deploy key.** `main`'s ruleset (PR required, linear
+  history, no force-push/deletion) can only be bypassed by the admin role and
+  `DeployKey`; GitHub refuses the Actions app as a bypass actor on a
+  user-owned repo, so a `GITHUB_TOKEN` push is rejected with `GH013`. The
+  release job therefore checks out with `ssh-key: secrets.RELEASE_DEPLOY_KEY`
+  (the private half of a write-enabled deploy key; the owner creates both)
+  and pushes over SSH. Its first step fails with an `::error::` naming the
+  setup commands when the secret is missing. A deploy-key push, unlike a
+  `GITHUB_TOKEN` one, *does* trigger workflows: `[skip ci]` keeps the release
+  commit from re-running `ci.yml` (and `build.yml`'s `main` trigger), and
+  since GitHub's docs don't say whether it also covers the tag in the same
+  push, `build.yml` has no tag trigger at all — the explicit dispatch is the
+  only build, so a release gets exactly one. Rotating the key = new deploy
+  key + `gh secret set RELEASE_DEPLOY_KEY`, then delete the old key.
   The script tests (`scripts/*.test.sh`) run in the `changelog` job.
 - **Not yet set up:** signed/notarized releases.
 

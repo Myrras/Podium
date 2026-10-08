@@ -18,6 +18,20 @@ when it merges.
   the badge (or press Delete while it has focus) to go back to the theme
   accent. The colour is remembered across restarts.
 
+## [2.2.0] - 2026-10-08
+
+### Added
+
+- **Fold a project's sidebar sections away.** Click a subsection title
+  (To-dos, Agents, Processes, Terminals, Worktrees, Scratchpads) to collapse
+  it to one line with a count; a collapsed section still flags a row that
+  needs your input. A new button on the project header collapses or expands
+  every section of that project at once. What you folded is remembered per
+  project across restarts, and adding something to a collapsed section opens
+  it again.
+
+## [2.1.4] - 2026-10-08
+
 ### Fixed
 
 - **Messages waiting to be sent stay visible.** A long conversation with the

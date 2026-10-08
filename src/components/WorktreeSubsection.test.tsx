@@ -77,6 +77,7 @@ function renderSubsection(
   render(
     <WorktreeSubsection
       projectId={PROJECT}
+      projectRoot="/fake/root"
       nativeInWslMode={nativeInWslMode}
       terminals={terminals}
       onOpenCommands={onOpenCommands}
@@ -98,6 +99,7 @@ describe("WorktreeSubsection", () => {
     const { container } = render(
       <WorktreeSubsection
         projectId={PROJECT}
+        projectRoot="/fake/root"
         nativeInWslMode={false}
         terminals={[]}
         onOpenCommands={vi.fn()}
