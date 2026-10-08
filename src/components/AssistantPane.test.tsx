@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import css from "./AssistantPane.module.css?raw";
+
 // The file picker is a Tauri plugin: mocked so the picker button resolves
 // to fixture paths instead of opening a real dialog.
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -381,6 +383,16 @@ describe("AssistantPane", () => {
   });
 
   describe("the pending queue", () => {
+    // jsdom does no layout, so this pins the rule itself. The tail is a
+    // scroll container inside the `.log` flex column; without
+    // `flex-shrink: 0` its automatic min-height is 0 and a long transcript
+    // squeezes it to nothing, hiding every waiting message.
+    it("never lets the transcript squeeze the tail away", () => {
+      const tail = /(?:^|\n)\.tail\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+      expect(tail).toMatch(/overflow-y:\s*auto/);
+      expect(tail).toMatch(/flex-shrink:\s*0/);
+    });
+
     it("shows nothing when the queue is empty", () => {
       render(<AssistantPane />);
       expect(screen.queryByLabelText("Edit waiting message")).toBeNull();
