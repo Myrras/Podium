@@ -29,6 +29,8 @@ export interface ProjectInfo {
   configError: string | null;
   /** True when a user-set display-name override is in effect. */
   renamed: boolean;
+  /** User-picked badge colour (`#rrggbb`); null keeps the theme accent. */
+  color: string | null;
   /**
    * WSL-backend mode only: this Windows-drive project runs natively (the
    * `nativeDriveProjects` opt-in), so the terminal-shell setting — meant for

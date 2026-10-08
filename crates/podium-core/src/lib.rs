@@ -41,7 +41,7 @@ pub use ids::{
     CommentId, LinkId, PendingId, ProcessId, ProjectId, ProposalId, ScratchpadId, TodoId,
 };
 pub use mcp::McpServer;
-pub use orchestrator::{Orchestrator, ProjectInfo};
+pub use orchestrator::{normalize_project_name, Orchestrator, ProjectInfo};
 pub use proactivity::ProactivityConfig;
 pub use process::pty::TermChunk;
 pub use process::scrollback::OutputActivity;

@@ -40,6 +40,8 @@ import {
   CommentIcon,
   TodoIcon,
 } from "./icons";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
 
@@ -149,6 +151,8 @@ function TodoRow({
 
 interface TodoSubsectionProps {
   projectId: ProjectId;
+  /** Project root: the key its collapse state is persisted under. */
+  projectRoot: string;
   /** Open the to-do detail dialog (hosted by the sidebar). */
   onOpenTodo: (projectId: ProjectId, todoId: TodoId) => void;
   /**
@@ -165,6 +169,7 @@ interface TodoSubsectionProps {
 
 export function TodoSubsection({
   projectId,
+  projectRoot,
   onOpenTodo,
   onPickAgent,
 }: TodoSubsectionProps) {
@@ -296,11 +301,21 @@ export function TodoSubsection({
     anchorRef.current = null;
   };
 
+  const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, "todos");
+
   return (
-    <div className={sidebarStyles.subsection}>
+    <div
+      className={sidebarStyles.subsection}
+      data-collapsed={collapsed ? "true" : undefined}
+    >
       <div className={sidebarStyles.sectionHeader}>
-        <TodoIcon className={sidebarStyles.panelIcon} />
-        <span className={sidebarStyles.panelTitle}>To-dos</span>
+        <SectionTitle
+          title="To-dos"
+          Icon={TodoIcon}
+          count={todos.length}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
         <button
           type="button"
           className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
@@ -318,12 +333,15 @@ export function TodoSubsection({
           className={sidebarStyles.addBtn}
           aria-label="New to-do"
           title="New to-do"
-          onClick={() => setAdding(true)}
+          onClick={() => {
+            setCollapsed(false);
+            setAdding(true);
+          }}
         >
           <AddIcon size={13} />
         </button>
       </div>
-      {todos.length > 0 || adding ? (
+      {collapsed ? null : todos.length > 0 || adding ? (
         <div className={styles.rows}>
           {todos.map((todo) => (
             <TodoRow
@@ -365,6 +383,8 @@ export function TodoSubsection({
       ) : (
         <div className={sidebarStyles.placeholder}>No to-dos yet.</div>
       )}
+      {/* Stays visible while collapsed: the selection outlives the fold, so
+          its "Start agent" / Clear actions must too. */}
       {selectedIds.length >= 2 && (
         <div className={styles.selectionBar}>
           <button

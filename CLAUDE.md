@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 31 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **83 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **84 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -78,7 +78,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 83 commands.
+  IPC wrappers over all 84 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -166,18 +166,20 @@ reaches around it.
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
 it; at startup the frontend calls `workspace_list` and re-opens every path via
-`project_open`. A path that fails to open (folder moved/deleted, drive not
-yet mounted) is *not* auto-pruned — a transient failure must not silently
-drop the project — but its error toast offers a "Remove from workspace"
-action wired to `workspace_remove` for permanent failures. Each entry is
-a `{ path, name? }` object — the optional `name` is a user-set display-name
-override (set via `project_rename`) and list position is the sidebar order
-(set via `project_reorder`); legacy bare-path-string files are migrated on
-load. `project_open` re-applies a stored name override so a renamed project
-comes back named after a restart. Opening the same folder concurrently (e.g.
-React StrictMode's double-mount firing `restoreWorkspace` twice) dedupes to
-one project: the "already open" check and the id reservation happen under
-one lock acquisition, atomically, before the async `podium.yml` load.
+`project_open`. A path that fails to open (folder moved/deleted, drive not yet
+mounted) is *not* auto-pruned — a transient failure must not silently drop the
+project — but its error toast offers a "Remove from workspace" action wired to
+`workspace_remove` for permanent failures. Each entry is a `{ path, name?,
+color? }` object — the optional `name` is a user-set display-name override (set
+via `project_rename`), `color` the badge colour (`#rrggbb`, set via
+`project_set_color`, validated in core since it lands in a CSS property) and
+list position is the sidebar order (set via `project_reorder`); legacy
+bare-path-string files are migrated on load. `project_open` re-applies a stored
+name override and colour so a renamed/recoloured project comes back that way
+after a restart. Opening the same folder concurrently (e.g. React StrictMode's
+double-mount firing `restoreWorkspace` twice) dedupes to one project: the
+"already open" check and the id reservation happen under one lock acquisition,
+atomically, before the async `podium.yml` load.
 
 - **Processes** are shell command lines run via `$SHELL -lic` (login +
   interactive, so both `.zprofile`/`.bash_profile` and `.zshrc`/`.bashrc`
@@ -820,6 +822,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `project_list`          | –                                           | `ProjectInfo[]`   |
 | `project_config_reload` | `{ projectId }`                             | `ProjectInfo`     |
 | `project_rename`        | `{ projectId, name? }` (blank clears)       | `ProjectInfo`     |
+| `project_set_color`     | `{ projectId, color? }` (`#rrggbb`, blank clears) | `ProjectInfo` |
 | `project_reorder`       | `{ ordered: string[] }` (project ids)       | `ProjectInfo[]`   |
 | `project_just_recipes`  | `{ projectId }`                             | `string[]`        |
 | `project_open_in_warp`  | `{ projectId }`                             | –                 |
@@ -1207,9 +1210,10 @@ Conversations that touch no code (questions, exploration) need no branch.
 - **Bundle build** (`.github/workflows/build.yml`): a matrix over macOS and
   Windows, each building natively (cross-compiling Tauri is painful). macOS
   packages the `.app` + APFS `.dmg` (via `scripts/make-dmg.sh`); Windows
-  packages the NSIS `.exe`. Runs on `workflow_dispatch`, pushes to `main` and
-  any pushed `v*` tag, uploading each OS's installer as an artifact; on a tag
-  ref it also attaches the `.dmg`/`.exe` to that tag's GitHub Release.
+  packages the NSIS `.exe`. Runs on `workflow_dispatch` and pushes to `main`,
+  uploading each OS's installer as an artifact; on a tag ref (the release
+  job's dispatch) it also attaches the `.dmg`/`.exe` to that tag's GitHub
+  Release. There is deliberately **no tag trigger** (see below).
 - **Releasing is automatic: every merge to `main` is a release.** The
   `release` job in `ci.yml` runs after the test jobs on each push to `main`
   (its own non-cancelling `release` concurrency group, and the workflow never
@@ -1221,11 +1225,25 @@ Conversations that touch no code (questions, exploration) need no branch.
   merged PR carries that label (`major` wins). It renames `## [Unreleased]`
   to `## [X.Y.Z] - date` (`scripts/changelog.sh release`), runs
   `sync-version.sh --set` and `cargo update --workspace` (Cargo.lock), commits
-  `Release vX.Y.Z` to `main` as `github-actions[bot]`, pushes it with the
-  annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release with the
-  section as notes, and dispatches `build.yml` on the tag (a `GITHUB_TOKEN`
-  push triggers no workflows — that also prevents a loop). **Never bump the
-  version or create a tag by hand**; `just version` is for emergencies only.
+  `Release vX.Y.Z [skip ci]` to `main` as `github-actions[bot]`, pushes it
+  with the annotated tag `vX.Y.Z` (`--atomic`), creates the GitHub Release
+  with the section as notes, and dispatches `build.yml` on the tag — the one
+  installer build per release. **Never bump the version or create a tag by
+  hand**; `just version` is for emergencies only.
+- **Release push = deploy key.** `main`'s ruleset (PR required, linear
+  history, no force-push/deletion) can only be bypassed by the admin role and
+  `DeployKey`; GitHub refuses the Actions app as a bypass actor on a
+  user-owned repo, so a `GITHUB_TOKEN` push is rejected with `GH013`. The
+  release job therefore checks out with `ssh-key: secrets.RELEASE_DEPLOY_KEY`
+  (the private half of a write-enabled deploy key; the owner creates both)
+  and pushes over SSH. Its first step fails with an `::error::` naming the
+  setup commands when the secret is missing. A deploy-key push, unlike a
+  `GITHUB_TOKEN` one, *does* trigger workflows: `[skip ci]` keeps the release
+  commit from re-running `ci.yml` (and `build.yml`'s `main` trigger), and
+  since GitHub's docs don't say whether it also covers the tag in the same
+  push, `build.yml` has no tag trigger at all — the explicit dispatch is the
+  only build, so a release gets exactly one. Rotating the key = new deploy
+  key + `gh secret set RELEASE_DEPLOY_KEY`, then delete the old key.
   The script tests (`scripts/*.test.sh`) run in the `changelog` job.
 - **Not yet set up:** signed/notarized releases.
 

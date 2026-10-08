@@ -9,6 +9,7 @@ import {
   projectList,
   projectOpen,
   projectRename,
+  projectSetColor,
   projectReorder,
   recentsList,
   recentsRemove,
@@ -17,6 +18,7 @@ import {
   workspaceRemove,
 } from "../ipc/commands";
 import type { ProjectId, ProjectInfo, RecentProject } from "../ipc/types";
+import { useLayoutStore } from "./layoutStore";
 import { toastError, useToastStore } from "./toastStore";
 
 /**
@@ -64,6 +66,7 @@ interface ProjectState {
   reloadProjectConfig: (id: ProjectId) => Promise<void>;
   /** Rename a project; a blank/null name reverts to the folder/config name. */
   renameProject: (id: ProjectId, name: string | null) => Promise<void>;
+  setProjectColor: (id: ProjectId, color: string | null) => Promise<void>;
   /**
    * Move project `id` before `beforeId` (or to the end when null),
    * optimistically updating the list and persisting the new order.
@@ -186,6 +189,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       toastError("Could not close project", toIpcError(e).message);
       return;
     }
+    // Closing removes it from the workspace for good; its collapse state goes
+    // with it (a failed open, by contrast, keeps it — see `restoreWorkspace`).
+    const root = get().projects.find((p) => p.id === id)?.root;
+    if (root !== undefined) useLayoutStore.getState().forgetProject(root);
     set((s) => {
       const projects = s.projects.filter((p) => p.id !== id);
       return {
@@ -217,6 +224,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }));
     } catch (e) {
       toastError("Could not rename project", toIpcError(e).message);
+    }
+  },
+
+  setProjectColor: async (id, color) => {
+    try {
+      const project = await projectSetColor(id, color);
+      set((s) => ({
+        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
+      }));
+    } catch (e) {
+      toastError("Could not change project colour", toIpcError(e).message);
     }
   },
 
