@@ -264,6 +264,10 @@
   flex-shrink: 0;
 }
 
+.pushRight {
+  margin-left: auto;
+}
+
 /* ── Agent edit form ─────────────────────────────────────────────────────── */
 
 .field {

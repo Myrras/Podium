@@ -16,6 +16,10 @@ import type {
   Attachment,
   AutonomyMode,
   CommentId,
+  Board,
+  CachedBoard,
+  IssueProvider,
+  IssuesOverview,
   IpcError,
   LinkId,
   McpClientInfo,
@@ -28,6 +32,7 @@ import type {
   ProcessInfo,
   ProjectId,
   ProjectInfo,
+  ProjectSections,
   RecentProject,
   ResponseItem,
   ScratchpadId,
@@ -91,6 +96,14 @@ export function projectRename(
   name: string | null,
 ): Promise<ProjectInfo> {
   return invoke("project_rename", { projectId, name });
+}
+
+/** Set which optional sidebar sections a project shows. Returns the updated snapshot. */
+export function projectSetSections(
+  projectId: ProjectId,
+  sections: ProjectSections,
+): Promise<ProjectInfo> {
+  return invoke("project_set_sections", { projectId, sections });
 }
 
 /** Set a project's badge colour (`#rrggbb`); null clears it. */
@@ -832,4 +845,87 @@ export async function processAttach(
   channel.onmessage = onEvent;
   await invoke("process_attach", { processId, channel });
   return channel;
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+/**
+ * The Git board of the project's `origin` repo; `mine` = only the user's own
+ * issues/PRs. Rejects with kind `issuesNoRemote` / `issuesGhUnavailable` /
+ * `issuesUnsupportedHost` / `issuesGitlabNotConfigured` / `issuesGitlabAuth`
+ * / `issuesFetch`.
+ */
+export function issuesBoard(
+  projectId: ProjectId,
+  mine: boolean,
+): Promise<Board> {
+  return invoke("issues_board", { projectId, mine });
+}
+
+/** The cached board for a scope, no network; `null` when never fetched. */
+export function issuesBoardCached(
+  projectId: ProjectId,
+  mine: boolean,
+): Promise<CachedBoard | null> {
+  return invoke("issues_board_cached", { projectId, mine });
+}
+
+/**
+ * Move a card to another column. Rejects with kind `issuesMove` (message is
+ * user-facing text). Success emits `board:changed`.
+ */
+export function issuesBoardMove(
+  projectId: ProjectId,
+  kind: "issue" | "pr",
+  number: number,
+  column: string,
+): Promise<void> {
+  return invoke("issues_board_move", { projectId, kind, number, column });
+}
+
+/**
+ * Unassign the signed-in user from a card. Rejects with kind `issuesMove`
+ * (message is user-facing text). Success emits `board:changed`.
+ */
+export function issuesBoardUnassign(
+  projectId: ProjectId,
+  kind: "issue" | "pr",
+  number: number,
+): Promise<void> {
+  return invoke("issues_board_unassign", { projectId, kind, number });
+}
+
+/** Every issue setup (never a token) plus each project's pick. */
+export function issuesSettingsGet(): Promise<IssuesOverview> {
+  return invoke("issues_settings_get");
+}
+
+/**
+ * Add (`id` omitted) or update an issue setup. `token` (GitLab): omit to keep
+ * the stored one, blank to delete it, otherwise it replaces it.
+ */
+export function issuesSetupSave(setup: {
+  id?: string;
+  name: string;
+  provider: IssueProvider;
+  url: string;
+  account?: string;
+  token?: string;
+}): Promise<IssuesOverview> {
+  return invoke("issues_setup_save", setup);
+}
+
+/** Remove an issue setup and its stored token. */
+export function issuesSetupRemove(id: string): Promise<IssuesOverview> {
+  return invoke("issues_setup_remove", { id });
+}
+
+/** Pick the setup a project's Issues section uses; omit to match by host. */
+export function issuesProjectSetupSet(
+  projectId: ProjectId,
+  setupId?: string,
+): Promise<IssuesOverview> {
+  return invoke("issues_project_setup_set", { projectId, setupId });
 }

@@ -1,0 +1,61 @@
+/**
+ * The project header's Git button: opens the project's Git board in the work
+ * area. Unlike the other header actions it stays visible at rest, as a pill at
+ * the row's far end, and it carries the board's state — the open-card count,
+ * an accent fill while the board is open, a warning dot when the last fetch
+ * failed.
+ * Mounting it keeps the board fresh (`startAutoRefresh`), so the board is
+ * already loaded when opened.
+ */
+
+import { useEffect } from "react";
+
+import type { ProjectId } from "../ipc/types";
+import { boardErrorText } from "../lib/issueActions";
+import { useIssueStore } from "../state/issueStore";
+import { useLayoutStore } from "../state/layoutStore";
+import { useProjectStore } from "../state/projectStore";
+import { BoardIcon } from "./icons";
+import styles from "./Sidebar.module.css";
+
+export function GitButton({ projectId }: { projectId: ProjectId }) {
+  const entry = useIssueStore((s) => s.byProject[projectId]);
+  const startAutoRefresh = useIssueStore((s) => s.startAutoRefresh);
+  const loadOverview = useIssueStore((s) => s.loadOverview);
+  const isOpen = useLayoutStore((s) => s.openBoard?.projectId === projectId);
+  const openBoard = useLayoutStore((s) => s.openBoardInWorkArea);
+  const setActiveProject = useProjectStore((s) => s.setActiveProject);
+
+  useEffect(() => startAutoRefresh(projectId), [projectId, startAutoRefresh]);
+  useEffect(() => void loadOverview(), [loadOverview]);
+
+  // Not set up is a state, not a failure: no warning dot on every project.
+  const error =
+    entry?.error?.kind === "issuesNotConfigured" ? null : entry?.error;
+  const items = entry?.board?.items ?? [];
+  const open = items.filter((i) => i.column !== "done").length;
+  const title = error
+    ? `Git board — ${boardErrorText(error)}`
+    : entry?.board
+      ? `Git board — ${open} open`
+      : "Git board";
+
+  return (
+    <button
+      type="button"
+      className={styles.gitButton}
+      data-open={isOpen ? "true" : undefined}
+      data-error={error ? "true" : undefined}
+      aria-label={title}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        setActiveProject(projectId);
+        openBoard(projectId);
+      }}
+    >
+      <BoardIcon size={12} />
+      {entry?.board && !error && open > 0 && <span aria-hidden>{open}</span>}
+    </button>
+  );
+}

@@ -12,7 +12,12 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { useThemeStore, type ThemeMode } from "../state/themeStore";
 import { useSettingsStore } from "../state/settingsStore";
+import {
+  useSettingsRequestStore,
+  type SettingsTabId,
+} from "../state/settingsRequestStore";
 import { useAssistantStore } from "../state/assistantStore";
+import { useIssueStore } from "../state/issueStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
 import { isWindows } from "../lib/platform";
 import {
@@ -24,11 +29,14 @@ import {
   backendSettingsGet,
   backendSettingsSetNativeDriveProjects,
   backendSettingsSetWslDistro,
+  issuesSetupRemove,
+  issuesSetupSave,
   mcpClientInstall,
   mcpClientsStatus,
   toIpcError,
 } from "../ipc/commands";
 import type {
+  IssueProvider,
   AgentAdapterConfig,
   AgentSettingsDto,
   AutonomyMode,
@@ -46,7 +54,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "agents" | "assistant" | "mcp";
+type SettingsTab = SettingsTabId;
 
 const THEMES: {
   mode: ThemeMode;
@@ -198,6 +206,10 @@ function McpClientCard({
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [clients, setClients] = useState<McpClientInfo[] | null>(null);
+  const requestedTab = useSettingsRequestStore((s) => s.request);
+  useEffect(() => {
+    if (open && requestedTab) setTab(requestedTab);
+  }, [open, requestedTab]);
 
   // Refresh the client registration snapshot every time the dialog opens.
   useEffect(() => {
@@ -224,6 +236,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             ["general", "General"],
             ["agents", "Agents"],
             ["assistant", "Assistant"],
+            ["issues", "Issues"],
             ["mcp", "MCP"],
           ] as [SettingsTab, string][]
         ).map(([id, label]) => (
@@ -268,6 +281,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         <AgentsTab />
       ) : tab === "assistant" ? (
         <AssistantTab />
+      ) : tab === "issues" ? (
+        <IssuesTab />
       ) : (
         <GeneralTab />
       )}
@@ -392,6 +407,235 @@ const MERGE_MODES: { value: MergeMode; label: string }[] = [
   { value: "project-overrides", label: "Project overrides global" },
   { value: "global-overrides", label: "Global overrides project" },
 ];
+
+/** A setup being added (no `id`) or edited in the Issues tab. */
+interface IssueSetupDraft {
+  id?: string;
+  name: string;
+  provider: IssueProvider;
+  url: string;
+  account: string;
+  token: string;
+  tokenSet: boolean;
+}
+
+const PROVIDER_LABELS: Record<IssueProvider, string> = {
+  github: "GitHub",
+  gitlab: "GitLab (self-hosted)",
+};
+
+/**
+ * Issues tab: the GitHub/GitLab setups a project's Issues section can pick
+ * from. Token fields are never prefilled — the backend only says whether one
+ * is stored.
+ */
+function IssuesTab() {
+  const overview = useIssueStore((s) => s.overview);
+  const loadOverview = useIssueStore((s) => s.loadOverview);
+  const setOverview = useIssueStore((s) => s.setOverview);
+  const [draft, setDraft] = useState<IssueSetupDraft | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => void loadOverview(), [loadOverview]);
+
+  const startNew = (provider: IssueProvider) =>
+    setDraft({
+      provider,
+      name: "",
+      url: provider === "github" ? "https://github.com" : "",
+      account: "",
+      token: "",
+      tokenSet: false,
+    });
+
+  const save = (d: IssueSetupDraft) => {
+    setBusy(true);
+    issuesSetupSave({
+      id: d.id,
+      name: d.name,
+      provider: d.provider,
+      url: d.url,
+      account: d.account || undefined,
+      // Blank on an edit keeps the stored token.
+      token: d.token.trim() ? d.token : undefined,
+    })
+      .then((o) => {
+        setOverview(o);
+        setDraft(null);
+        toastSuccess("Issue setup saved");
+      })
+      .catch((e) => toastError(toIpcError(e).message))
+      .finally(() => setBusy(false));
+  };
+
+  // A blank token deletes the stored one (the backend's rule for `""`). It
+  // saves the setup as stored, not the draft: unsaved edits stay unsaved.
+  const clearToken = (d: IssueSetupDraft) => {
+    const stored = overview?.setups.find((s) => s.id === d.id);
+    if (!stored) return;
+    setBusy(true);
+    issuesSetupSave({
+      id: stored.id,
+      name: stored.name,
+      provider: stored.provider,
+      url: stored.url,
+      token: "",
+    })
+      .then((o) => {
+        setOverview(o);
+        setDraft({ ...d, token: "", tokenSet: false });
+        toastSuccess("Token cleared");
+      })
+      .catch((e) => toastError(toIpcError(e).message))
+      .finally(() => setBusy(false));
+  };
+
+  const remove = (id: string) =>
+    issuesSetupRemove(id)
+      .then(setOverview)
+      .catch((e) => toastError(toIpcError(e).message));
+
+  const setups = overview?.setups ?? [];
+
+  return (
+    <section className={styles.section}>
+      <h3 className={styles.sectionLabel}>Issue setups</h3>
+      <small className={styles.rowHelp}>
+        A project&apos;s Issues section uses the setup picked there, or the
+        first one whose host matches its <code>origin</code>. GitHub goes
+        through your <code>gh</code> login (optionally a specific account),
+        github.com included — every host needs a setup. Self-hosted GitLab needs
+        a personal access token with the <code>api</code> scope (moving cards
+        and unassigning write to GitLab), kept in the OS keychain — temporary,
+        until Connect is on GitHub.
+      </small>
+      {setups.map((s) => (
+        <div key={s.id} className={styles.clientCard}>
+          <div className={styles.clientHeader}>
+            <span className={styles.clientName}>{s.name}</span>
+            <span className={styles.clientBadge}>
+              {PROVIDER_LABELS[s.provider]}
+            </span>
+            <div className={`${styles.clientActions} ${styles.pushRight}`}>
+              <button
+                type="button"
+                onClick={() =>
+                  setDraft({
+                    ...s,
+                    account: s.account ?? "",
+                    token: "",
+                  })
+                }
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove ${s.name}`}
+                onClick={() => void remove(s.id)}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+          <small className={styles.rowHelp}>
+            {s.url}
+            {s.provider === "github"
+              ? ` · ${s.account ? `gh account ${s.account}` : "active gh account"}`
+              : ` · ${s.tokenSet ? "token saved" : "no token"}`}
+          </small>
+        </div>
+      ))}
+      {draft ? (
+        <form
+          className={styles.clientCard}
+          onSubmit={(e) => {
+            e.preventDefault();
+            save(draft);
+          }}
+        >
+          <span className={styles.clientName}>
+            {draft.id ? "Edit" : "New"} {PROVIDER_LABELS[draft.provider]} setup
+          </span>
+          <div className={styles.field}>
+            <label htmlFor="issue-setup-name">Name</label>
+            <input
+              id="issue-setup-name"
+              type="text"
+              value={draft.name}
+              placeholder="Defaults to the host"
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
+          </div>
+          <div className={styles.field}>
+            <label htmlFor="issue-setup-url">URL</label>
+            <input
+              id="issue-setup-url"
+              type="text"
+              value={draft.url}
+              placeholder="https://gitlab.example.com (http:// is kept)"
+              onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+            />
+          </div>
+          {draft.provider === "github" ? (
+            <div className={styles.field}>
+              <label htmlFor="issue-setup-account">gh account</label>
+              <input
+                id="issue-setup-account"
+                type="text"
+                value={draft.account}
+                placeholder="Blank = the active gh account"
+                onChange={(e) =>
+                  setDraft({ ...draft, account: e.target.value })
+                }
+              />
+            </div>
+          ) : (
+            <div className={styles.field}>
+              <label htmlFor="issue-setup-token">Access token</label>
+              <input
+                id="issue-setup-token"
+                type="password"
+                autoComplete="off"
+                value={draft.token}
+                placeholder={
+                  draft.tokenSet ? "Saved — leave blank to keep" : undefined
+                }
+                onChange={(e) => setDraft({ ...draft, token: e.target.value })}
+              />
+              {draft.id && draft.tokenSet && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => clearToken(draft)}
+                >
+                  Clear token
+                </button>
+              )}
+            </div>
+          )}
+          <div className={styles.editActions}>
+            <button type="button" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+            <button type="submit" className="primary" disabled={busy}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className={styles.editActions}>
+          <button type="button" onClick={() => startNew("github")}>
+            Add GitHub setup
+          </button>
+          <button type="button" onClick={() => startNew("gitlab")}>
+            Add GitLab setup
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
 
 /** Agents tab: per-adapter command + default arguments, plus the merge mode. */
 function AgentsTab() {

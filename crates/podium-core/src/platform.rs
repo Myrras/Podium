@@ -655,6 +655,54 @@ fn git_binary() -> &'static str {
         .as_str()
 }
 
+/// The `gh` binary, resolved once like [`git_binary`]; `None` when it is not
+/// installed (so callers can report that instead of a spawn failure). In
+/// WSL-backend mode it is the distro's `gh` (an absolute Linux path, since
+/// [`gh_command`] runs it without a login shell), so the probe and the call
+/// can never disagree on which `gh` — and which login — is used.
+pub fn gh_binary() -> Option<&'static str> {
+    static GH_PATH: OnceLock<Option<String>> = OnceLock::new();
+    GH_PATH
+        .get_or_init(|| {
+            if cfg!(unix) || wsl().is_some() {
+                // The last line: a chatty shell profile may print first.
+                run_shell_stdout(&command_exists_query("gh"))
+                    .and_then(|s| s.lines().last().map(|l| l.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+            } else {
+                run_shell_ok(&command_exists_query("gh")).then(|| "gh".to_string())
+            }
+        })
+        .as_deref()
+}
+
+/// A [`std::process::Command`] that runs `gh` (from [`gh_binary`]): directly
+/// natively, `wsl.exe -d <distro> -e <gh>` in WSL-backend mode — like
+/// [`git_command`], console window hidden. Run it through [`run_gated`], and
+/// set environment variables with [`backend_env`] so they reach Linux.
+pub fn gh_command(gh: &str) -> std::process::Command {
+    let mut cmd = match wsl() {
+        Some(w) => {
+            let mut cmd = std::process::Command::new("wsl.exe");
+            cmd.args(["-d", w.distro(), "-e", gh]);
+            cmd
+        }
+        None => std::process::Command::new(gh),
+    };
+    hide_console_window(&mut cmd);
+    cmd
+}
+
+/// Set `key=value` on `cmd`, and in WSL-backend mode also list `key` in
+/// `WSLENV`, without which `wsl.exe` does not pass it on to Linux.
+pub fn backend_env(cmd: &mut std::process::Command, key: &str, value: &str) {
+    cmd.env(key, value);
+    if wsl().is_some() {
+        let existing = std::env::var("WSLENV").ok();
+        cmd.env("WSLENV", wslenv_with(existing.as_deref(), [key]));
+    }
+}
+
 /// The `warp://` URI that opens a new Warp tab at `path` (percent-encoded).
 pub fn warp_uri(path: &std::path::Path) -> String {
     let mut encoded = String::new();

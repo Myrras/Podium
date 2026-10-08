@@ -34,6 +34,13 @@ function project(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
     iconInitials: "WS",
     configError: null,
     renamed: false,
+    sections: {
+      todos: true,
+      terminals: true,
+      worktrees: true,
+      scratchpads: true,
+      issues: false,
+    },
     color: null,
     nativeInWslMode: false,
     ...overrides,
@@ -77,6 +84,118 @@ describe("Sidebar project header", () => {
     vi.mocked(invoke)
       .mockReset()
       .mockImplementation(() => Promise.resolve([]));
+  });
+
+  it("hides a section whose toggle is off and keeps the others", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: false,
+            issues: false,
+          },
+        }),
+      ],
+    });
+    render(<Sidebar />);
+
+    expect(screen.queryByText("Scratchpads")).not.toBeInTheDocument();
+    expect(screen.getByText("Terminals")).toBeInTheDocument();
+    // Agents are not toggleable.
+    expect(screen.getByText("Agents")).toBeInTheDocument();
+  });
+
+  it("shows the Git board as a header button, not a section, when enabled", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: true,
+            issues: true,
+          },
+        }),
+      ],
+    });
+    const { rerender } = render(<Sidebar />);
+    expect(
+      screen.getByRole("button", { name: /^Git board/ }),
+    ).toBeInTheDocument();
+
+    useProjectStore.setState({ projects: [project()] });
+    rerender(<Sidebar />);
+    expect(
+      screen.queryByRole("button", { name: /^Git board/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("toggling a Sections checkbox calls setProjectSections with the changed key", () => {
+    const setProjectSections = vi.fn(() => Promise.resolve());
+    useProjectStore.setState({ projects: [project()], setProjectSections });
+    render(<Sidebar />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sections for Webshop" }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Scratchpads" }));
+
+    expect(setProjectSections).toHaveBeenCalledWith("proj-1", {
+      scratchpads: false,
+    });
+  });
+
+  it("two quick Sections toggles both stick", () => {
+    useProjectStore.setState({ projects: [project()] });
+    render(<Sidebar />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sections for Webshop" }),
+    );
+    // Neither backend call has answered yet.
+    vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Scratchpads" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Terminals" }));
+
+    const calls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "project_set_sections");
+    expect(calls[calls.length - 1]?.[1]).toEqual({
+      projectId: "proj-1",
+      sections: {
+        todos: true,
+        terminals: false,
+        worktrees: true,
+        scratchpads: false,
+        issues: false,
+      },
+    });
+  });
+
+  it("hiding the Git board section closes that project's open board", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: true,
+            scratchpads: true,
+            issues: true,
+          },
+        }),
+      ],
+    });
+    useLayoutStore.setState({ openBoard: { projectId: "proj-1" } });
+    render(<Sidebar />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sections for Webshop" }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Git board" }));
+    expect(useLayoutStore.getState().openBoard).toBeNull();
   });
 
   it("drops the hover actions while renaming so they never cover the input", () => {
@@ -297,6 +416,30 @@ describe("Sidebar project header", () => {
     // empty hint instead of listing it a second time.
     await screen.findByText("worktree-shell");
     expect(screen.getByText("No terminals yet.")).toBeInTheDocument();
+  });
+
+  it("lists worktree terminals under Terminals when the Worktrees section is off", () => {
+    useProjectStore.setState({
+      projects: [
+        project({
+          sections: {
+            todos: true,
+            terminals: true,
+            worktrees: false,
+            scratchpads: true,
+            issues: false,
+          },
+        }),
+      ],
+    });
+    useProcessStore.setState({
+      processes: [terminal("t1", "worktree-shell", "fix-login")],
+    });
+
+    render(<Sidebar />);
+
+    expect(screen.getByText("worktree-shell")).toBeInTheDocument();
+    expect(screen.queryByText("No terminals yet.")).not.toBeInTheDocument();
   });
 
   it("collapses one subsection to its header with a row count", () => {

@@ -17,6 +17,111 @@ export type CommentId = string;
 export type LinkId = string;
 export type ScratchpadId = string;
 
+/** Which optional sidebar sections a project shows (`podium_core::ProjectSections`). */
+export interface ProjectSections {
+  todos: boolean;
+  terminals: boolean;
+  worktrees: boolean;
+  scratchpads: boolean;
+  issues: boolean;
+}
+
+/**
+ * A Git board column (`podium_core::issues::Column`). `color` is a hex string
+ * (GitLab) or a lowercase GitHub option colour name ("gray", "blue", …).
+ */
+export interface BoardColumn {
+  id: string;
+  title: string;
+  color: string | null;
+  /** Item kinds that may be dropped here (`issues_board_move`). */
+  accepts: ("issue" | "pr")[];
+}
+
+/** One card on the Git board: an issue or a PR/MR (`podium_core::issues::BoardItem`). */
+export interface BoardItem {
+  kind: "issue" | "pr";
+  number: number;
+  title: string;
+  url: string;
+  body: string;
+  labels: string[];
+  updatedAt: string;
+  /** A `BoardColumn.id` of the board. */
+  column: string;
+  draft: boolean;
+  author: string;
+  /** Whether it can be moved to another column. */
+  movable: boolean;
+  /** PRs/MRs folded into this issue (empty for PRs and unlinked issues). */
+  linked: LinkedPr[];
+  /** Logins/usernames it is assigned to. */
+  assignees: string[];
+  /** Open PRs/MRs only; null when unknown. */
+  approvals: Approvals | null;
+}
+
+/** Who approved an open PR/MR (`podium_core::issues::Approvals`). */
+export interface Approvals {
+  by: string[];
+  /** Approvals the platform requires (GitLab); null when it does not say. */
+  required: number | null;
+}
+
+/** A PR/MR linked to an issue, shown inside its card instead of as its own. */
+export interface LinkedPr {
+  number: number;
+  title: string;
+  url: string;
+  draft: boolean;
+  merged: boolean;
+  approvals: Approvals | null;
+}
+
+/** A project's Git board (`podium_core::Board`); counts are all-time, `null` = unknown. */
+export interface Board {
+  provider: IssueProvider;
+  items: BoardItem[];
+  /** Display order. */
+  columns: BoardColumn[];
+  /** Name of the project board the columns come from; null = Podium's defaults. */
+  source: string | null;
+  /** Podium-owned text: how to unlock the project's columns. */
+  hint: string | null;
+  prCounts: { open: number | null; merged: number | null };
+  /** The signed-in user's login/username; null when the platform would not say. */
+  me: string | null;
+}
+
+/** The last fetched board of a scope, from the backend cache. */
+export interface CachedBoard {
+  board: Board;
+  /** RFC3339 time of the fetch. */
+  fetchedAt: string;
+}
+
+/** Platform an issue setup talks to (`podium_core::IssueProvider`). */
+export type IssueProvider = "github" | "gitlab";
+
+/** One Settings → Issues setup (`IssueSetupInfo`); a token never crosses IPC. */
+export interface IssueSetup {
+  id: string;
+  name: string;
+  provider: IssueProvider;
+  /** Base URL, scheme kept (`http://` for an instance without TLS). */
+  url: string;
+  /** GitHub: the `gh` account to use; absent = gh's active account. */
+  account?: string;
+  /** GitLab: whether a token is stored in the keychain. */
+  tokenSet: boolean;
+}
+
+/** Every setup plus each project's pick, keyed by project root (`IssuesOverview`). */
+export interface IssuesOverview {
+  setups: IssueSetup[];
+  projects: Record<string, string>;
+}
+
 /** Open project snapshot (`podium_core::ProjectInfo`). */
 export interface ProjectInfo {
   id: ProjectId;
@@ -29,6 +134,8 @@ export interface ProjectInfo {
   configError: string | null;
   /** True when a user-set display-name override is in effect. */
   renamed: boolean;
+  /** Which optional sidebar sections are shown. */
+  sections: ProjectSections;
   /** User-picked badge colour (`#rrggbb`); null keeps the theme accent. */
   color: string | null;
   /**

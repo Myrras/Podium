@@ -156,6 +156,10 @@ pub fn run() {
             state
                 .orchestrator
                 .set_scratchpads_path(app.path().app_data_dir()?.join("scratchpads.json"));
+            // The last Git board per project and scope, so it paints at once.
+            state
+                .orchestrator
+                .set_boards_path(app.path().app_data_dir()?.join("boards.json"));
             // The assistant's Responses list outlives a restart (and the
             // blank conversation every launch starts with): items are the
             // user's to clear.
@@ -231,6 +235,7 @@ pub fn run() {
             commands::project::project_list,
             commands::project::project_config_reload,
             commands::project::project_rename,
+            commands::project::project_set_sections,
             commands::project::project_set_color,
             commands::project::project_reorder,
             commands::project::project_just_recipes,
@@ -310,6 +315,14 @@ pub fn run() {
             commands::scratchpad::scratchpad_remove,
             commands::scratchpad::scratchpad_unassign,
             commands::window::window_confirm_close,
+            commands::issues::issues_board,
+            commands::issues::issues_board_cached,
+            commands::issues::issues_board_move,
+            commands::issues::issues_board_unassign,
+            commands::issues::issues_settings_get,
+            commands::issues::issues_setup_save,
+            commands::issues::issues_setup_remove,
+            commands::issues::issues_project_setup_set,
             commands::worktree::worktree_list,
             commands::worktree::worktree_remove,
             commands::worktree::worktree_open_in_warp,

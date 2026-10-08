@@ -24,6 +24,8 @@ interface NewAgentModalProps {
   todoIds?: TodoId[];
   /** Prefill the name field (e.g. the to-do's title). */
   initialName?: string;
+  /** Prefill the prompt field (e.g. an issue's url, title and body). */
+  initialPrompt?: string;
   onClose: () => void;
 }
 
@@ -32,6 +34,7 @@ export function NewAgentModal({
   projectId,
   todoIds,
   initialName,
+  initialPrompt,
   onClose,
 }: NewAgentModalProps) {
   const spawnAgent = useProcessStore((s) => s.spawnAgent);
@@ -58,7 +61,7 @@ export function NewAgentModal({
     setAdapters(null);
     setAdapterId("");
     setName(initialName ?? "");
-    setPrompt("");
+    setPrompt(initialPrompt ?? "");
     setWorktree(false);
     setWorktreeName("");
     setBusy(false);
@@ -89,7 +92,7 @@ export function NewAgentModal({
     return () => {
       cancelled = true;
     };
-  }, [open, initialName, projectId]);
+  }, [open, initialName, initialPrompt, projectId]);
 
   // Seed the args field with the selected adapter's default args (Settings →
   // Agents) whenever the adapter changes, so the user starts from the defaults

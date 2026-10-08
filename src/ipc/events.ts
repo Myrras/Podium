@@ -90,6 +90,13 @@ export function onWorktreesChanged(
   return listen<ProjectRefEvent>("worktree:changed", (e) => handler(e.payload));
 }
 
+/** A project's cached Git board changed (a move from this UI or an agent). */
+export function onBoardChanged(
+  handler: (event: ProjectRefEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ProjectRefEvent>("board:changed", (e) => handler(e.payload));
+}
+
 /** The native macOS menu's Settings… item (⌘,) was activated (`lib.rs`). */
 export function onMenuOpenSettings(handler: () => void): Promise<UnlistenFn> {
   return listen("menu:open-settings", () => handler());

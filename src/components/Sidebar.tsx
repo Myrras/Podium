@@ -21,6 +21,7 @@ import type {
   ProcessInfo,
   ProjectId,
   ProjectInfo,
+  ProjectSections,
   ScratchpadId,
   TodoId,
   WorktreeInfo,
@@ -37,6 +38,7 @@ import { toastError } from "../state/toastStore";
 import { NewAgentModal } from "./NewAgentModal";
 import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
+import { GitButton } from "./GitButton";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
 import {
   useSectionCollapsed,
@@ -60,6 +62,7 @@ import {
   GripIcon,
   RestartIcon,
   RunIcon,
+  SectionsIcon,
   TerminalIcon,
 } from "./icons";
 import styles from "./Sidebar.module.css";
@@ -205,19 +208,22 @@ function ProjectGroup({
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
   const renameProject = useProjectStore((s) => s.renameProject);
+  const setProjectSections = useProjectStore((s) => s.setProjectSections);
   const setProjectColor = useProjectStore((s) => s.setProjectColor);
   const hasWorktrees = useWorktreeStore(
     (s) => (s.worktreesByProject[project.id]?.length ?? 0) > 0,
   );
   const hasServices = processes.some((p) => p.kind.kind === "service");
   // Only the subsections actually on screen count: Processes and Worktrees
-  // render nothing when empty, and folding the visible ones by hand should
+  // render nothing when empty, a section switched off in the project's
+  // section menu none at all, and folding the visible ones by hand should
   // still flip this button to "Expand all".
   const allSectionsCollapsed = useLayoutStore((s) =>
     SECTIONS.filter(
       (sec) =>
         (sec !== "processes" || hasServices) &&
-        (sec !== "worktrees" || hasWorktrees),
+        (sec !== "worktrees" || hasWorktrees) &&
+        (sec === "agents" || sec === "processes" || project.sections[sec]),
     ).every((sec) => s.collapsedSections[sectionKey(project.root, sec)]),
   );
   const setAllSectionsCollapsed = useLayoutStore(
@@ -234,6 +240,11 @@ function ProjectGroup({
   const [commandsTarget, setCommandsTarget] = useState<
     WorktreeInfo | null | undefined
   >(undefined);
+  const [sectionsOpen, setSectionsOpen] = useState(false);
+  // The trigger lives in the hover strip, the popover outside it (the strip
+  // clips): an outside click is one that hits neither.
+  const sectionsRef = useRef<HTMLDivElement>(null);
+  const sectionsTriggerRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraft] = useState(project.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -292,6 +303,22 @@ function ProjectGroup({
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
+
+  // Close the Sections popover on any outside click.
+  useEffect(() => {
+    if (!sectionsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        !sectionsRef.current?.contains(target) &&
+        !sectionsTriggerRef.current?.contains(target)
+      ) {
+        setSectionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [sectionsOpen]);
 
   const startEditing = () => {
     setActiveProject(project.id);
@@ -484,7 +511,10 @@ function ProjectGroup({
           )}
           {/* Hidden while renaming so they never cover the input. */}
           {!editing && (
-            <div className={styles.projectActions}>
+            <div
+              className={styles.projectActions}
+              data-open={sectionsOpen ? "true" : undefined}
+            >
               <button
                 type="button"
                 className={styles.projectAction}
@@ -496,6 +526,21 @@ function ProjectGroup({
                 }}
               >
                 <EditIcon size={12} />
+              </button>
+              <button
+                ref={sectionsTriggerRef}
+                type="button"
+                className={styles.projectAction}
+                aria-label={`Sections for ${project.name}`}
+                aria-haspopup="true"
+                aria-expanded={sectionsOpen}
+                title="Sections"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSectionsOpen((o) => !o);
+                }}
+              >
+                <SectionsIcon size={12} />
               </button>
               <button
                 type="button"
@@ -554,17 +599,59 @@ function ProjectGroup({
             <ErrorIcon size={13} />
           </span>
         )}
+        {/* Outside the hover strip, which clips; anchored to the header. */}
+        {sectionsOpen && (
+          <div
+            ref={sectionsRef}
+            className={styles.sectionsPopover}
+            role="group"
+            aria-label={`Sections for ${project.name}`}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Escape") setSectionsOpen(false);
+            }}
+          >
+            {SECTION_TOGGLES.map(({ key, label }) => (
+              <label key={key} className={styles.sectionsItem}>
+                <input
+                  type="checkbox"
+                  checked={project.sections[key]}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    void setProjectSections(project.id, { [key]: on });
+                    // Hiding the Git section unmounts its button (and the
+                    // board's auto-refresh): close the board with it.
+                    const layout = useLayoutStore.getState();
+                    if (
+                      key === "issues" &&
+                      !on &&
+                      layout.openBoard?.projectId === project.id
+                    ) {
+                      layout.clearOpenBoard();
+                    }
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        )}
+        {/* Last, outside the hover strip, so it is always shown and never moves. */}
+        {project.sections.issues && <GitButton projectId={project.id} />}
       </div>
       <div
         className={`${styles.groupBody}${isCollapsed ? ` ${styles.groupBodyCollapsed}` : ""}`}
       >
         <div className={styles.groupBodyInner}>
-          <TodoSubsection
-            projectId={project.id}
-            projectRoot={project.root}
-            onOpenTodo={onOpenTodo}
-            onPickAgent={onPickAgent}
-          />
+          {project.sections.todos && (
+            <TodoSubsection
+              projectId={project.id}
+              projectRoot={project.root}
+              onOpenTodo={onOpenTodo}
+              onPickAgent={onPickAgent}
+            />
+          )}
           <Subsection
             projectRoot={project.root}
             section="agents"
@@ -589,40 +676,48 @@ function ProjectGroup({
               rows={services}
             />
           )}
-          <Subsection
-            projectRoot={project.root}
-            section="terminals"
-            title="Terminals"
-            Icon={TerminalIcon}
-            rows={terminals.filter((p) => p.worktree == null)}
-            empty="No terminals yet."
-            add={{ label: "New terminal", onClick: () => void addTerminal() }}
-            extra={[
-              {
-                label: "Open in Warp",
-                Icon: ExternalLinkIcon,
-                onClick: openInWarp,
-              },
-              {
-                label: "Commands",
-                Icon: RunIcon,
-                onClick: () => {
-                  setActiveProject(project.id);
-                  setCommandsTarget(null);
+          {project.sections.terminals && (
+            <Subsection
+              projectRoot={project.root}
+              section="terminals"
+              title="Terminals"
+              Icon={TerminalIcon}
+              // With the Worktrees section off, a worktree's terminals have
+              // no row of their own to nest under: list them here instead.
+              rows={terminals.filter(
+                (p) => p.worktree == null || !project.sections.worktrees,
+              )}
+              empty="No terminals yet."
+              add={{ label: "New terminal", onClick: () => void addTerminal() }}
+              extra={[
+                {
+                  label: "Open in Warp",
+                  Icon: ExternalLinkIcon,
+                  onClick: openInWarp,
                 },
-              },
-            ]}
-          />
-          <WorktreeSubsection
-            projectId={project.id}
-            projectRoot={project.root}
-            nativeInWslMode={project.nativeInWslMode}
-            terminals={terminals}
-            onOpenCommands={(wt) => {
-              setActiveProject(project.id);
-              setCommandsTarget(wt);
-            }}
-          />
+                {
+                  label: "Commands",
+                  Icon: RunIcon,
+                  onClick: () => {
+                    setActiveProject(project.id);
+                    setCommandsTarget(null);
+                  },
+                },
+              ]}
+            />
+          )}
+          {project.sections.worktrees && (
+            <WorktreeSubsection
+              projectId={project.id}
+              projectRoot={project.root}
+              nativeInWslMode={project.nativeInWslMode}
+              terminals={terminals}
+              onOpenCommands={(wt) => {
+                setActiveProject(project.id);
+                setCommandsTarget(wt);
+              }}
+            />
+          )}
           <TerminalCommandsModal
             open={commandsTarget !== undefined}
             projectId={project.id}
@@ -631,17 +726,28 @@ function ProjectGroup({
             onClose={() => setCommandsTarget(undefined)}
             onRun={(command, name, cwd) => void runCommand(command, name, cwd)}
           />
-          <ScratchpadSubsection
-            projectId={project.id}
-            projectRoot={project.root}
-            onOpenScratchpad={onOpenScratchpad}
-            onPickAgent={onPickScratchpadAgent}
-          />
+          {project.sections.scratchpads && (
+            <ScratchpadSubsection
+              projectId={project.id}
+              projectRoot={project.root}
+              onOpenScratchpad={onOpenScratchpad}
+              onPickAgent={onPickScratchpadAgent}
+            />
+          )}
         </div>
       </div>
     </div>
   );
 }
+
+/** The toggleable sidebar sections. Agents and Processes are always shown. */
+const SECTION_TOGGLES: { key: keyof ProjectSections; label: string }[] = [
+  { key: "todos", label: "To-do's" },
+  { key: "terminals", label: "Terminals" },
+  { key: "worktrees", label: "Worktrees" },
+  { key: "scratchpads", label: "Scratchpads" },
+  { key: "issues", label: "Git board" },
+];
 
 /** What the New agent modal is opened for: a plain new agent, or a to-do. */
 interface AgentModalTarget {

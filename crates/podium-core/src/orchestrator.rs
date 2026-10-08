@@ -1,7 +1,7 @@
 //! The single public API surface over projects and PTY-backed processes.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
     ProposalInfo, TranscriptEntry,
 };
+use crate::boards::{BoardStore, CachedBoard};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
@@ -26,7 +27,7 @@ use crate::process::pty::{ExitCallback, PtyProcess, TermChunk};
 use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
-use crate::project::{self, ConfiguredProcess};
+use crate::project::{self, ConfiguredProcess, ProjectSections};
 use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::todo::{TodoInfo, TodoStore};
@@ -68,6 +69,8 @@ pub struct ProjectInfo {
     /// True when a user-set display-name override is in effect (the command
     /// layer persists the name in this case, or clears it when false).
     pub renamed: bool,
+    /// Which optional sidebar sections the project shows.
+    pub sections: ProjectSections,
     /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`;
     /// `None` keeps the theme accent.
     pub color: Option<String>,
@@ -90,6 +93,8 @@ struct ProjectHandle {
     /// set it wins over `name` and drives the badge initials; a config reload
     /// leaves it untouched.
     name_override: Option<String>,
+    /// Which optional sidebar sections are shown (persisted in `workspace.json`).
+    sections: ProjectSections,
     /// User-picked badge colour (`#rrggbb`), persisted in `workspace.json`.
     color: Option<String>,
     /// The backend this project runs on, decided once at open from its root
@@ -112,6 +117,7 @@ impl ProjectHandle {
             icon_initials,
             config_error: self.config_error.clone(),
             renamed: self.name_override.is_some(),
+            sections: self.sections,
             color: self.color.clone(),
             native_in_wsl_mode: crate::platform::wsl().is_some() && self.wsl.is_none(),
         }
@@ -236,6 +242,8 @@ pub struct Orchestrator {
     todos: TodoStore,
     /// Per-project scratchpads, keyed by project root (survives restarts).
     scratchpads: ScratchpadStore,
+    /// The last Git board per project and scope (survives restarts).
+    boards: BoardStore,
     /// Global, cross-project agent settings (command override + default args
     /// per adapter, plus the merge mode).
     agent_settings: AgentSettingsStore,
@@ -267,6 +275,7 @@ impl Orchestrator {
             mcp: Mutex::new(None),
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
+            boards: BoardStore::new(),
             agent_settings: AgentSettingsStore::new(),
         }
     }
@@ -287,6 +296,12 @@ impl Orchestrator {
     /// Until this is called, to-dos are held in memory only.
     pub fn set_todos_path(&self, path: PathBuf) {
         self.todos.set_path(path);
+    }
+
+    /// Point the Git board cache at its backing file (app data dir) and load
+    /// it. Until this is called, boards are cached in memory only.
+    pub fn set_boards_path(&self, path: PathBuf) {
+        self.boards.set_path(path);
     }
 
     /// Point the scratchpad store at its backing file (app data dir) and
@@ -859,6 +874,7 @@ impl Orchestrator {
                         config_error: None,
                         agents: AgentsConfig::default(),
                         name_override: None,
+                        sections: ProjectSections::default(),
                         color: None,
                         wsl: crate::platform::wsl_for(&path),
                     },
@@ -1013,9 +1029,10 @@ impl Orchestrator {
         Ok(info)
     }
 
-    /// Re-apply a project's persisted overrides (display name, badge colour)
-    /// after `open_project`, publishing one `ProjectUpdated` for both rather
-    /// than one per override. `None` leaves that override unset. A stored
+    /// Re-apply a project's persisted overrides (display name, badge colour,
+    /// section toggles) after `open_project`, publishing one `ProjectUpdated`
+    /// for all rather than one per override. `None` leaves that override
+    /// unset (sections: the default). A stored
     /// colour that is not `#rrggbb` (a hand-edited `workspace.json`) is
     /// dropped (and logged) so the name still applies.
     pub fn restore_project_overrides(
@@ -1023,10 +1040,13 @@ impl Orchestrator {
         id: ProjectId,
         name: Option<String>,
         color: Option<String>,
+        sections: Option<ProjectSections>,
     ) -> CoreResult<ProjectInfo> {
-        let color = normalize_project_color(color).unwrap_or_else(|e| {
-            tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
-            None
+        let color = color.and_then(|c| {
+            normalize_project_color(Some(c)).unwrap_or_else(|e| {
+                tracing::warn!(project_id = %id, "ignoring stored project colour: {e}");
+                None
+            })
         });
         let info = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
@@ -1034,8 +1054,38 @@ impl Orchestrator {
                 .projects
                 .get_mut(&id)
                 .ok_or(CoreError::ProjectNotFound)?;
-            handle.name_override = normalize_project_name(name);
-            handle.color = color;
+            // Only what was stored: a project with just stored sections must
+            // not lose its name or colour.
+            if name.is_some() {
+                handle.name_override = normalize_project_name(name);
+            }
+            if color.is_some() {
+                handle.color = color;
+            }
+            if let Some(sections) = sections {
+                handle.sections = sections;
+            }
+            handle.info(id)
+        };
+        self.events
+            .publish(PodiumEvent::ProjectUpdated { project_id: id });
+        Ok(info)
+    }
+
+    /// Set which optional sidebar sections a project shows. Presentation only:
+    /// nothing is stopped or deleted. Returns the updated snapshot.
+    pub fn set_project_sections(
+        &self,
+        id: ProjectId,
+        sections: ProjectSections,
+    ) -> CoreResult<ProjectInfo> {
+        let info = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let handle = inner
+                .projects
+                .get_mut(&id)
+                .ok_or(CoreError::ProjectNotFound)?;
+            handle.sections = sections;
             handle.info(id)
         };
         self.events
@@ -2003,6 +2053,262 @@ impl Orchestrator {
             .filter(|(_, p)| project_id.is_none_or(|pid| p.project_id == pid))
             .map(|(id, p)| p.info(*id))
             .collect()
+    }
+
+    /// The Git board (issues + PRs/MRs, all-time PR/MR counts) of the repo
+    /// behind the project's `origin` remote, via the project's chosen setup
+    /// (or the one matching the remote's host); `mine` narrows it to the
+    /// user's own. Returns it with the time it was fetched. Shells out — call
+    /// from a blocking-friendly context.
+    pub fn issue_board(&self, project_id: ProjectId, mine: bool) -> CoreResult<CachedBoard> {
+        let root = self.project_root(project_id)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        // Taken before the fetch: a move landing meanwhile wins over its result.
+        let edits = self.boards.edits(&root);
+        // Either scope's last board tells GitLab where the columns were.
+        let cached = self
+            .boards
+            .get(&root, mine)
+            .or_else(|| self.boards.get(&root, !mine));
+        let board = crate::issues::board(
+            &root,
+            &issues.setups,
+            selected,
+            mine,
+            cached.as_ref().map(|c| &c.board),
+        )?;
+        if let Some(stored) = self.boards.put(&root, mine, board.clone(), edits) {
+            return Ok(stored);
+        }
+        // A move/unassign of this project landed mid-fetch, so this board
+        // predates it: serve the cache (which has the edit), with its own
+        // fetch time; the next refresh catches up.
+        Ok(self.boards.get(&root, mine).unwrap_or_else(|| CachedBoard {
+            board,
+            fetched_at: Utc::now(),
+        }))
+    }
+
+    /// The last successfully fetched board of this scope, if any. No network.
+    pub fn cached_issue_board(
+        &self,
+        project_id: ProjectId,
+        mine: bool,
+    ) -> CoreResult<Option<CachedBoard>> {
+        Ok(self.boards.get(&self.project_root(project_id)?, mine))
+    }
+
+    /// Move a card to another column of the project's Git board, on the
+    /// platform itself (GitLab labels/state, GitHub close/reopen/Project
+    /// Status). Validated against the cached board, so it needs one: of the
+    /// scopes holding the card, the most recently fetched — the best word on
+    /// whether it is open or closed, which decides close/reopen. A card
+    /// already in `column` there is a no-op success (the other scope was
+    /// stale), not a refusal. On success both cached scopes are updated and
+    /// `BoardChanged` published. Shells out / blocks — call from a
+    /// blocking-friendly context.
+    pub fn move_board_item(
+        &self,
+        project_id: ProjectId,
+        kind: crate::ItemKind,
+        number: u64,
+        column: &str,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let cached = self
+            .newest_board_with(&root, kind, number)
+            .or_else(|| self.boards.get(&root, true))
+            .or_else(|| self.boards.get(&root, false))
+            .ok_or_else(|| CoreError::IssuesMove("Refresh the board first.".to_string()))?;
+        let board = &cached.board;
+        let item = crate::issues::validate_move(board, kind, number, column)?;
+        if item.column == column {
+            self.boards.apply_move(&root, kind, number, column, None);
+            self.events
+                .publish(PodiumEvent::BoardChanged { project_id });
+            return Ok(());
+        }
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        let labels =
+            crate::issues::move_item(&root, &issues.setups, selected, board, item, column)?;
+        self.boards
+            .apply_move(&root, kind, number, column, labels.as_deref());
+        self.events
+            .publish(PodiumEvent::BoardChanged { project_id });
+        Ok(())
+    }
+
+    /// Of the cached scopes holding the card, the most recently fetched: the
+    /// best word on its state when the two disagree.
+    fn newest_board_with(
+        &self,
+        root: &Path,
+        kind: crate::ItemKind,
+        number: u64,
+    ) -> Option<CachedBoard> {
+        [true, false]
+            .into_iter()
+            .filter_map(|mine| self.boards.get(root, mine))
+            .filter(|c| {
+                c.board
+                    .items
+                    .iter()
+                    .any(|i| i.kind == kind && i.number == number)
+            })
+            .max_by_key(|c| c.fetched_at)
+    }
+
+    /// Unassign the signed-in user from a card of the project's Git board, on
+    /// the platform itself. Validated against the cached board (which knows
+    /// who you are), so it needs one. On success both cached scopes are
+    /// updated and `BoardChanged` published. Blocks — call from a
+    /// blocking-friendly context.
+    pub fn unassign_board_item(
+        &self,
+        project_id: ProjectId,
+        kind: crate::ItemKind,
+        number: u64,
+    ) -> CoreResult<()> {
+        let root = self.project_root(project_id)?;
+        let cached = self.newest_board_with(&root, kind, number).ok_or_else(|| {
+            CoreError::IssuesMove(
+                "That card is not on the board. Refresh the board first.".to_string(),
+            )
+        })?;
+        let (item, me) = crate::issues::validate_unassign(&cached.board, kind, number)?;
+        let issues = self.agent_settings().issues;
+        let selected = issues
+            .projects
+            .get(&root)
+            .and_then(|id| issues.setups.iter().find(|s| &s.id == id));
+        crate::issues::unassign_item(&root, &issues.setups, selected, item, me)?;
+        self.boards.apply_unassign(&root, kind, number, me);
+        self.events
+            .publish(PodiumEvent::BoardChanged { project_id });
+        Ok(())
+    }
+
+    /// Settings → Issues: every setup (with whether a GitLab token is stored —
+    /// never the token) plus each project's pick. Touches the keychain.
+    pub fn issues_overview(&self) -> crate::issues::IssuesOverview {
+        let issues = self.agent_settings().issues;
+        crate::issues::IssuesOverview {
+            setups: issues
+                .setups
+                .into_iter()
+                .map(|setup| crate::issues::IssueSetupInfo {
+                    token_set: setup.provider == crate::issues::IssueProvider::Gitlab
+                        && crate::issues::gitlab_token_present(&setup.id),
+                    setup,
+                })
+                .collect(),
+            projects: issues.projects,
+        }
+    }
+
+    /// Add a setup (`id: None`) or replace the one with that id. The URL is
+    /// normalized (scheme kept, `https` by default); a blank name falls back to
+    /// the host. `token` (GitLab only): `None` keeps the stored one, blank
+    /// deletes it, anything else replaces it.
+    pub fn save_issue_setup(
+        &self,
+        id: Option<String>,
+        name: String,
+        provider: crate::issues::IssueProvider,
+        url: String,
+        account: Option<String>,
+        token: Option<String>,
+    ) -> CoreResult<crate::issues::IssuesOverview> {
+        let url = crate::issues::normalize_url(&url).ok_or_else(|| {
+            CoreError::InvalidInput(
+                "enter a valid http(s) URL, without a user:token@ part".to_string(),
+            )
+        })?;
+        let name = match name.trim() {
+            "" => crate::issues::url_host(&url).to_string(),
+            n => n.to_string(),
+        };
+        let github = provider == crate::issues::IssueProvider::Github;
+        let setup = crate::issues::IssueSetup {
+            id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            name,
+            provider,
+            url,
+            account: account
+                .map(|a| a.trim().to_string())
+                .filter(|a| github && !a.is_empty()),
+        };
+        if let Some(token) = token.filter(|_| !github) {
+            crate::issues::gitlab_token_set(&setup.id, &token)?;
+        }
+        let mut issues = self.agent_settings().issues;
+        // Turned from GitLab into GitHub: its token has no use any more.
+        let was_gitlab = issues
+            .setups
+            .iter()
+            .any(|s| s.id == setup.id && s.provider == crate::IssueProvider::Gitlab);
+        if github && was_gitlab {
+            if let Err(e) = crate::issues::gitlab_token_set(&setup.id, "") {
+                tracing::warn!("could not delete a GitLab token no longer in use: {e}");
+            }
+        }
+        match issues.setups.iter_mut().find(|s| s.id == setup.id) {
+            Some(existing) => *existing = setup,
+            None => issues.setups.push(setup),
+        }
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
+    }
+
+    /// Remove a setup, its keychain token, and any project's pick of it.
+    pub fn remove_issue_setup(&self, id: &str) -> CoreResult<crate::issues::IssuesOverview> {
+        let mut issues = self.agent_settings().issues;
+        // Only a GitLab setup has a token. A keychain that will not delete it
+        // must not keep the setup alive: log it and remove the setup anyway.
+        let gitlab = issues
+            .setups
+            .iter()
+            .any(|s| s.id == id && s.provider == crate::IssueProvider::Gitlab);
+        if gitlab {
+            if let Err(e) = crate::issues::gitlab_token_set(id, "") {
+                tracing::warn!("could not delete a removed setup's GitLab token: {e}");
+            }
+        }
+        issues.setups.retain(|s| s.id != id);
+        issues.projects.retain(|_, pick| pick != id);
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
+    }
+
+    /// Pin a project to one setup; `None` goes back to matching by host.
+    pub fn set_project_issue_setup(
+        &self,
+        project_id: ProjectId,
+        setup_id: Option<String>,
+    ) -> CoreResult<crate::issues::IssuesOverview> {
+        let root = self.project_root(project_id)?;
+        let mut issues = self.agent_settings().issues;
+        match setup_id {
+            Some(id) => {
+                if !issues.setups.iter().any(|s| s.id == id) {
+                    return Err(CoreError::InvalidInput("unknown issue setup".to_string()));
+                }
+                issues.projects.insert(root, id);
+            }
+            None => {
+                issues.projects.remove(&root);
+            }
+        }
+        self.agent_settings.set_issues(issues)?;
+        Ok(self.issues_overview())
     }
 
     /// The project's Podium-managed git worktrees, with `in_use` marking the
@@ -3351,6 +3657,66 @@ mod tests {
         assert_eq!(ids, vec![idc, ida, idb], "list reflects the new order");
     }
 
+    #[tokio::test]
+    async fn issue_setups_save_normalize_and_pin_per_project() {
+        use crate::issues::IssueProvider;
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+
+        // GitHub needs no keychain: account kept, URL normalized, name defaults to host.
+        let o = orch
+            .save_issue_setup(
+                None,
+                " ".into(),
+                IssueProvider::Github,
+                "GitHub.com/".into(),
+                Some(" octo-fictional ".into()),
+                Some("ignored for GitHub".into()),
+            )
+            .unwrap();
+        let setup = &o.setups[0];
+        assert_eq!(setup.setup.url, "https://github.com");
+        assert_eq!(setup.setup.name, "github.com");
+        assert_eq!(setup.setup.account.as_deref(), Some("octo-fictional"));
+        assert!(!setup.token_set);
+        assert!(matches!(
+            orch.save_issue_setup(
+                None,
+                "x".into(),
+                IssueProvider::Github,
+                "ftp://nope".into(),
+                None,
+                None
+            ),
+            Err(CoreError::InvalidInput(_))
+        ));
+
+        // Editing by id replaces in place.
+        let sid = setup.setup.id.clone();
+        let o = orch
+            .save_issue_setup(
+                Some(sid.clone()),
+                "Personal".into(),
+                IssueProvider::Github,
+                "https://github.com".into(),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(o.setups.len(), 1);
+        assert_eq!(o.setups[0].setup.name, "Personal");
+
+        let root = orch.project_root(id).unwrap();
+        let o = orch.set_project_issue_setup(id, Some(sid.clone())).unwrap();
+        assert_eq!(o.projects.get(&root), Some(&sid));
+        assert!(orch
+            .set_project_issue_setup(id, Some("missing".into()))
+            .is_err());
+        let o = orch.set_project_issue_setup(id, None).unwrap();
+        assert!(o.projects.is_empty());
+    }
+
     // A `\\?\`-prefixed root breaks agent spawn on Windows: it becomes the
     // agent's `cwd` (`process::pty::PtyProcess::spawn` → portable-pty's
     // `CommandBuilder::cwd`), and `CreateProcessW`'s `lpCurrentDirectory`
@@ -3439,6 +3805,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_project_sections_updates_info_and_emits() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let opened = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(opened.sections, ProjectSections::default());
+
+        let mut rx = orch.subscribe_events();
+        let sections = ProjectSections {
+            scratchpads: false,
+            ..ProjectSections::default()
+        };
+        let info = orch.set_project_sections(id, sections).unwrap();
+        assert!(!info.sections.scratchpads);
+        assert!(info.sections.todos);
+        let listed = orch
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(listed.sections, sections);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PodiumEvent::ProjectUpdated { project_id }) if project_id == id
+        ));
+        assert!(matches!(
+            orch.set_project_sections(ProjectId::new(), sections),
+            Err(CoreError::ProjectNotFound)
+        ));
+    }
+
+    #[tokio::test]
     async fn project_color_sets_validates_and_clears() {
         let dir = tempfile::tempdir().unwrap();
         let orch = Orchestrator::new();
@@ -3478,10 +3880,19 @@ mod tests {
         let mut rx = orch.subscribe_events();
 
         let info = orch
-            .restore_project_overrides(id, Some("Webshop".into()), Some("#E5484D".into()))
+            .restore_project_overrides(
+                id,
+                Some("Webshop".into()),
+                Some("#E5484D".into()),
+                Some(ProjectSections {
+                    scratchpads: false,
+                    ..ProjectSections::default()
+                }),
+            )
             .unwrap();
         assert_eq!(info.name, "Webshop");
         assert_eq!(info.color.as_deref(), Some("#e5484d"));
+        assert!(!info.sections.scratchpads, "sections ride along");
 
         let mut updates = 0;
         while let Ok(event) = rx.try_recv() {
@@ -3489,13 +3900,36 @@ mod tests {
                 updates += 1;
             }
         }
-        assert_eq!(updates, 1, "one ProjectUpdated for name + colour");
+        assert_eq!(
+            updates, 1,
+            "one ProjectUpdated for name + colour + sections"
+        );
 
         let info = orch
-            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()))
+            .restore_project_overrides(id, Some("Shop".into()), Some("red".into()), None)
             .unwrap();
         assert_eq!(info.name, "Shop", "a bad stored colour keeps the name");
-        assert_eq!(info.color, None);
+        assert_eq!(
+            info.color.as_deref(),
+            Some("#e5484d"),
+            "a bad stored colour is ignored, not applied"
+        );
+
+        // Only sections stored: the name and colour stay as they are.
+        let info = orch
+            .restore_project_overrides(
+                id,
+                None,
+                None,
+                Some(ProjectSections {
+                    todos: false,
+                    ..ProjectSections::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(info.name, "Shop");
+        assert_eq!(info.color.as_deref(), Some("#e5484d"));
+        assert!(!info.sections.todos);
     }
 
     #[tokio::test]
