@@ -45,6 +45,11 @@ const DEFAULT_ADAPTER_ID: &str = "claude-code";
 
 const LOCK_POISONED: &str = "orchestrator lock poisoned";
 
+/// A resumed agent that crashes within this long after starting is taken to
+/// have failed to resume (the CLI refusing the session), so its next start is
+/// fresh instead of the same `--resume` again.
+const RESUME_FAILURE_WINDOW: Duration = Duration::from_secs(5);
+
 /// Read-only snapshot of an open project, for listing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,6 +142,20 @@ struct ManagedProcess {
 struct AgentSession {
     commands: RestartCommands,
     id: String,
+    /// The current run resumed `id` (rather than starting it fresh).
+    resumed: bool,
+    /// Resuming `id` crashed right away (see [`RESUME_FAILURE_WINDOW`]), so
+    /// it is not tried again: the next start is fresh.
+    resume_failed: bool,
+}
+
+/// What a restart of an exited agent runs, from [`restart_launch`]. The
+/// session it names becomes the agent's current one only once the start has
+/// succeeded, so a start that loses a race cannot overwrite the winner's.
+struct Relaunch {
+    command: String,
+    session_id: String,
+    resumed: bool,
 }
 
 impl ManagedProcess {
@@ -942,10 +961,9 @@ impl Orchestrator {
             // Block claiming a to-do already owned by a *different* live agent
             // (one that exited or is gone can be reclaimed; re-claiming your
             // own is idempotent).
-            let owner = inner.todo_assignments.get(&todo_id);
-            if owner.is_some_and(|pid| {
-                *pid != process_id && inner.processes.get(pid).is_some_and(|p| p.is_active())
-            }) {
+            if assigned_agent_of(&inner, todo_id)
+                .is_some_and(|a| a.active && a.process_id != process_id)
+            {
                 return Err(CoreError::TodoAlreadyAssigned);
             }
             inner.todo_assignments.insert(todo_id, process_id);
@@ -1672,6 +1690,8 @@ impl Orchestrator {
         let session = plan.restart.map(|commands| AgentSession {
             commands,
             id: process_id.to_string(),
+            resumed: false,
+            resume_failed: false,
         });
         let spec = ProcessSpec {
             name,
@@ -1933,7 +1953,7 @@ impl Orchestrator {
                 _ => None,
             }
         };
-        let command = match restart {
+        let relaunch = match restart {
             Some((adapter, session, wsl)) => {
                 // The session check reads the disk — or, on WSL, runs a
                 // login shell in the distro — so it runs off the lock and off
@@ -1949,18 +1969,7 @@ impl Orchestrator {
                     }
                     None => false,
                 };
-                let (command, session_id) = restart_launch(&session, stored);
-                if let Some(s) = self
-                    .inner
-                    .lock()
-                    .expect(LOCK_POISONED)
-                    .processes
-                    .get_mut(&id)
-                    .and_then(|p| p.session.as_mut())
-                {
-                    s.id = session_id;
-                }
-                Some(command)
+                Some(restart_launch(&session, stored))
             }
             None => None,
         };
@@ -1970,7 +1979,7 @@ impl Orchestrator {
             self.supervisor,
             id,
             true,
-            command,
+            relaunch,
         )
     }
 
@@ -2568,7 +2577,7 @@ fn do_start(
     supervisor: SupervisorConfig,
     id: ProcessId,
     manual: bool,
-    command: Option<String>,
+    relaunch: Option<Relaunch>,
 ) -> CoreResult<()> {
     // The project's backend, read under a short lock of its own: the gate
     // below depends on it, and must be taken before `inner`.
@@ -2615,8 +2624,8 @@ fn do_start(
     proc.user_stopped = false;
     let project_id = proc.project_id;
     // A restart's command runs this once; `spec.command` stays as spawned.
-    let restart_spec = command.map(|command| ProcessSpec {
-        command,
+    let restart_spec = relaunch.as_ref().map(|r| ProcessSpec {
+        command: r.command.clone(),
         ..proc.spec.clone()
     });
     let pty = PtyProcess::spawn(
@@ -2641,6 +2650,12 @@ fn do_start(
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
     proc.started_at = Some(Instant::now());
+    // Only now that the launch is running does its session become current.
+    if let (Some(r), Some(session)) = (relaunch, proc.session.as_mut()) {
+        session.resume_failed &= r.session_id == session.id;
+        session.id = r.session_id;
+        session.resumed = r.resumed;
+    }
     let recolored = new_color.is_some();
     if recolored {
         proc.spec.color = new_color;
@@ -2665,13 +2680,29 @@ fn do_start(
 /// again: the CLI refuses an id it already used, so a transcript the check
 /// failed to find must not make the agent unstartable — and the new id keeps
 /// the agent resumable from then on.
-fn restart_launch(session: &AgentSession, stored: bool) -> (String, String) {
-    if stored {
-        (session.commands.resume(&session.id), session.id.clone())
+/// A resume that already failed right away is not tried again
+/// ([`AgentSession::resume_failed`]), so the agent never crash-loops on it.
+fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
+    if stored && !session.resume_failed {
+        Relaunch {
+            command: session.commands.resume(&session.id),
+            session_id: session.id.clone(),
+            resumed: true,
+        }
     } else {
-        let id = uuid::Uuid::new_v4().to_string();
-        (session.commands.fresh(&id), id)
+        let session_id = uuid::Uuid::new_v4().to_string();
+        Relaunch {
+            command: session.commands.fresh(&session_id),
+            session_id,
+            resumed: false,
+        }
     }
+}
+
+/// Whether an agent run that just exited was a resume that failed: it
+/// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
+fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
+    session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
 }
 
 /// Tell the UI an agent's colour changed: its own row (`ProcessUpdated`
@@ -2719,10 +2750,13 @@ fn make_exit_handler(
             };
             p.status = status.clone();
             p.pty = None;
-            let ran_long = p
-                .started_at
-                .take()
-                .is_some_and(|s| s.elapsed() >= supervisor.backoff_reset_after);
+            let ran_for = p.started_at.take().map(|s| s.elapsed());
+            if let Some(session) = p.session.as_mut() {
+                if resume_failed(session, crashed, ran_for) {
+                    session.resume_failed = true;
+                }
+            }
+            let ran_long = ran_for.is_some_and(|d| d >= supervisor.backoff_reset_after);
             if ran_long {
                 p.restart.reset_backoff();
             }
@@ -2825,17 +2859,64 @@ mod tests {
                 resume_flag: "--resume",
             },
             id: "0f0e0d0c".to_string(),
+            resumed: false,
+            resume_failed: false,
         };
-        let (command, id) = restart_launch(&session, true);
-        assert_eq!(command, "claude --resume 0f0e0d0c");
-        assert_eq!(id, "0f0e0d0c");
+        let resume = restart_launch(&session, true);
+        assert_eq!(resume.command, "claude --resume 0f0e0d0c");
+        assert_eq!(resume.session_id, "0f0e0d0c");
+        assert!(resume.resumed);
 
         // Not found: a new id, never the current one the CLI may still know.
-        let (command, id) = restart_launch(&session, false);
-        assert_ne!(id, session.id);
+        let fresh = restart_launch(&session, false);
+        assert_ne!(fresh.session_id, session.id);
+        assert!(!fresh.resumed);
         assert_eq!(
-            command,
-            format!("claude 'fix the login bug' --session-id {id}")
+            fresh.command,
+            format!(
+                "claude 'fix the login bug' --session-id {}",
+                fresh.session_id
+            )
+        );
+
+        // A resume that already failed is not tried again, transcript or not.
+        let failed = AgentSession {
+            resume_failed: true,
+            ..session
+        };
+        let next = restart_launch(&failed, true);
+        assert!(!next.resumed);
+        assert_ne!(next.session_id, failed.id);
+    }
+
+    #[test]
+    fn only_a_resume_that_crashes_right_away_counts_as_failed() {
+        let session = |resumed| AgentSession {
+            commands: RestartCommands {
+                bin: "claude".to_string(),
+                prompt: None,
+                tail: String::new(),
+                new_flag: "--session-id",
+                resume_flag: "--resume",
+            },
+            id: "0f0e0d0c".to_string(),
+            resumed,
+            resume_failed: false,
+        };
+        let quick = Some(Duration::from_secs(1));
+        let long = Some(RESUME_FAILURE_WINDOW + Duration::from_secs(1));
+        assert!(resume_failed(&session(true), true, quick));
+        assert!(
+            !resume_failed(&session(true), false, quick),
+            "clean exit or user stop"
+        );
+        assert!(
+            !resume_failed(&session(true), true, long),
+            "ran a while first"
+        );
+        assert!(
+            !resume_failed(&session(false), true, quick),
+            "a fresh start"
         );
     }
 

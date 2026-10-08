@@ -307,7 +307,12 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   transcript, else `fresh(<new UUID>)` — the original launch under a *new*
   `--session-id`, since the CLI refuses an id it already used and `--resume`
   fails without a transcript; the new id becomes current, so the agent stays
-  resumable. The transcript is `projects/*/<id>.jsonl` under
+  resumable. The chosen launch (`Relaunch`) is handed to `do_start`, which
+  makes its id current under the same lock only once the PTY spawned — a
+  concurrent start that loses with `ProcessAlreadyRunning` cannot overwrite
+  it. A resumed run that crashes within `RESUME_FAILURE_WINDOW` (5 s) marks
+  the id `resume_failed` in the exit handler, so the next start is fresh
+  instead of crash-looping on `--resume`. The transcript is `projects/*/<id>.jsonl` under
   `$CLAUDE_CONFIG_DIR` or `~/.claude` — read from disk natively, and on a WSL
   project checked inside the distro through its login shell
   (`run_shell_ok_on`, off the async runtime), since that is where the CLI

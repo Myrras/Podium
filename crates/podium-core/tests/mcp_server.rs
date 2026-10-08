@@ -2938,6 +2938,54 @@ async fn wait_for_launch(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_start_that_loses_a_race_does_not_change_the_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let adapter = Arc::new(ResumableAdapter {
+        stored: std::sync::Mutex::new(None),
+    });
+    let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter.clone()]));
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("resumable".to_string()),
+            None,
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn");
+    let pid = agent.to_string();
+    wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id == pid).await;
+    orch.stop_process(agent).await.expect("stop");
+    wait_for_exit(&orch, agent).await;
+
+    // Two starts at once, both picking a fresh session: one runs, the other
+    // is refused — and must not leave its own, never-launched id behind.
+    let (a, b) = tokio::join!(orch.start_process(agent), orch.start_process(agent));
+    assert!(
+        a.is_ok() != b.is_ok(),
+        "exactly one start wins: {a:?} {b:?}"
+    );
+    let (_, running) =
+        wait_for_launch(&orch, agent, |flag, id| flag == "--session-id" && id != pid).await;
+
+    // The session that actually ran is the one the next restart resumes.
+    adapter.store(Some(&running));
+    orch.restart_process(agent).await.expect("restart");
+    wait_for_launch(&orch, agent, |flag, id| flag == "--resume" && id == running).await;
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_agent_takes_its_old_colour_back_while_it_is_free() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch =
