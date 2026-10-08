@@ -229,6 +229,8 @@ function ProjectGroup({
   }, [project.id, project.color, setProjectColor]);
 
   const resetColor = () => {
+    // A late-landing older save would overwrite the reset.
+    if (saving.current) return;
     setColorDraft(null);
     if (project.color) void setProjectColor(project.id, null);
   };
@@ -698,6 +700,14 @@ function themeAccentHex(mode: ThemeMode): string {
 /** Black or white initials, whichever reads better on a `#rrggbb` badge. */
 function readableOn(hex: string): string {
   const n = parseInt(hex.slice(1), 16);
-  const luma = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
-  return luma > 150 ? "#000" : "#fff";
+  // WCAG relative luminance; pick whichever of black/white contrasts more.
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const l =
+    0.2126 * lin(n >> 16) +
+    0.7152 * lin((n >> 8) & 255) +
+    0.0722 * lin(n & 255);
+  return (l + 0.05) / 0.05 > 1.05 / (l + 0.05) ? "#000" : "#fff";
 }

@@ -193,6 +193,19 @@ describe("Sidebar project header", () => {
     expect(badge).toHaveStyle({ background: "#30a46c" });
   });
 
+  it("picks black or white initials by contrast", () => {
+    useProjectStore.setState({
+      projects: [project({ color: "#e5484d" })],
+      setProjectColor: vi.fn(() => Promise.resolve()),
+    });
+    render(<Sidebar />);
+    const picker = screen.getByLabelText("Change colour of Webshop");
+    const badge = picker.closest("label")!;
+    expect(badge).toHaveStyle({ color: "#000" });
+    fireEvent.input(picker, { target: { value: "#1a1a2e" } });
+    expect(badge).toHaveStyle({ color: "#fff" });
+  });
+
   it("resets a picked colour from a right-click or the Delete key", () => {
     const setProjectColor = vi.fn(() => Promise.resolve());
     useProjectStore.setState({
