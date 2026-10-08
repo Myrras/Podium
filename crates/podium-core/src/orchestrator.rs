@@ -11,7 +11,9 @@ use tokio::sync::broadcast;
 
 use crate::agent::session_memory::{self, RememberedSession, SessionMemoryStore};
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
-use crate::agent::{AdapterInfo, AdapterRegistry, AgentLaunchCtx, McpConnectInfo, RestartCommands};
+use crate::agent::{
+    AdapterInfo, AdapterRegistry, AgentLaunchCtx, LiveProcess, McpConnectInfo, RestartCommands,
+};
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
     AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
@@ -164,7 +166,7 @@ struct ManagedProcess {
 /// An agent's CLI session: the commands a restart picks from
 /// ([`LaunchPlan::restart`]) and the id of the session it is on — the
 /// process id at spawn, a new one after each fresh restart, and the CLI's
-/// own after a `/clear` (see [`follow_live_session`]). `spec.command` itself
+/// own after a `/clear` (see [`read_live_session`]). `spec.command` itself
 /// is never swapped, so the choice is made afresh every start.
 #[derive(Clone)]
 struct AgentSession {
@@ -2872,11 +2874,15 @@ impl Orchestrator {
     /// Also cancels a pending supervised restart; if only a restart was
     /// pending (the process already exited), that cancellation is success.
     pub async fn stop_process(&self, id: ProcessId) -> CoreResult<()> {
+        // Asked while the CLI still runs: a clean exit removes the record of
+        // which session a `/clear` moved it to.
+        let probe = live_probe(&self.inner.lock().expect(LOCK_POISONED), id);
+        let followed = read_live_sessions(probe.into_iter().collect()).await;
         let (project_id, pty) = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
-            // While the CLI still runs: a clean exit removes what says which
-            // session a `/clear` moved it to.
-            follow_live_session(&mut inner, id);
+            for (probe, live) in followed {
+                apply_live_session(&mut inner, &probe, live);
+            }
             let proc = inner
                 .processes
                 .get_mut(&id)
@@ -2993,7 +2999,7 @@ impl Orchestrator {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
-            self.capture_agent_sessions();
+            self.capture_agent_sessions().await;
         }
         let stopped: Vec<(ProjectId, ProcessId)> = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
@@ -3025,15 +3031,24 @@ impl Orchestrator {
     /// that cannot resume (Auggie), or one whose own args pick the session
     /// (`--resume`, `--continue`, …) — is not remembered.
     ///
-    /// Each agent's id first follows a `/clear` ([`follow_live_session`]).
-    /// Runs on the app's exit path, so it reads at most one small file per
-    /// agent and starts no process; every entry goes out in one write.
-    fn capture_agent_sessions(&self) {
+    /// Each agent's id first follows a `/clear` ([`read_live_session`]),
+    /// all agents read at once, outside the lock and within
+    /// [`LIVE_SESSION_TIMEOUT`]: this is the app's exit path. No process is
+    /// started, and every entry goes out in one write.
+    async fn capture_agent_sessions(&self) {
+        let probes: Vec<LiveProbe> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .processes
+                .keys()
+                .filter_map(|id| live_probe(&inner, *id))
+                .collect()
+        };
+        let followed = read_live_sessions(probes).await;
         let mut entries: Vec<(u64, PathBuf, RememberedSession)> = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
-            let ids: Vec<ProcessId> = inner.processes.keys().copied().collect();
-            for id in ids {
-                follow_live_session(&mut inner, id);
+            for (probe, live) in followed {
+                apply_live_session(&mut inner, &probe, live);
             }
             inner
                 .processes
@@ -3616,34 +3631,97 @@ fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
     }
 }
 
-/// Follow a `/clear`: move agent `id`'s [`AgentSession`] to the session its
-/// CLI process says it is on now ([`AgentAdapter::live_session`]), when that
-/// is a valid id other than the current one. Called while the process is
-/// still there to ask — before a user stop signals it, in the exit handler
-/// (a crash can leave the registry behind; a clean exit removes it), and at
-/// the shutdown capture — so a restart and a remembered session pick up the
-/// conversation the agent was actually in. Anything else keeps the id.
+/// How long a stop or the shutdown capture waits for the CLIs' live session
+/// records before going on without them.
+const LIVE_SESSION_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// What [`read_live_session`] needs to know of a running agent, taken under
+/// the lock so the read itself can happen outside it.
+struct LiveProbe {
+    id: ProcessId,
+    cli: LiveProcess,
+    /// The session id it was on when probed.
+    current: String,
+    adapter: Arc<dyn crate::agent::AgentAdapter>,
+    wsl: Option<&'static WslBackend>,
+}
+
+/// A [`LiveProbe`] for agent `id`: `None` unless it has an [`AgentSession`]
+/// and a running PTY.
+fn live_probe(inner: &Inner, id: ProcessId) -> Option<LiveProbe> {
+    let p = inner.processes.get(&id)?;
+    let (pty, session, started) = (p.pty.as_ref()?, p.session.as_ref()?, p.started_at?);
+    let started = std::time::SystemTime::now()
+        .checked_sub(started.elapsed())
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Some(LiveProbe {
+        id,
+        cli: LiveProcess {
+            pid: pty.pid(),
+            started,
+            cwd: p.spec.cwd.clone(),
+        },
+        current: session.id.clone(),
+        adapter: Arc::clone(&session.adapter),
+        wsl: project_backend(inner, p.project_id),
+    })
+}
+
+/// Follow a `/clear`: the session the agent's CLI says it is on now
+/// ([`AgentAdapter::live_session`]), when that is a valid id other than the
+/// current one *and* the CLI has stored it — a conversation cleared but not
+/// yet written to would only make the next start fresh. `None` keeps the
+/// current id. Reads the disk: call it outside the lock. Asked while the CLI
+/// is still there — before a user stop signals it, in the exit handler (a
+/// crash can leave the record behind; a clean exit removes it) and at the
+/// shutdown capture — so a restart and a remembered session pick up the
+/// conversation the agent was actually in.
 ///
 /// [`AgentAdapter::live_session`]: crate::agent::AgentAdapter::live_session
-fn follow_live_session(inner: &mut Inner, id: ProcessId) {
-    let Some(p) = inner.processes.get(&id) else {
-        return;
-    };
-    let wsl = project_backend(inner, p.project_id);
-    let Some(p) = inner.processes.get_mut(&id) else {
-        return;
-    };
-    let (Some(pty), Some(session)) = (p.pty.as_ref(), p.session.as_mut()) else {
-        return;
-    };
-    let Some(live) = session
+fn read_live_session(probe: &LiveProbe) -> Option<String> {
+    probe
         .adapter
-        .live_session(pty.pid(), wsl)
-        .filter(|live| session_memory::is_valid_session_id(live))
-    else {
+        .live_session(&probe.cli, probe.wsl)
+        .filter(|live| session_memory::is_valid_session_id(live) && *live != probe.current)
+        .filter(|live| probe.adapter.session_exists(live, probe.wsl))
+}
+
+/// [`read_live_session`] for each probe, all at once off the async runtime,
+/// giving up on any not done within [`LIVE_SESSION_TIMEOUT`].
+async fn read_live_sessions(probes: Vec<LiveProbe>) -> Vec<(LiveProbe, String)> {
+    let deadline = tokio::time::Instant::now() + LIVE_SESSION_TIMEOUT;
+    let reads: Vec<_> = probes
+        .into_iter()
+        .map(|probe| {
+            tokio::task::spawn_blocking(move || {
+                let live = read_live_session(&probe);
+                (probe, live)
+            })
+        })
+        .collect();
+    let mut followed = Vec::new();
+    for read in reads {
+        if let Ok(Ok((probe, Some(live)))) = tokio::time::timeout_at(deadline, read).await {
+            followed.push((probe, live));
+        }
+    }
+    followed
+}
+
+/// Move the probed agent's session to `live`, under the lock again — only
+/// when it is still the same run (same pid) on the same session it was
+/// probed on, so a restart or another move in between is never overwritten.
+fn apply_live_session(inner: &mut Inner, probe: &LiveProbe, live: String) {
+    let Some(p) = inner.processes.get_mut(&probe.id) else {
         return;
     };
-    if live != session.id {
+    if p.pty.as_ref().map(|pty| pty.pid()) != Some(probe.cli.pid) {
+        return;
+    }
+    let Some(session) = p.session.as_mut() else {
+        return;
+    };
+    if session.id == probe.current {
         session.id = live;
         // Neither was the new session resumed, nor did resuming it fail.
         session.resumed = false;
@@ -3688,6 +3766,10 @@ fn make_exit_handler(
     // (all `do_start` callers run inside the runtime).
     let rt = tokio::runtime::Handle::current();
     Box::new(move |code| {
+        // A crash or kill can leave the CLI's record of a `/clear` behind (a
+        // clean exit removes it). Read on this wait thread, outside the lock.
+        let probe = live_probe(&inner.lock().expect(LOCK_POISONED), id);
+        let followed = probe.and_then(|probe| read_live_session(&probe).map(|live| (probe, live)));
         let restart = {
             let mut guard = inner.lock().expect(LOCK_POISONED);
             let Some(p) = guard.processes.get_mut(&id) else {
@@ -3707,8 +3789,11 @@ fn make_exit_handler(
                     session.resume_failed = true;
                 }
             }
-            // Before the PTY (and with it the pid) is dropped.
-            follow_live_session(&mut guard, id);
+            // After the resume-failure check (about the id this run used),
+            // and before the PTY — with it the pid `apply` matches — is dropped.
+            if let Some((probe, live)) = followed {
+                apply_live_session(&mut guard, &probe, live);
+            }
             let Some(p) = guard.processes.get_mut(&id) else {
                 return;
             };
@@ -4616,8 +4701,13 @@ mod tests {
         slow: Mutex<Option<String>>,
         entered: tokio::sync::Notify,
         release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-        /// The fake live registry: the session each CLI pid says it is on.
-        live: Mutex<HashMap<u32, String>>,
+        /// The fake live registry: the session each CLI pid says it is on,
+        /// and whether the record outlives the process (as Claude Code's
+        /// does after a crash or kill, but not after a clean exit).
+        live: Mutex<HashMap<u32, (String, bool)>>,
+        /// A record answered for any pid (a run that exits too soon to look
+        /// its pid up).
+        live_any: Mutex<Option<(String, bool)>>,
     }
 
     impl MemoryAdapter {
@@ -4630,6 +4720,7 @@ mod tests {
                 entered: tokio::sync::Notify::new(),
                 release: Mutex::new(None),
                 live: Mutex::new(HashMap::new()),
+                live_any: Mutex::new(None),
             })
         }
 
@@ -4690,13 +4781,25 @@ mod tests {
             self.stored.lock().unwrap().iter().any(|s| s == session_id)
         }
 
-        fn live_session(&self, pid: u32, _wsl: Option<&WslBackend>) -> Option<String> {
-            self.live.lock().unwrap().get(&pid).cloned()
+        fn live_session(&self, cli: &LiveProcess, _wsl: Option<&WslBackend>) -> Option<String> {
+            let found = self.live.lock().unwrap().get(&cli.pid).cloned();
+            let (id, outlives_exit) = found.or_else(|| self.live_any.lock().unwrap().clone())?;
+            // Like Claude Code: gone once the process is.
+            (outlives_exit || alive(cli.pid)).then_some(id)
         }
 
         fn is_available(&self, _wsl: Option<&WslBackend>) -> bool {
             true
         }
+    }
+
+    /// Whether process `pid` still runs (`kill -0`).
+    fn alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
     }
 
     /// The pid of running agent `id`.
@@ -5313,12 +5416,13 @@ mod tests {
         let orch = memory_orch(data.path(), adapter.clone());
         let id = orch.open_project(root).await.unwrap();
         let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
-        // `/clear`: the CLI moved on to a new session.
+        // `/clear`: the CLI moved on to a new session. Its record goes with
+        // the process, so only the stop — asking before it signals — sees it.
         adapter
             .live
             .lock()
             .unwrap()
-            .insert(pid_of(&orch, agent), SESS_2.to_string());
+            .insert(pid_of(&orch, agent), (SESS_2.to_string(), false));
         adapter.store(SESS_2);
         orch.stop_process(agent).await.unwrap();
         wait_for_exit(&orch, agent).await;
@@ -5337,11 +5441,17 @@ mod tests {
         let id = orch.open_project(root).await.unwrap();
         let agent = spawn_memory_agent(&orch, id, "agent-1", Vec::new(), None).await;
         let pid = pid_of(&orch, agent);
-        adapter.live.lock().unwrap().insert(pid, SESS_2.to_string());
+        // A kill leaves the record behind, so the exit handler finds it.
+        adapter
+            .live
+            .lock()
+            .unwrap()
+            .insert(pid, (SESS_2.to_string(), true));
         adapter.store(SESS_2);
-        // Killed from outside, as a crash would: the exit handler asks.
+        // Killed from outside, as a crash would — the whole process group,
+        // so no `sleep` is left behind.
         let killed = std::process::Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
+            .args(["-KILL", "--", &format!("-{pid}")])
             .status()
             .unwrap();
         assert!(killed.success());
@@ -5371,11 +5481,16 @@ mod tests {
         let cleared = spawn_memory_agent(&orch, id, "cleared", Vec::new(), None).await;
         let invalid = spawn_memory_agent(&orch, id, "invalid", Vec::new(), None).await;
         let unknown = spawn_memory_agent(&orch, id, "unknown", Vec::new(), None).await;
+        let empty = spawn_memory_agent(&orch, id, "empty", Vec::new(), None).await;
+        adapter.store(SESS_2);
         {
             let mut live = adapter.live.lock().unwrap();
-            live.insert(pid_of(&orch, cleared), SESS_2.to_string());
-            // A registry entry that is no session id keeps the current one.
-            live.insert(pid_of(&orch, invalid), "-x".to_string());
+            live.insert(pid_of(&orch, cleared), (SESS_2.to_string(), false));
+            // A record that is no session id keeps the current one.
+            live.insert(pid_of(&orch, invalid), ("-x".to_string(), false));
+            // So does a cleared conversation the CLI has not stored yet: a
+            // resume of it would fail and start fresh.
+            live.insert(pid_of(&orch, empty), (SESS_3.to_string(), false));
         }
         orch.shutdown().await;
         let listed = orch.session_memory.list(&root);
@@ -5389,6 +5504,50 @@ mod tests {
         assert_eq!(id_of("cleared"), SESS_2);
         assert_eq!(id_of("invalid"), invalid.to_string());
         assert_eq!(id_of("unknown"), unknown.to_string());
+        assert_eq!(id_of("empty"), empty.to_string());
+    }
+
+    /// A resumed run (`fail_resume`: it crashes at once) restored from
+    /// SESS_1, with the CLI's record saying `live`; returns its session once
+    /// the exit handler has run.
+    async fn a_failed_resume_with_live_record(live: &str) -> (bool, bool, String) {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(true);
+        adapter.store(SESS_1);
+        adapter.store(SESS_2);
+        *adapter.live_any.lock().unwrap() = Some((live.to_string(), true));
+        let orch = memory_orch(data.path(), adapter);
+        orch.set_agent_remember_sessions(true).unwrap();
+        orch.session_memory
+            .remember(&root, remembered(SESS_1, Utc::now()))
+            .unwrap();
+        let id = orch.open_project(root).await.unwrap();
+        let agent = orch.list_processes(Some(id))[0].id;
+        wait_for_exit(&orch, agent).await;
+        let session = orch.inner.lock().unwrap().processes[&agent]
+            .session
+            .clone()
+            .unwrap();
+        orch.shutdown().await;
+        (session.resumed, session.resume_failed, session.id)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_failed_resume_stays_failed_when_the_cli_is_still_on_that_session() {
+        let (_, resume_failed, id) = a_failed_resume_with_live_record(SESS_1).await;
+        assert!(resume_failed);
+        assert_eq!(id, SESS_1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_failed_resume_whose_cli_moved_on_takes_the_new_session_afresh() {
+        let (resumed, resume_failed, id) = a_failed_resume_with_live_record(SESS_2).await;
+        assert_eq!(id, SESS_2);
+        assert!(!resumed);
+        assert!(!resume_failed);
     }
 
     /// The real Claude Code adapter: an agent whose own args pick the

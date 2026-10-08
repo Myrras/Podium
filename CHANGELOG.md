@@ -22,8 +22,9 @@ when it merges.
   setting off forgets them all. Auggie agents, and agents whose own args pick
   the session, are not resumed. Both this and restarting a stopped agent now
   follow a `/clear` to the conversation after it, instead of going back to
-  the one before — except for an agent that ended itself with `/exit`, and on
-  WSL projects.
+  the one before — on macOS and Linux when Podium starts `claude` itself (not
+  through a wrapper command, a shell function or fish), and not for an agent
+  that ended itself with `/exit`; not on Windows or WSL.
 
 ## [3.0.0] - 2026-10-08
 

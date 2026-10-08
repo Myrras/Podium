@@ -135,6 +135,18 @@ fn join_line(bin: &str, head: &[&str], tail: &str) -> String {
         .join(" ")
 }
 
+/// The running CLI process [`AgentAdapter::live_session`] is asked about:
+/// what Podium knows of the agent's PTY child, so a record left by some other
+/// process can be told apart.
+#[derive(Debug, Clone)]
+pub struct LiveProcess {
+    pub pid: u32,
+    /// When Podium started it (wall clock).
+    pub started: std::time::SystemTime,
+    /// The directory it runs in.
+    pub cwd: PathBuf,
+}
+
 /// One supported agent CLI (Claude Code today; more later).
 pub trait AgentAdapter: Send + Sync {
     /// Stable identifier used in config and over IPC (e.g. `"claude-code"`).
@@ -152,13 +164,12 @@ pub trait AgentAdapter: Send + Sync {
         false
     }
 
-    /// The session the running CLI process `pid` is on right now, as the CLI
+    /// The session the running CLI process `cli` is on right now, as the CLI
     /// itself records it — Claude Code moves to a new id on `/clear`, which
     /// Podium's own `--session-id` bookkeeping never sees. `None` when it is
-    /// not known; the caller then keeps the id it has. Reads at most one
-    /// small file and never starts a process, so it is cheap enough to call
-    /// under a lock and on the app's exit path.
-    fn live_session(&self, _pid: u32, _wsl: Option<&WslBackend>) -> Option<String> {
+    /// not known; the caller then keeps the id it has. Reads the disk, so
+    /// call it outside any lock.
+    fn live_session(&self, _cli: &LiveProcess, _wsl: Option<&WslBackend>) -> Option<String> {
         None
     }
 
@@ -269,14 +280,15 @@ impl AgentAdapter for CliAdapter {
         }
     }
 
-    // ponytail: native only. On a WSL project the pid Podium holds is
-    // `wsl.exe`'s, not the CLI's inside the distro, and the registry lives
-    // there too; there a `/clear`ed agent resumes its pre-clear conversation.
-    fn live_session(&self, pid: u32, wsl: Option<&WslBackend>) -> Option<String> {
-        if self.session_flags.is_none() || wsl.is_some() {
+    // ponytail: Unix-native only. On a WSL project the pid Podium holds is
+    // `wsl.exe`'s, not the CLI's inside the distro (whose registry lives there
+    // too), and on native Windows the PTY child is not the CLI either; there a
+    // `/clear`ed agent resumes its pre-clear conversation.
+    fn live_session(&self, cli: &LiveProcess, wsl: Option<&WslBackend>) -> Option<String> {
+        if self.session_flags.is_none() || wsl.is_some() || cfg!(windows) {
             return None;
         }
-        claude_live_session_in(&claude_config_dir()?, pid)
+        claude_live_session_in(&claude_config_dir()?, cli)
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
@@ -422,21 +434,42 @@ fn claude_session_in(config_dir: &Path, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The `sessionId` Claude Code's live registry holds for CLI process `pid`:
+/// Slack on "the record was written by a CLI started after Podium's spawn":
+/// the CLI stamps its own start, a little after the PTY child's.
+const LIVE_SESSION_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The `sessionId` Claude Code's live registry holds for CLI process `cli`:
 /// `<config_dir>/sessions/<pid>.json`, written while the CLI runs (and
 /// removed when it exits cleanly), and following `/clear` to the new id. The
-/// agent's PTY child *is* the CLI — the login shell execs a lone command —
-/// so Podium's pid is the one the file is named after. Not validated here.
-fn claude_live_session_in(config_dir: &Path, pid: u32) -> Option<String> {
+/// agent's PTY child is the CLI only when the login shell execs it — a lone
+/// command, the default — so the file is trusted only when it says so
+/// itself: its `pid` is that pid, its `startedAt` (ms since the epoch) is no
+/// earlier than Podium's spawn (less [`LIVE_SESSION_SLACK`]), and its `cwd`,
+/// when present, is the agent's. A stale record from a reused pid, or a
+/// wrapper's child, fails one of those. The id itself is not validated here.
+fn claude_live_session_in(config_dir: &Path, cli: &LiveProcess) -> Option<String> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct LiveSession {
+        pid: u32,
         session_id: String,
+        started_at: u64,
+        cwd: Option<PathBuf>,
     }
-    let raw = fs::read_to_string(config_dir.join("sessions").join(format!("{pid}.json"))).ok()?;
-    serde_json::from_str::<LiveSession>(&raw)
-        .ok()
-        .map(|s| s.session_id)
+    let path = config_dir
+        .join("sessions")
+        .join(format!("{}.json", cli.pid));
+    let raw = fs::read_to_string(path).ok()?;
+    let live: LiveSession = serde_json::from_str(&raw).ok()?;
+    let earliest = cli
+        .started
+        .checked_sub(LIVE_SESSION_SLACK)
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis());
+    let ours = live.pid == cli.pid
+        && u128::from(live.started_at) >= earliest
+        && live.cwd.as_ref().is_none_or(|cwd| *cwd == cli.cwd);
+    ours.then_some(live.session_id)
 }
 
 /// Shell test, for a POSIX login shell (the WSL distro's), that succeeds when
@@ -1161,28 +1194,62 @@ mod tests {
     #[test]
     fn the_live_registry_names_the_session_a_cli_process_is_on() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let started = std::time::SystemTime::now();
+        let cli = LiveProcess {
+            pid: 4242,
+            started,
+            cwd: PathBuf::from("/work/fictional-project"),
+        };
         assert_eq!(
-            claude_live_session_in(dir.path(), 4242),
+            claude_live_session_in(dir.path(), &cli),
             None,
             "no registry"
         );
         let sessions = dir.path().join("sessions");
         fs::create_dir_all(&sessions).expect("mkdir");
         let id = ProcessId::new().to_string();
-        fs::write(
-            sessions.join("4242.json"),
-            format!(
-                r#"{{"pid":4242,"sessionId":"{id}","name":"podium-0f0e0d0c","kind":"interactive"}}"#
-            ),
-        )
-        .expect("write");
-        assert_eq!(claude_live_session_in(dir.path(), 4242), Some(id));
-        // Another process, or a file that is not the registry's.
-        assert_eq!(claude_live_session_in(dir.path(), 4243), None);
+        let ms = |t: std::time::SystemTime| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .expect("epoch")
+                .as_millis()
+        };
+        let record = |pid: u32, started_at: u128, cwd: Option<&str>| {
+            let cwd = cwd.map_or(String::new(), |c| format!(r#","cwd":"{c}""#));
+            fs::write(
+                sessions.join("4242.json"),
+                format!(r#"{{"pid":{pid},"sessionId":"{id}","startedAt":{started_at}{cwd},"kind":"interactive"}}"#),
+            )
+            .expect("write");
+            claude_live_session_in(dir.path(), &cli)
+        };
+        // Written by this CLI: a little after the spawn, in its cwd.
+        let now = ms(started) + 300;
+        assert_eq!(
+            record(4242, now, Some("/work/fictional-project")),
+            Some(id.clone())
+        );
+        assert_eq!(
+            record(4242, now, None),
+            Some(id.clone()),
+            "no cwd to compare"
+        );
+        // Within the slack for a CLI stamping its start a bit early.
+        assert_eq!(record(4242, ms(started) - 1_000, None), Some(id.clone()));
+        // A stale record from an earlier process that had this pid.
+        assert_eq!(record(4242, ms(started) - 60_000, None), None);
+        // Another pid inside the file, or another directory.
+        assert_eq!(record(4243, now, None), None);
+        assert_eq!(record(4242, now, Some("/work/other-project")), None);
+        // No such file, or not the registry's format.
+        let other = LiveProcess {
+            pid: 4243,
+            ..cli.clone()
+        };
+        assert_eq!(claude_live_session_in(dir.path(), &other), None);
         fs::write(sessions.join("4243.json"), "not json").expect("write");
-        assert_eq!(claude_live_session_in(dir.path(), 4243), None);
+        assert_eq!(claude_live_session_in(dir.path(), &other), None);
         // Auggie keeps no such registry.
-        assert_eq!(AUGGIE.live_session(4242, None), None);
+        assert_eq!(AUGGIE.live_session(&cli, None), None);
     }
 
     #[test]
