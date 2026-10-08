@@ -374,10 +374,14 @@
    log: a long transcript scrolls *under* it instead of pushing it out of
    view. Opaque (the pane's own surface) and bled over the log's horizontal
    padding, so no transcript text shows through or around it. Capped and
-   scrollable, so a long queue never covers the whole transcript. */
+   scrollable, so a long queue never covers the whole transcript.
+   `flex-shrink: 0` is load-bearing: `overflow-y: auto` drops a flex item's
+   automatic min-height to 0, so without it `.log` squeezes the tail to its
+   border as soon as the transcript overflows — the queue vanishes. */
 .tail {
   position: sticky;
   bottom: 0;
+  flex-shrink: 0;
   max-height: 40vh;
   overflow-y: auto;
   display: flex;
