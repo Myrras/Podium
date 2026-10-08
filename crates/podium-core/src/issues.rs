@@ -894,7 +894,15 @@ pub fn normalize_url(input: &str) -> Option<String> {
         return None;
     }
     // The path stays (a GitLab served under `https://host/gitlab`); only a
-    // trailing slash goes, since API paths are appended to it.
+    // trailing slash goes, since API paths are appended to it. A URL copied
+    // from the browser is cut at GitLab's `/-/` (`…/proj/-/issues`), which no
+    // install path contains, and loses its query/fragment; a project path
+    // left before it then fails with a "check the setup's URL" error.
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let rest = match format!("{rest}/").find("/-/") {
+        Some(i) => &rest[..i],
+        None => rest,
+    };
     let rest = rest.trim_end_matches('/');
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     (!host.is_empty() && !rest.contains(char::is_whitespace))
@@ -904,21 +912,15 @@ pub fn normalize_url(input: &str) -> Option<String> {
 /// The GitLab API base and project path for a remote `remote_path` under the
 /// setup URL `url`. A GitLab served under a path (`https://host/gitlab`) puts
 /// that path into an HTTPS remote too (`gitlab/group/proj`), so it is cut off
-/// the project path — an SSH remote never has it. A setup URL that is the
-/// project's own URL (`https://host/group/proj`, pasted from the browser) is
-/// cut back to the host.
+/// the project path — an SSH remote never has it.
 fn gitlab_target(url: &str, remote_path: &str) -> (String, String) {
     let after_scheme = url.find("://").map_or(0, |i| i + 3);
-    let (origin, prefix) = match url[after_scheme..].find('/') {
-        Some(i) => url.split_at(after_scheme + i),
-        None => (url, ""),
-    };
-    let prefix = prefix.trim_matches('/');
+    let prefix = url[after_scheme..]
+        .find('/')
+        .map_or("", |i| &url[after_scheme + i..])
+        .trim_matches('/');
     if prefix.is_empty() {
         return (url.to_string(), remote_path.to_string());
-    }
-    if remote_path.eq_ignore_ascii_case(prefix) {
-        return (origin.to_string(), remote_path.to_string());
     }
     let rest = remote_path
         .get(..prefix.len() + 1)
@@ -1308,6 +1310,11 @@ fn gitlab_get(base: &str, token: &str, path: &str) -> CoreResult<(String, Option
         }
         300..=399 => Err(CoreError::IssuesFetch(GITLAB_REDIRECT.to_string())),
         401 | 403 => Err(CoreError::IssuesGitlabAuth),
+        // Also what a setup URL with a project path in it runs into.
+        404 => Err(CoreError::IssuesFetch(
+            "GitLab knows no such project, or the token cannot see it; check the setup's URL"
+                .to_string(),
+        )),
         429 => Err(CoreError::IssuesFetch(
             "GitLab rate limit reached, try again later".to_string(),
         )),
@@ -2292,6 +2299,19 @@ mod tests {
                 "https://Git.Example.test/GitLab",
                 Some("https://git.example.test/GitLab"),
             ),
+            // Copied from the browser: cut at GitLab's `/-/`.
+            (
+                "https://git.example.test/grp/proj/-/issues/12?sort=x",
+                Some("https://git.example.test/grp/proj"),
+            ),
+            (
+                "https://git.example.test/gitlab/grp/proj/-",
+                Some("https://git.example.test/gitlab/grp/proj"),
+            ),
+            (
+                "https://git.example.test/gitlab#top",
+                Some("https://git.example.test/gitlab"),
+            ),
             ("HTTP://git.example.test", Some("http://git.example.test")),
             (
                 "git.example.test:8443",
@@ -2321,11 +2341,10 @@ mod tests {
         // No path: untouched.
         let root = "https://git.example.test";
         assert_eq!(t(root, "grp/proj"), s(root, "grp/proj"));
-        // The project's own URL pasted as the setup: back to the host.
-        assert_eq!(
-            t("https://git.example.test/grp/proj", "grp/proj"),
-            s(root, "grp/proj")
-        );
+        // A project path left in the setup URL is not guessed away: the
+        // fetch then says to check the URL (see the 404 test).
+        let pasted = "https://git.example.test/grp/proj";
+        assert_eq!(t(pasted, "grp/other"), s(pasted, "grp/other"));
         // A prefix that only looks alike is not cut.
         assert_eq!(t(sub, "gitlabx/proj"), s(sub, "gitlabx/proj"));
         // End to end from the remote URL, HTTPS and SSH alike.
@@ -2624,6 +2643,12 @@ mod tests {
                 Err(CoreError::IssuesGitlabAuth)
             ));
         }
+        // A setup URL still holding a project path (pasted from the browser):
+        // another repo on that host is a 404, reported as a URL problem.
+        let (srv, _h) = serve_board("404 Not Found", 7);
+        let (base, path) = gitlab_target(&format!("{srv}/grp/proj"), "grp/other");
+        let err = fetch_gitlab(&base, &path, "t", true, since(), None).unwrap_err();
+        assert!(err.to_string().contains("check the setup's URL"), "{err}");
         let (base, _h) = serve_board("500 Internal Server Error", 7);
         let err = fetch_gitlab(&base, "a/b", "t", true, since(), None).unwrap_err();
         assert!(matches!(err, CoreError::IssuesFetch(_)));

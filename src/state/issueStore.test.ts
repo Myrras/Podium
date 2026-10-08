@@ -174,6 +174,20 @@ describe("issueStore", () => {
     stops.forEach((stop) => stop());
   });
 
+  it("auto-refresh: closing during hydrate gives no fetch and no entry", async () => {
+    let answer!: (v: { board: Board; fetchedAt: string }) => void;
+    cachedMock.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    listMock.mockResolvedValue(board(1));
+    const stop = useIssueStore.getState().startAutoRefresh(P);
+    useIssueStore.getState().dropProject(P);
+    stop();
+    // A stale cache: it would be shown, then refetched, were it still open.
+    answer({ board: board(3), fetchedAt: "2026-01-01T00:00:00Z" });
+    await vi.advanceTimersByTimeAsync(AUTO_FETCH_SPACING_MS);
+    expect(listMock).not.toHaveBeenCalled();
+    expect(useIssueStore.getState().byProject[P]).toBeUndefined();
+  });
+
   it("auto-refresh: a project stuck on a local error takes no slot", async () => {
     listMock.mockResolvedValue(board(1));
     useIssueStore.setState({

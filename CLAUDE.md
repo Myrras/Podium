@@ -412,8 +412,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `scheme://host[:port][/path]` with the scheme **kept** (`http://` for an
   instance without TLS; `https` when omitted) and the path kept minus a
   trailing slash (a GitLab under `/gitlab`); `gitlab_target` cuts that path
-  off an HTTPS remote's project path (SSH remotes never carry it), and a
-  setup URL that *is* the project's URL is cut back to the host. GitLab calls never follow a
+  off an HTTPS remote's project path (SSH remotes never carry it). A URL
+  copied from the browser is cut at GitLab's `/-/` (and loses `?`/`#`) on
+  save; a project path still left in it is not guessed away — the fetch's 404
+  says to check the setup's URL. GitLab calls never follow a
   redirect (the token header would go along to the new host); a 3xx is a
   "check the setup's URL" error. A project can pin one setup from the
   board's picker (`issues.projects`, project root → setup id, app-side);

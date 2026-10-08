@@ -144,6 +144,9 @@ export const resetAutoFetchPacing = () => {
   autoWaiting.clear();
 };
 
+/** How often each project was dropped, so a late answer can tell. */
+const drops = new Map<ProjectId, number>();
+
 /** Auto refreshes waiting for their slot, by project; a ticket per wait. */
 const autoWaiting = new Map<ProjectId, object>();
 
@@ -277,8 +280,11 @@ export const useIssueStore = create<IssueState>((set, get) => {
 
     hydrate: async (projectId) => {
       const mine = (get().byProject[projectId] ?? EMPTY).mine;
+      const drop = drops.get(projectId) ?? 0;
       try {
         const cached = await issuesBoardCached(projectId, mine);
+        // Closed while reading: do not bring its entry back.
+        if ((drops.get(projectId) ?? 0) !== drop) return null;
         // The scope changed while reading: that answer is for the old one.
         if (!cached || (get().byProject[projectId]?.mine ?? true) !== mine) {
           return null;
@@ -331,9 +337,13 @@ export const useIssueStore = create<IssueState>((set, get) => {
 
     startAutoRefresh: (projectId) => {
       const { refresh } = get();
+      // Stopped (unmounted, project closed) before the cache answered: no
+      // first fetch for a board nobody shows any more.
+      let stopped = false;
       void get()
         .hydrate(projectId)
         .then((at) => {
+          if (stopped) return;
           if (at === null || Date.now() - at > ISSUE_POLL_MS) {
             void refresh(projectId, { auto: true });
           }
@@ -350,6 +360,8 @@ export const useIssueStore = create<IssueState>((set, get) => {
       };
       window.addEventListener("focus", onFocus);
       return () => {
+        stopped = true;
+        autoWaiting.delete(projectId);
         clearInterval(timer);
         window.removeEventListener("focus", onFocus);
       };
@@ -359,6 +371,7 @@ export const useIssueStore = create<IssueState>((set, get) => {
       set((s) => {
         rerunAfterFetch.delete(projectId);
         autoWaiting.delete(projectId);
+        drops.set(projectId, (drops.get(projectId) ?? 0) + 1);
         const next = { ...s.byProject };
         delete next[projectId];
         return { byProject: next };
