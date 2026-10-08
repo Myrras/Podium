@@ -9,6 +9,7 @@ import {
   projectList,
   projectOpen,
   projectRename,
+  projectSetColor,
   projectReorder,
   recentsList,
   recentsRemove,
@@ -65,6 +66,7 @@ interface ProjectState {
   reloadProjectConfig: (id: ProjectId) => Promise<void>;
   /** Rename a project; a blank/null name reverts to the folder/config name. */
   renameProject: (id: ProjectId, name: string | null) => Promise<void>;
+  setProjectColor: (id: ProjectId, color: string | null) => Promise<void>;
   /**
    * Move project `id` before `beforeId` (or to the end when null),
    * optimistically updating the list and persisting the new order.
@@ -222,6 +224,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }));
     } catch (e) {
       toastError("Could not rename project", toIpcError(e).message);
+    }
+  },
+
+  setProjectColor: async (id, color) => {
+    try {
+      const project = await projectSetColor(id, color);
+      set((s) => ({
+        projects: s.projects.map((p) => (p.id === project.id ? project : p)),
+      }));
+    } catch (e) {
+      toastError("Could not change project colour", toIpcError(e).message);
     }
   },
 

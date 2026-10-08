@@ -41,12 +41,20 @@ pub async fn project_open(
             tracing::warn!("failed to migrate legacy recents entry: {e}");
         }
     }
-    // Re-apply any persisted display-name override before returning, so a
-    // renamed project comes back with its user-chosen name after a restart.
-    if let Ok(Some(name)) = workspace::name_for(&app, &root) {
-        if let Err(e) = state.orchestrator.rename_project(id, Some(name)) {
-            tracing::warn!("failed to apply persisted project name: {e}");
+    // Re-apply any persisted display-name override and badge colour before
+    // returning, so a renamed/recoloured project comes back that way after a
+    // restart. One read of workspace.json, one ProjectUpdated for both.
+    match workspace::overrides_for(&app, &root) {
+        Ok((None, None)) => {}
+        Ok((name, color)) => {
+            if let Err(e) = state
+                .orchestrator
+                .restore_project_overrides(id, name, color)
+            {
+                tracing::warn!("failed to apply persisted project overrides: {e}");
+            }
         }
+        Err(e) => tracing::warn!("failed to read persisted project overrides: {e}"),
     }
     let info = state
         .orchestrator
@@ -84,6 +92,22 @@ pub fn project_rename(
     };
     if let Err(e) = workspace::set_name(&app, &info.root, stored) {
         tracing::warn!("failed to persist project name: {e}");
+    }
+    Ok(info)
+}
+
+/// Set or clear a project's sidebar badge colour (`#rrggbb`; blank clears).
+/// Persisted in `workspace.json` like the name override.
+#[tauri::command]
+pub fn project_set_color(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    color: Option<String>,
+) -> Result<ProjectInfo, IpcError> {
+    let info = state.orchestrator.set_project_color(project_id, color)?;
+    if let Err(e) = workspace::set_color(&app, &info.root, info.color.clone()) {
+        tracing::warn!("failed to persist project colour: {e}");
     }
     Ok(info)
 }
