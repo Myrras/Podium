@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-08
+
 ### Added
 
 - **Fold a project's sidebar sections away.** Click a subsection title
