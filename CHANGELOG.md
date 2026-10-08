@@ -10,6 +10,18 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **A Git board per project.** A Kanban board of the repo's GitHub or GitLab
+  issues and PRs/MRs, opened from the Git button in the project header. It
+  uses the repo's own board columns when there are any. Drag a card to another
+  column to move, close or reopen it on GitHub/GitLab itself, and switch
+  between your own items (Mine) and the whole repo (All). Set it up once in
+  Settings → Issues.
+- **Choose which sections a project shows.** The Sections button in the
+  project header turns the sidebar's To-do's, Terminals, Worktrees,
+  Scratchpads and Git board on or off per project; hiding one deletes nothing.
+
 ## [2.1.3] - 2026-10-08
 
 ### Changed
