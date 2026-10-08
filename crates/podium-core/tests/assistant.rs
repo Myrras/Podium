@@ -1940,3 +1940,34 @@ async fn a_waiting_reply_lost_with_the_conversation_puts_its_item_back() {
 
     orch.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_response_about_a_terminal_is_refused() {
+    use podium_core::ResponseKind;
+
+    let (orch, dir) = setup(ECHOING_CLAUDE);
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let terminal = orch
+        .add_process(
+            project,
+            ProcessSpec {
+                kind: ProcessKind::Terminal,
+                ..agent_spec("sleep 30", dir.path())
+            },
+        )
+        .await
+        .expect("add terminal");
+
+    let refused =
+        orch.add_assistant_response(ResponseKind::Fyi, "Done.", Some(terminal), None, None, None);
+    assert!(
+        matches!(refused, Err(CoreError::InvalidInput(_))),
+        "{refused:?}"
+    );
+    assert!(orch.assistant_responses().is_empty());
+
+    orch.shutdown().await;
+}

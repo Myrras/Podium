@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ResponseItem } from "../ipc/types";
-import { shortAge } from "../lib/dateFormat";
+import { formatRelativeTime } from "../lib/dateFormat";
 import { useAssistantStore } from "../state/assistantStore";
 import { CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
 import styles from "./ResponsesSection.module.css";
@@ -153,7 +153,13 @@ function ResponseRow({
   // Enter and the Send button both submit; ignore a second one while the
   // first is in flight.
   const [sending, setSending] = useState(false);
-  const context = [item.project, item.todo, item.source].filter(Boolean);
+  // The parts `ResponseItem::label` is made of. Blank ones are dropped as it
+  // does; the row's `white-space: nowrap` already collapses whitespace runs
+  // (a newline in a name) the way it does per part.
+  const agent = item.agent?.trim();
+  const context = [item.project, item.todo, item.source].filter((p) =>
+    p?.trim(),
+  );
 
   async function send() {
     if (!draft?.trim() || sending) return;
@@ -177,15 +183,15 @@ function ResponseRow({
       <div className={styles.body}>
         <div className={styles.meta}>
           <span className={styles.who}>
-            {item.agent && <span className={styles.agent}>{item.agent}</span>}
+            {agent && <span className={styles.agent}>{agent}</span>}
             {context.length > 0 &&
-              `${item.agent ? " · " : ""}${context.join(" · ")}`}
+              `${agent ? " · " : ""}${context.join(" · ")}`}
           </span>
           <span className={styles.kind} data-kind={item.kind}>
             {item.kind === "needsYou" ? "Needs you" : "FYI"}
           </span>
           <span className={styles.age} title={item.createdAt}>
-            {shortAge(item.createdAt)}
+            {formatRelativeTime(item.createdAt, new Date(), { compact: true })}
           </span>
         </div>
         <span className={styles.text}>{item.text}</span>

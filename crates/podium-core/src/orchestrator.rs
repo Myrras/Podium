@@ -615,6 +615,17 @@ impl Orchestrator {
         }
         let process =
             process_id.and_then(|id| self.list_processes(None).into_iter().find(|p| p.id == id));
+        // Responses are about agents: a terminal's or service's id would key
+        // and label the item after the wrong thing. (An id that is gone is
+        // fine — see above.)
+        if process
+            .as_ref()
+            .is_some_and(|p| !matches!(p.kind, ProcessKind::Agent { .. }))
+        {
+            return Err(CoreError::InvalidInput(
+                "process_id must be an agent's".to_string(),
+            ));
+        }
         // A live agent's own project wins over `project_id`: the agent is
         // what the item is about, so a mismatched id would mislabel it.
         let project_id = process.as_ref().map(|p| p.project_id).or(project_id);

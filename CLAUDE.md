@@ -597,8 +597,10 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   `AssistantManager::shutdown` restores them itself before killing the
   child, since nothing after it is sure to run). That is why the
   `ResponseStore` lives on the `AssistantStore`: the queue code needs it.
-  `restore` skips an item a newer one has since replaced and keeps the
-  100-item cap.
+  `restore` skips an item a *newer* one has since replaced (an older item
+  beside it never counts) and keeps the 100-item cap by dropping the oldest
+  other item, never the restored one. `add_response` refuses a `process_id`
+  that names a live terminal or service rather than an agent.
   Snapshots are published under the store's lock, so they arrive in the order
   the changes happened, and a write that fails leaves the list (and the
   published snapshot) unchanged. The label is the non-empty parts of agent ·
@@ -606,7 +608,9 @@ one lock acquisition, atomically, before the async `podium.yml` load.
   (`ResponseItem::label`) and added as `label` only at the wire boundary
   (`LabelledResponse`, used by `assistant_responses_list`, the
   `responsesChanged` event and `add_response`'s answer) — never written to
-  `assistant-responses.json` — so the frontend never re-derives it. The panel's `loadResponses` drops its result when a
+  `assistant-responses.json` — so the frontend never re-derives it. (The
+  row shows the same parts with the agent styled apart, dropping blank ones
+  as `label()` does; its `nowrap` collapses whitespace inside a part.) The panel's `loadResponses` drops its result when a
   snapshot landed while it was in flight. A half-typed reply is filed under
   its item's id; when that item is replaced, the draft moves to the newest
   item that replaced it (the backend's rule mirrored in `supersedes`), so

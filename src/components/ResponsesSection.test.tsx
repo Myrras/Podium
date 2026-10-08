@@ -8,7 +8,7 @@ vi.mock("../ipc/commands", () => ({}));
 
 import type { ResponseItem } from "../ipc/types";
 import { useAssistantStore } from "../state/assistantStore";
-import { shortAge } from "../lib/dateFormat";
+import { formatRelativeTime } from "../lib/dateFormat";
 import { ResponsesSection } from "./ResponsesSection";
 
 const NOW = Date.now();
@@ -79,6 +79,14 @@ describe("ResponsesSection", () => {
     expect(screen.getByText("Slack")).toBeInTheDocument();
     expect(screen.getByText("FYI")).toBeInTheDocument();
     expect(screen.getByText("3h")).toBeInTheDocument();
+  });
+
+  it("leaves blank name parts out of the row's name, as the label does", () => {
+    useAssistantStore.setState({
+      responses: [item({ agent: "  ", project: " ", todo: "Fix the loop" })],
+    });
+    render(<ResponsesSection />);
+    expect(screen.getByText("Fix the loop").textContent).toBe("Fix the loop");
   });
 
   it("renders nothing when there are no items", () => {
@@ -283,12 +291,14 @@ describe("ResponsesSection", () => {
   });
 });
 
-describe("shortAge", () => {
+describe("formatRelativeTime compact", () => {
   it("compacts an age to one unit", () => {
     const ago = (ms: number) => new Date(NOW - ms).toISOString();
-    expect(shortAge(ago(10_000), NOW)).toBe("now");
-    expect(shortAge(ago(5 * 60_000), NOW)).toBe("5m");
-    expect(shortAge(ago(3 * 3_600_000), NOW)).toBe("3h");
-    expect(shortAge(ago(2 * 86_400_000), NOW)).toBe("2d");
+    const age = (ms: number) =>
+      formatRelativeTime(ago(ms), new Date(NOW), { compact: true });
+    expect(age(10_000)).toBe("now");
+    expect(age(5 * 60_000)).toBe("5m");
+    expect(age(3 * 3_600_000)).toBe("3h");
+    expect(age(2 * 86_400_000)).toBe("2d");
   });
 });

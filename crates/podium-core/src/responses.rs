@@ -205,7 +205,14 @@ impl ResponseStore {
     /// which is the one the user should see.
     pub fn restore(&self, item: ResponseItem, changed: impl FnOnce(&[ResponseItem])) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        if inner.items.iter().any(|i| item.superseded_by(i)) {
+        // Only a *newer* item can have replaced it: an older one that sits
+        // beside it (a question next to the FYI being restored, an agent's
+        // item next to a sweep note on its to-do) was never its replacement.
+        if inner
+            .items
+            .iter()
+            .any(|i| i.created_at > item.created_at && item.superseded_by(i))
+        {
             return;
         }
         let at = inner
@@ -216,7 +223,12 @@ impl ResponseStore {
         // Kept in memory even if the write fails: this undoes a reply that
         // never got through, and losing the item is worse than a stale file.
         inner.items.insert(at, item);
-        inner.items.truncate(MAX_ITEMS);
+        // At the cap, the oldest *other* item goes: the restored one is a
+        // reply's question the user still has to answer.
+        if inner.items.len() > MAX_ITEMS {
+            let last = inner.items.len() - 1;
+            inner.items.remove(if at == last { last - 1 } else { last });
+        }
         let _ = save(inner.path.as_deref(), &inner.items);
         changed(&inner.items);
     }
@@ -369,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restore_respects_the_cap() {
+    fn a_restore_at_the_cap_keeps_the_restored_item() {
         let store = ResponseStore::new();
         let mut oldest = item(None, None, "oldest");
         oldest.created_at -= chrono::Duration::minutes(1);
@@ -377,7 +389,42 @@ mod tests {
             add(&store, item(None, None, &n.to_string()));
         }
         store.restore(oldest, |_| {});
-        assert_eq!(store.list().len(), MAX_ITEMS);
+        let list = store.list();
+        assert_eq!(list.len(), MAX_ITEMS);
+        assert_eq!(list[MAX_ITEMS - 1].text, "oldest");
+        // The oldest other item made room.
+        assert_eq!(list[MAX_ITEMS - 2].text, "1");
+    }
+
+    #[test]
+    fn an_older_question_beside_it_does_not_stop_an_fyi_coming_back() {
+        let store = ResponseStore::new();
+        let agent = ProcessId::new();
+        let mut question = ResponseItem {
+            kind: ResponseKind::NeedsYou,
+            ..item(Some(agent), None, "merge now?")
+        };
+        question.created_at -= chrono::Duration::minutes(1);
+        add(&store, question);
+        let fyi = add(&store, item(Some(agent), None, "tests green"))[0].clone();
+
+        let taken = store.remove(fyi.id, |_| {}).unwrap();
+        store.restore(taken, |_| {});
+        assert_eq!(texts(&store.list()), vec!["tests green", "merge now?"]);
+    }
+
+    #[test]
+    fn an_older_agent_item_beside_it_does_not_stop_a_sweep_note_coming_back() {
+        let store = ResponseStore::new();
+        let todo = TodoId::new();
+        let mut agents = item(Some(ProcessId::new()), Some(todo), "agent: done?");
+        agents.created_at -= chrono::Duration::minutes(1);
+        add(&store, agents);
+        let note = add(&store, item(None, Some(todo), "open a week"))[0].clone();
+
+        let taken = store.remove(note.id, |_| {}).unwrap();
+        store.restore(taken, |_| {});
+        assert_eq!(texts(&store.list()), vec!["open a week", "agent: done?"]);
     }
 
     #[test]
