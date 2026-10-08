@@ -12,6 +12,12 @@
 # commands (`sleep`, `printf`, POSIX shell syntax) that ConPTY has no
 # equivalent for; those are `#[cfg_attr(windows, ignore)]` with a comment
 # explaining why, and the macOS job still runs them.
+#
+# Releases: every push to main (a merged PR) is a release. The `release` job
+# turns CHANGELOG.md's `## [Unreleased]` section into the next version (patch,
+# or minor/major via a PR label), bumps the manifests, commits `Release vX.Y.Z`
+# to main, tags it, creates the GitHub Release and dispatches build.yml, which
+# attaches the installers. The `changelog` job makes every PR add that entry.
 name: CI
 
 on:
@@ -19,7 +25,102 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel on main: a cancelled run would leave a merge without a version.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changelog:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Release script tests
+        run: |
+          bash scripts/next-version.test.sh
+          bash scripts/changelog.test.sh
+
+      - name: PR adds a CHANGELOG entry
+        run: |
+          if ! git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qx CHANGELOG.md \
+            || ! bash scripts/changelog.sh unreleased >/dev/null; then
+            echo "::error file=CHANGELOG.md::Add an entry for this change under '## [Unreleased]' in CHANGELOG.md (Keep a Changelog headings, user-facing voice). Merging to main releases it."
+            exit 1
+          fi
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [ci, windows]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # main, not the pushed sha: a queued second run must see the first run's
+      # release commit, or it would release the same version twice.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # An empty Unreleased section means an earlier run already released this.
+      - name: Anything to release?
+        id: pending
+        run: |
+          if bash scripts/changelog.sh unreleased > "$RUNNER_TEMP/notes.md"; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing under ## [Unreleased]; already released."
+          fi
+
+      - name: Determine version
+        if: steps.pending.outputs.release == 'true'
+        run: |
+          prev=$(git describe --tags --match 'v[0-9]*' --abbrev=0)
+          labels=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[0].labels[]?.name] | join(",")')
+          tag=$(bash scripts/next-version.sh "$prev" "$labels")
+          echo "$prev → $tag (labels: ${labels:-none})"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+
+      - name: Bump CHANGELOG, manifests and Cargo.lock
+        if: steps.pending.outputs.release == 'true'
+        run: |
+          bash scripts/changelog.sh release "$VERSION" "$(date -u +%F)"
+          bash scripts/sync-version.sh --set "$VERSION"
+          cargo update --workspace
+          bash scripts/sync-version.sh --check
+          git diff --stat
+
+      - name: Commit, tag and push
+        if: steps.pending.outputs.release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $TAG"
+          git tag -a "$TAG" -m "Podium $TAG"
+          git push --atomic origin HEAD:main "$TAG"
+
+      - name: Create GitHub Release
+        if: steps.pending.outputs.release == 'true'
+        run: gh release create "$TAG" --title "Podium $TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+
+      # A tag pushed with GITHUB_TOKEN does not trigger build.yml's tag trigger;
+      # a workflow_dispatch does. build.yml attaches the installers to the release.
+      - name: Build installers
+        if: steps.pending.outputs.release == 'true'
+        run: gh workflow run build.yml --ref "$TAG"
+
   ci:
     runs-on: macos-latest
     timeout-minutes: 45

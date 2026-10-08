@@ -1,131 +1,78 @@
 ---
 name: release
-description: Cut a Podium release — fold the CHANGELOG + version bump into the feature PR, run checks, then (after explicit user confirmation) merge the PR and tag. Use when the user wants to release/ship a version, cut a patch/minor/major, or "release it".
+description: Ship a Podium change — make sure the PR has its CHANGELOG `## [Unreleased]` entry, pick the bump label (none/minor/major), run checks, then (after explicit user confirmation) squash-merge; CI assigns the version, tags and publishes the release. Use when the user wants to release/ship/merge a change, cut a patch/minor/major, or "release it".
 ---
 
 # Release Podium
 
-Runbook for cutting a Podium release. Changes are already developed on a feature
-branch with an open PR (see the git workflow in CLAUDE.md), so a release **folds
-the CHANGELOG + version bump into that PR, merges it to `main`, then tags** — you
-do **not** commit release changes straight to `main`. The pushed tag drives the
-GitHub Actions bundle build.
+Every merge to `main` is a release. CI's `release` job (`.github/workflows/ci.yml`)
+assigns the version, renames `## [Unreleased]`, bumps the manifests + Cargo.lock,
+commits `Release vX.Y.Z` to `main`, tags it, creates the GitHub Release and
+dispatches the bundle build that attaches the installers. **Never bump the version
+or create a tag by hand.**
 
-**One hard stop: get explicit user confirmation before merging the PR or pushing
-the tag** (both are outward-facing and hard to undo). Invoking this skill and
-confirming the target PR + version counts as that approval.
+**One hard stop: explicit user confirmation before merging** (outward-facing, and
+it publishes a release).
 
-## 0. Determine the target PR + version bump
+## 1. Target PR
 
-- **Which PR** is being released? Usually the one just discussed/approved; if
-  several are open, confirm which. Note its number `N` and branch.
-- **Version** — SemVer; the `[workspace.package]` version in the root `Cargo.toml`
-  is the single source of truth. Infer from the changes (bugfix → patch, new
-  feature → minor, breaking → major) and state your choice; ask only if genuinely
-  ambiguous, or honour a level/version the user gave. Compute from the current one.
-
-## 1. Pre-flight
+Which PR? Usually the one just discussed; if several are open, confirm. Note `N`.
 
 ```
-git checkout <pr-branch>          # the release rides the feature PR's branch
-git pull --ff-only                # branch up to date with its remote
-git status --short                # clean working tree (only release work to come)
-gh pr view N --json state,baseRefName,headRefName   # PR OPEN, base main
-just version-check                # versions currently in sync
+gh pr view N --json state,baseRefName,headRefName,labels   # OPEN, base main
 ```
 
-## 2. Update CHANGELOG.md (on the branch)
+## 2. CHANGELOG entry (on the PR branch)
 
-`CHANGELOG.md` follows [Keep a Changelog]. **Functional (user-facing) changes
-only** — omit internal refactors, tooling, tests, and chores.
+The PR must add its entry under `## [Unreleased]` in `CHANGELOG.md` — CI's
+`changelog` job fails otherwise. Check with `bash scripts/changelog.sh unreleased`.
 
-- Add a new section above the latest one:
-  `## [X.Y.Z] - YYYY-MM-DD` (today's date).
-- Group entries under the standard headings, in this order, including only those
-  that apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
-- Match the existing voice: a **bold lead sentence** stating the user-visible
-  effect, then detail. Describe behavior, not code.
-- There are no `[x.y.z]: <url>` link-reference definitions at the bottom — don't
-  add any.
+- **Functional (user-facing) changes only**; internal refactors, tooling, tests
+  and chores still need *an* entry for CI, so describe the user-visible effect
+  (if truly none, say so briefly under `### Changed`).
+- Keep a Changelog headings, in this order, only those that apply: `Added`,
+  `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
+- Existing voice: a **bold lead sentence** stating the user-visible effect, then
+  detail. Behaviour, not code.
+- Don't add a version heading, a date, or `[x.y.z]: <url>` link definitions.
 
-## 3. Bump + sync the version
+Missing or wrong → fix it on the branch, commit, push. Never add a
+`Co-Authored-By` trailer.
 
-```
-just version X.Y.Z        # writes Cargo.toml + propagates to tauri.conf.json + package.json
-just version-check        # must report the version is in sync
-```
+## 3. Bump label
 
-## 4. Run checks (scope to the change)
-
-- Frontend-only change (fast path):
-  `pnpm typecheck` · `pnpm lint` · `pnpm test` ·
-  `pnpm exec prettier --write <changed files>`
-- Rust or mixed change: `just lint` and `just test` (note `just test` runs the
-  full cargo workspace — real PTYs — plus the frontend; heavier).
-- Everything must be green before committing. Report failures; don't push past them.
-
-## 5. Commit + push the branch
+Patch by default. Infer from the changes and state your choice (honour a level
+the user gave): new feature → `minor`, breaking → `major`.
 
 ```
-git add -A
-git commit -F - <<'EOF'
-<subject>; release vX.Y.Z
-
-<body: what changed and why>
-EOF
-git push origin <pr-branch>
+gh pr edit N --add-label minor    # or major; nothing for a patch
 ```
 
-Commit subject: concise, describing the change, ending with `; release vX.Y.Z`.
+Remove a wrong one with `--remove-label`. `major` wins over `minor`.
 
-**Hook fact (`core.hooksPath` = `~/.githooks`):** a `commit-msg` hook strips
-`Co-Authored-By: …anthropic.com` trailers. Per the user's global rule, **never
-add any `Co-Authored-By` trailer** regardless.
+## 4. Checks
 
-## 6. STOP — confirm with the user before merging + tagging
+`gh pr checks N` must be green. Locally, scope to the change: frontend-only →
+`pnpm typecheck` · `pnpm lint` · `pnpm test`; Rust or mixed → `just lint` and
+`just test`. Report failures; don't push past them.
 
-Show the user:
-- the release commit (`git log -1 --format='%h %s'` + `git show --stat HEAD`),
-- the new version, and
-- that the next steps will **merge PR #N into `main`** and **create + push the
-  annotated tag `vX.Y.Z`** (which triggers the bundle build).
+## 5. STOP — confirm with the user
 
-Wait for explicit approval (already satisfied if they confirmed the PR + version
-when invoking the skill). Do not merge or tag until they confirm.
+Show the PR, its `## [Unreleased]` entry, the label (so the resulting bump), and
+that the next step **squash-merges PR #N into `main`, which publishes a release**.
+Wait for explicit approval.
 
-## 7. Merge the PR
+## 6. Merge + watch
 
 ```
-gh pr merge N --squash --delete-branch    # squash matches the repo's merge history
+gh pr merge N --squash      # the branch auto-deletes (delete-branch-on-merge)
+gh run list --workflow ci.yml --branch main --limit 1   # find the run
+gh run watch <run-id>
+git fetch --tags && git describe --tags --abbrev=0 origin/main
 ```
 
-The squashed commit on `main` carries the feature **plus** the version bump and
-CHANGELOG entry.
-
-## 8. Tag
-
-Annotated tag, named `vX.Y.Z`, message `Podium vX.Y.Z`, on the new `main` HEAD
-(the squash-merge commit):
-
-```
-git checkout main && git pull --ff-only
-git tag -a vX.Y.Z -m "Podium vX.Y.Z"
-git push origin vX.Y.Z
-```
-
-After pushing, optionally check `git tag --list --sort=-v:refname` for gaps — if a
-prior release was never tagged, offer to back-tag it on its release commit (don't
-do it unprompted).
-
-## Notes
-
-- Do not create tags outside this confirmed flow (global rule: no tags without
-  explicit approval — invoking this skill + the step-6 confirmation is the approval).
-- A pushed `v*` tag triggers the GitHub Actions build (`.github/workflows/build.yml`)
-  of the macOS bundle (the `.app` plus the APFS `.dmg` from `scripts/make-dmg.sh`,
-  since Tauri's own HFS+ dmg step is broken on macOS 26+). Windows/Linux are not
-  packaged yet (the PTY layer is Unix-only today).
-- Not yet set up: Conventional Commits, git-cliff changelog automation,
-  signed/notarized releases. If those land, revisit this runbook.
+Report the new tag and the release URL (`gh release view vX.Y.Z --json url`).
+If the `release` job fails, read its log (`gh run view <run-id> --log-failed`) and
+report — don't tag or bump manually.
 
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
