@@ -500,6 +500,10 @@ fn file_name(path: &str) -> String {
 pub enum PendingKind {
     User,
     Nudge,
+    /// The external-sources sweep. Delivered like a proposal-outcome `Notice`,
+    /// but it also leaves the same chat row a nudge does (see
+    /// [`record_delivered`]).
+    Poll,
     Notice,
 }
 
@@ -1372,12 +1376,13 @@ impl AssistantManager {
 
     /// Ask the assistant to sweep the user's external sources (the slow lane
     /// in [`crate::proactivity`]). Spawns the session like a nudge, but goes
-    /// in as a `Notice` — Podium's own errand, not something worth a row in
-    /// the chat every interval. The user only ever sees the *answer*, and
-    /// only when there is one: a sweep that found nothing replies
-    /// [`NOTHING_TO_REPORT`], which is swallowed.
+    /// in as a `Poll`, which leaves the same row a nudge does so the panel
+    /// folds the sweep's actions into one faint "Podium check" line instead
+    /// of mixing them with the user's own. The user only ever sees the
+    /// *answer*, and only when there is one: a sweep that found nothing
+    /// replies [`NOTHING_TO_REPORT`], which is swallowed.
     pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Notice, text, mcp).await;
+        self.deliver_own(PendingKind::Poll, text, mcp).await;
     }
 
     /// The shared body of [`nudge`](Self::nudge) and [`poll`](Self::poll):
@@ -1810,9 +1815,10 @@ async fn deliver_or_queue(
     // are deduped: two identical user messages are two deliberate sends, and
     // two identical proposal outcomes are two real answers the assistant is
     // waiting on.
-    // ponytail: that leaves an external poll (a `Notice`) able to stack when
-    // a turn outlives two intervals — harmless, since a poll shows no chat
-    // row and a duplicate "nothing to report" answer is swallowed anyway.
+    // ponytail: that leaves an external poll able to stack when a turn
+    // outlives two intervals — harmless, since the panel folds its rows into
+    // one faint line and a duplicate "nothing to report" answer is swallowed
+    // anyway.
     if item.kind == PendingKind::Nudge
         && state
             .pending
@@ -1934,7 +1940,7 @@ fn record_before_write(store: &AssistantStore, item: &mut PendingInput) {
 fn record_delivered(store: &AssistantStore, events: &EventBus, item: &PendingInput) {
     match item.kind {
         PendingKind::User => {}
-        PendingKind::Nudge => {
+        PendingKind::Nudge | PendingKind::Poll => {
             let event = AssistantEvent::Notice {
                 text: item.text.clone(),
             };
@@ -2508,6 +2514,45 @@ mod tests {
 
         assert!(store.transcript().is_empty());
         assert!(!item.recorded);
+    }
+
+    #[test]
+    fn a_delivered_poll_leaves_a_nudge_row_but_a_proposal_outcome_leaves_none() {
+        // The sweep's row is what lets the panel fold its actions into one
+        // faint "Podium check" line; a proposal outcome stays silent.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = store_in(dir.path());
+        let events = EventBus::new();
+        let mut rx = events.subscribe();
+        let item = |kind| PendingInput {
+            id: PendingId::new(),
+            kind,
+            text: "[Podium] check Slack".to_string(),
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+        };
+
+        record_delivered(&store, &events, &item(PendingKind::Notice));
+        assert!(store.transcript().is_empty());
+        assert!(rx.try_recv().is_err());
+
+        record_delivered(&store, &events, &item(PendingKind::Poll));
+        let rows: Vec<_> = store
+            .transcript()
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(TranscriptRole::Nudge, "[Podium] check Slack".to_string())]
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Notice { .. }
+            })
+        ));
     }
 
     #[test]

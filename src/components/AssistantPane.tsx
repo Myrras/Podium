@@ -291,25 +291,35 @@ export function AssistantPane() {
 
   // Follow the tail as turns stream in (waiting rows count too — they live
   // at the bottom of the same scroll container) — but only from the bottom: a
-  // user who scrolled up to read gets a pill instead of being yanked down, and
-  // only when rows were actually appended (not on busy/queue changes). Sending
-  // jumps because submit() sets the ref first.
+  // user who scrolled up to read gets a pill instead of being yanked down —
+  // only when a row worth reading was appended (prose, a notice, a proposal;
+  // more actions or nudges folding into runs do not warrant it) and never on
+  // busy/queue changes. A shrinking transcript (new conversation) clears it.
+  // Sending jumps because submit() scrolls down first.
   const prevCount = useRef(messages.length);
   useEffect(() => {
-    const grew = messages.length > prevCount.current;
+    const prev = prevCount.current;
     prevCount.current = messages.length;
+    const news = messages.slice(prev).some((m) => !isActivity(m));
     if (atBottomRef.current) scrollToBottom();
-    else if (grew) setNewActivity(true);
+    else if (messages.length < prev) setNewActivity(false);
+    else if (news) setNewActivity(true);
   }, [messages, busy, pending]);
 
-  // Also called when content grows without a scroll event (opening a folded
-  // run), so the ref reflects where the user really is.
   function syncAtBottom() {
     const el = logRef.current;
     if (!el) return;
     atBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_PX;
     if (atBottomRef.current) setNewActivity(false);
+  }
+
+  // Opening or closing a folded run changes the content height without a
+  // scroll event. A reader pinned to the bottom stays there; anyone else is
+  // left where they are (re-measuring here would drop the follow whenever the
+  // expanded list grows below the viewport).
+  function onRunToggle() {
+    if (atBottomRef.current) scrollToBottom();
   }
 
   // Grow the composer with the draft, up to the CSS max-height cap (where it
@@ -382,7 +392,9 @@ export function AssistantPane() {
     // lands in the log as a notice), so re-typing it would be noise.
     setDraft("");
     setHistoryIndex(null);
-    atBottomRef.current = true;
+    // Directly, not just the ref: a momentum scroll event could reset the ref
+    // before the new row arrives.
+    scrollToBottom();
     const toSend = attachments;
     setAttachments([]);
     // Files the user picked come first: with both past the backend's
@@ -499,7 +511,7 @@ export function AssistantPane() {
               aria-label="Start my day"
               title="Get a summary of what's open across your projects"
               onClick={() => {
-                atBottomRef.current = true;
+                scrollToBottom();
                 void dayStart();
               }}
             >
@@ -509,7 +521,7 @@ export function AssistantPane() {
         )}
         {groups.map((g) =>
           Array.isArray(g) ? (
-            <ActivityRun key={g[0].id} rows={g} onToggle={syncAtBottom} />
+            <ActivityRun key={g[0].id} rows={g} onToggle={onRunToggle} />
           ) : (
             <div key={g.id} className={styles.message} data-role={g.role}>
               {g.role === "assistant" ? (
@@ -788,7 +800,10 @@ function ProposalCard({ proposal }: { proposal: ChatProposal }) {
   );
 }
 
-/** Consecutive activity rows become one array; everything else stays a row. */
+/**
+ * Consecutive activity rows become one array; everything else stays a row.
+ * A nudge starts a new run unless the current one already holds one.
+ */
 function groupActivity(
   messages: ChatMessage[],
 ): (ChatMessage | ChatMessage[])[] {
@@ -796,7 +811,14 @@ function groupActivity(
   for (const m of messages) {
     const prev = out[out.length - 1];
     if (!isActivity(m)) out.push(m);
-    else if (Array.isArray(prev)) prev.push(m);
+    // A nudge opens its own run unless the current one already holds a nudge:
+    // consecutive Podium checks merge, but a user turn's actions are never
+    // absorbed into (and relabelled as) Podium's.
+    else if (
+      Array.isArray(prev) &&
+      (m.role !== "nudge" || prev.some((r) => r.role === "nudge"))
+    )
+      prev.push(m);
     else out.push([m]);
   }
   return out;
@@ -880,7 +902,11 @@ function ActivityRun({
             </li>
           ))}
           {fails.map((m) => (
-            <li key={m.id} className={styles.activityFailed} title={m.text}>
+            <li
+              key={m.id}
+              className={styles.activityFailed}
+              title={textPreview(m.text, 2000)}
+            >
               ⚠ action failed: {textPreview(m.text)}
             </li>
           ))}

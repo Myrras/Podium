@@ -342,6 +342,23 @@ describe("AssistantPane", () => {
       expect(summary.closest("details")).toHaveAttribute("data-podium", "true");
     });
 
+    it("keeps a user turn's actions out of a following nudge's run", () => {
+      render(<AssistantPane />);
+      // An interrupted turn: actions, no prose, then Podium speaks.
+      apply({ type: "tool", name: "Agent" });
+      apply({ type: "notice", text: "[Podium] sweep" });
+      apply({ type: "tool", name: "mcp__claude_ai_Slack__slack_read_channel" });
+      apply({ type: "notice", text: "[Podium] sweep again" });
+      const runs = document.querySelectorAll("details");
+      // The plain run stays plain; the nudge, its action and the next nudge
+      // share one faint run.
+      expect(runs).toHaveLength(2);
+      expect(runs[0]).not.toHaveAttribute("data-podium");
+      expect(screen.getByText("Ran 1 action · Agent")).toBeInTheDocument();
+      expect(runs[1]).toHaveAttribute("data-podium", "true");
+      expect(runs[1]).toHaveTextContent("Podium check · Ran 1 action · Slack");
+    });
+
     it("leaves a plain run unmarked", () => {
       render(<AssistantPane />);
       apply({ type: "tool", name: "Agent" });
@@ -380,6 +397,12 @@ describe("AssistantPane", () => {
       apply({ type: "toolFailed", message: "boom" });
       apply({ type: "toolFailed", message: "bang" });
       expect(screen.getByText("⚠ 2 failed")).toBeInTheDocument();
+    });
+
+    it("flattens a multi-line failure in its tooltip", () => {
+      render(<AssistantPane />);
+      apply({ type: "toolFailed", message: "line one\n\nline two" });
+      expect(screen.getByTitle("line one line two")).toBeInTheDocument();
     });
 
     it("clips a huge failure to a one-line preview, full text in the title", () => {
@@ -483,26 +506,82 @@ describe("AssistantPane", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("re-measures when a folded run is opened without a scroll event", () => {
+    it("keeps a pinned reader at the bottom when a folded run opens", () => {
       render(<AssistantPane />);
       act(() =>
         useAssistantStore.getState().apply({ type: "tool", name: "Agent" }),
       );
       const log = logOf();
-      // At the bottom, then the run opens and the content grows.
-      stubLog(log, 700);
+      const top = stubLog(log, 700);
       fireEvent.scroll(log);
-      stubLog(log, 100);
+      // The list grows below the viewport: no scroll event, just a toggle.
       fireEvent(
         document.querySelector("details") as HTMLDetailsElement,
         new Event("toggle"),
       );
+      expect(top()).toBe(1000);
+      // Still following: the next reply is not announced by a pill.
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("leaves a reader who scrolled up alone when a run opens", () => {
+      render(<AssistantPane />);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "tool", name: "Agent" }),
+      );
+      const log = logOf();
+      const top = stubLog(log, 100);
+      fireEvent.scroll(log);
+      fireEvent(
+        document.querySelector("details") as HTMLDetailsElement,
+        new Event("toggle"),
+      );
+      expect(top()).toBe(100);
+    });
+
+    it("offers no pill for new actions or nudges alone", () => {
+      render(<AssistantPane />);
+      stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      act(() => {
+        const { apply } = useAssistantStore.getState();
+        apply({ type: "tool", name: "Agent" });
+        apply({ type: "toolFailed", message: "boom" });
+        apply({ type: "notice", text: "[Podium] sweep" });
+      });
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("clears the pill when the transcript is emptied", () => {
+      render(<AssistantPane />);
+      stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
       act(() =>
         useAssistantStore.getState().apply({ type: "message", text: "more" }),
       );
       expect(
         screen.getByRole("button", { name: "New activity ↓" }),
       ).toBeInTheDocument();
+      act(() => useAssistantStore.setState({ messages: [] }));
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("'Start my day' jumps to the bottom directly", async () => {
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const top = stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      await user.click(screen.getByLabelText("Start my day"));
+      expect(top()).toBe(1000);
     });
 
     it("sending a message always jumps to the bottom", async () => {

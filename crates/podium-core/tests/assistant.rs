@@ -1191,8 +1191,8 @@ async fn a_message_sent_during_podiums_own_turn_reports_itself_as_queued() {
     let (orch, _dir) = setup(ECHOING_CLAUDE);
     let mut rx = orch.subscribe_events();
 
-    // The external-sources sweep: Podium's own turn, and one the panel never
-    // sees — it publishes no chat row and no busy signal of any kind.
+    // The external-sources sweep: Podium's own turn. It publishes no busy
+    // signal the panel could read, only its (folded) chat row once delivered.
     orch.assistant_poll("[Podium] check Slack".to_string())
         .await;
 
@@ -1214,6 +1214,13 @@ async fn a_message_sent_during_podiums_own_turn_reports_itself_as_queued() {
         sweep
             .iter()
             .any(|e| matches!(e, AssistantEvent::Message { text } if text.contains("check Slack"))),
+        "{sweep:?}"
+    );
+    // Its row, so the panel can fold the sweep's actions as Podium's own.
+    assert!(
+        sweep
+            .iter()
+            .any(|e| matches!(e, AssistantEvent::Notice { text } if text.contains("check Slack"))),
         "{sweep:?}"
     );
 
