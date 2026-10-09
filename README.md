@@ -203,7 +203,8 @@ whether agents are done, no recap of what they did.
   answer), and on a 6-hourly sweep for to-dos open longer than a week.
 - **External sweep** — every 10 minutes by default, it checks the sources you
   enabled (Slack, Teams — through your *own* MCP servers) and stays silent
-  when there is nothing to report.
+  when there is nothing to report. Its actions show as one faint "Podium
+  check" line in the log.
 - **Responses** — when an agent reports back, the assistant also files the
   essential point as a *Needs you* or *FYI* item in a collapsible list pinned
   above the chat (agent, project, to-do, age); the details stay in its chat
@@ -226,6 +227,11 @@ whether agents are done, no recap of what they did.
   another way (`git -C … push`, an alias) falls back to the normal prompt.
   Passing your own `--settings` in an agent's args turns this off for that
   agent.
+- **Folded activity** — a run of actions is one collapsed line ("Ran 12
+  actions · Slack, Podium, Notion, +2 ⚠ 1"); open it for each action with a count.
+  Failures show as a ⚠ count, each with a clipped error inside (full text on hover), and Podium's own
+  nudges get a fainter line. The log keeps your scroll position while it
+  streams; a "New activity ↓" button (shown only when a new reply or notice arrives) jumps back to the bottom.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 
