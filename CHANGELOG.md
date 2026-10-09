@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-10-09
+
 ### Changed
 
 - **The assistant panel is quieter.** A run of actions shows as one collapsed
