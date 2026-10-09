@@ -44,6 +44,7 @@ import type {
   ResponseItem,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "./layoutStore";
 
 /**
@@ -60,6 +61,13 @@ export type ChatRole =
   | "assistant"
   | "tool"
   | "notice"
+  /**
+   * An action that came back as an error; `text` is the raw error. The panel
+   * folds it into the run of action rows around it. Persisted under
+   * `TranscriptRole::ToolFailed` (rows from before that existed replay as
+   * plain notices).
+   */
+  | "toolFailed"
   | "proposal"
   /**
    * Podium spoke to the *assistant*, not the user — an internal nudge (an
@@ -344,8 +352,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // message gets a chat bubble, because a queued one already shows as a
       // waiting row via `queueChanged`. `busy` is not usable as a stand-in
       // here: a turn Podium started for itself (the external-sources poll, a
-      // nudge) publishes nothing the panel can see, so the panel reads as
-      // idle while the session is busy — and the bubble it added on that
+      // nudge) leaves a nudge row but publishes nothing that sets `busy` or
+      // marks the turn as the user's, so the panel reads as idle while the
+      // session is busy — and the bubble it added on that
       // guess put the same message on screen twice, once as sent and once as
       // waiting.
       if (await assistantSend(trimmed, attachments)) {
@@ -548,10 +557,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           };
         case "toolFailed":
           return {
-            messages: [
-              ...s.messages,
-              message("notice", `That action failed: ${event.message}`),
-            ],
+            messages: [...s.messages, message("toolFailed", event.message)],
           };
         case "proposal":
           // The assistant is waiting on the user, exactly like a stalled
@@ -606,7 +612,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             messages: event.error
               ? [
                   ...s.messages,
-                  message("notice", `The turn failed: ${event.error}`),
+                  message(
+                    "notice",
+                    `The turn failed: ${textPreview(event.error, 300)}`,
+                  ),
                 ]
               : s.messages,
           };
