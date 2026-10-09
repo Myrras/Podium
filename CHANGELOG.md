@@ -14,7 +14,7 @@ when it merges.
 
 - **The assistant panel is quieter.** A run of actions shows as one collapsed
   line (open it for the details), failed actions as a ⚠ count with the error
-  on hover, and Podium's own nudges fainter. Slack and Microsoft 365 actions
+  inside (full text on hover), and Podium's own nudges fainter. Slack and Microsoft 365 actions
   read as `Slack · slack read channel`. The panel no longer jumps to the
   bottom while you read back; a "New activity ↓" button appears instead.
 

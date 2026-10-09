@@ -174,7 +174,7 @@ describe("AssistantPane", () => {
     expect(screen.getByText("Podium · list processes")).toBeInTheDocument();
     expect(screen.getByText("Ran 1 action · Podium ⚠ 1")).toBeInTheDocument();
     expect(screen.getByTitle("to-do not found")).toHaveTextContent(
-      "⚠ action failed",
+      "⚠ action failed: to-do not found",
     );
     expect(
       screen.getByText("The turn failed: error_max_turns"),
@@ -361,7 +361,7 @@ describe("AssistantPane", () => {
       ).toBeInTheDocument();
     });
 
-    it("shows a usage limit verbatim instead of 'The turn failed'", () => {
+    it("shows a failed turn's reason after 'The turn failed:'", () => {
       render(<AssistantPane />);
       apply({
         type: "turnEnd",
@@ -369,9 +369,26 @@ describe("AssistantPane", () => {
         notify: false,
       });
       expect(
-        screen.getByText("Usage limit reached: resumes at 15:00"),
+        screen.getByText(
+          "The turn failed: Usage limit reached: resumes at 15:00",
+        ),
       ).toBeInTheDocument();
-      expect(screen.queryByText(/The turn failed/)).not.toBeInTheDocument();
+    });
+
+    it("summarises a run of only failures as '⚠ n failed'", () => {
+      render(<AssistantPane />);
+      apply({ type: "toolFailed", message: "boom" });
+      apply({ type: "toolFailed", message: "bang" });
+      expect(screen.getByText("⚠ 2 failed")).toBeInTheDocument();
+    });
+
+    it("clips a huge failure to a one-line preview, full text in the title", () => {
+      render(<AssistantPane />);
+      const long = `${"word ".repeat(100)}end`;
+      apply({ type: "toolFailed", message: long });
+      const item = screen.getByTitle(long);
+      expect(item.textContent?.endsWith("…")).toBe(true);
+      expect(item.textContent!.length).toBeLessThan(120);
     });
   });
 
@@ -454,6 +471,38 @@ describe("AssistantPane", () => {
         useAssistantStore.getState().apply({ type: "message", text: "more" }),
       );
       expect(top()).toBe(1000);
+    });
+
+    it("shows no pill when only the busy flag changes", () => {
+      render(<AssistantPane />);
+      stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      act(() => useAssistantStore.setState({ busy: true }));
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("re-measures when a folded run is opened without a scroll event", () => {
+      render(<AssistantPane />);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "tool", name: "Agent" }),
+      );
+      const log = logOf();
+      // At the bottom, then the run opens and the content grows.
+      stubLog(log, 700);
+      fireEvent.scroll(log);
+      stubLog(log, 100);
+      fireEvent(
+        document.querySelector("details") as HTMLDetailsElement,
+        new Event("toggle"),
+      );
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      expect(
+        screen.getByRole("button", { name: "New activity ↓" }),
+      ).toBeInTheDocument();
     });
 
     it("sending a message always jumps to the bottom", async () => {

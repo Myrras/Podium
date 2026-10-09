@@ -227,10 +227,10 @@ whether agents are done, no recap of what they did.
   Passing your own `--settings` in an agent's args turns this off for that
   agent.
 - **Folded activity** — a run of actions is one collapsed line ("Ran 12
-  actions · Slack, Podium, +1 ⚠ 1"); open it for each action with a count.
-  Failures show only as a ⚠ count, with the error on hover, and Podium's own
+  actions · Slack, Podium, Notion, +2 ⚠ 1"); open it for each action with a count.
+  Failures show as a ⚠ count, each with a clipped error inside (full text on hover), and Podium's own
   nudges get a fainter line. The log keeps your scroll position while it
-  streams; a "New activity ↓" button jumps back to the bottom.
+  streams; a "New activity ↓" button (shown only when new rows arrive) jumps back to the bottom.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
 

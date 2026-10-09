@@ -204,15 +204,6 @@ interface AssistantState {
 
 let seq = 0;
 
-/**
- * A usage limit comes through as the turn's error and already reads as a
- * sentence ("Usage limit reached: resumes at 15:00"); prefixing "The turn
- * failed:" to it would only say the same thing twice.
- */
-function turnFailedText(error: string): string {
-  return /limit/i.test(error) ? error : `The turn failed: ${error}`;
-}
-
 function message(
   role: ChatRole,
   text: string,
@@ -617,7 +608,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             activity: null,
             turnReplyText: null,
             messages: event.error
-              ? [...s.messages, message("notice", turnFailedText(event.error))]
+              ? [
+                  ...s.messages,
+                  message("notice", `The turn failed: ${event.error}`),
+                ]
               : s.messages,
           };
         case "exited":

@@ -328,15 +328,6 @@
   overflow-wrap: anywhere;
 }
 
-/* Podium nudging the assistant, not the user: a quiet aside, not a message —
-   no background, small and muted, unlike `[data-role="notice"]` above. */
-.message[data-role="nudge"] {
-  padding: 0 var(--sp-2);
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-  font-style: italic;
-}
-
 /* A message waiting for the current turn to end: dashed border reads as
    "not sent yet", distinct from the solid user bubble above it. */
 .pending {

@@ -12,7 +12,7 @@
  * arrive as notice rows, so an unprompted reply always has a visible reason.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import type { Attachment, AutonomyMode, QueuedMessage } from "../ipc/types";
@@ -233,6 +233,8 @@ function isCaretOnLastLine(el: HTMLTextAreaElement): boolean {
 
 export function AssistantPane() {
   const messages = useAssistantStore((s) => s.messages);
+  // Regrouped only when the transcript changes, not on composer keystrokes.
+  const groups = useMemo(() => groupActivity(messages), [messages]);
   const busy = useAssistantStore((s) => s.busy);
   const activity = useAssistantStore((s) => s.activity);
   const send = useAssistantStore((s) => s.send);
@@ -289,17 +291,22 @@ export function AssistantPane() {
 
   // Follow the tail as turns stream in (waiting rows count too — they live
   // at the bottom of the same scroll container) — but only from the bottom: a
-  // user who scrolled up to read gets a pill instead of being yanked down. Their
-  // own message always jumps.
-  const last = messages[messages.length - 1];
-  const own = last?.role === "user" || last?.role === "reply";
+  // user who scrolled up to read gets a pill instead of being yanked down, and
+  // only when rows were actually appended (not on busy/queue changes). Sending
+  // jumps because submit() sets the ref first.
+  const prevCount = useRef(messages.length);
   useEffect(() => {
-    if (atBottomRef.current || own) scrollToBottom();
-    else setNewActivity(true);
-  }, [messages, busy, pending, own]);
+    const grew = messages.length > prevCount.current;
+    prevCount.current = messages.length;
+    if (atBottomRef.current) scrollToBottom();
+    else if (grew) setNewActivity(true);
+  }, [messages, busy, pending]);
 
-  function onLogScroll(e: React.UIEvent<HTMLDivElement>) {
-    const el = e.currentTarget;
+  // Also called when content grows without a scroll event (opening a folded
+  // run), so the ref reflects where the user really is.
+  function syncAtBottom() {
+    const el = logRef.current;
+    if (!el) return;
     atBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_PX;
     if (atBottomRef.current) setNewActivity(false);
@@ -479,7 +486,7 @@ export function AssistantPane() {
 
       <ResponsesSection />
 
-      <div className={styles.log} ref={logRef} onScroll={onLogScroll}>
+      <div className={styles.log} ref={logRef} onScroll={syncAtBottom}>
         {messages.length === 0 && pending.length === 0 && (
           <div className={styles.emptyState}>
             <p className={styles.empty}>
@@ -500,9 +507,9 @@ export function AssistantPane() {
             </button>
           </div>
         )}
-        {groupActivity(messages).map((g) =>
+        {groups.map((g) =>
           Array.isArray(g) ? (
-            <ActivityRun key={g[0].id} rows={g} />
+            <ActivityRun key={g[0].id} rows={g} onToggle={syncAtBottom} />
           ) : (
             <div key={g.id} className={styles.message} data-role={g.role}>
               {g.role === "assistant" ? (
@@ -799,11 +806,17 @@ function groupActivity(
  * A run of actions (and the failures and nudges among them) as one collapsed
  * line: the log stays readable when a turn fires dozens of tool calls. The
  * summary names the first few servers; opening it lists each distinct action
- * once with a count. A failure's error text is only a hover, since it is
- * usually something the assistant already dealt with. A run holding a nudge
+ * once with a count. A failure's error shows clipped, with the full text on hover,
+ * since it is usually something the assistant already dealt with. A run holding a nudge
  * is Podium's own check, so it reads fainter than the assistant's actions.
  */
-function ActivityRun({ rows }: { rows: ChatMessage[] }) {
+function ActivityRun({
+  rows,
+  onToggle,
+}: {
+  rows: ChatMessage[];
+  onToggle: () => void;
+}) {
   const tools = rows.filter((m) => m.role === "tool");
   const fails = rows.filter((m) => m.role === "toolFailed");
   const nudges = rows.filter((m) => m.role === "nudge");
@@ -837,7 +850,9 @@ function ActivityRun({ rows }: { rows: ChatMessage[] }) {
       tools.length > 0
         ? `Ran ${tools.length} action${tools.length > 1 ? "s" : ""} · ${shown}${more > 0 ? `, +${more}` : ""}`
         : "",
-      fails.length > 0 ? `${tools.length > 0 ? " " : ""}⚠ ${fails.length}` : "",
+      fails.length > 0
+        ? `${tools.length > 0 ? " ⚠ " : "⚠ "}${fails.length}${tools.length > 0 ? "" : " failed"}`
+        : "",
     ].join("");
   }
 
@@ -845,6 +860,7 @@ function ActivityRun({ rows }: { rows: ChatMessage[] }) {
     <details
       className={styles.activity}
       data-podium={nudges.length > 0 ? "true" : undefined}
+      onToggle={onToggle}
     >
       <summary
         title={
@@ -865,7 +881,7 @@ function ActivityRun({ rows }: { rows: ChatMessage[] }) {
           ))}
           {fails.map((m) => (
             <li key={m.id} className={styles.activityFailed} title={m.text}>
-              ⚠ action failed
+              ⚠ action failed: {textPreview(m.text)}
             </li>
           ))}
           {nudges.map((m) => (

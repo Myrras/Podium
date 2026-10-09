@@ -2070,7 +2070,7 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
                     .and_then(|r| r.as_str())
                     .map(str::trim)
                     .filter(|r| !r.is_empty())
-                    .map(|r| usage_limit_text(r, &Local))
+                    .map(|r| usage_limit_text(r, &Local, Utc::now()))
                     .unwrap_or_else(|| {
                         value
                             .get("subtype")
@@ -2090,22 +2090,29 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
     }
 }
 
-/// Older CLIs report a usage limit as `<text>|<unix seconds>`; turn that into
-/// a readable reset time in `tz`. Anything else is already prose (newer CLIs
-/// say "You've hit your limit · resets 3pm") and is kept verbatim.
-fn usage_limit_text<Tz: TimeZone>(result: &str, tz: &Tz) -> String
+/// Older CLIs report a usage limit as `<text mentioning "limit">|<unix
+/// seconds>`; turn that into a readable reset time in `tz` (with the weekday
+/// when it is not today). Anything else — another error that happens to hold a
+/// `|`, a milliseconds stamp — is kept verbatim.
+fn usage_limit_text<Tz: TimeZone>(result: &str, tz: &Tz, now: DateTime<Utc>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
     result
         .split_once('|')
+        .filter(|(text, _)| text.to_lowercase().contains("limit"))
         .and_then(|(_, secs)| secs.trim().parse::<i64>().ok())
+        // Plausible epoch seconds only (2001..5138); a ms value falls through.
+        .filter(|secs| (1_000_000_000..100_000_000_000).contains(secs))
         .and_then(|secs| DateTime::from_timestamp(secs, 0))
         .map(|at| {
-            format!(
-                "Usage limit reached: resumes at {}",
-                at.with_timezone(tz).format("%H:%M")
-            )
+            let at = at.with_timezone(tz);
+            let fmt = if at.date_naive() == now.with_timezone(tz).date_naive() {
+                "%H:%M"
+            } else {
+                "%a %H:%M"
+            };
+            format!("Usage limit reached: resumes at {}", at.format(fmt))
         })
         .unwrap_or_else(|| result.to_string())
 }
@@ -2938,14 +2945,32 @@ mod tests {
     fn the_old_usage_limit_form_becomes_a_reset_time() {
         let tz = chrono::FixedOffset::east_opt(2 * 3600).expect("offset");
         // 1760000000 = 2025-10-09 08:53:20 UTC -> 10:53 at +02:00.
+        let same_day = DateTime::from_timestamp(1_759_990_000, 0).expect("ts");
         assert_eq!(
-            usage_limit_text("Claude AI usage limit reached|1760000000", &tz),
+            usage_limit_text("Claude AI usage limit reached|1760000000", &tz, same_day),
             "Usage limit reached: resumes at 10:53"
         );
+        // Not today: the weekday (2025-10-09 is a Thursday) disambiguates.
+        let next_day = DateTime::from_timestamp(1_759_900_000, 0).expect("ts");
         assert_eq!(
-            usage_limit_text("Something else | later", &tz),
-            "Something else | later"
+            usage_limit_text("Claude AI usage limit reached|1760000000", &tz, next_day),
+            "Usage limit reached: resumes at Thu 10:53"
         );
+    }
+
+    #[test]
+    fn other_errors_and_non_second_stamps_stay_verbatim() {
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).expect("offset");
+        let now = DateTime::from_timestamp(1_759_990_000, 0).expect("ts");
+        for text in [
+            "Something else | later",
+            "Error|404",
+            "Tool execution failed|2",
+            // Milliseconds: not a plausible epoch in seconds.
+            "Claude AI usage limit reached|1760000000000",
+        ] {
+            assert_eq!(usage_limit_text(text, &tz, now), text);
+        }
     }
 
     #[test]
