@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -653,8 +653,12 @@ pub enum TranscriptRole {
     Assistant,
     /// An action the assistant ran (the tool name).
     Tool,
-    /// Something Podium reports, e.g. an action that failed.
+    /// Something Podium reports, e.g. a dropped queue message. Rows from
+    /// before `ToolFailed` existed also hold failed actions.
     Notice,
+    /// An action that came back as an error (the error text). Its own role so
+    /// the panel can fold it in with the action rows around it.
+    ToolFailed,
     /// A proactivity nudge Podium sent the assistant (an internal
     /// instruction, not a user-facing notice). Kept distinct from `Notice`
     /// so a replayed row renders the same muted way a live nudge does.
@@ -806,7 +810,7 @@ impl AssistantStore {
             }
             AssistantEvent::Tool { name } => self.append(TranscriptRole::Tool, name.clone()),
             AssistantEvent::ToolFailed { message } => {
-                self.append(TranscriptRole::Notice, message.clone())
+                self.append(TranscriptRole::ToolFailed, message.clone())
             }
             AssistantEvent::Notice { text } => self.append(TranscriptRole::Nudge, text.clone()),
             AssistantEvent::QueueNotice { text } => {
@@ -2024,6 +2028,16 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
         return Vec::new();
     };
+    // A subagent's own tool calls and results arrive on this stream too,
+    // tagged with the id of the call that spawned it. They are not the
+    // assistant's actions, so they stay out of the chat (the parent's `Agent`
+    // row already stands for them).
+    if value
+        .get("parent_tool_use_id")
+        .is_some_and(|p| p.is_string())
+    {
+        return Vec::new();
+    }
     match value.get("type").and_then(|t| t.as_str()) {
         Some("system") if value.get("subtype").and_then(|s| s.as_str()) == Some("init") => value
             .get("session_id")
@@ -2048,12 +2062,22 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
             .unwrap_or_default(),
         Some("result") => {
             let failed = value.get("is_error").and_then(|e| e.as_bool()) == Some(true);
+            // A usage limit arrives as `is_error` with subtype `success`, the
+            // reason being in `result`; the subtype alone reads "success".
             let error = failed.then(|| {
                 value
-                    .get("subtype")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("the assistant turn failed")
-                    .to_string()
+                    .get("result")
+                    .and_then(|r| r.as_str())
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .map(|r| usage_limit_text(r, &Local))
+                    .unwrap_or_else(|| {
+                        value
+                            .get("subtype")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("the assistant turn failed")
+                            .to_string()
+                    })
             });
             // `notify` is not in the stream — the stdout task fills it in
             // once it knows who started the turn.
@@ -2064,6 +2088,26 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Older CLIs report a usage limit as `<text>|<unix seconds>`; turn that into
+/// a readable reset time in `tz`. Anything else is already prose (newer CLIs
+/// say "You've hit your limit · resets 3pm") and is kept verbatim.
+fn usage_limit_text<Tz: TimeZone>(result: &str, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    result
+        .split_once('|')
+        .and_then(|(_, secs)| secs.trim().parse::<i64>().ok())
+        .and_then(|secs| DateTime::from_timestamp(secs, 0))
+        .map(|at| {
+            format!(
+                "Usage limit reached: resumes at {}",
+                at.with_timezone(tz).format("%H:%M")
+            )
+        })
+        .unwrap_or_else(|| result.to_string())
 }
 
 fn content_block_event(block: &serde_json::Value) -> Option<AssistantEvent> {
@@ -2496,7 +2540,7 @@ mod tests {
                 (TranscriptRole::User, "what is open?".to_string()),
                 (TranscriptRole::Assistant, "two to-dos".to_string()),
                 (TranscriptRole::Tool, "list_todos".to_string()),
-                (TranscriptRole::Notice, "project not found".to_string()),
+                (TranscriptRole::ToolFailed, "project not found".to_string()),
             ]
         );
     }
@@ -2841,6 +2885,70 @@ mod tests {
     }
 
     #[test]
+    fn a_subagents_own_calls_stay_out_of_the_chat() {
+        assert!(parse_stream_line(
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[
+                {"type":"tool_use","name":"Bash"}]}}"#
+        )
+        .is_empty());
+        assert!(parse_stream_line(
+            r#"{"type":"user","parent_tool_use_id":"toolu_1","message":{"content":[
+                {"type":"tool_result","is_error":true,"content":"nope"}]}}"#
+        )
+        .is_empty());
+        for parent in [r#""parent_tool_use_id":null,"#, ""] {
+            let line = format!(
+                r#"{{"type":"assistant",{parent}"message":{{"content":[
+                    {{"type":"tool_use","name":"Agent"}}]}}}}"#
+            );
+            assert_eq!(
+                parse_stream_line(&line),
+                vec![AssistantEvent::Tool {
+                    name: "Agent".to_string()
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn a_usage_limit_turn_ends_with_the_reason_not_the_subtype() {
+        let end = |line: &str| match parse_stream_line(line).as_slice() {
+            [AssistantEvent::TurnEnd { error, .. }] => error.clone(),
+            other => panic!("unexpected {other:?}"),
+        };
+        // Newer CLIs: prose, kept verbatim.
+        assert_eq!(
+            end(
+                r#"{"type":"result","is_error":true,"subtype":"success","result":" You've hit your limit · resets 3pm "}"#
+            ),
+            Some("You've hit your limit · resets 3pm".to_string())
+        );
+        // No reason given: the subtype fallback.
+        assert_eq!(
+            end(r#"{"type":"result","is_error":true,"subtype":"error_max_turns"}"#),
+            Some("error_max_turns".to_string())
+        );
+        assert_eq!(
+            end(r#"{"type":"result","is_error":false,"subtype":"success","result":"ok"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn the_old_usage_limit_form_becomes_a_reset_time() {
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).expect("offset");
+        // 1760000000 = 2025-10-09 08:53:20 UTC -> 10:53 at +02:00.
+        assert_eq!(
+            usage_limit_text("Claude AI usage limit reached|1760000000", &tz),
+            "Usage limit reached: resumes at 10:53"
+        );
+        assert_eq!(
+            usage_limit_text("Something else | later", &tz),
+            "Something else | later"
+        );
+    }
+
+    #[test]
     fn full_autonomy_never_proposes() {
         for tool in ["list_todos", "add_todo", "stop_process", "remove_worktree"] {
             assert!(!requires_proposal(AutonomyMode::Full, tool), "{tool}");
@@ -3054,9 +3162,9 @@ mod tests {
                     TranscriptRole::Nudge,
                     "[Podium] The agent \"fix-login\" finished.".to_string()
                 ),
-                (TranscriptRole::Notice, "project not found".to_string()),
+                (TranscriptRole::ToolFailed, "project not found".to_string()),
             ],
-            "a nudge must replay as muted (Nudge), a real tool failure as a visible Notice"
+            "a nudge must replay as muted (Nudge), a tool failure as ToolFailed"
         );
     }
 

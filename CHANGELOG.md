@@ -10,6 +10,20 @@ when it merges.
 
 ## [Unreleased]
 
+### Changed
+
+- **The assistant panel is quieter.** A run of actions shows as one collapsed
+  line (open it for the details), failed actions as a ⚠ count with the error
+  on hover, and Podium's own nudges fainter. Slack and Microsoft 365 actions
+  read as `Slack · slack read channel`. The panel no longer jumps to the
+  bottom while you read back; a "New activity ↓" button appears instead.
+
+### Fixed
+
+- A usage limit now says so ("Usage limit reached: resumes at 15:00")
+  instead of "The turn failed: success".
+- A subagent's own tool calls no longer show up in the assistant's chat.
+
 ## [3.1.0] - 2026-10-08
 
 ### Added

@@ -21,7 +21,7 @@ import {
   useAssistantContext,
 } from "../lib/assistantContext";
 import { textPreview } from "../lib/textPreview";
-import type { ChatProposal } from "../state/assistantStore";
+import type { ChatMessage, ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { Markdown } from "./Markdown";
@@ -182,9 +182,38 @@ export const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
   "propose-all": "Ask before every action",
 };
 
-/** `set_todo_archived` → `set todo archived`, for the action cards. */
-function actionLabel(tool: string): string {
-  return tool.replace(/^mcp__[^_]+__/, "").replace(/_/g, " ");
+/**
+ * `mcp__claude_ai_Slack__slack_read_channel` → `{ server: "Slack", tool:
+ * "slack read channel" }`. The server name may itself hold `_`, so the split
+ * is on the last `__`. Non-MCP names (`Agent`, `set_todo_archived`) have no
+ * server.
+ */
+function parseAction(name: string): { server?: string; tool: string } {
+  const rest = name.startsWith("mcp__") ? name.slice(5) : null;
+  const at = rest?.lastIndexOf("__") ?? -1;
+  if (rest === null || at < 0) return { tool: name.replace(/_/g, " ") };
+  const server = rest.slice(0, at).replace(/^claude_ai_/, "");
+  return {
+    server: server === "podium" ? "Podium" : server.replace(/_/g, " "),
+    tool: rest.slice(at + 2).replace(/_/g, " "),
+  };
+}
+
+/** `Slack · slack read channel`, or just the tool for a non-MCP action. */
+function actionLabel(name: string): string {
+  const { server, tool } = parseAction(name);
+  return server ? `${server} · ${tool}` : tool;
+}
+
+/** Distinct servers named in a run's summary before it says `+k`. */
+const SUMMARY_SERVERS = 3;
+
+/** How far from the bottom still counts as "at the bottom" when following. */
+const AT_BOTTOM_PX = 40;
+
+/** Rows that fold into one line: actions, their failures, Podium's nudges. */
+function isActivity(m: ChatMessage): boolean {
+  return m.role === "tool" || m.role === "toolFailed" || m.role === "nudge";
 }
 
 /**
@@ -229,6 +258,11 @@ export function AssistantPane() {
   const activeContext = context.filter((c) => !dismissed.includes(c.key));
   const [memoryOpen, setMemoryOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  // Whether the log is scrolled to the bottom, so streaming only drags the
+  // view along when the user is not reading further up. A ref (written by
+  // onScroll) rather than state: nothing renders from it.
+  const atBottomRef = useRef(true);
+  const [newActivity, setNewActivity] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Arrow-up/down history recall: an index into `history` (newest last),
   // `null` while not recalling. `draftBeforeRecall` is what the user had
@@ -246,12 +280,30 @@ export function AssistantPane() {
     void loadResponses();
   }, [loadAutonomy, hydrate, loadResponses]);
 
-  // Follow the tail as turns stream in (waiting rows count too — they live
-  // at the bottom of the same scroll container).
-  useEffect(() => {
+  function scrollToBottom() {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
-  }, [messages, busy, pending]);
+    atBottomRef.current = true;
+    setNewActivity(false);
+  }
+
+  // Follow the tail as turns stream in (waiting rows count too — they live
+  // at the bottom of the same scroll container) — but only from the bottom: a
+  // user who scrolled up to read gets a pill instead of being yanked down. Their
+  // own message always jumps.
+  const last = messages[messages.length - 1];
+  const own = last?.role === "user" || last?.role === "reply";
+  useEffect(() => {
+    if (atBottomRef.current || own) scrollToBottom();
+    else setNewActivity(true);
+  }, [messages, busy, pending, own]);
+
+  function onLogScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    atBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_PX;
+    if (atBottomRef.current) setNewActivity(false);
+  }
 
   // Grow the composer with the draft, up to the CSS max-height cap (where it
   // starts scrolling instead). Re-runs on every keystroke and on submit()
@@ -323,6 +375,7 @@ export function AssistantPane() {
     // lands in the log as a notice), so re-typing it would be noise.
     setDraft("");
     setHistoryIndex(null);
+    atBottomRef.current = true;
     const toSend = attachments;
     setAttachments([]);
     // Files the user picked come first: with both past the backend's
@@ -426,7 +479,7 @@ export function AssistantPane() {
 
       <ResponsesSection />
 
-      <div className={styles.log} ref={logRef}>
+      <div className={styles.log} ref={logRef} onScroll={onLogScroll}>
         {messages.length === 0 && pending.length === 0 && (
           <div className={styles.emptyState}>
             <p className={styles.empty}>
@@ -438,33 +491,32 @@ export function AssistantPane() {
               className={styles.confirmBtn}
               aria-label="Start my day"
               title="Get a summary of what's open across your projects"
-              onClick={() => void dayStart()}
+              onClick={() => {
+                atBottomRef.current = true;
+                void dayStart();
+              }}
             >
               Start my day
             </button>
           </div>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={styles.message} data-role={m.role}>
-            {m.role === "assistant" ? (
-              <Markdown>{m.text}</Markdown>
-            ) : m.role === "tool" ? (
-              actionLabel(m.text)
-            ) : m.proposal ? (
-              <ProposalCard proposal={m.proposal} />
-            ) : m.role === "reply" ? (
-              <ReplyLine text={m.text} />
-            ) : m.role === "nudge" ? (
-              // Podium spoke to the *assistant*, not the user: a discreet
-              // marker, not the internal instruction text (hover for it).
-              <span title={textPreview(m.text)}>
-                Podium nudged the assistant
-              </span>
-            ) : (
-              m.text
-            )}
-          </div>
-        ))}
+        {groupActivity(messages).map((g) =>
+          Array.isArray(g) ? (
+            <ActivityRun key={g[0].id} rows={g} />
+          ) : (
+            <div key={g.id} className={styles.message} data-role={g.role}>
+              {g.role === "assistant" ? (
+                <Markdown>{g.text}</Markdown>
+              ) : g.proposal ? (
+                <ProposalCard proposal={g.proposal} />
+              ) : g.role === "reply" ? (
+                <ReplyLine text={g.text} />
+              ) : (
+                g.text
+              )}
+            </div>
+          ),
+        )}
         {/* Pinned to the bottom of the log: what the turn is doing, and what
             is queued behind it. A message the turn has picked up is gone from
             `pending` by then (the backend's queue snapshot), so nothing
@@ -498,6 +550,16 @@ export function AssistantPane() {
           </div>
         )}
       </div>
+
+      {newActivity && (
+        <button
+          type="button"
+          className={styles.newActivity}
+          onClick={scrollToBottom}
+        >
+          New activity ↓
+        </button>
+      )}
 
       <form
         className={styles.composer}
@@ -716,6 +778,104 @@ function ProposalCard({ proposal }: { proposal: ChatProposal }) {
         </span>
       )}
     </div>
+  );
+}
+
+/** Consecutive activity rows become one array; everything else stays a row. */
+function groupActivity(
+  messages: ChatMessage[],
+): (ChatMessage | ChatMessage[])[] {
+  const out: (ChatMessage | ChatMessage[])[] = [];
+  for (const m of messages) {
+    const prev = out[out.length - 1];
+    if (!isActivity(m)) out.push(m);
+    else if (Array.isArray(prev)) prev.push(m);
+    else out.push([m]);
+  }
+  return out;
+}
+
+/**
+ * A run of actions (and the failures and nudges among them) as one collapsed
+ * line: the log stays readable when a turn fires dozens of tool calls. The
+ * summary names the first few servers; opening it lists each distinct action
+ * once with a count. A failure's error text is only a hover, since it is
+ * usually something the assistant already dealt with. A run holding a nudge
+ * is Podium's own check, so it reads fainter than the assistant's actions.
+ */
+function ActivityRun({ rows }: { rows: ChatMessage[] }) {
+  const tools = rows.filter((m) => m.role === "tool");
+  const fails = rows.filter((m) => m.role === "toolFailed");
+  const nudges = rows.filter((m) => m.role === "nudge");
+
+  const counts = new Map<string, number>();
+  for (const m of tools) {
+    const label = actionLabel(m.text);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  // Server (or bare tool name) of each distinct one, in first-seen order.
+  const groups = [
+    ...new Set(
+      tools.map((m) => {
+        const { server, tool } = parseAction(m.text);
+        return server ?? tool;
+      }),
+    ),
+  ];
+
+  const times = (n: number) => (n > 1 ? ` ×${n}` : "");
+  // Only nudges: nothing to open, the text rides on the summary's hover.
+  const onlyNudges = tools.length === 0 && fails.length === 0;
+  let summary: string;
+  if (onlyNudges) {
+    summary = `Podium nudged the assistant${times(nudges.length)}`;
+  } else {
+    const shown = groups.slice(0, SUMMARY_SERVERS).join(", ");
+    const more = groups.length - SUMMARY_SERVERS;
+    summary = [
+      nudges.length > 0 ? "Podium check · " : "",
+      tools.length > 0
+        ? `Ran ${tools.length} action${tools.length > 1 ? "s" : ""} · ${shown}${more > 0 ? `, +${more}` : ""}`
+        : "",
+      fails.length > 0 ? `${tools.length > 0 ? " " : ""}⚠ ${fails.length}` : "",
+    ].join("");
+  }
+
+  return (
+    <details
+      className={styles.activity}
+      data-podium={nudges.length > 0 ? "true" : undefined}
+    >
+      <summary
+        title={
+          onlyNudges
+            ? nudges.map((m) => textPreview(m.text)).join("\n\n")
+            : undefined
+        }
+      >
+        {summary}
+      </summary>
+      {!onlyNudges && (
+        <ul>
+          {[...counts].map(([label, n]) => (
+            <li key={label}>
+              {label}
+              {times(n)}
+            </li>
+          ))}
+          {fails.map((m) => (
+            <li key={m.id} className={styles.activityFailed} title={m.text}>
+              ⚠ action failed
+            </li>
+          ))}
+          {nudges.map((m) => (
+            <li key={m.id} title={textPreview(m.text)}>
+              Podium nudged the assistant
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
   );
 }
 

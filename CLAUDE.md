@@ -784,7 +784,17 @@ atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event. The gate only sees Podium's own MCP tools,
+  become a `toolFailed` event, stored under its own `TranscriptRole::ToolFailed`
+  (rows from before that replay as `Notice`). Lines carrying a string
+  `parent_tool_use_id` are a subagent's own calls and yield no events — the
+  parent's `Agent` row stands for them. A `result` with `is_error` reports
+  its `result` text, not the `success` subtype: a usage limit reads `Usage
+  limit reached: resumes at HH:MM` (the old `<text>|<epoch>` form, local
+  time) or the CLI's own wording, shown verbatim by the panel. The panel folds
+  each run of consecutive `tool` / `toolFailed` / `nudge` rows into one
+  collapsed `<details>` line (render-only, the transcript is unchanged) and
+  only follows the tail while scrolled to the bottom, else shows a
+  `New activity ↓` button. The gate only sees Podium's own MCP tools,
   so the CLI's own `SendMessage` — the way a push go-ahead is relayed — is
   refused outright under `propose-all` instead: that mode adds it to the
   session's `--disallowedTools`. A CLI flag cannot change in a running

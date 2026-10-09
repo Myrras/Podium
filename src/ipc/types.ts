@@ -589,6 +589,8 @@ export type TranscriptRole =
   | "assistant"
   | "tool"
   | "notice"
+  /** An action that came back as an error; `text` is the error. */
+  | "toolFailed"
   | "nudge"
   /** A reply to a Responses item; `text` is `"<label>\n<reply text>"`. */
   | "reply";

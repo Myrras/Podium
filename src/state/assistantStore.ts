@@ -60,6 +60,13 @@ export type ChatRole =
   | "assistant"
   | "tool"
   | "notice"
+  /**
+   * An action that came back as an error; `text` is the raw error. The panel
+   * folds it into the run of action rows around it. Persisted under
+   * `TranscriptRole::ToolFailed` (rows from before that existed replay as
+   * plain notices).
+   */
+  | "toolFailed"
   | "proposal"
   /**
    * Podium spoke to the *assistant*, not the user — an internal nudge (an
@@ -196,6 +203,15 @@ interface AssistantState {
 }
 
 let seq = 0;
+
+/**
+ * A usage limit comes through as the turn's error and already reads as a
+ * sentence ("Usage limit reached: resumes at 15:00"); prefixing "The turn
+ * failed:" to it would only say the same thing twice.
+ */
+function turnFailedText(error: string): string {
+  return /limit/i.test(error) ? error : `The turn failed: ${error}`;
+}
 
 function message(
   role: ChatRole,
@@ -548,10 +564,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           };
         case "toolFailed":
           return {
-            messages: [
-              ...s.messages,
-              message("notice", `That action failed: ${event.message}`),
-            ],
+            messages: [...s.messages, message("toolFailed", event.message)],
           };
         case "proposal":
           // The assistant is waiting on the user, exactly like a stalled
@@ -604,10 +617,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             activity: null,
             turnReplyText: null,
             messages: event.error
-              ? [
-                  ...s.messages,
-                  message("notice", `The turn failed: ${event.error}`),
-                ]
+              ? [...s.messages, message("notice", turnFailedText(event.error))]
               : s.messages,
           };
         case "exited":
