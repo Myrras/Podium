@@ -184,18 +184,18 @@ export const AUTONOMY_LABELS: Record<AutonomyMode, string> = {
 
 /**
  * `mcp__claude_ai_Slack__slack_read_channel` → `{ server: "Slack", tool:
- * "slack read channel" }`. The server name may itself hold `_`, so the split
- * is on the last `__`. Non-MCP names (`Agent`, `set_todo_archived`) have no
+ * "slack read channel" }`. Server names hold only single `_`, but tool names
+ * may hold `__`, so the split is on the first `__`. Non-MCP names (`Agent`, `set_todo_archived`) have no
  * server.
  */
 function parseAction(name: string): { server?: string; tool: string } {
   const rest = name.startsWith("mcp__") ? name.slice(5) : null;
-  const at = rest?.lastIndexOf("__") ?? -1;
+  const at = rest?.indexOf("__") ?? -1;
   if (rest === null || at < 0) return { tool: name.replace(/_/g, " ") };
   const server = rest.slice(0, at).replace(/^claude_ai_/, "");
   return {
     server: server === "podium" ? "Podium" : server.replace(/_/g, " "),
-    tool: rest.slice(at + 2).replace(/_/g, " "),
+    tool: rest.slice(at + 2).replace(/_+/g, " "),
   };
 }
 
@@ -302,7 +302,8 @@ export function AssistantPane() {
     prevCount.current = messages.length;
     const news = messages.slice(prev).some((m) => !isActivity(m));
     if (atBottomRef.current) scrollToBottom();
-    else if (messages.length < prev) setNewActivity(false);
+    // A new conversation: re-pin too, since no scroll event may follow.
+    else if (messages.length < prev) scrollToBottom();
     else if (news) setNewActivity(true);
   }, [messages, busy, pending]);
 
@@ -317,9 +318,12 @@ export function AssistantPane() {
   // Opening or closing a folded run changes the content height without a
   // scroll event. A reader pinned to the bottom stays there; anyone else is
   // left where they are (re-measuring here would drop the follow whenever the
-  // expanded list grows below the viewport).
-  function onRunToggle() {
-    if (atBottomRef.current) scrollToBottom();
+  // expanded list grows below the viewport). Only the last run can stay
+  // pinned: scrolling down for an earlier one would push the run the user just
+  // opened out of view, so that one just re-measures.
+  function onRunToggle(isLast: boolean) {
+    if (isLast && atBottomRef.current) scrollToBottom();
+    else if (!isLast) syncAtBottom();
   }
 
   // Grow the composer with the draft, up to the CSS max-height cap (where it
@@ -499,7 +503,7 @@ export function AssistantPane() {
       <ResponsesSection />
 
       <div className={styles.log} ref={logRef} onScroll={syncAtBottom}>
-        {messages.length === 0 && pending.length === 0 && (
+        {!messages.some((m) => !isActivity(m)) && pending.length === 0 && (
           <div className={styles.emptyState}>
             <p className={styles.empty}>
               Ask for anything across your projects — to-dos, agents, an
@@ -519,9 +523,13 @@ export function AssistantPane() {
             </button>
           </div>
         )}
-        {groups.map((g) =>
+        {groups.map((g, i) =>
           Array.isArray(g) ? (
-            <ActivityRun key={g[0].id} rows={g} onToggle={onRunToggle} />
+            <ActivityRun
+              key={g[0].id}
+              rows={g}
+              onToggle={() => onRunToggle(i === groups.length - 1)}
+            />
           ) : (
             <div key={g.id} className={styles.message} data-role={g.role}>
               {g.role === "assistant" ? (

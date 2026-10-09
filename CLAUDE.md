@@ -888,8 +888,10 @@ atomically, before the async `podium.yml` load.
   `assistant_send` (and `assistant_day_start`) therefore **return whether the
   message was delivered rather than queued**, and the panel adds its chat
   bubble only on `true`. It cannot work that out on its own: a turn Podium
-  started for itself — the external-sources poll, a nudge — publishes nothing
-  the panel can see, so its `busy` flag reads idle while the session is busy.
+  started for itself — the external-sources poll, a nudge — leaves a `nudge`
+  row (`PendingKind::Poll` / `Nudge`) but publishes nothing that starts or ends
+  the panel's `busy` state or announces the turn as the user's, so `busy` reads
+  idle while the session is busy.
   Guessing from `busy` meant a bubble for a message the backend had in fact
   queued, and `queueChanged` then added a waiting row for the same text: the
   user's message on screen twice, with the poll's unrelated answer landing

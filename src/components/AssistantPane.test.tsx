@@ -392,6 +392,40 @@ describe("AssistantPane", () => {
       ).toBeInTheDocument();
     });
 
+    it("keeps 'Start my day' while the transcript holds only activity rows", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] sweep" });
+      apply({ type: "tool", name: "Agent" });
+      expect(screen.getByLabelText("Start my day")).toBeInTheDocument();
+      apply({ type: "message", text: "hello" });
+      expect(screen.queryByLabelText("Start my day")).toBeNull();
+    });
+
+    it("splits an action name on the first '__' and collapses '_' runs", () => {
+      render(<AssistantPane />);
+      apply({
+        type: "tool",
+        name: "mcp__claude_ai_Notion__pages__search",
+      });
+      expect(screen.getByText("Ran 1 action · Notion")).toBeInTheDocument();
+      expect(
+        screen.getByText("Notion · pages search", { exact: false }),
+      ).toBeInTheDocument();
+    });
+
+    it("caps a long multi-line failure reason", () => {
+      render(<AssistantPane />);
+      apply({
+        type: "turnEnd",
+        error: `{\n  "detail": "${"x ".repeat(400)}"\n}`,
+        notify: false,
+      });
+      const text = screen.getByText(/^The turn failed: /).textContent ?? "";
+      expect(text.length).toBeLessThanOrEqual(330);
+      expect(text).not.toContain("\n");
+      expect(text.endsWith("…")).toBe(true);
+    });
+
     it("summarises a run of only failures as '⚠ n failed'", () => {
       render(<AssistantPane />);
       apply({ type: "toolFailed", message: "boom" });
@@ -542,6 +576,42 @@ describe("AssistantPane", () => {
         new Event("toggle"),
       );
       expect(top()).toBe(100);
+    });
+
+    it("does not scroll down when an earlier run opens", () => {
+      render(<AssistantPane />);
+      act(() => {
+        const { apply } = useAssistantStore.getState();
+        apply({ type: "tool", name: "Agent" });
+        apply({ type: "message", text: "between" });
+        apply({ type: "tool", name: "Agent" });
+      });
+      const log = logOf();
+      const top = stubLog(log, 700);
+      fireEvent.scroll(log);
+      fireEvent(
+        document.querySelectorAll("details")[0] as HTMLDetailsElement,
+        new Event("toggle"),
+      );
+      expect(top()).toBe(700);
+    });
+
+    it("re-pins to the bottom when the transcript shrinks", () => {
+      render(<AssistantPane />);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "hi" }),
+      );
+      const log = logOf();
+      const top = stubLog(log, 100);
+      fireEvent.scroll(log);
+      act(() => useAssistantStore.setState({ messages: [] }));
+      expect(top()).toBe(1000);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "new" }),
+      );
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
     });
 
     it("offers no pill for new actions or nudges alone", () => {

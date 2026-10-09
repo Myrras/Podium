@@ -44,6 +44,7 @@ import type {
   ResponseItem,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
+import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "./layoutStore";
 
 /**
@@ -610,7 +611,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             messages: event.error
               ? [
                   ...s.messages,
-                  message("notice", `The turn failed: ${event.error}`),
+                  message(
+                    "notice",
+                    `The turn failed: ${textPreview(event.error, 300)}`,
+                  ),
                 ]
               : s.messages,
           };
