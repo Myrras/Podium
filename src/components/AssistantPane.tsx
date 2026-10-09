@@ -867,7 +867,6 @@ function ActivityRun({
   ];
 
   const times = (n: number) => (n > 1 ? ` ×${n}` : "");
-  // Only nudges: nothing to open, the text rides on the summary's hover.
   const onlyNudges = tools.length === 0 && fails.length === 0;
   let summary: string;
   if (onlyNudges) {
@@ -886,45 +885,46 @@ function ActivityRun({
     ].join("");
   }
 
+  const nudgeTitle = nudges.map((m) => textPreview(m.text)).join("\n\n");
+
+  // Only nudges: nothing to open, so no disclosure — the text rides on hover.
+  if (onlyNudges) {
+    return (
+      <div className={styles.activity} data-podium="true" title={nudgeTitle}>
+        {summary}
+      </div>
+    );
+  }
+
   return (
     <details
       className={styles.activity}
       data-podium={nudges.length > 0 ? "true" : undefined}
       onToggle={onToggle}
     >
-      <summary
-        title={
-          onlyNudges
-            ? nudges.map((m) => textPreview(m.text)).join("\n\n")
-            : undefined
-        }
-      >
-        {summary}
-      </summary>
-      {!onlyNudges && (
-        <ul>
-          {[...counts].map(([label, n]) => (
-            <li key={label}>
-              {label}
-              {times(n)}
-            </li>
-          ))}
-          {fails.map((m) => (
-            <li
-              key={m.id}
-              className={styles.activityFailed}
-              title={textPreview(m.text, 2000)}
-            >
-              ⚠ action failed: {textPreview(m.text)}
-            </li>
-          ))}
-          {nudges.map((m) => (
-            <li key={m.id} title={textPreview(m.text)}>
-              Podium nudged the assistant
-            </li>
-          ))}
-        </ul>
-      )}
+      <summary>{summary}</summary>
+      <ul>
+        {[...counts].map(([label, n]) => (
+          <li key={label}>
+            {label}
+            {times(n)}
+          </li>
+        ))}
+        {fails.map((m) => (
+          <li
+            key={m.id}
+            className={styles.activityFailed}
+            title={textPreview(m.text, 2000)}
+          >
+            ⚠ action failed: {textPreview(m.text)}
+          </li>
+        ))}
+        {nudges.length > 0 && (
+          <li title={nudgeTitle}>
+            Podium nudged the assistant{times(nudges.length)}
+          </li>
+        )}
+      </ul>
     </details>
   );
 }

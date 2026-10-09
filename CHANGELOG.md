@@ -21,8 +21,8 @@ when it merges.
 
 ### Fixed
 
-- A usage limit now says so ("The turn failed: Usage limit reached: resumes
-  at 15:00") instead of "The turn failed: success".
+- A usage limit now says so ("The turn failed: Claude AI usage limit reached:
+  resumes at 15:00") instead of "The turn failed: success".
 - A subagent's own tool calls no longer show up in the assistant's chat.
 
 ## [3.1.0] - 2026-10-08

@@ -502,7 +502,7 @@ pub enum PendingKind {
     Nudge,
     /// The external-sources sweep. Delivered like a proposal-outcome `Notice`,
     /// but it also leaves the same chat row a nudge does (see
-    /// [`record_delivered`]).
+    /// [`record_before_write`]).
     Poll,
     Notice,
 }
@@ -1764,12 +1764,11 @@ async fn deliver_bypassing_queue(
     events: &EventBus,
 ) {
     if let Some(session) = state.session.as_mut() {
-        record_before_write(store, &mut item);
+        record_before_write(store, events, &mut item);
         match write_turn(session, &item).await {
             Ok(()) => {
                 state.in_flight = true;
                 state.turn_from_user |= item.kind == PendingKind::User;
-                record_delivered(store, events, &item);
                 return;
             }
             Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
@@ -1796,12 +1795,11 @@ async fn deliver_or_queue(
 ) -> bool {
     if !state.in_flight && state.pending.is_empty() {
         if let Some(session) = state.session.as_mut() {
-            record_before_write(store, &mut item);
+            record_before_write(store, events, &mut item);
             match write_turn(session, &item).await {
                 Ok(()) => {
                     state.in_flight = true;
                     state.turn_from_user |= item.kind == PendingKind::User;
-                    record_delivered(store, events, &item);
                     return true;
                 }
                 Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
@@ -1871,7 +1869,9 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     // yesterday before answering today's question. Read together they are a
     // summary of where things stand, which is what they are for. User
     // messages are still never merged — those are separate thoughts.
-    if item.kind == PendingKind::Nudge {
+    // One whose row is already in (a failed write re-queued it) is not
+    // merged into: its row would no longer match the turn's text.
+    if item.kind == PendingKind::Nudge && !item.recorded {
         while state
             .pending
             .front()
@@ -1882,12 +1882,11 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
             item.text.push_str(&next.text);
         }
     }
-    record_before_write(store, &mut item);
+    record_before_write(store, events, &mut item);
     match write_turn(session, &item).await {
         Ok(()) => {
             state.in_flight = true;
             state.turn_from_user |= item.kind == PendingKind::User;
-            record_delivered(store, events, &item);
             // Shrink the queue *before* announcing the delivery: the panel
             // applies these two in order, and the other way round left one
             // render where the message sat in the log and in the waiting
@@ -1913,33 +1912,26 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     }
 }
 
-/// Record/publish a just-delivered item the same way it always would have
-/// been, had it never needed to wait: a user turn joins the transcript, a
-/// nudge shows as a muted row, and a proposal-outcome notice stays invisible
-/// (it is for the assistant, not the user).
-/// Put a user turn in the transcript *before* the child can see it. The
-/// stdout task records the reply on its own task, so appending the user row
-/// after the write let a fast reply land *above* the message it answers —
-/// and a restart then replayed the conversation out of order. Idempotent, so
-/// a re-queued item is not appended twice.
-fn record_before_write(store: &AssistantStore, item: &mut PendingInput) {
-    if item.kind == PendingKind::User && !item.recorded {
-        match &item.reply_to {
+/// Put an item's own chat row in *before* the child can see the turn: a user
+/// turn joins the transcript, a nudge or sweep shows as a muted row, and a
+/// proposal-outcome notice stays invisible (it is for the assistant, not the
+/// user). The stdout task records the reply on its own task, so a row added
+/// after the write could land *below* the turn's own actions or reply — which
+/// misorders a restart's replay, and the panel groups a turn's tool rows by
+/// the nudge row that precedes them. Idempotent, so a re-queued item is not
+/// recorded twice.
+fn record_before_write(store: &AssistantStore, events: &EventBus, item: &mut PendingInput) {
+    if item.recorded {
+        return;
+    }
+    match item.kind {
+        PendingKind::User => match &item.reply_to {
             None => store.append(TranscriptRole::User, item.text.clone()),
             Some(r) => store.append(
                 TranscriptRole::Reply,
                 format!("{}\n{}", r.label(), item.text),
             ),
-        }
-        item.recorded = true;
-    }
-}
-
-/// What is recorded *after* a turn went out — the user's own row is already
-/// in by then (see [`record_before_write`]).
-fn record_delivered(store: &AssistantStore, events: &EventBus, item: &PendingInput) {
-    match item.kind {
-        PendingKind::User => {}
+        },
         PendingKind::Nudge | PendingKind::Poll => {
             let event = AssistantEvent::Notice {
                 text: item.text.clone(),
@@ -1947,8 +1939,9 @@ fn record_delivered(store: &AssistantStore, events: &EventBus, item: &PendingInp
             store.record(&event);
             events.publish(PodiumEvent::AssistantEvent { event });
         }
-        PendingKind::Notice => {}
+        PendingKind::Notice => return,
     }
+    item.recorded = true;
 }
 
 /// Publish the current queue as a snapshot for the UI.
@@ -2097,28 +2090,37 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
 }
 
 /// Older CLIs report a usage limit as `<text mentioning "limit">|<unix
-/// seconds>`; turn that into a readable reset time in `tz` (with the weekday
-/// when it is not today). Anything else — another error that happens to hold a
-/// `|`, a milliseconds stamp — is kept verbatim.
+/// seconds>`: the CLI's own text and the reset time. Anything else — another
+/// error that happens to hold a `|`, a milliseconds stamp — is `None`.
+fn parse_usage_limit(result: &str) -> Option<(&str, DateTime<Utc>)> {
+    let (text, secs) = result.split_once('|')?;
+    if !text.to_lowercase().contains("limit") {
+        return None;
+    }
+    let secs = secs.trim().parse::<i64>().ok()?;
+    // Plausible epoch seconds only (2001..5138); a ms value falls through.
+    if !(1_000_000_000..100_000_000_000).contains(&secs) {
+        return None;
+    }
+    Some((text.trim(), DateTime::from_timestamp(secs, 0)?))
+}
+
+/// Turn the old usage-limit form into the CLI's text plus a readable reset
+/// time in `tz` (with the weekday when it is not today). Anything else is
+/// kept verbatim.
 fn usage_limit_text<Tz: TimeZone>(result: &str, tz: &Tz, now: DateTime<Utc>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
-    result
-        .split_once('|')
-        .filter(|(text, _)| text.to_lowercase().contains("limit"))
-        .and_then(|(_, secs)| secs.trim().parse::<i64>().ok())
-        // Plausible epoch seconds only (2001..5138); a ms value falls through.
-        .filter(|secs| (1_000_000_000..100_000_000_000).contains(secs))
-        .and_then(|secs| DateTime::from_timestamp(secs, 0))
-        .map(|at| {
+    parse_usage_limit(result)
+        .map(|(text, at)| {
             let at = at.with_timezone(tz);
             let fmt = if at.date_naive() == now.with_timezone(tz).date_naive() {
                 "%H:%M"
             } else {
                 "%a %H:%M"
             };
-            format!("Usage limit reached: resumes at {}", at.format(fmt))
+            format!("{text}: resumes at {}", at.format(fmt))
         })
         .unwrap_or_else(|| result.to_string())
 }
@@ -2129,6 +2131,10 @@ fn content_block_event(block: &serde_json::Value) -> Option<AssistantEvent> {
             .get("text")
             .and_then(|t| t.as_str())
             .filter(|t| !t.trim().is_empty())
+            // The CLI also emits the usage limit as a synthetic text block
+            // before the `is_error` result, which reports it as the turn's
+            // error; as a message it would show twice, one of them raw.
+            .filter(|t| parse_usage_limit(t.trim()).is_none())
             .map(|t| AssistantEvent::Message {
                 text: t.to_string(),
             }),
@@ -2487,39 +2493,18 @@ mod tests {
             recorded: false,
         };
 
-        record_before_write(&store, &mut item);
-        record_before_write(&store, &mut item);
+        record_before_write(&store, &EventBus::new(), &mut item);
+        record_before_write(&store, &EventBus::new(), &mut item);
 
         let rows: Vec<String> = store.transcript().into_iter().map(|e| e.text).collect();
         assert_eq!(rows, vec!["what is open?".to_string()]);
     }
 
     #[test]
-    fn a_nudge_is_not_written_to_the_transcript_before_it_goes_out() {
-        // Only a user turn is pre-recorded: a nudge's own row is the
-        // `Notice` event `record_delivered` publishes once it is delivered,
-        // so pre-recording it would double it up.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = store_in(dir.path());
-        let mut item = PendingInput {
-            id: PendingId::new(),
-            kind: PendingKind::Nudge,
-            text: "[Podium] an agent finished".to_string(),
-            attachments: Vec::new(),
-            reply_to: None,
-            recorded: false,
-        };
-
-        record_before_write(&store, &mut item);
-
-        assert!(store.transcript().is_empty());
-        assert!(!item.recorded);
-    }
-
-    #[test]
-    fn a_delivered_poll_leaves_a_nudge_row_but_a_proposal_outcome_leaves_none() {
-        // The sweep's row is what lets the panel fold its actions into one
-        // faint "Podium check" line; a proposal outcome stays silent.
+    fn a_nudge_or_poll_row_goes_in_before_the_write_exactly_once() {
+        // The panel groups a turn's tool rows by the nudge row ahead of them,
+        // so the row must exist before the child can answer. A re-queued item
+        // must not leave a second one; a proposal outcome leaves none.
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(dir.path());
         let events = EventBus::new();
@@ -2533,11 +2518,17 @@ mod tests {
             recorded: false,
         };
 
-        record_delivered(&store, &events, &item(PendingKind::Notice));
+        let mut notice = item(PendingKind::Notice);
+        record_before_write(&store, &events, &mut notice);
         assert!(store.transcript().is_empty());
         assert!(rx.try_recv().is_err());
 
-        record_delivered(&store, &events, &item(PendingKind::Poll));
+        for kind in [PendingKind::Poll, PendingKind::Nudge] {
+            let mut it = item(kind);
+            record_before_write(&store, &events, &mut it);
+            record_before_write(&store, &events, &mut it);
+            assert!(it.recorded);
+        }
         let rows: Vec<_> = store
             .transcript()
             .into_iter()
@@ -2545,14 +2536,20 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            vec![(TranscriptRole::Nudge, "[Podium] check Slack".to_string())]
+            vec![
+                (TranscriptRole::Nudge, "[Podium] check Slack".to_string()),
+                (TranscriptRole::Nudge, "[Podium] check Slack".to_string()),
+            ]
         );
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(PodiumEvent::AssistantEvent {
-                event: AssistantEvent::Notice { .. }
-            })
-        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(PodiumEvent::AssistantEvent {
+                    event: AssistantEvent::Notice { .. }
+                })
+            ));
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -2993,14 +2990,28 @@ mod tests {
         let same_day = DateTime::from_timestamp(1_759_990_000, 0).expect("ts");
         assert_eq!(
             usage_limit_text("Claude AI usage limit reached|1760000000", &tz, same_day),
-            "Usage limit reached: resumes at 10:53"
+            "Claude AI usage limit reached: resumes at 10:53"
         );
         // Not today: the weekday (2025-10-09 is a Thursday) disambiguates.
         let next_day = DateTime::from_timestamp(1_759_900_000, 0).expect("ts");
         assert_eq!(
             usage_limit_text("Claude AI usage limit reached|1760000000", &tz, next_day),
-            "Usage limit reached: resumes at Thu 10:53"
+            "Claude AI usage limit reached: resumes at Thu 10:53"
         );
+    }
+
+    #[test]
+    fn the_synthetic_usage_limit_text_block_is_not_a_message() {
+        // The CLI emits it before the `is_error` result that reports it.
+        let blocks = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Claude AI usage limit reached|1760000000"}]}}"#,
+        );
+        assert!(blocks.is_empty(), "{blocks:?}");
+        // A reply that merely mentions a limit is still a message.
+        let real = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"The rate limit is 5|6 per minute"}]}}"#,
+        );
+        assert_eq!(real.len(), 1, "{real:?}");
     }
 
     #[test]
@@ -3367,7 +3378,7 @@ mod tests {
     fn a_reply_is_recorded_as_a_reply_row_led_by_its_label() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(dir.path());
-        record_before_write(&store, &mut reply("merge it"));
+        record_before_write(&store, &EventBus::new(), &mut reply("merge it"));
         let rows: Vec<(TranscriptRole, String)> = store
             .transcript()
             .into_iter()

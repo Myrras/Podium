@@ -352,8 +352,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // message gets a chat bubble, because a queued one already shows as a
       // waiting row via `queueChanged`. `busy` is not usable as a stand-in
       // here: a turn Podium started for itself (the external-sources poll, a
-      // nudge) publishes nothing the panel can see, so the panel reads as
-      // idle while the session is busy — and the bubble it added on that
+      // nudge) leaves a nudge row but publishes nothing that sets `busy` or
+      // marks the turn as the user's, so the panel reads as idle while the
+      // session is busy — and the bubble it added on that
       // guess put the same message on screen twice, once as sent and once as
       // waiting.
       if (await assistantSend(trimmed, attachments)) {

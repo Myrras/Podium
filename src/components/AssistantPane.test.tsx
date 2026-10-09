@@ -334,6 +334,27 @@ describe("AssistantPane", () => {
       expect(summary.title).toContain("second nudge");
     });
 
+    it("renders a nudge-only run as a plain line, not a disclosure", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] first nudge" });
+      expect(document.querySelector("details")).toBeNull();
+      expect(screen.getByText("Podium nudged the assistant")).toHaveAttribute(
+        "data-podium",
+        "true",
+      );
+    });
+
+    it("counts the nudges in an opened mixed run like tools", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] first nudge" });
+      apply({ type: "notice", text: "[Podium] second nudge" });
+      apply({ type: "tool", name: "Agent" });
+      const item = screen.getByText("Podium nudged the assistant ×2");
+      expect(item.tagName).toBe("LI");
+      expect(item.title).toContain("first nudge");
+      expect(item.title).toContain("second nudge");
+    });
+
     it("marks a run holding a nudge as Podium's own and prefixes its summary", () => {
       render(<AssistantPane />);
       apply({ type: "notice", text: "[Podium] sweep" });
