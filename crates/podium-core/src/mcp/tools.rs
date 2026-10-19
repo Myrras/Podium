@@ -1,6 +1,8 @@
 //! The 36 MCP tools Podium exposes — all thin calls into [`Orchestrator`],
 //! returning JSON (or plain text for output tails). Agents get 33 of them:
 //! `add_response`, `spawn_subagent` and `list_subagents` are the assistant's.
+//! A lookup sub-agent's route ([`crate::mcp::LOOKUP_PATH`]) gets 10: the
+//! read-only ones and `report_to_assistant`.
 //!
 //! The same surface serves the personal assistant, on its own endpoint
 //! ([`crate::mcp::ASSISTANT_PATH`], built via [`PodiumTools::new_assistant`]).
@@ -365,15 +367,27 @@ pub struct SetScratchpadArchivedParams {
     pub archived: bool,
 }
 
+/// Which endpoint a [`PodiumTools`] instance serves — the route is the
+/// caller's role on this server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// `/mcp`: project agents and full sub-agents. Never gated.
+    Agent,
+    /// [`crate::mcp::ASSISTANT_PATH`]: the personal assistant, through the
+    /// autonomy gate.
+    Assistant,
+    /// [`crate::mcp::LOOKUP_PATH`]: lookup sub-agents — the read-only tools
+    /// and their own report, nothing else.
+    Lookup,
+}
+
 /// The MCP tool surface. One instance is created per HTTP session; all state
 /// lives in the shared [`Orchestrator`].
 #[derive(Clone)]
 pub struct PodiumTools {
     orchestrator: Arc<Orchestrator>,
     tool_router: ToolRouter<Self>,
-    /// True for the personal assistant's endpoint: its calls go through the
-    /// autonomy gate. Agents are never gated.
-    assistant: bool,
+    route: Route,
 }
 
 #[tool_router]
@@ -393,7 +407,7 @@ impl PodiumTools {
                 .with_disabled("add_response")
                 .with_disabled("spawn_subagent")
                 .with_disabled("list_subagents"),
-            assistant: false,
+            route: Route::Agent,
         }
     }
 
@@ -402,7 +416,82 @@ impl PodiumTools {
         Self {
             orchestrator,
             tool_router: Self::tool_router(),
-            assistant: true,
+            route: Route::Assistant,
+        }
+    }
+
+    /// The lookup sub-agents' tools: only the read-only ones and
+    /// `report_to_assistant` ([`crate::subagent::unprompted_podium_tools`]).
+    /// Everything else is neither listed nor run — and [`Self::call_tool`]
+    /// refuses it before dispatch as well, so a lookup's "no writes" holds
+    /// here on the server whatever the CLI lets through.
+    pub fn new_lookup(orchestrator: Arc<Orchestrator>) -> Self {
+        let allowed = crate::subagent::unprompted_podium_tools();
+        let mut tool_router = Self::tool_router();
+        for tool in Self::all_tool_names() {
+            if !allowed.contains(&tool.as_str()) {
+                tool_router.disable_route(tool);
+            }
+        }
+        Self {
+            orchestrator,
+            tool_router,
+            route: Route::Lookup,
+        }
+    }
+
+    /// The sub-agent a call comes from, by the caller key its MCP config
+    /// sends ([`crate::mcp::CALLER_HEADER`]); `None` for anyone else.
+    fn caller(&self, context: &RequestContext<RoleServer>) -> Option<ProcessId> {
+        let parts = context.extensions.get::<axum::http::request::Parts>()?;
+        let key = parts
+            .headers
+            .get(crate::mcp::CALLER_HEADER)?
+            .to_str()
+            .ok()?;
+        self.orchestrator.subagent_for_caller(key)
+    }
+
+    /// What this route refuses before anything runs (or is proposed):
+    ///
+    /// - on the lookup route, every tool but its own read-only set;
+    /// - a sub-agent's report from anyone but that sub-agent — on the lookup
+    ///   route, any report but the caller's own — since a report ends it
+    ///   `done` and hands its "result" to the assistant;
+    /// - on the agent and lookup routes, a stop of one of the assistant's
+    ///   sub-agents by anyone but itself: those are the assistant's (gated)
+    ///   and the user's to stop.
+    fn refuse(&self, request: &CallToolRequestParams, caller: Option<ProcessId>) -> Option<String> {
+        let tool = request.name.as_ref();
+        if self.route == Route::Lookup
+            && !crate::subagent::unprompted_podium_tools().contains(&tool)
+        {
+            return Some(format!(
+                "{tool} is not available to a lookup sub-agent: it only reads, and reports its own result"
+            ));
+        }
+        let target = request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("process_id"))
+            .and_then(|id| id.as_str())
+            .and_then(|id| ProcessId::from_str(id).ok())?;
+        let own = caller == Some(target);
+        match tool {
+            "report_to_assistant"
+                if !own && (self.route == Route::Lookup || self.orchestrator.is_subagent(target)) =>
+            {
+                Some("a sub-agent's result can only be reported by that sub-agent itself".to_string())
+            }
+            "stop_process"
+                if self.route != Route::Assistant && !own && self.orchestrator.is_subagent(target) =>
+            {
+                Some(
+                    "the assistant's sub-agents are stopped by the assistant or the user, not by an agent"
+                        .to_string(),
+                )
+            }
+            _ => None,
         }
     }
 
@@ -1150,7 +1239,11 @@ impl ServerHandler for PodiumTools {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        if self.assistant
+        // Before the gate, so a refused call is never parked as a proposal.
+        if let Some(reason) = self.refuse(&request, self.caller(&context)) {
+            return Err(McpError::invalid_params(reason, None));
+        }
+        if self.route == Route::Assistant
             && requires_proposal_for(
                 self.orchestrator.assistant_autonomy(),
                 request.name.as_ref(),

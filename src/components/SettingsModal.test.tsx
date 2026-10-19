@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -434,6 +440,32 @@ describe("SettingsModal — Assistant tab", () => {
       await waitFor(() =>
         expect(invoke).toHaveBeenCalledWith("assistant_new_conversation", {
           stopSubagents: true,
+        }),
+      );
+    });
+
+    it("withdraws the question once no sub-agent is live any more", async () => {
+      await askReset();
+      act(() => {
+        const ended = useAssistantStore
+          .getState()
+          .subagents.map((s) => ({ ...s, phase: "done" as const }));
+        useAssistantStore.setState({ subagents: ended });
+      });
+      expect(
+        screen.queryByRole("group", { name: "Sub-agents still running" }),
+      ).toBeNull();
+      expect(invoke).not.toHaveBeenCalledWith(
+        "assistant_new_conversation",
+        expect.anything(),
+      );
+      // The next reset just resets.
+      fireEvent.click(
+        screen.getByRole("button", { name: "Reset conversation" }),
+      );
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("assistant_new_conversation", {
+          stopSubagents: false,
         }),
       );
     });

@@ -63,6 +63,10 @@ pub struct AgentLaunchCtx<'a> {
     /// of a project agent's, and session settings without the push go-ahead
     /// rules. `None` for every project agent.
     pub subagent: Option<SubagentKind>,
+    /// A secret only this session's MCP config carries (an `X-Podium-Caller`
+    /// header), by which Podium's MCP server tells which sub-agent is
+    /// calling — set for sub-agents, `None` for everything else.
+    pub caller_key: Option<&'a str>,
 }
 
 /// Connection details for the built-in MCP server.
@@ -309,7 +313,22 @@ impl AgentAdapter for CliAdapter {
             args.push(quote(arg)?);
         }
         if let Some(mcp) = ctx.mcp {
-            let path = write_mcp_config(mcp, ctx.process_id)?;
+            let path = match ctx.subagent {
+                // A lookup gets the lookup route, which serves the read-only
+                // tools and its report and refuses everything else.
+                Some(SubagentKind::Lookup) => write_client_config(
+                    mcp,
+                    &format!("agent-{}.json", ctx.process_id),
+                    crate::mcp::LOOKUP_PATH,
+                    ctx.caller_key,
+                )?,
+                _ => write_client_config(
+                    mcp,
+                    &format!("agent-{}.json", ctx.process_id),
+                    "/mcp",
+                    ctx.caller_key,
+                )?,
+            };
             args.push("--mcp-config".to_string());
             args.push(quote(&crate::platform::backend_path_in(wsl, &path)?)?);
             // Cross-session messaging: with no explicit inbound setting the
@@ -330,7 +349,7 @@ impl AgentAdapter for CliAdapter {
                     // A sub-agent has no branch to push and no PR to open,
                     // so it gets none of the go-ahead rules.
                     let settings = match ctx.subagent {
-                        Some(kind) => subagent_session_settings(kind),
+                        Some(kind) => subagent_session_settings(kind, mcp, wsl)?,
                         None => agent_session_settings(),
                     };
                     args.push(quote(&settings)?);
@@ -720,21 +739,47 @@ fn subagent_allow_rules() -> Vec<String> {
         .collect()
 }
 
-/// What a sub-agent's `--settings` carries: the same inbound setting as every
-/// Podium session, the allow rules above, and — for a lookup, which runs
-/// without permission prompts (see [`crate::subagent::launch_args`]) — the
-/// setting that skips the CLI's one-time bypass-mode warning, which would
-/// otherwise hold its first launch with nobody there to accept it. All of it
-/// for this session alone; the user's own settings file is never touched.
-fn subagent_session_settings(kind: SubagentKind) -> String {
+/// What a sub-agent's `--settings` carries: the allow rules above and — for a
+/// lookup, which runs without permission prompts (see
+/// [`crate::subagent::launch_args`]) — the setting that skips the CLI's
+/// one-time bypass-mode warning, which would otherwise hold its first launch
+/// with nobody there to accept it, and deny rules keeping it from reading
+/// Podium's MCP config dir (`mcp.config_dir`: the bearer token and every
+/// session's caller key). Cross-session messages are not accepted: the
+/// assistant never messages its sub-agents, and they cannot message anyone
+/// (`SendMessage` is denied them). All of it for this session alone; the
+/// user's own settings file is never touched.
+fn subagent_session_settings(
+    kind: SubagentKind,
+    mcp: &McpConnectInfo,
+    wsl: Option<&WslBackend>,
+) -> CoreResult<String> {
     let mut settings = serde_json::json!({
-        PEER_INBOUND_KEY: PEER_INBOUND_VALUE,
         "permissions": { "allow": subagent_allow_rules() },
     });
     if kind == SubagentKind::Lookup {
         settings["skipDangerousModePermissionPrompt"] = serde_json::Value::Bool(true);
+        // Read rules also cover the CLI's other file readers (Grep, Glob);
+        // the shell is denied a lookup outright.
+        let dir = crate::platform::backend_path_in(wsl, &mcp.config_dir)?;
+        settings["permissions"]["deny"] =
+            serde_json::json!([format!("Read({}/**)", absolute_path_rule(&dir))]);
     }
-    settings.to_string()
+    Ok(settings.to_string())
+}
+
+/// An absolute path in the CLI's permission-rule spelling: `//` then the
+/// path from the filesystem root (`/Users/a/x` → `//Users/a/x`), Windows
+/// paths in their POSIX form (`C:\Users\a` → `//c/Users/a`).
+fn absolute_path_rule(path: &str) -> String {
+    let posix = path.replace('\\', "/");
+    let bytes = posix.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        format!("//{drive}{}", &posix[2..])
+    } else {
+        format!("/{}", posix.trim_end_matches('/'))
+    }
 }
 
 /// Prefix of the CLI session name Podium stamps on the sessions it spawns.
@@ -782,7 +827,7 @@ pub fn peer_name_carries(sender_name: &str, tag: &str) -> bool {
 /// run unprompted, so the prompt must not offer it.
 fn identity_prompt(ctx: &AgentLaunchCtx, peer_messaging: bool, push_rules: bool) -> String {
     if let Some(kind) = ctx.subagent {
-        return subagent_identity_prompt(ctx, kind, peer_messaging);
+        return subagent_identity_prompt(ctx, kind);
     }
     let mut prompt = format!(
         "You run as a Podium-managed agent: your process_id is {} and your \
@@ -882,11 +927,7 @@ const PEER_MESSAGES_NOTE: &str =
 /// project id is deliberately not mentioned: the assistant's scope is
 /// Podium's own, and nothing a project tool could do with it is the
 /// sub-agent's business.
-fn subagent_identity_prompt(
-    ctx: &AgentLaunchCtx,
-    kind: SubagentKind,
-    peer_messaging: bool,
-) -> String {
+fn subagent_identity_prompt(ctx: &AgentLaunchCtx, kind: SubagentKind) -> String {
     let mut prompt = format!(
         "You run as a sub-agent of the user's Podium personal assistant: your \
          process_id is {}. You belong to no project — your working directory \
@@ -915,9 +956,7 @@ fn subagent_identity_prompt(
              need it, say so as follow-up in your report."
         }
     });
-    if peer_messaging {
-        prompt.push_str(PEER_MESSAGES_NOTE);
-    }
+    // No note on peer messages: a sub-agent neither accepts nor sends them.
     prompt
 }
 
@@ -959,25 +998,21 @@ pub(crate) fn write_private(path: &Path, contents: &str) -> std::io::Result<()> 
     std::fs::write(path, contents)
 }
 
-/// Write the per-agent MCP client config and return its path. The file carries
-/// the bearer token, so it is written 0600 (via [`write_private`]). Claude Code
-/// and Auggie both consume the same `--mcp-config <file>` shape, so this is
-/// shared across those adapters.
-pub(crate) fn write_mcp_config(mcp: &McpConnectInfo, process_id: ProcessId) -> CoreResult<PathBuf> {
-    write_client_config(mcp, &format!("agent-{process_id}.json"), "/mcp")
-}
-
 /// Write the personal assistant's MCP client config and return its path.
 /// It points at the **assistant** endpoint, whose tool calls go through the
 /// autonomy gate — that endpoint *is* the assistant's identity on the server.
 pub(crate) fn write_assistant_mcp_config(mcp: &McpConnectInfo) -> CoreResult<PathBuf> {
-    write_client_config(mcp, "assistant.json", crate::mcp::ASSISTANT_PATH)
+    write_client_config(mcp, "assistant.json", crate::mcp::ASSISTANT_PATH, None)
 }
 
+/// Write one MCP client config for `endpoint`. `caller_key`, when given,
+/// rides along as the `X-Podium-Caller` header ([`crate::mcp::CALLER_HEADER`]):
+/// how the server knows which sub-agent a call is from.
 fn write_client_config(
     mcp: &McpConnectInfo,
     file_name: &str,
     endpoint: &str,
+    caller_key: Option<&str>,
 ) -> CoreResult<PathBuf> {
     let base = mcp.url.trim_end_matches('/');
     let url = if base.ends_with(endpoint) {
@@ -985,12 +1020,16 @@ fn write_client_config(
     } else {
         format!("{base}{endpoint}")
     };
+    let mut headers = serde_json::json!({ "Authorization": format!("Bearer {}", mcp.token) });
+    if let Some(key) = caller_key {
+        headers[crate::mcp::CALLER_HEADER] = serde_json::Value::from(key);
+    }
     let config = serde_json::json!({
         "mcpServers": {
             "podium": {
                 "type": "http",
                 "url": url,
-                "headers": { "Authorization": format!("Bearer {}", mcp.token) },
+                "headers": headers,
             }
         }
     });
@@ -1188,6 +1227,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         (plan, project_id, process_id)
@@ -1278,6 +1318,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         assert_eq!(plan.command, "auggie");
@@ -1562,6 +1603,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         assert_eq!(
             AUGGIE.build_launch(&ctx).expect("build_launch").command,
@@ -1600,6 +1642,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -1626,6 +1669,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: true,
             subagent: None,
+            caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -1652,6 +1696,7 @@ mod tests {
             worktree_name: Some("auth-refactor"),
             suggest_worktree: true,
             subagent: None,
+            caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -1680,6 +1725,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -1703,6 +1749,14 @@ mod tests {
         kind: SubagentKind,
         mcp: &McpConnectInfo,
     ) -> (Vec<String>, ProcessId, ProjectId) {
+        subagent_tokens_keyed(kind, mcp, None)
+    }
+
+    fn subagent_tokens_keyed(
+        kind: SubagentKind,
+        mcp: &McpConnectInfo,
+        caller_key: Option<&str>,
+    ) -> (Vec<String>, ProcessId, ProjectId) {
         let ctx = AgentLaunchCtx {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
@@ -1717,6 +1771,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: Some(kind),
+            caller_key,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
         (split_command(&plan.command), ctx.process_id, ctx.project_id)
@@ -1777,7 +1832,8 @@ mod tests {
                 .expect("valid json")
         };
         let lookup = settings(SubagentKind::Lookup);
-        assert_eq!(lookup["crossSessionInbound"], "accept");
+        // The assistant never messages its sub-agents.
+        assert!(lookup.get("crossSessionInbound").is_none(), "{lookup}");
         let allow: Vec<&str> = lookup["permissions"]["allow"]
             .as_array()
             .expect("allow list")
@@ -1789,13 +1845,68 @@ mod tests {
             "{allow:?}"
         );
         assert!(!allow.iter().any(|r| r.contains("git push")), "{allow:?}");
-        assert!(lookup["permissions"].get("deny").is_none());
+        // A lookup cannot read Podium's MCP config dir (the token, every
+        // caller key), in the CLI's absolute-path rule spelling.
+        assert_eq!(
+            lookup["permissions"]["deny"],
+            serde_json::json!([format!("Read(/{}/**)", dir.path().display())])
+        );
         // A lookup runs without prompts, so the one-time warning is skipped.
         assert_eq!(lookup["skipDangerousModePermissionPrompt"], true);
         // A full one keeps its prompts, and with them the warning setting off.
         let full = settings(SubagentKind::Full);
         assert!(full.get("skipDangerousModePermissionPrompt").is_none());
+        assert!(full.get("crossSessionInbound").is_none(), "{full}");
+        assert!(full["permissions"].get("deny").is_none(), "{full}");
         assert_eq!(full["permissions"]["allow"], lookup["permissions"]["allow"]);
+    }
+
+    /// A lookup talks to the lookup route, a full one to the agents', and
+    /// both say who they are with their caller key.
+    #[test]
+    fn a_subagent_s_mcp_config_names_its_route_and_its_caller_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = test_mcp(&dir);
+        for (kind, endpoint) in [
+            (SubagentKind::Lookup, crate::mcp::LOOKUP_PATH),
+            (SubagentKind::Full, "/mcp"),
+        ] {
+            let (tokens, process_id, _) = subagent_tokens_keyed(kind, &mcp, Some("key-123"));
+            let path = value_after(&tokens, "--mcp-config");
+            assert!(
+                path.ends_with(&format!("agent-{process_id}.json")),
+                "{path}"
+            );
+            let written: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).expect("config")).expect("json");
+            let server = &written["mcpServers"]["podium"];
+            assert_eq!(server["url"], format!("http://127.0.0.1:1{endpoint}"));
+            assert_eq!(server["headers"][crate::mcp::CALLER_HEADER], "key-123");
+            assert_eq!(server["headers"]["Authorization"], "Bearer t");
+        }
+        // A project agent carries no caller key.
+        let (plan, _, process_id) = plan(None, &[], Some(&mcp));
+        let _ = plan;
+        let written: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(format!("agent-{process_id}.json")))
+                .expect("config"),
+        )
+        .expect("json");
+        assert!(written["mcpServers"]["podium"]["headers"]
+            .get(crate::mcp::CALLER_HEADER)
+            .is_none());
+    }
+
+    #[test]
+    fn absolute_path_rules_use_the_cli_spelling() {
+        assert_eq!(
+            absolute_path_rule("/Users/a/Library/Application Support/com.podium.app/mcp"),
+            "//Users/a/Library/Application Support/com.podium.app/mcp"
+        );
+        assert_eq!(
+            absolute_path_rule(r"C:\Users\a\AppData\Roaming\com.podium.app\mcp"),
+            "//c/Users/a/AppData/Roaming/com.podium.app/mcp"
+        );
     }
 
     #[test]
@@ -1816,6 +1927,7 @@ mod tests {
             worktree_name: Some("auth-refactor"),
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);
@@ -2219,6 +2331,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            caller_key: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
         let tokens = split_command(&plan.command);

@@ -316,6 +316,11 @@ function AssistantTab() {
     (s) => s.subagents.filter(isSubagentLive).length,
   );
   const [askKeep, setAskKeep] = useState(false);
+  // The question only stands while there is something to keep: once the last
+  // one ends (or is stopped from the panel) it is withdrawn, and the next
+  // Reset simply resets. Adjusted during render, not in an effect, so the
+  // box never shows a count of zero.
+  if (askKeep && liveSubagents === 0) setAskKeep(false);
 
   function reset(stopSubagents: boolean) {
     setAskKeep(false);

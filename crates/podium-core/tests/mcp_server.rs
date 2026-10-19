@@ -12,7 +12,7 @@ use podium_core::mcp::tools::{
     SetScratchpadArchivedParams, SpawnAgentParams, UpdateAssistantMemoryParams,
     UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
-use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
+use podium_core::mcp::{self, McpServer, ASSISTANT_PATH, LOOKUP_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
     CoreResult, LaunchPlan, Orchestrator, PodiumEvent, ProcessId, ProcessKind, ProcessSpec,
@@ -56,7 +56,7 @@ async fn http_post_path(
     session_id: Option<&str>,
     body: &str,
 ) -> (u16, String) {
-    http_post_inner(base_url, path, token, session_id, body).await
+    http_post_inner(base_url, path, token, session_id, None, body).await
 }
 
 /// Like [`http_post_mcp`], but able to carry an `Mcp-Session-Id` header (the
@@ -68,7 +68,7 @@ async fn http_post_mcp_with_session(
     session_id: Option<&str>,
     body: &str,
 ) -> (u16, String) {
-    http_post_inner(base_url, "/mcp", token, session_id, body).await
+    http_post_inner(base_url, "/mcp", token, session_id, None, body).await
 }
 
 async fn http_post_inner(
@@ -76,6 +76,7 @@ async fn http_post_inner(
     path: &str,
     token: Option<&str>,
     session_id: Option<&str>,
+    caller_key: Option<&str>,
     body: &str,
 ) -> (u16, String) {
     let addr = base_url.strip_prefix("http://").expect("http url");
@@ -86,6 +87,11 @@ async fn http_post_inner(
     let session = session_id
         .map(|s| format!("Mcp-Session-Id: {s}\r\n"))
         .unwrap_or_default();
+    // A sub-agent's caller key, as its MCP config sends it.
+    let session = match caller_key {
+        Some(key) => format!("{session}{}: {key}\r\n", podium_core::mcp::CALLER_HEADER),
+        None => session,
+    };
     // HTTP/1.0 so the server answers with a close-delimited body rather than
     // chunked encoding: chunk-size lines would otherwise sit between the
     // bytes of the payload, and where the chunks fall is not ours to control
@@ -3501,9 +3507,12 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
 /// labels) and waits for an answer on stdin — "trust-and-ask" with a
 /// permission prompt below it — and anything else sleeps. Records each
 /// launch's kind and args.
+/// One launch as [`TaskScriptAdapter`] saw it: kind, args, caller key.
+type TaskLaunch = (Option<SubagentKind>, Vec<String>, Option<String>);
+
 #[derive(Default)]
 struct TaskScriptAdapter {
-    launches: std::sync::Mutex<Vec<(Option<SubagentKind>, Vec<String>)>>,
+    launches: std::sync::Mutex<Vec<TaskLaunch>>,
 }
 
 impl AgentAdapter for TaskScriptAdapter {
@@ -3520,10 +3529,11 @@ impl AgentAdapter for TaskScriptAdapter {
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
-        self.launches
-            .lock()
-            .unwrap()
-            .push((ctx.subagent, ctx.extra_args.to_vec()));
+        self.launches.lock().unwrap().push((
+            ctx.subagent,
+            ctx.extra_args.to_vec(),
+            ctx.caller_key.map(str::to_string),
+        ));
         let task = ctx.prompt.unwrap_or("");
         let command = if task.starts_with("crash") {
             "exit 3"
@@ -3648,7 +3658,7 @@ async fn spawn_subagent_runs_over_the_assistant_route_and_never_on_the_agents() 
         .expect("processId")
         .parse()
         .expect("a process id");
-    let (kind, args) = adapter.launches.lock().unwrap()[0].clone();
+    let (kind, args, _) = adapter.launches.lock().unwrap()[0].clone();
     assert_eq!(kind, Some(SubagentKind::Lookup));
     // It reaches Podium over the agents' route, which has no gate: what it
     // could change there is denied it at the CLI.
@@ -4127,4 +4137,203 @@ fn arg_after_flag(args: &[String], flag: &str) -> String {
         .position(|a| a == flag)
         .unwrap_or_else(|| panic!("{flag} in {args:?}"));
     args[at + 1].clone()
+}
+
+/// One tools/call over `path`, as the sub-agent holding `caller_key` (or as
+/// nobody in particular): the JSON-RPC body.
+async fn call_as(
+    server: &McpServer,
+    path: &str,
+    session: &str,
+    caller_key: Option<&str>,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let (status, response) = http_post_inner(
+        server.url(),
+        path,
+        Some(server.token()),
+        Some(session),
+        caller_key,
+        &tools_call_request(30, name, arguments),
+    )
+    .await;
+    assert_eq!(status, 200, "{name} on {path}: {response}");
+    extract_json_body(&response)
+}
+
+fn refusal(body: &serde_json::Value) -> String {
+    body["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a refusal, got {body}"))
+        .to_string()
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lookup_route_serves_only_reads_and_the_callers_own_report() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, adapter) = subagent_server(dir.path()).await;
+    let id = orch
+        .spawn_subagent(SubagentKind::Lookup, "look it up", None, None)
+        .await
+        .expect("spawn")
+        .process_id;
+    let key = adapter.launches.lock().unwrap()[0]
+        .2
+        .clone()
+        .expect("a sub-agent has a caller key");
+    let other = orch
+        .spawn_subagent(SubagentKind::Lookup, "another one", None, None)
+        .await
+        .expect("spawn")
+        .process_id;
+    let lookup = open_session(&server, LOOKUP_PATH).await;
+
+    let mut listed = listed_tools(&server, LOOKUP_PATH, &lookup).await;
+    listed.sort();
+    let mut expected = vec![
+        "get_board",
+        "get_process_output",
+        "get_process_status",
+        "list_processes",
+        "list_projects",
+        "list_scratchpads",
+        "list_todos",
+        "list_worktrees",
+        "report_to_assistant",
+        "verify_sender",
+    ];
+    expected.sort_unstable();
+    assert_eq!(listed, expected);
+
+    // Anything else is refused before it runs, hidden or not.
+    for (tool, args) in [
+        (
+            "stop_process",
+            serde_json::json!({ "process_id": other.to_string() }),
+        ),
+        (
+            "add_todo",
+            serde_json::json!({ "project_id": ProjectId::new().to_string(), "text": "x" }),
+        ),
+        (
+            "spawn_agent",
+            serde_json::json!({ "project_id": ProjectId::new().to_string() }),
+        ),
+        (
+            "update_assistant_memory",
+            serde_json::json!({ "content": "" }),
+        ),
+    ] {
+        let body = call_as(&server, LOOKUP_PATH, &lookup, Some(&key), tool, args).await;
+        assert!(
+            refusal(&body).contains("not available to a lookup sub-agent"),
+            "{tool}: {body}"
+        );
+    }
+    assert_eq!(subagent_phase(&orch, other), Some(SubagentPhase::Running));
+
+    // A report for another sub-agent, or with no key at all, is refused…
+    let report = |pid: ProcessId| serde_json::json!({ "process_id": pid.to_string(), "summary": "Found it." });
+    for (caller, target) in [(Some(key.as_str()), other), (None, id)] {
+        let body = call_as(
+            &server,
+            LOOKUP_PATH,
+            &lookup,
+            caller,
+            "report_to_assistant",
+            report(target),
+        )
+        .await;
+        assert!(
+            refusal(&body).contains("only be reported by that sub-agent"),
+            "{body}"
+        );
+    }
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+    // …its own goes through and ends it done.
+    let body = call_as(
+        &server,
+        LOOKUP_PATH,
+        &lookup,
+        Some(&key),
+        "report_to_assistant",
+        report(id),
+    )
+    .await;
+    assert!(
+        body["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("Reported")),
+        "{body}"
+    );
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Done));
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_can_neither_report_for_nor_stop_a_sub_agent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, adapter) = subagent_server(dir.path()).await;
+    let id = orch
+        .spawn_subagent(SubagentKind::Full, "a long check", None, None)
+        .await
+        .expect("spawn")
+        .process_id;
+    let key = adapter.launches.lock().unwrap()[0]
+        .2
+        .clone()
+        .expect("a sub-agent has a caller key");
+    let agent = open_session(&server, "/mcp").await;
+    let process = serde_json::json!({ "process_id": id.to_string() });
+
+    // Without its key: no forged result, no stop.
+    let body = call_as(
+        &server,
+        "/mcp",
+        &agent,
+        None,
+        "report_to_assistant",
+        serde_json::json!({ "process_id": id.to_string(), "summary": "All clear." }),
+    )
+    .await;
+    assert!(
+        refusal(&body).contains("only be reported by that sub-agent"),
+        "{body}"
+    );
+    let body = call_as(
+        &server,
+        "/mcp",
+        &agent,
+        None,
+        "stop_process",
+        process.clone(),
+    )
+    .await;
+    assert!(
+        refusal(&body).contains("stopped by the assistant or the user"),
+        "{body}"
+    );
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+
+    // The sub-agent itself may stop itself.
+    let body = call_as(&server, "/mcp", &agent, Some(&key), "stop_process", process).await;
+    assert!(body.get("error").is_none(), "{body}");
+    wait_for("it to stop", || {
+        subagent_phase(&orch, id) == Some(SubagentPhase::Stopped)
+    })
+    .await;
+
+    server.stop();
+    orch.shutdown().await;
 }

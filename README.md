@@ -201,7 +201,11 @@ they did.
   answers you at once with one line and its result comes back later as a
   short summary, plus a to-do in the right project when follow-up is needed.
   A *lookup* sub-agent only reads (Slack, Teams, tickets, your MCP servers,
-  summaries across projects): no shell, no file edits. A *full* one also has
+  summaries across projects): no shell, no file edits, and of Podium's own
+  tools only the read-only ones — Podium's server refuses the rest. It runs
+  without permission prompts, so it can still call your *other* MCP servers
+  without asking, just as the assistant itself can; it is told to change
+  nothing, but Podium cannot check that for servers that are not its own. A *full* one also has
   shell, files and git, for work that belongs to no single project; it asks
   for permission like any agent, and under `propose-all` starting one needs
   your confirmation (a lookup never does). Project code work still goes to a
@@ -214,7 +218,14 @@ they did.
   the assistant without a summary. Resetting the conversation while some are
   queued or running asks whether to keep them (their results then report
   into the new conversation) or stop them; quitting Podium stops them, and the
-  quit warning counts them. They are not restored after a restart. The first
+  quit warning counts them. They are not restored after a restart. A
+  sub-agent stuck on a prompt is reported right away once you have opened its
+  terminal; otherwise after five minutes of silence. Sub-agents load only your
+  own Claude Code settings, not ones a folder could carry. If your default
+  Claude Code args (Settings → Agents) carry your own `--settings`, sub-agents
+  use yours instead of Podium's: a lookup then shows Claude Code's one-time
+  bypass-mode warning in its terminal, and a full one asks before it reports
+  back. The first
   sub-agent on a machine may wait on Claude Code's folder-trust question for
   Podium's assistant folder: open it from the list and answer it once with
   "Yes, I trust this folder" — Podium reports it but never answers for you.
@@ -257,7 +268,7 @@ they did.
 ### Built-in MCP server
 
 Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
-and exposes **36 tools** over it (33 to the agents it spawns; the assistant's route adds `add_response`, `spawn_subagent` and `list_subagents`): process inspection and control, agent
+and exposes **36 tools** over it (33 to the agents it spawns; the assistant's route adds `add_response`, `spawn_subagent` and `list_subagents`; a lookup sub-agent's own route serves only the read-only tools and its report): process inspection and control, agent
 spawning (and respawning a stuck agent with the answer in its prompt), the
 full to-do, scratchpad and worktree surfaces, the Git board (`get_board`,
 `move_board_item`), assistant memory, Responses items and sub-agents, and sender

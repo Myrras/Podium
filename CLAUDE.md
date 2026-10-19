@@ -306,7 +306,7 @@ atomically, before the async `podium.yml` load.
   assistant_; only the assistant route lists or runs it), and
   `spawn_subagent` / `list_subagents` (the assistant's sub-agents — see
   _Sub-agents_; assistant route only, like `add_response`: 36 tools on it, 33
-  on the agents' route). `spawn_subagent { kind, task, name?, args? }` is
+  on the agents' route, 10 on the lookup route). `spawn_subagent { kind, task, name?, args? }` is
   gated by its `kind` (`assistant::requires_proposal_for`): `lookup` never,
   `full` like `spawn_agent` (a missing/unknown kind too), and `args` may only
   be `--model`/`--effort` with a plain value (`subagent::validate_args`).
@@ -314,7 +314,25 @@ atomically, before the async `podium.yml` load.
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
-  through the autonomy gate (see _Personal assistant_).
+  through the autonomy gate (see _Personal assistant_). A third route,
+  **`/mcp-lookup`** (`mcp::LOOKUP_PATH`, same token), is a *lookup*
+  sub-agent's: `PodiumTools::new_lookup` lists and runs only
+  `subagent::unprompted_podium_tools` (the read-only tools without
+  `add_response`/`list_subagents`, plus `report_to_assistant`), and
+  `call_tool` refuses anything else before dispatch, so a lookup's "no writes"
+  holds on the server, not only through the tool names the CLI hides.
+  **Caller identity**: the bearer token is shared, so each sub-agent's MCP
+  config also carries a per-sub-agent secret as `X-Podium-Caller`
+  (`mcp::CALLER_HEADER`; `SubagentRecord.caller_key`, generated at spawn,
+  resolved by `Orchestrator::subagent_for_caller` in constant time).
+  `call_tool` (`refuse`, before the gate, so a refusal is never a proposal)
+  refuses `report_to_assistant` for a sub-agent id unless the call carries
+  that sub-agent's own key — on the lookup route any report but the caller's
+  own — and, on the agents' and lookup routes, `stop_process` of a sub-agent by
+  anyone but itself (the assistant's gated stop and the user's are the ways).
+  The key lives in the sub-agent's 0600 config file under `{app_data_dir}/mcp`,
+  which a lookup is denied reading; a project agent with a shell could read it,
+  like the bearer token — the OS user stays the trust boundary.
   Spawned agents get the URL + token via 0600 per-agent config files under
   `{app_data_dir}/mcp` (wiped on every start); the same dir holds
   `server.json` (current URL + token, 0600) for the **stdio bridge**:
@@ -341,7 +359,9 @@ atomically, before the async `podium.yml` load.
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
-    A `--settings` the user put in `extra_args` wins over Podium's.
+    A `--settings` the user put in `extra_args` wins over Podium's. The
+    assistant's sub-agents get neither this nor the rules below: the assistant
+    never messages them, and they are denied `SendMessage`.
   - **Go-ahead rules.** A Claude Code agent's `--settings`
     (`agent::agent_session_settings`, built on the same inbound setting)
     also allows `git push`, `gh pr create` and `glab mr create`, so a
@@ -1024,22 +1044,51 @@ atomically, before the async `podium.yml` load.
   refused until the scope is set and while there is no MCP server (the result
   only comes back over MCP).
   - **Kinds and launch** (`subagent::launch_args`, after the user's default
-    args so the restrictions win; `args` is `--model`/`--effort` only).
-    *lookup*: `--permission-mode bypassPermissions` (it runs in the
-    background, a prompt for an MCP read would only block it) plus
-    `--disallowedTools` Bash, Edit, Write, NotebookEdit, SendMessage, Agent,
-    Task and `mcp__podium__<tool>` for **every non-read-only Podium tool**,
-    generated from the router (`PodiumTools::all_tool_names` minus
-    `unprompted_podium_tools`, i.e. `READ_ONLY_TOOLS` without `add_response` /
-    `list_subagents`, plus `report_to_assistant`), so a tool added later is
-    refused until classified read-only; the agents' route has no autonomy gate,
-    these deny rules are what keeps a lookup from stopping/removing/moving
-    anything. *full*: the normal permission prompts, `--disallowedTools
-    SendMessage,Agent,Task`. A sub-agent never gets the go-ahead push rules, has
-    its own identity prompt (no project; do the task, then call
-    `report_to_assistant` with two lines and whether follow-up is needed) and no
-    session (`AgentSession`): never restarted, never remembered by session
-    memory.
+    args so the restrictions win; `args` is `--model`/`--effort` only — both
+    flags, the `--effort` levels and the CLI's `Task`→`Agent` alias checked
+    against Claude Code 2.1.301). Both kinds load **only the user's own
+    settings** (`--setting-sources user`): no project or local settings files
+    (hooks, permissions), no project/local `CLAUDE.md` or `.claude/rules` (the
+    CLI's walk up the parent dirs included) and no settings-based approval of
+    a project `.mcp.json`. *lookup*: `--permission-mode bypassPermissions` (it
+    runs in the background, a prompt for an MCP read would only block it), its
+    Podium tools over the **lookup route** (above), and `--disallowedTools`
+    Bash, Edit, MultiEdit, Write, NotebookEdit, SendMessage, Agent, Task plus
+    `mcp__podium__<tool>` for **every tool not on the lookup route**, generated
+    from the router (`PodiumTools::all_tool_names` minus
+    `unprompted_podium_tools`) — a second layer under the route, so a tool
+    added later is refused until classified read-only. Its `--settings` also
+    deny `Read(//{app_data_dir}/mcp/**)` (the CLI's absolute-path rule
+    spelling, `agent::absolute_path_rule`; Read rules cover Grep/Glob, and the
+    shell is denied): the token files and every caller key. A lookup **can
+    still call the user's own other MCP servers** (Slack, Teams, a ticket
+    system) **without a prompt**, as the assistant itself can — it is told to
+    change nothing, but Podium cannot enforce that for servers that are not
+    its own. *full*: the normal permission prompts, `--disallowedTools
+    SendMessage,Agent,Task`, the agents' route. A sub-agent never gets the
+    go-ahead push rules or `crossSessionInbound`, has its own identity prompt
+    (no project; do the task, then call `report_to_assistant` with two lines
+    and whether follow-up is needed; no peer-message note) and no session
+    (`AgentSession`): never restarted, never remembered by session memory.
+    **A `--settings` in the user's own default args** (Settings → Agents)
+    replaces Podium's for sub-agents too (`has_flag`, as for agents): then a
+    lookup shows Claude Code's one-time bypass-mode warning in its terminal
+    (no `skipDangerousModePermissionPrompt`) and has no deny rule on the MCP
+    dir, and a full one asks before its report (no allow rules). The flags in
+    `launch_args` still apply.
+  - **Shared workspace.** All sub-agents run in the one
+    `{app_data_dir}/assistant-workspace`, and before every start
+    (`Hub::scrub_workspace` → `subagent::scrub_workspace`) Podium removes what
+    an earlier sub-agent may have left at its root that would shape the next
+    session — `.claude/`, `.mcp.json`, `CLAUDE.md`, `CLAUDE.local.md` (a
+    symlink is removed, never followed). Only a sub-agent can have put them
+    there; `--setting-sources user` already ignores all but `.mcp.json`
+    (approved anyway when the user's settings carry
+    `enableAllProjectMcpServers`), so the scrub is the second layer. Not one
+    folder per sub-agent: Claude Code checks folder trust up the parent dirs
+    but records an accepted dialog for the session's own cwd (its git root, if
+    any), so a fresh subfolder per sub-agent would ask the trust question every
+    time.
   - **Cap and phases** (`SubagentBook`, pure bookkeeping): at most
     `MAX_RUNNING_SUBAGENTS` = 4 run, further ones are `queued` (a `notStarted`
     row, never refused) and start oldest-first as slots free; a newcomer never
@@ -1056,7 +1105,10 @@ atomically, before the async `podium.yml` load.
     `finished_nudge`, the session stopped after a 5 s grace so the tool call
     can finish; a second report changes nothing. An exit without a report is
     `failed` (a `failed_nudge` with the reason); an exit Podium caused is
-    `stopped`. **Who is told:** the *user's* stop (`assistant_subagent_stop`, and
+    `stopped`. A queued one handed a slot by `fill_slots` is started outside
+    the lock; a stop landing in between ends it (`subagent_unstarted`), and
+    `do_start` re-checks the phase under the lock and refuses an ended
+    sub-agent, so no untracked process is left. **Who is told:** the *user's* stop (`assistant_subagent_stop`, and
     IPC `process_stop`, which calls `Orchestrator::user_stop_process` and so
     routes a sub-agent through `stop_subagent`) nudges the assistant
     ("stopped by the user, no summary needed"); the assistant's own
@@ -1073,8 +1125,11 @@ atomically, before the async `podium.yml` load.
     undelivered (when the sub-agents were kept). `assistant_new_conversation
     { stopSubagents }`: with stop, `stop_all_subagents` first marks each ended
     `stopped` under the lock (so a racing report finds it ended and nudges
-    nothing), then signals the processes; the `setup` call passes `false`
-    (nothing runs yet).
+    nothing), then signals the processes — and runs once more after the old
+    session is gone, for a spawn that raced the reset; the `setup` call passes
+    `false` (nothing runs yet). Known limit: a `lasting` nudge already written
+    into the turn the reset kills is not re-sent (the old session got it, the
+    new one never hears of it).
   - **Folder trust.** The first sub-agent on a machine may sit on Claude
     Code's folder-trust dialog for the workspace. For `trust_window` (30 s)
     after a start Podium watches its output (`shows_trust_prompt`: header,
@@ -1549,8 +1604,11 @@ a terminal stalled on `sudo` surfaces the same way; non-agents only show that
 state ("working…"/"idle" is noise for a plain shell). The monitor also
 covers the assistant's sub-agents, which are never in `processStore`:
 `agentActivityStore` adds the running ones from `assistantStore.subagents`
-(through `subagentProcess`) to its input, so one stuck on a prompt is seen
-without waiting for the backend's silence timer.
+(through `subagentProcess`) to its input, so one stuck on a prompt is reported
+at once — **once its terminal has been opened** (the prompt is read off the
+xterm viewport). A sub-agent whose terminal was never opened is caught by the
+backend's 5-minute silence timer instead; only its folder-trust dialog the
+backend spots on its own (see _Sub-agents_).
 
 **Sub-agents (frontend).** `SubagentsSection` (rendered by `AssistantPane`
 above the chat log, hidden when empty; collapsible) lists
@@ -1567,7 +1625,8 @@ sub-agent · kind" label and a stop button, and its stop goes through the
 sub-agent path. `CloseWarningModal` lists live sub-agents (queued marked)
 beside processes. **Settings → Assistant**'s reset: with live sub-agents the
 button shows an inline Keep running / Stop them / Cancel choice before calling
-`assistant_new_conversation { stopSubagents }`.
+`assistant_new_conversation { stopSubagents }`; the choice is withdrawn when the
+live count drops to 0 while it is open, and the next Reset just resets.
 
 `notifyAgentWaiting` (`src/lib/notify.ts`) has a sibling, `notifyAssistant`,
 for the same toast+OS-notification+sound treatment on the personal assistant.
