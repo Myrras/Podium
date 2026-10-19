@@ -188,6 +188,15 @@ pub fn run() {
                     cwd: Some(app.path().app_data_dir()?),
                     data_dir: Some(app.path().app_data_dir()?),
                 });
+            // The assistant's sub-agents run in a folder of Podium's own, not
+            // in one of the user's projects. Without it the assistant simply
+            // cannot start sub-agents, so a failure is logged, not fatal.
+            if let Err(e) = state
+                .orchestrator
+                .set_assistant_workspace(app.path().app_data_dir()?.join("assistant-workspace"))
+            {
+                tracing::warn!("could not set up the assistant workspace: {e}");
+            }
             // Every launch starts the assistant on a blank conversation: the
             // panel's day-start button is the way back in, and a transcript
             // replayed from days ago is mostly noise. `assistant-memory.md`
@@ -198,7 +207,8 @@ pub fn run() {
             // the frontend asks for the transcript — a task racing that call
             // would replay the old conversation into a fresh panel. There is
             // no session to kill this early, so this only rewrites one file.
-            tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation());
+            // Nothing runs yet, so there are no sub-agents to keep or stop.
+            tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation(false));
             // Watch the workspace on the assistant's behalf: an agent that
             // finished or crashed, one that looks stuck and lingering to-dos
             // become chat nudges — each starting the assistant's CLI if it is

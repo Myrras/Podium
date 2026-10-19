@@ -180,6 +180,12 @@ impl Watcher {
         };
         // A dead agent cannot be waiting on input any more.
         self.waiting.remove(&process_id);
+        // One of the assistant's sub-agents: how it ended is reported by the
+        // sub-agent machinery itself (done, failed or stopped), not as an
+        // agent that "finished".
+        if orchestrator.is_subagent(process_id) {
+            return;
+        }
         // Someone asked for this stop (the user, or the assistant itself via
         // `stop_process`/`respawn_agent`); "check what it did" would be noise.
         if stopped {
@@ -271,6 +277,11 @@ impl Watcher {
             let Some(nudges) = self.next_nudge(process.id) else {
                 continue;
             };
+            if process.subagent.is_some() {
+                let text = self.stuck_subagent_text(&process, nudges, prompting);
+                self.nudge(orchestrator, text).await;
+                continue;
+            }
             let where_ = describe(orchestrator, &process);
             let text = if nudges > 1 {
                 format!(
@@ -296,6 +307,41 @@ impl Watcher {
                 )
             };
             self.nudge(orchestrator, text).await;
+        }
+    }
+
+    /// What to say about one of the assistant's own sub-agents that looks
+    /// stuck: the same three stages as for a project agent, but it is the
+    /// assistant's, it has no project, and it cannot be respawned — a fresh
+    /// `spawn_subagent` carrying the answer replaces it instead. The user can
+    /// also answer it in its terminal, from the sub-agent list.
+    fn stuck_subagent_text(&self, process: &ProcessInfo, nudges: u32, prompting: bool) -> String {
+        let who = format!(
+            "Your sub-agent \"{}\" (process {})",
+            process.name, process.id
+        );
+        if nudges > 1 {
+            format!(
+                "[Podium] {who} is still blocked on the same question — raised {nudges} times \
+                 now and nobody has answered. Do not put the question to the user again: read \
+                 its last output, work out what the answer should be and say which one you \
+                 would pick and why, as something they can wave through in a word. Once they \
+                 agree, stop it (stop_process) and start a fresh spawn_subagent whose task \
+                 carries that answer."
+            )
+        } else if prompting {
+            format!(
+                "[Podium] {who} is sitting on a prompt and cannot go on without the user. \
+                 Read its last output and tell the user what it is asking for — they can \
+                 answer it in its terminal, from your sub-agent list."
+            )
+        } else {
+            format!(
+                "[Podium] {who} has printed nothing for {}. It is probably waiting on input — \
+                 read its last output and tell the user what it needs; they can answer it in \
+                 its terminal, from your sub-agent list.",
+                minutes(self.config.idle_after),
+            )
         }
     }
 
@@ -376,10 +422,11 @@ impl Watcher {
     }
 }
 
-/// Ids of every agent process that is still running.
+/// Ids of every agent process that is still running — the assistant's
+/// sub-agents included, whose stuck reports must not restart from scratch.
 fn live_agents(orchestrator: &Orchestrator) -> HashSet<ProcessId> {
     orchestrator
-        .list_processes(None)
+        .processes_with_subagents()
         .into_iter()
         .filter(|p| matches!(p.kind, ProcessKind::Agent { .. }))
         .filter(|p| matches!(p.status, ProcessStatus::Running { .. }))

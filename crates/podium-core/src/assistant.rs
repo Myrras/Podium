@@ -81,8 +81,11 @@ use crate::ids::{PendingId, ProjectId, ProposalId};
 use crate::responses::{ResponseItem, ResponseStore};
 
 /// Tools the assistant is never allowed to run: it delegates implementation
-/// work to spawned agents instead of touching the filesystem itself.
-const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash";
+/// work to spawned agents instead of touching the filesystem itself, and
+/// everything else to its own Podium sub-agents (`spawn_subagent`) rather than
+/// the CLI's in-session ones — `Agent`, which older CLIs call `Task` — whose
+/// work would hold its turn and which no panel would show.
+const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash,Agent,Task";
 
 /// Added to [`DISALLOWED_TOOLS`] under `propose-all`: `SendMessage` is the
 /// CLI's own tool, so Podium's autonomy gate never sees it, and a relayed
@@ -107,13 +110,26 @@ You are the personal assistant docked in the right-hand panel of Podium, a \
 desktop cockpit for AI coding agents. You work across the user's whole \
 workspace, not one project: call the podium MCP tools (start with \
 list_projects) to see and change to-dos, agents, processes, scratchpads and \
-worktrees. You orchestrate; you do not do the work. Your own tool calls are \
-for Podium's tools and for a message the user directly asks you to send — \
-writing or editing code, shell or file-system work, and lookups the user asks \
-for all go to an agent you start with spawn_agent. Never hand such work to \
-your own Agent-tool subagents: they have no shell here. When a request \
-plainly implies dev work, do not ask whether to start: spawn the agent and \
-say what you started. To-dos are for work that runs long or is meant to be \
+worktrees. You orchestrate; you do not do the work, so that you stay free to \
+answer the user at once. Your own tool calls are for Podium's tools and for a \
+message the user directly asks you to send. Anything beyond a reply from what \
+you already know — a lookup, a check, shell or file work — goes to a \
+sub-agent you start with spawn_subagent: kind \"lookup\" to read and look \
+things up (Slack, Teams, tickets, MCP reads, a summary across projects; no \
+shell, no file edits), kind \"full\" for shell, file or git work that belongs \
+to no single project (a check across repositories, a one-off script). Start \
+it, answer the user in one line and end your turn: do not wait for it — its \
+result reaches you as a [Podium] message. At most 4 run at once and the rest \
+simply queue, so never hold one back; list_subagents shows yours, and \
+stop_process stops one. Writing or editing code in a project is not a \
+sub-agent's: start a project agent for it with spawn_agent. Routing stays \
+with you — to-dos, messages to existing agents, proposals and spawn_agent \
+itself. Never use the CLI's own Agent tool. When a sub-agent reports back, \
+tell the user its result in at most two lines, and when it says follow-up \
+work is needed, add a to-do for it in the relevant project with add_todo \
+(ask the user when no project fits). When a request plainly implies dev \
+work, do not ask whether to start: spawn the agent and say what you started. \
+To-dos are for work that runs long or is meant to be \
 picked up later; a small request that can be done now goes straight into a \
 spawned agent's prompt, with no to-do at all. When an agent will open an \
 MR/PR for a sub-issue, tell it to link the parent issue in the description. \
@@ -250,7 +266,11 @@ const READ_ONLY_TOOLS: &[&str] = &[
     // assistant can call it. A card asking whether it may tell the user
     // something would be the very noise the list exists to cut.
     "add_response",
+    "list_subagents",
 ];
+
+/// The tool whose gate depends on its arguments (see [`requires_proposal_for`]).
+const SPAWN_SUBAGENT_TOOL: &str = "spawn_subagent";
 
 /// Tools that stop, archive or remove something. These are what
 /// [`AutonomyMode::ConfirmDestructive`] holds back.
@@ -394,6 +414,24 @@ pub fn requires_proposal(mode: AutonomyMode, tool: &str) -> bool {
         AutonomyMode::ConfirmDestructive => DESTRUCTIVE_TOOLS.contains(&tool),
         AutonomyMode::ProposeAll => !READ_ONLY_TOOLS.contains(&tool),
     }
+}
+
+/// [`requires_proposal`] for one concrete call. `spawn_subagent` is the one
+/// tool gated by its arguments: a `lookup` sub-agent only reads, so it never
+/// needs a card, while a `full` one — shell and files — is classified like
+/// `spawn_agent`, which is also what a missing or unknown kind gets (it would
+/// be refused anyway, but never by skipping the gate).
+pub fn requires_proposal_for(
+    mode: AutonomyMode,
+    tool: &str,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    let lookup = tool == SPAWN_SUBAGENT_TOOL
+        && arguments
+            .and_then(|args| args.get("kind"))
+            .and_then(|kind| kind.as_str())
+            == Some(crate::subagent::SubagentKind::Lookup.as_str());
+    !lookup && requires_proposal(mode, tool)
 }
 
 /// A gated tool call, parked until the user decides. Running it returns the
@@ -640,6 +678,13 @@ pub enum AssistantEvent {
     ResponsesChanged {
         #[serde(serialize_with = "crate::responses::serialize_labelled")]
         items: Vec<ResponseItem>,
+    },
+    /// The assistant's sub-agents changed (one was spawned, started, ended,
+    /// renamed or dropped off after lingering). The whole list, oldest first
+    /// — a snapshot like [`AssistantEvent::ResponsesChanged`], and likewise
+    /// never recorded.
+    SubagentsChanged {
+        subagents: Vec<crate::subagent::SubagentInfo>,
     },
 }
 
@@ -2585,7 +2630,6 @@ mod tests {
     fn the_identity_carries_the_orchestrator_rules() {
         for rule in [
             "You orchestrate; you do not do the work",
-            "they have no shell here",
             "never recap what an agent did",
             "stop only that project's agents",
             "get_process_output for follow-up work",
@@ -2620,6 +2664,106 @@ mod tests {
         // With the user's own --settings, --allowedTools would grant a push
         // with no deny list behind it, so the fallback must not pass one.
         assert!(!IDENTITY_PROMPT.contains("Bash(git push:*)"));
+    }
+
+    /// Delegation is what keeps the assistant free to answer, and nothing but
+    /// this wording makes it delegate — pin each rule.
+    #[test]
+    fn the_identity_hands_almost_everything_to_sub_agents() {
+        for rule in [
+            "so that you stay free to answer the user at once",
+            "goes to a sub-agent you start with spawn_subagent",
+            "kind \"lookup\" to read and look things up",
+            "no shell, no file edits",
+            "kind \"full\" for shell, file or git work that belongs to no single project",
+            "answer the user in one line and end your turn",
+            "do not wait for it",
+            "At most 4 run at once and the rest simply queue",
+            "list_subagents shows yours",
+            "Writing or editing code in a project is not a sub-agent's",
+            "start a project agent for it with spawn_agent",
+            "Routing stays with you",
+            "Never use the CLI's own Agent tool",
+            "tell the user its result in at most two lines",
+            "add a to-do for it in the relevant project with add_todo",
+        ] {
+            assert!(IDENTITY_PROMPT.contains(rule), "missing: {rule}");
+        }
+        // The old rule sent lookups to spawn_agent; that is a sub-agent's now.
+        assert!(!IDENTITY_PROMPT.contains("lookups the user asks for all go to an agent"));
+    }
+
+    /// The CLI's own subagents would do the work inside the assistant's turn,
+    /// out of every panel's sight — under both of its names.
+    #[test]
+    fn the_cli_s_own_agent_tool_is_refused() {
+        let refused: Vec<&str> = DISALLOWED_TOOLS.split(',').collect();
+        for tool in ["Edit", "Write", "NotebookEdit", "Bash", "Agent", "Task"] {
+            assert!(refused.contains(&tool), "{tool} must be refused");
+        }
+    }
+
+    /// A lookup sub-agent only reads, so starting one never needs a card; a
+    /// full one is gated like spawn_agent, and so is one whose kind is
+    /// missing or unknown.
+    #[test]
+    fn spawn_subagent_is_gated_by_its_kind() {
+        let args = |kind: &str| {
+            serde_json::json!({ "kind": kind, "task": "Find the release thread" })
+                .as_object()
+                .cloned()
+                .expect("object")
+        };
+        let lookup = args("lookup");
+        let full = args("full");
+        let odd = args("everything");
+        for mode in [
+            AutonomyMode::Full,
+            AutonomyMode::ConfirmDestructive,
+            AutonomyMode::ProposeAll,
+        ] {
+            assert!(!requires_proposal_for(
+                mode,
+                "spawn_subagent",
+                Some(&lookup)
+            ));
+            for gated in [Some(&full), Some(&odd), None] {
+                assert_eq!(
+                    requires_proposal_for(mode, "spawn_subagent", gated),
+                    requires_proposal(mode, "spawn_agent"),
+                    "{mode:?}"
+                );
+            }
+        }
+        // The kind only matters for spawn_subagent.
+        assert!(requires_proposal_for(
+            AutonomyMode::ConfirmDestructive,
+            "stop_process",
+            Some(&lookup)
+        ));
+        // Listing them is a read.
+        assert!(!requires_proposal(
+            AutonomyMode::ProposeAll,
+            "list_subagents"
+        ));
+    }
+
+    #[test]
+    fn a_sub_agents_snapshot_is_tagged_and_camel_case() {
+        let json = serde_json::to_value(AssistantEvent::SubagentsChanged {
+            subagents: Vec::new(),
+        })
+        .expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "subagentsChanged", "subagents": [] })
+        );
+        // Not conversation: never a transcript row.
+        let store = AssistantStore::new();
+        store.record(&AssistantEvent::SubagentsChanged {
+            subagents: Vec::new(),
+        });
+        assert!(store.transcript().is_empty());
     }
 
     /// The marker is the whole notification gate for unprompted turns, and it

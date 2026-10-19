@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -16,8 +17,8 @@ use crate::agent::{
 };
 use crate::assignment::AssignedAgent;
 use crate::assistant::{
-    AssistantConfig, AssistantManager, AssistantPolling, Attachment, AutonomyMode, ProposalAction,
-    ProposalInfo, TranscriptEntry,
+    AssistantConfig, AssistantEvent, AssistantManager, AssistantPolling, Attachment, AutonomyMode,
+    ProposalAction, ProposalInfo, TranscriptEntry,
 };
 use crate::boards::{BoardStore, CachedBoard};
 use crate::config::AgentsConfig;
@@ -33,6 +34,10 @@ use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, Resta
 use crate::project::{self, ConfiguredProcess, ProjectSections};
 use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
+use crate::subagent::{
+    SubagentBook, SubagentConfig, SubagentInfo, SubagentKind, SubagentPhase, SubagentRecord,
+    SubagentSpawned,
+};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
 
@@ -52,6 +57,15 @@ const LOCK_POISONED: &str = "orchestrator lock poisoned";
 
 /// Longest Responses item text kept; the rest is clipped.
 const MAX_RESPONSE_TEXT_CHARS: usize = 500;
+
+/// Why a process call refuses one of the assistant's sub-agents.
+const SUBAGENT_MANAGED: &str = "this is one of the assistant's sub-agents, which Podium starts \
+     and ends itself: spawn a new one with spawn_subagent instead";
+
+/// How often a fresh sub-agent's output is checked for the folder-trust
+/// prompt, and how much of it (see [`Hub::watch_trust_prompt`]).
+const TRUST_POLL: Duration = Duration::from_millis(200);
+const TRUST_TAIL_BYTES: usize = 8 * 1024;
 
 /// A resumed agent that crashes within this long after starting is taken to
 /// have failed to resume (the CLI refusing the session), so its next start is
@@ -206,6 +220,8 @@ impl ManagedProcess {
             command: self.spec.command.clone(),
             worktree: crate::process::worktree_name_from_cwd(&self.spec.cwd),
             color: self.spec.color.clone(),
+            // Filled in by `process_info_in`, which can see the sub-agents.
+            subagent: None,
         }
     }
 
@@ -240,6 +256,32 @@ struct Inner {
     /// How many processes were ever inserted; each takes the next value as
     /// its [`ManagedProcess::seq`].
     inserted: u64,
+    /// The personal assistant's scope (see [`AssistantScope`]); `None` until
+    /// [`Orchestrator::set_assistant_workspace`].
+    assistant_scope: Option<AssistantScope>,
+    /// The assistant's sub-agents — kind, task and phase of each, keyed by
+    /// process id. Their rows in `processes` live in the assistant's scope.
+    subagents: SubagentBook,
+    /// Where the exit handler hands a sub-agent's exit to the sub-agent
+    /// driver ([`run_subagent_driver`]); set when the driver starts.
+    subagent_exits: Option<tokio::sync::mpsc::UnboundedSender<ProcessId>>,
+}
+
+/// The personal assistant's own scope: the Podium-internal "project" its
+/// sub-agents run in, rooted at `{app_data_dir}/assistant-workspace`.
+///
+/// Kept out of [`Inner::projects`] on purpose: every user-facing project call
+/// — listing, close, rename, colour, sections, reorder, to-dos, scratchpads,
+/// worktrees, the Git board, `spawn_agent`, `add_process`, session memory —
+/// looks a project up there, so each one answers `ProjectNotFound` for the
+/// scope without having to remember to refuse it. Only the sub-agent spawn
+/// and the process engine ([`project_backend`]) know it exists.
+struct AssistantScope {
+    id: ProjectId,
+    root: PathBuf,
+    /// The assistant's own backend (`platform::wsl()`), not one decided from
+    /// the root: sub-agents run where the assistant does.
+    wsl: Option<&'static WslBackend>,
 }
 
 /// Who a verified cross-session message came from, as resolved by
@@ -256,6 +298,8 @@ pub enum PeerSender {
         /// since been closed.
         project: Option<String>,
     },
+    /// A live sub-agent of the assistant's (no project).
+    Subagent { process: Box<ProcessInfo> },
 }
 
 /// Owns all projects and processes; every UI/adapter goes through this.
@@ -265,7 +309,8 @@ pub struct Orchestrator {
     supervisor: SupervisorConfig,
     adapters: AdapterRegistry,
     /// How agents reach the built-in MCP server; `None` until it is running.
-    mcp: Mutex<Option<McpConnectInfo>>,
+    /// Shared with the sub-agent machinery's own tasks (see [`Hub`]).
+    mcp: Arc<Mutex<Option<McpConnectInfo>>>,
     /// Per-project to-do lists, keyed by project root (survives restarts).
     todos: TodoStore,
     /// Per-project scratchpads, keyed by project root (survives restarts).
@@ -279,8 +324,13 @@ pub struct Orchestrator {
     /// root (`AgentSettings.remember_sessions`).
     session_memory: SessionMemoryStore,
     /// The workspace-wide personal assistant session (chat panel). Also
-    /// holds the Responses list ([`Self::responses`]).
-    assistant: AssistantManager,
+    /// holds the Responses list ([`Self::responses`]). Shared with the
+    /// sub-agent machinery's own tasks, which nudge it (see [`Hub`]).
+    assistant: Arc<AssistantManager>,
+    /// The sub-agents' cap and timings.
+    subagent_config: SubagentConfig,
+    /// Whether the sub-agent driver runs yet — started on the first spawn.
+    subagent_driver: AtomicBool,
 }
 
 impl Default for Orchestrator {
@@ -299,22 +349,31 @@ impl Orchestrator {
         let events = EventBus::new();
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
-            assistant: AssistantManager::new(events.clone()),
+            assistant: Arc::new(AssistantManager::new(events.clone())),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
-            mcp: Mutex::new(None),
+            mcp: Arc::new(Mutex::new(None)),
             todos: TodoStore::new(),
             scratchpads: ScratchpadStore::new(),
             boards: BoardStore::new(),
             agent_settings: AgentSettingsStore::new(),
             session_memory: SessionMemoryStore::new(),
+            subagent_config: SubagentConfig::default(),
+            subagent_driver: AtomicBool::new(false),
         }
     }
 
     /// Replace the agent adapter registry (tests inject fakes).
     pub fn with_adapters(mut self, adapters: AdapterRegistry) -> Self {
         self.adapters = adapters;
+        self
+    }
+
+    /// Replace the sub-agents' cap and timings (tests use milliseconds and a
+    /// fake adapter).
+    pub fn with_subagent_config(mut self, config: SubagentConfig) -> Self {
+        self.subagent_config = config;
         self
     }
 
@@ -395,7 +454,15 @@ impl Orchestrator {
     /// Start a fresh conversation: the session is killed and the transcript,
     /// session id and pending proposals are dropped. Memory is kept — that is
     /// the point of it.
-    pub async fn assistant_new_conversation(&self) {
+    ///
+    /// The assistant's sub-agents keep running unless `stop_subagents`: the
+    /// results of the ones kept are delivered into the new conversation,
+    /// like any nudge. Stopped ones are stopped quietly — there is no
+    /// conversation left to tell.
+    pub async fn assistant_new_conversation(&self, stop_subagents: bool) {
+        if stop_subagents {
+            self.stop_all_subagents();
+        }
         self.assistant.new_conversation().await;
     }
 
@@ -430,7 +497,7 @@ impl Orchestrator {
         if crate::agent::peer_name_carries(sender_name, &self.assistant_peer_tag()) {
             return Some(PeerSender::Assistant);
         }
-        self.list_processes(None)
+        self.processes_with_subagents()
             .into_iter()
             // Only agents get a Podium-stamped session name, and only a live
             // one can be talking: a tag from an exited session is stale.
@@ -442,13 +509,18 @@ impl Orchestrator {
                         &crate::agent::peer_tag(&p.id.to_string()),
                     )
             })
-            .map(|p| PeerSender::Agent {
-                project: self
-                    .list_projects()
-                    .into_iter()
-                    .find(|proj| proj.id == p.project_id)
-                    .map(|proj| proj.name),
-                process: Box::new(p),
+            .map(|p| match p.subagent {
+                Some(_) => PeerSender::Subagent {
+                    process: Box::new(p),
+                },
+                None => PeerSender::Agent {
+                    project: self
+                        .list_projects()
+                        .into_iter()
+                        .find(|proj| proj.id == p.project_id)
+                        .map(|proj| proj.name),
+                    process: Box::new(p),
+                },
             })
     }
 
@@ -531,6 +603,290 @@ impl Orchestrator {
             .await
     }
 
+    /// Set up the personal assistant's own scope at `dir`
+    /// (`{app_data_dir}/assistant-workspace`), creating the folder: the
+    /// working directory its sub-agents run in. It is never a project — not
+    /// listed, not persisted, and refused by every project call (see
+    /// [`AssistantScope`]). Until this is called, `spawn_subagent` is refused.
+    pub fn set_assistant_workspace(&self, dir: PathBuf) -> CoreResult<()> {
+        std::fs::create_dir_all(&dir)?;
+        // Canonical like a project root, so `open_project` can tell the
+        // folder apart from a project the user picks.
+        let root = dunce::canonicalize(&dir).unwrap_or(dir);
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        match &mut inner.assistant_scope {
+            // Moved: running sub-agents keep the id they were spawned under.
+            Some(scope) => scope.root = root,
+            None => {
+                inner.assistant_scope = Some(AssistantScope {
+                    id: ProjectId::new(),
+                    root,
+                    wsl: crate::platform::wsl(),
+                })
+            }
+        }
+        Ok(())
+    }
+
+    /// Start one of the assistant's sub-agents on `task` and return at once:
+    /// `running` when one of the [`SubagentConfig::max_running`] slots is
+    /// free, else `queued` — never refused for being over the cap — and a
+    /// queued one starts on its own when a slot frees. It is an agent
+    /// process in the assistant's scope (no project, never in a sidebar, not
+    /// counted towards any project's agent cap) launched with the sub-agent
+    /// identity; its result comes back through `report_to_assistant` as a
+    /// nudge (see [`Self::report_subagent_result`]).
+    ///
+    /// `name` defaults to one derived from the task; `args` replaces the
+    /// global default args for this sub-agent, like `spawn_agent`'s. A start
+    /// that fails right away is an error here, and leaves no row behind.
+    pub async fn spawn_subagent(
+        &self,
+        kind: SubagentKind,
+        task: &str,
+        name: Option<String>,
+        args: Option<Vec<String>>,
+    ) -> CoreResult<SubagentSpawned> {
+        let task = task.trim();
+        if task.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "a sub-agent needs a task".to_string(),
+            ));
+        }
+        let scope = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner.assistant_scope.as_ref().map(|s| s.id)
+        };
+        let scope = scope.ok_or_else(|| {
+            CoreError::InvalidInput(
+                "the assistant workspace is not set up, so a sub-agent has nowhere to run"
+                    .to_string(),
+            )
+        })?;
+        // Its result can only come back over MCP: without the server, a
+        // sub-agent would work and then have no way to say so.
+        if self.mcp.lock().expect(LOCK_POISONED).is_none() {
+            return Err(CoreError::InvalidInput(
+                "Podium's MCP server is not running, so a sub-agent could not report back"
+                    .to_string(),
+            ));
+        }
+        self.ensure_subagent_driver();
+        let spawned = self
+            .spawn_agent_core(AgentSpawn {
+                project_id: scope,
+                adapter_id: Some(self.subagent_config.adapter_id.clone()),
+                name,
+                prompt: Some(task.to_string()),
+                todo_ids: Vec::new(),
+                scratchpad_ids: Vec::new(),
+                worktree: false,
+                worktree_name: None,
+                args_override: args,
+                resume_session_id: None,
+                suggest_worktree: false,
+                subagent: Some(kind),
+            })
+            .await?;
+        Ok(SubagentSpawned {
+            process_id: spawned.id,
+            state: spawned.phase.unwrap_or(SubagentPhase::Running),
+        })
+    }
+
+    /// The assistant's sub-agents, oldest first: queued, running, and the
+    /// ended ones still within [`SubagentConfig::linger`].
+    pub fn list_subagents(&self) -> Vec<SubagentInfo> {
+        subagent_infos(&self.inner.lock().expect(LOCK_POISONED))
+    }
+
+    /// Whether `id` is one of the assistant's sub-agents.
+    pub fn is_subagent(&self, id: ProcessId) -> bool {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .subagents
+            .contains(&id)
+    }
+
+    /// The user stopped a sub-agent from the panel. Ungated — it is the
+    /// user's own click — and the assistant is told, without a summary to
+    /// give. A queued one is simply cancelled; a running one is stopped and
+    /// ends `stopped` once it exits; one that already ended is only made
+    /// sure of (a `done` one still in its grace is stopped now).
+    pub async fn stop_subagent(&self, id: ProcessId) -> CoreResult<()> {
+        let cancelled = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            let unstarted = subagent_unstarted(inner, id);
+            let record = inner
+                .subagents
+                .get_mut(&id)
+                .ok_or(CoreError::ProcessNotFound)?;
+            match record.phase {
+                _ if unstarted => {
+                    record.stopped_by_user = true;
+                    let (kind, task) = (record.kind, record.task.clone());
+                    inner.subagents.finish(
+                        &id,
+                        SubagentPhase::Stopped,
+                        None,
+                        Utc::now(),
+                        Instant::now(),
+                    );
+                    publish_subagents(inner, &self.events);
+                    Some(crate::subagent::stopped_by_user_nudge(
+                        &process_name(inner, id),
+                        id,
+                        kind,
+                        &task,
+                    ))
+                }
+                SubagentPhase::Running => {
+                    // Read by the driver when the exit comes in.
+                    record.stopped_by_user = true;
+                    None
+                }
+                _ => None,
+            }
+        };
+        match cancelled {
+            Some(text) => self.hub().nudge(text).await,
+            None => match request_stop(&self.inner, &self.events, id) {
+                Ok(()) | Err(CoreError::ProcessNotRunning) => {}
+                Err(e) => return Err(e),
+            },
+        }
+        Ok(())
+    }
+
+    /// A sub-agent called `report_to_assistant`: it is `done`, its slot goes
+    /// to the next queued one, the assistant gets the result as a nudge
+    /// (summarise it in two lines, add a to-do where follow-up is needed),
+    /// and the session is stopped after [`SubagentConfig::report_grace`], so
+    /// the tool call it is in can finish. A second report, or one from a
+    /// sub-agent already stopped, changes nothing.
+    pub async fn report_subagent_result(&self, id: ProcessId, summary: &str) -> CoreResult<()> {
+        let summary = summary.trim();
+        if summary.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "summary must not be blank".to_string(),
+            ));
+        }
+        let text = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            let record = inner.subagents.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            if record.phase != SubagentPhase::Running {
+                None
+            } else {
+                let (kind, task) = (record.kind, record.task.clone());
+                inner.subagents.finish(
+                    &id,
+                    SubagentPhase::Done,
+                    Some(summary.to_string()),
+                    Utc::now(),
+                    Instant::now(),
+                );
+                publish_subagents(inner, &self.events);
+                // The clipped result, as the row shows it.
+                let result = inner
+                    .subagents
+                    .get(&id)
+                    .and_then(|r| r.result.clone())
+                    .unwrap_or_default();
+                Some(crate::subagent::finished_nudge(
+                    &process_name(inner, id),
+                    id,
+                    kind,
+                    &task,
+                    &result,
+                ))
+            }
+        };
+        let Some(text) = text else {
+            return Ok(());
+        };
+        let hub = self.hub();
+        hub.stop_after(id, self.subagent_config.report_grace);
+        hub.fill_slots().await;
+        hub.nudge(text).await;
+        Ok(())
+    }
+
+    /// Stop every sub-agent and cancel the queued ones, telling no one —
+    /// what a new conversation that drops them does.
+    fn stop_all_subagents(&self) {
+        let live = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            let mut live = Vec::new();
+            for id in inner.subagents.ids() {
+                if subagent_unstarted(inner, id) {
+                    inner.subagents.finish(
+                        &id,
+                        SubagentPhase::Stopped,
+                        None,
+                        Utc::now(),
+                        Instant::now(),
+                    );
+                } else {
+                    // A running one, or a done one still in its grace.
+                    live.push(id);
+                }
+            }
+            publish_subagents(inner, &self.events);
+            live
+        };
+        for id in live {
+            // Not running (any more) is exactly what is wanted.
+            let _ = request_stop(&self.inner, &self.events, id);
+        }
+    }
+
+    /// Everything the sub-agent machinery's own tasks need, owned.
+    fn hub(&self) -> Hub {
+        Hub {
+            inner: Arc::clone(&self.inner),
+            events: self.events.clone(),
+            supervisor: self.supervisor,
+            assistant: Arc::clone(&self.assistant),
+            mcp: Arc::clone(&self.mcp),
+            config: self.subagent_config.clone(),
+        }
+    }
+
+    /// Start the sub-agent driver ([`run_subagent_driver`]) if it does not
+    /// run yet. Lazily, on the first spawn: it needs the async runtime, which
+    /// the app's synchronous setup does not run on, and no sub-agent can
+    /// exit before one was spawned.
+    fn ensure_subagent_driver(&self) {
+        if self.subagent_driver.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.inner.lock().expect(LOCK_POISONED).subagent_exits = Some(tx);
+        tokio::spawn(run_subagent_driver(self.hub().downgrade(), rx));
+    }
+
+    /// One process by id — a project's or one of the assistant's sub-agents
+    /// (which [`Self::list_processes`] leaves out), with
+    /// [`ProcessInfo::subagent`] set for the latter.
+    pub fn process_info(&self, id: ProcessId) -> Option<ProcessInfo> {
+        process_info_in(&self.inner.lock().expect(LOCK_POISONED), id)
+    }
+
+    /// Every process, the sub-agents included — for what has to see the
+    /// assistant's own agents too (stuck detection, sender verification).
+    pub(crate) fn processes_with_subagents(&self) -> Vec<ProcessInfo> {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
+            .processes
+            .keys()
+            .filter_map(|id| process_info_in(&inner, *id))
+            .collect()
+    }
+
     /// Running agents that have printed nothing for at least `min_idle` —
     /// what [`crate::proactivity`] reads as "probably waiting on input".
     pub fn idle_agents(&self, min_idle: Duration) -> Vec<ProcessInfo> {
@@ -550,7 +906,9 @@ impl Orchestrator {
                     .expect(LOCK_POISONED)
                     .last_append_at()
                     .or(p.started_at)?;
-                (now.duration_since(last) >= min_idle).then(|| p.info(*id))
+                (now.duration_since(last) >= min_idle)
+                    .then(|| process_info_in(&inner, *id))
+                    .flatten()
             })
             .collect()
     }
@@ -616,7 +974,7 @@ impl Orchestrator {
                 let last = p.scrollback.lock().expect(LOCK_POISONED).last_append_at();
                 match last {
                     Some(last) if last > since => None,
-                    _ => Some(p.info(*id)),
+                    _ => process_info_in(&inner, *id),
                 }
             })
             .collect()
@@ -712,8 +1070,9 @@ impl Orchestrator {
                 "todo_id needs project_id (or the process_id of an agent)".to_string(),
             ));
         }
-        let process =
-            process_id.and_then(|id| self.list_processes(None).into_iter().find(|p| p.id == id));
+        // Sub-agents included: an item about one keeps its name (it has no
+        // project to show).
+        let process = process_id.and_then(|id| self.process_info(id));
         // Responses are about agents: a terminal's or service's id would key
         // and label the item after the wrong thing. (An id that is gone is
         // fine — see above.)
@@ -888,6 +1247,18 @@ impl Orchestrator {
         // (os error 5). `dunce` resolves symlinks the same way but keeps the
         // legacy path form when the verbatim form isn't required.
         let path = dunce::canonicalize(&path).unwrap_or(path);
+        if self
+            .inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .assistant_scope
+            .as_ref()
+            .is_some_and(|scope| scope.root == path)
+        {
+            return Err(CoreError::InvalidInput(
+                "this folder is Podium's own assistant workspace, not a project".to_string(),
+            ));
+        }
         if let Some(legacy_root) = &legacy_root {
             self.todos.migrate_legacy_root(&path, legacy_root);
             self.scratchpads.migrate_legacy_root(&path, legacy_root);
@@ -1085,6 +1456,7 @@ impl Orchestrator {
                 worktree: entry.worktree && !made,
                 worktree_name: entry.worktree_name.clone(),
                 suggest_worktree: !made,
+                subagent: None,
             })
             .await?;
         self.reassign_restored(
@@ -2051,11 +2423,19 @@ impl Orchestrator {
             args_override,
             resume_session_id: None,
             suggest_worktree: true,
+            subagent: None,
         })
         .await
     }
 
     async fn spawn_agent_inner(&self, req: AgentSpawn) -> CoreResult<ProcessId> {
+        Ok(self.spawn_agent_core(req).await?.id)
+    }
+
+    /// The one agent spawn: a project agent, or — with `req.subagent` — one
+    /// of the assistant's sub-agents in its scope, which is admitted against
+    /// the sub-agent cap instead of the project's (and may only be queued).
+    async fn spawn_agent_core(&self, req: AgentSpawn) -> CoreResult<Spawned> {
         let AgentSpawn {
             project_id,
             adapter_id,
@@ -2068,16 +2448,33 @@ impl Orchestrator {
             args_override,
             resume_session_id,
             suggest_worktree,
+            subagent,
         } = req;
         let (root, wsl, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
-            let handle = inner
-                .projects
-                .get(&project_id)
-                .ok_or(CoreError::ProjectNotFound)?;
-            if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
-                return Err(CoreError::AgentLimitReached);
-            }
+            let (root, wsl, agents) = match subagent {
+                // The assistant's scope is no project: no `podium.yml`
+                // agents config, and the sub-agent cap — not the
+                // per-project one — governs how many run.
+                Some(_) => {
+                    let scope = inner
+                        .assistant_scope
+                        .as_ref()
+                        .filter(|s| s.id == project_id)
+                        .ok_or(CoreError::ProjectNotFound)?;
+                    (scope.root.clone(), scope.wsl, AgentsConfig::default())
+                }
+                None => {
+                    let handle = inner
+                        .projects
+                        .get(&project_id)
+                        .ok_or(CoreError::ProjectNotFound)?;
+                    if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
+                        return Err(CoreError::AgentLimitReached);
+                    }
+                    (handle.root.clone(), handle.wsl, handle.agents.clone())
+                }
+            };
             let names: HashSet<String> = inner
                 .processes
                 .values()
@@ -2085,13 +2482,7 @@ impl Orchestrator {
                 .map(|p| p.spec.name.clone())
                 .collect();
             let color = pick_session_color(&inner, project_id, None);
-            (
-                handle.root.clone(),
-                handle.wsl,
-                handle.agents.clone(),
-                names,
-                color,
-            )
+            (root, wsl, agents, names, color)
         };
         // Adapter precedence: an explicit choice, then the project's pinned
         // `agents.default_adapter`, then the global Settings → Agents default,
@@ -2195,7 +2586,12 @@ impl Orchestrator {
             .as_deref()
             .or_else(|| ov.map(|o| o.default_args.as_slice()))
             .unwrap_or(&[]);
-        let merged_args = settings::merge_args(global.merge_mode, global_args, &agents.extra_args);
+        let mut merged_args =
+            settings::merge_args(global.merge_mode, global_args, &agents.extra_args);
+        // After the user's own, so a lookup's restrictions win.
+        if let Some(kind) = subagent {
+            merged_args.extend(crate::subagent::launch_args(kind));
+        }
         let command_override = ov.and_then(|o| o.command.as_deref());
         let plan = adapter.build_launch(&AgentLaunchCtx {
             project_id,
@@ -2210,14 +2606,20 @@ impl Orchestrator {
             worktree,
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && suggest_worktree && !worktree,
+            subagent,
         })?;
-        let mut session = plan.restart.map(|commands| AgentSession {
-            commands,
-            adapter: Arc::clone(&adapter),
-            id: process_id.to_string(),
-            resumed: false,
-            resume_failed: false,
-        });
+        // A sub-agent is never restarted (Podium refuses it) nor remembered,
+        // so it carries no session to resume.
+        let mut session =
+            plan.restart
+                .filter(|_| subagent.is_none())
+                .map(|commands| AgentSession {
+                    commands,
+                    adapter: Arc::clone(&adapter),
+                    id: process_id.to_string(),
+                    resumed: false,
+                    resume_failed: false,
+                });
         // A restore starts on the remembered session, spelled exactly as a
         // restart that found it stored. Without session flags (the user's own
         // args pick the session now) there is nothing to resume it with.
@@ -2244,36 +2646,63 @@ impl Orchestrator {
             restart_policy: RestartPolicy::Never,
             color: Some(session_color),
         };
-        {
-            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let phase = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
             // Re-check under the same lock as the insert: a concurrent spawn
             // may have raced past the early check above.
-            let guard = if inner.shutting_down {
+            let refused = if inner.shutting_down {
                 // Refused here as well as in `do_start`, so a quit leaves no
                 // never-started row behind.
                 Some(CoreError::ShuttingDown)
+            } else if subagent.is_some() {
+                inner
+                    .assistant_scope
+                    .as_ref()
+                    .is_none_or(|s| s.id != project_id)
+                    .then_some(CoreError::ProjectNotFound)
             } else if !inner.projects.contains_key(&project_id) {
                 Some(CoreError::ProjectNotFound)
-            } else if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
+            } else if active_agent_count(inner, project_id) >= MAX_AGENTS_PER_PROJECT {
                 Some(CoreError::AgentLimitReached)
             } else {
                 None
             };
-            if let Some(err) = guard {
+            if let Some(err) = refused {
                 return Err(err);
             }
-            insert_process(&mut inner, process_id, project_id, spec, false);
+            insert_process(inner, process_id, project_id, spec, false);
             if let Some(p) = inner.processes.get_mut(&process_id) {
                 p.session = session;
                 p.spawn_args = args_override;
                 p.spawn_worktree = worktree;
                 p.spawn_worktree_name = worktree_name.clone();
             }
-        }
+            // Admitted under the same lock as the insert, so two spawns
+            // racing for the last slot cannot both take it.
+            subagent.map(|kind| {
+                let phase = inner.subagents.admit(
+                    process_id,
+                    kind,
+                    base_prompt.unwrap_or_default(),
+                    self.subagent_config.max_running,
+                    Utc::now(),
+                );
+                publish_subagents(inner, &self.events);
+                phase
+            })
+        };
         self.events.publish(PodiumEvent::ProcessAdded {
             project_id,
             process_id,
         });
+        // A queued sub-agent starts when a slot frees (`Hub::fill_slots`).
+        if phase == Some(SubagentPhase::Queued) {
+            return Ok(Spawned {
+                id: process_id,
+                phase,
+            });
+        }
         let started = do_start(
             &self.inner,
             &self.events,
@@ -2282,10 +2711,19 @@ impl Orchestrator {
             true,
             relaunch,
         );
-        if let Err(CoreError::ShuttingDown) = started {
+        match &started {
             // The quit began between the insert and the start: drop the row,
-            // which would otherwise linger as never started.
-            let _ = self.remove_process(process_id).await;
+            // which would otherwise linger as never started. A sub-agent that
+            // could not start is not kept either: the assistant gets the
+            // error right away instead, and its slot goes to the next one.
+            Err(e) if subagent.is_some() || matches!(e, CoreError::ShuttingDown) => {
+                let _ = self.remove_process_row(process_id);
+                if subagent.is_some() {
+                    self.hub().fill_slots().await;
+                }
+            }
+            Ok(()) if subagent.is_some() => self.hub().watch_trust_prompt(process_id),
+            _ => {}
         }
         started?;
         // Link the agent to the to-dos/scratchpads it was spawned for so the
@@ -2295,18 +2733,35 @@ impl Orchestrator {
         self.assign_todos(project_id, process_id, &assign_todo_ids);
         let assign_scratchpad_ids: Vec<ScratchpadId> = scratchpads.iter().map(|s| s.id).collect();
         self.assign_scratchpads(project_id, process_id, &assign_scratchpad_ids);
-        Ok(process_id)
+        Ok(Spawned {
+            id: process_id,
+            phase,
+        })
     }
 
     /// Remove a process, stopping it first if it is still running. Also
-    /// cancels any pending supervised restart.
+    /// cancels any pending supervised restart. One of the assistant's
+    /// sub-agents is refused: Podium removes those itself once they ended.
     pub async fn remove_process(&self, id: ProcessId) -> CoreResult<()> {
+        if self.is_subagent(id) {
+            return Err(CoreError::InvalidInput(SUBAGENT_MANAGED.to_string()));
+        }
+        self.remove_process_row(id)
+    }
+
+    /// [`Self::remove_process`] without the sub-agent check, dropping a
+    /// sub-agent's record along with its row.
+    fn remove_process_row(&self, id: ProcessId) -> CoreResult<()> {
         let (project_id, cleared) = {
-            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            if inner.subagents.remove(&id).is_some() {
+                publish_subagents(inner, &self.events);
+            }
             // Drop the process's to-do/scratchpad assignments while it is
             // still in the map (clearing needs its project id), then remove
             // the process.
-            let cleared = clear_agent_assignments(&mut inner, id);
+            let cleared = clear_agent_assignments(inner, id);
             let mut p = inner
                 .processes
                 .remove(&id)
@@ -2332,12 +2787,15 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// The processes of one project, or of all of them. The assistant's
+    /// sub-agents are never listed here — they belong to no project and are
+    /// never in a sidebar; see [`Self::list_subagents`].
     pub fn list_processes(&self, project_id: Option<ProjectId>) -> Vec<ProcessInfo> {
-        self.inner
-            .lock()
-            .expect(LOCK_POISONED)
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner
             .processes
             .iter()
+            .filter(|(id, _)| !inner.subagents.contains(id))
             .filter(|(_, p)| project_id.is_none_or(|pid| p.project_id == pid))
             .map(|(id, p)| p.info(*id))
             .collect()
@@ -2696,14 +3154,13 @@ impl Orchestrator {
     /// exiting SIGTERMs/SIGKILLs every managed process group — losing an
     /// agent's in-flight work or a live terminal session. Services are
     /// intentionally excluded: they come from `podium.yml` and are meant to
-    /// come and go with the app.
+    /// come and go with the app. The assistant's sub-agents count too —
+    /// running ones are agent processes like any other, and a queued one is
+    /// work the user asked for that the quit would drop.
     pub fn has_active_agents_or_terminals(&self) -> bool {
-        self.inner
-            .lock()
-            .expect(LOCK_POISONED)
-            .processes
-            .values()
-            .any(|p| {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.subagents.queued() > 0
+            || inner.processes.values().any(|p| {
                 p.is_active()
                     && matches!(
                         p.spec.kind,
@@ -2729,7 +3186,13 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(CoreError::ProcessNotFound)?;
             proc.spec.name = name.to_string();
-            (proc.project_id, proc.info(id))
+            let project_id = proc.project_id;
+            // A sub-agent's row in the panel carries its name.
+            if inner.subagents.contains(&id) {
+                publish_subagents(&inner, &self.events);
+            }
+            let info = process_info_in(&inner, id).ok_or(CoreError::ProcessNotFound)?;
+            (project_id, info)
         };
         self.events.publish(PodiumEvent::ProcessUpdated {
             project_id,
@@ -2745,10 +3208,15 @@ impl Orchestrator {
     /// An agent that ran before picks its CLI session back up when the CLI
     /// has it stored, and otherwise starts a fresh session (see
     /// [`restart_launch`]). Its first start always runs `spec.command`.
+    /// One of the assistant's sub-agents is refused: Podium starts a queued
+    /// one itself when a slot frees, and an ended one stays ended.
     pub async fn start_process(&self, id: ProcessId) -> CoreResult<()> {
         let restart = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            if inner.subagents.contains(&id) {
+                return Err(CoreError::InvalidInput(SUBAGENT_MANAGED.to_string()));
+            }
             match (&proc.spec.kind, &proc.session) {
                 (ProcessKind::Agent { adapter }, Some(session))
                     if matches!(proc.status, ProcessStatus::Exited { .. }) =>
@@ -2812,6 +3280,11 @@ impl Orchestrator {
                 .processes
                 .get(&process_id)
                 .ok_or(CoreError::ProcessNotFound)?;
+            // A stuck sub-agent is stopped and replaced by a fresh
+            // `spawn_subagent` carrying the answer in its task.
+            if inner.subagents.contains(&process_id) {
+                return Err(CoreError::InvalidInput(SUBAGENT_MANAGED.to_string()));
+            }
             match &proc.spec.kind {
                 ProcessKind::Agent { adapter } => (proc.project_id, adapter.clone()),
                 _ => {
@@ -2877,43 +3350,43 @@ impl Orchestrator {
     /// Request a graceful stop (SIGTERM, then SIGKILL after a grace period).
     /// Also cancels a pending supervised restart; if only a restart was
     /// pending (the process already exited), that cancellation is success.
+    ///
+    /// On one of the assistant's sub-agents this is the assistant's own stop
+    /// (it is gated as destructive): a queued one is cancelled, a running
+    /// one ends `stopped` — and the assistant is not nudged about a stop it
+    /// asked for. The user's stop is [`Self::stop_subagent`].
     pub async fn stop_process(&self, id: ProcessId) -> CoreResult<()> {
         // Asked while the CLI still runs: a clean exit removes the record of
         // which session a `/clear` moved it to.
         let probe = live_probe(&self.inner.lock().expect(LOCK_POISONED), id);
         let followed = read_live_sessions(probe.into_iter().collect()).await;
-        let (project_id, pty) = {
-            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
             for (probe, live) in followed {
-                apply_live_session(&mut inner, &probe, live);
+                apply_live_session(inner, &probe, live);
             }
-            let proc = inner
-                .processes
-                .get_mut(&id)
-                .ok_or(CoreError::ProcessNotFound)?;
-            let cancelled = proc.restart.cancel();
-            let running = matches!(proc.status, ProcessStatus::Running { .. });
-            match proc.pty.clone() {
-                Some(pty) if running => {
-                    proc.user_stopped = true;
-                    proc.status = ProcessStatus::Stopping;
-                    (proc.project_id, pty)
-                }
-                _ if cancelled => return Ok(()),
-                _ => return Err(CoreError::ProcessNotRunning),
+            if subagent_unstarted(inner, id) {
+                inner.subagents.finish(
+                    &id,
+                    SubagentPhase::Stopped,
+                    None,
+                    Utc::now(),
+                    Instant::now(),
+                );
+                publish_subagents(inner, &self.events);
+                return Ok(());
             }
-        };
-        self.events.publish(PodiumEvent::ProcessStatusChanged {
-            project_id,
-            process_id: id,
-            status: ProcessStatus::Stopping,
-        });
-        pty.stop();
-        Ok(())
+        }
+        request_stop(&self.inner, &self.events, id)
     }
 
     /// Stop the process if running, wait for it to exit, then start it again.
+    /// Refused for one of the assistant's sub-agents, like a start.
     pub async fn restart_process(&self, id: ProcessId) -> CoreResult<()> {
+        if self.is_subagent(id) {
+            return Err(CoreError::InvalidInput(SUBAGENT_MANAGED.to_string()));
+        }
         match self.stop_process(id).await {
             Ok(()) | Err(CoreError::ProcessNotRunning) => {}
             Err(e) => return Err(e),
@@ -3123,6 +3596,445 @@ struct AgentSpawn {
     /// `false` keeps the "suggest worktree" setting out of the identity
     /// prompt: a restored agent that already made its worktree.
     suggest_worktree: bool,
+    /// One of the assistant's sub-agents, of this kind: `project_id` is then
+    /// the assistant's scope, `prompt` its task.
+    subagent: Option<SubagentKind>,
+}
+
+/// What [`Orchestrator::spawn_agent_core`] made: the process, and for a
+/// sub-agent whether it was admitted `Running` or `Queued`.
+struct Spawned {
+    id: ProcessId,
+    phase: Option<SubagentPhase>,
+}
+
+/// A process's snapshot, with [`ProcessInfo::subagent`] filled in for one of
+/// the assistant's sub-agents.
+fn process_info_in(inner: &Inner, id: ProcessId) -> Option<ProcessInfo> {
+    let mut info = inner.processes.get(&id)?.info(id);
+    info.subagent = inner.subagents.get(&id).map(SubagentRecord::meta);
+    Some(info)
+}
+
+/// The sub-agent panel's rows, oldest first.
+fn subagent_infos(inner: &Inner) -> Vec<SubagentInfo> {
+    inner
+        .subagents
+        .ids()
+        .into_iter()
+        .filter_map(|id| {
+            let record = inner.subagents.get(&id)?;
+            let process = inner.processes.get(&id)?;
+            Some(record.info(id, process.spec.name.clone(), process.status.clone()))
+        })
+        .collect()
+}
+
+/// Announce the whole sub-agent list after a change. Called under the lock
+/// that made the change, so snapshots arrive in the order the changes did.
+fn publish_subagents(inner: &Inner, events: &EventBus) {
+    events.publish(PodiumEvent::AssistantEvent {
+        event: AssistantEvent::SubagentsChanged {
+            subagents: subagent_infos(inner),
+        },
+    });
+}
+
+/// Whether sub-agent `id` holds no process yet: queued, or handed a slot but
+/// not started yet (`Hub::fill_slots` and the spawn start it outside the
+/// lock). A stop cancels such a one rather than signal a process that is not
+/// there — and [`do_start`] then refuses to start it.
+fn subagent_unstarted(inner: &Inner, id: ProcessId) -> bool {
+    match inner.subagents.get(&id).map(|r| r.phase) {
+        Some(SubagentPhase::Queued) => true,
+        Some(SubagentPhase::Running) => inner
+            .processes
+            .get(&id)
+            .is_some_and(|p| matches!(p.status, ProcessStatus::NotStarted)),
+        _ => false,
+    }
+}
+
+/// A process's display name, empty once it is gone.
+fn process_name(inner: &Inner, id: ProcessId) -> String {
+    inner
+        .processes
+        .get(&id)
+        .map(|p| p.spec.name.clone())
+        .unwrap_or_default()
+}
+
+/// Request a graceful stop (SIGTERM, then SIGKILL after a grace period) and
+/// cancel a pending supervised restart; when only a restart was pending (the
+/// process already exited), that cancellation is success. The core of
+/// [`Orchestrator::stop_process`], shared with the sub-agent tasks.
+fn request_stop(inner: &Mutex<Inner>, events: &EventBus, id: ProcessId) -> CoreResult<()> {
+    let (project_id, pty) = {
+        let mut inner = inner.lock().expect(LOCK_POISONED);
+        let proc = inner
+            .processes
+            .get_mut(&id)
+            .ok_or(CoreError::ProcessNotFound)?;
+        let cancelled = proc.restart.cancel();
+        let running = matches!(proc.status, ProcessStatus::Running { .. });
+        match proc.pty.clone() {
+            Some(pty) if running => {
+                proc.user_stopped = true;
+                proc.status = ProcessStatus::Stopping;
+                (proc.project_id, pty)
+            }
+            _ if cancelled => return Ok(()),
+            _ => return Err(CoreError::ProcessNotRunning),
+        }
+    };
+    events.publish(PodiumEvent::ProcessStatusChanged {
+        project_id,
+        process_id: id,
+        status: ProcessStatus::Stopping,
+    });
+    pty.stop();
+    Ok(())
+}
+
+/// Everything the sub-agent machinery needs, owned: the tasks it runs in
+/// (the driver, a delayed stop, the trust watch) outlive any single call
+/// into the orchestrator.
+#[derive(Clone)]
+struct Hub {
+    inner: Arc<Mutex<Inner>>,
+    events: EventBus,
+    supervisor: SupervisorConfig,
+    assistant: Arc<AssistantManager>,
+    mcp: Arc<Mutex<Option<McpConnectInfo>>>,
+    config: SubagentConfig,
+}
+
+/// A [`Hub`] that does not keep the orchestrator alive — what the driver
+/// holds, so it ends once the app drops the orchestrator.
+struct WeakHub {
+    inner: Weak<Mutex<Inner>>,
+    events: EventBus,
+    supervisor: SupervisorConfig,
+    assistant: Weak<AssistantManager>,
+    mcp: Weak<Mutex<Option<McpConnectInfo>>>,
+    config: SubagentConfig,
+}
+
+impl WeakHub {
+    fn upgrade(&self) -> Option<Hub> {
+        Some(Hub {
+            inner: self.inner.upgrade()?,
+            events: self.events.clone(),
+            supervisor: self.supervisor,
+            assistant: self.assistant.upgrade()?,
+            mcp: self.mcp.upgrade()?,
+            config: self.config.clone(),
+        })
+    }
+}
+
+impl Hub {
+    fn downgrade(&self) -> WeakHub {
+        WeakHub {
+            inner: Arc::downgrade(&self.inner),
+            events: self.events.clone(),
+            supervisor: self.supervisor,
+            assistant: Arc::downgrade(&self.assistant),
+            mcp: Arc::downgrade(&self.mcp),
+            config: self.config.clone(),
+        }
+    }
+
+    /// Tell the assistant how a sub-agent ended. Unlike proactivity's nudges
+    /// this is not behind the proactivity switch: the result is what the
+    /// user asked the assistant for. Nothing is said once the app quits —
+    /// a nudge would only start a fresh assistant session on the way out.
+    async fn nudge(&self, text: String) {
+        if self.inner.lock().expect(LOCK_POISONED).shutting_down {
+            return;
+        }
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.nudge(text, mcp).await;
+    }
+
+    /// Start queued sub-agents, oldest first, while slots are free. One that
+    /// fails to start ends `failed` (the assistant is told) and its slot goes
+    /// to the next.
+    async fn fill_slots(&self) {
+        loop {
+            let promoted = {
+                let mut guard = self.inner.lock().expect(LOCK_POISONED);
+                let inner = &mut *guard;
+                if inner.shutting_down {
+                    return;
+                }
+                let promoted = inner.subagents.promote(self.config.max_running, Utc::now());
+                if promoted.is_empty() {
+                    return;
+                }
+                publish_subagents(inner, &self.events);
+                promoted
+            };
+            for id in promoted {
+                match do_start(&self.inner, &self.events, self.supervisor, id, true, None) {
+                    Ok(()) => self.watch_trust_prompt(id),
+                    Err(e) => {
+                        if let Some(text) = self.fail(id, format!("it could not start: {e}")) {
+                            self.nudge(text).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// End sub-agent `id` `failed` with `reason`, returning the nudge that
+    /// says so (`None` when it had ended already — say, the user stopped it
+    /// before it could start).
+    fn fail(&self, id: ProcessId, reason: String) -> Option<String> {
+        let mut guard = self.inner.lock().expect(LOCK_POISONED);
+        let inner = &mut *guard;
+        let record = inner.subagents.get(&id)?;
+        let (kind, task) = (record.kind, record.task.clone());
+        if !inner.subagents.finish(
+            &id,
+            SubagentPhase::Failed,
+            Some(reason.clone()),
+            Utc::now(),
+            Instant::now(),
+        ) {
+            return None;
+        }
+        publish_subagents(inner, &self.events);
+        Some(crate::subagent::failed_nudge(
+            &process_name(inner, id),
+            id,
+            kind,
+            &task,
+            &reason,
+        ))
+    }
+
+    /// A sub-agent's process exited. Unless it already ended (reported, or
+    /// was cancelled), that decides how: `stopped` when Podium stopped it,
+    /// else `failed` — a crash, or a CLI that quit without a result. Either
+    /// way its slot goes to the next queued one; the assistant hears about a
+    /// failure, and about a stop only when the user made it.
+    async fn on_exit(&self, id: ProcessId) {
+        let text = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            let exited = inner.processes.get(&id).and_then(|p| match p.status {
+                ProcessStatus::Exited {
+                    code,
+                    crashed,
+                    stopped,
+                    ..
+                } => Some((code, crashed, stopped)),
+                _ => None,
+            });
+            let record = inner
+                .subagents
+                .get(&id)
+                .filter(|r| r.phase == SubagentPhase::Running)
+                .map(|r| (r.kind, r.task.clone(), r.stopped_by_user));
+            match (exited, record) {
+                (Some((_, _, true)), Some((kind, task, by_user))) => {
+                    inner.subagents.finish(
+                        &id,
+                        SubagentPhase::Stopped,
+                        None,
+                        Utc::now(),
+                        Instant::now(),
+                    );
+                    publish_subagents(inner, &self.events);
+                    by_user.then(|| {
+                        crate::subagent::stopped_by_user_nudge(
+                            &process_name(inner, id),
+                            id,
+                            kind,
+                            &task,
+                        )
+                    })
+                }
+                (Some((code, crashed, false)), Some((kind, task, _))) => {
+                    let reason = if crashed {
+                        match code {
+                            Some(code) => format!("it crashed (exit code {code})"),
+                            None => "it crashed".to_string(),
+                        }
+                    } else {
+                        "it exited without reporting a result".to_string()
+                    };
+                    inner.subagents.finish(
+                        &id,
+                        SubagentPhase::Failed,
+                        Some(reason.clone()),
+                        Utc::now(),
+                        Instant::now(),
+                    );
+                    publish_subagents(inner, &self.events);
+                    Some(crate::subagent::failed_nudge(
+                        &process_name(inner, id),
+                        id,
+                        kind,
+                        &task,
+                        &reason,
+                    ))
+                }
+                _ => None,
+            }
+        };
+        // The next one first: the nudge may have to start the assistant.
+        self.fill_slots().await;
+        if let Some(text) = text {
+            self.nudge(text).await;
+        }
+    }
+
+    /// The driver's slow tick: end any running sub-agent whose exit was
+    /// missed (none should be — the exit channel is lossless — but a slot
+    /// must never stay held by a process that is gone), then drop the rows
+    /// of those ended longer than [`SubagentConfig::linger`] ago, processes
+    /// and all.
+    async fn sweep(&self) {
+        let missed: Vec<ProcessId> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .subagents
+                .ids()
+                .into_iter()
+                .filter(|id| {
+                    inner
+                        .subagents
+                        .get(id)
+                        .is_some_and(|r| r.phase == SubagentPhase::Running)
+                        && inner
+                            .processes
+                            .get(id)
+                            .is_some_and(|p| matches!(p.status, ProcessStatus::Exited { .. }))
+                })
+                .collect()
+        };
+        for id in missed {
+            self.on_exit(id).await;
+        }
+        let removed = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            let expired: Vec<ProcessId> = inner
+                .subagents
+                .expired(self.config.linger, Instant::now())
+                .into_iter()
+                // A done one still in its grace keeps its row until it is down.
+                .filter(|id| inner.processes.get(id).is_none_or(|p| !p.is_active()))
+                .collect();
+            if expired.is_empty() {
+                return;
+            }
+            let mut removed = Vec::new();
+            for id in expired {
+                inner.subagents.remove(&id);
+                if let Some(mut p) = inner.processes.remove(&id) {
+                    p.restart.cancel();
+                    removed.push((p.project_id, id));
+                }
+            }
+            publish_subagents(inner, &self.events);
+            removed
+        };
+        for (project_id, process_id) in removed {
+            self.events.publish(PodiumEvent::ProcessRemoved {
+                project_id,
+                process_id,
+            });
+        }
+    }
+
+    /// Stop sub-agent `id` once `delay` has passed (its report came in; let
+    /// that tool call finish first).
+    fn stop_after(&self, id: ProcessId, delay: Duration) {
+        let inner = Arc::downgrade(&self.inner);
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Some(inner) = inner.upgrade() {
+                // Gone already (the user stopped it first) is fine.
+                let _ = request_stop(&inner, &events, id);
+            }
+        });
+    }
+
+    /// Accept Claude Code's folder-trust prompt for a sub-agent that just
+    /// started, if it shows one within [`SubagentConfig::trust_window`]. The
+    /// folder is the assistant workspace — Podium's own, made empty for this
+    /// — and the session runs in the background, so nobody would answer it:
+    /// the agent would just sit there until the stuck-agent check noticed.
+    /// The CLI keeps the answer for the folder, so only the first sub-agent
+    /// on a machine ever sees it. One Enter at most, on the default "Yes".
+    fn watch_trust_prompt(&self, id: ProcessId) {
+        let inner = Arc::downgrade(&self.inner);
+        let window = self.config.trust_window;
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + window;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(TRUST_POLL).await;
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                let (scrollback, pty) = {
+                    let guard = inner.lock().expect(LOCK_POISONED);
+                    match guard.processes.get(&id) {
+                        Some(p) if matches!(p.status, ProcessStatus::Running { .. }) => {
+                            (Arc::clone(&p.scrollback), p.pty.clone())
+                        }
+                        _ => return,
+                    }
+                };
+                let tail = scrollback
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .tail_bytes(TRUST_TAIL_BYTES);
+                let screen =
+                    String::from_utf8_lossy(&strip_ansi_escapes::strip(&tail)).into_owned();
+                if crate::subagent::shows_trust_prompt(&screen) {
+                    if let Some(pty) = pty {
+                        if let Err(e) = pty.write(b"\r") {
+                            tracing::debug!(process_id = %id, "could not answer the trust prompt: {e}");
+                        }
+                    }
+                    return;
+                }
+            }
+        });
+    }
+}
+
+/// The sub-agent driver: acts on each sub-agent exit the exit handler hands
+/// it ([`Hub::on_exit`]) and, on a slow tick, sweeps ended rows
+/// ([`Hub::sweep`]). Holds the orchestrator only weakly, so it ends with it.
+async fn run_subagent_driver(
+    hub: WeakHub,
+    mut exits: tokio::sync::mpsc::UnboundedReceiver<ProcessId>,
+) {
+    let mut ticker = tokio::time::interval(hub.config.tick);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let exited = tokio::select! {
+            id = exits.recv() => match id {
+                Some(id) => Some(id),
+                None => return,
+            },
+            _ = ticker.tick() => None,
+        };
+        let Some(live) = hub.upgrade() else {
+            return;
+        };
+        match exited {
+            Some(id) => live.on_exit(id).await,
+            None => live.sweep().await,
+        }
+    }
 }
 
 /// Trim a project display name; blank means "none".
@@ -3464,7 +4376,15 @@ fn next_free_name(base: &str, existing: &HashSet<String>) -> String {
 /// The backend `project_id` runs on (see [`ProjectHandle::wsl`]); `None`
 /// natively, or once the project is gone.
 fn project_backend(inner: &Inner, project_id: ProjectId) -> Option<&'static WslBackend> {
-    inner.projects.get(&project_id).and_then(|p| p.wsl)
+    match inner.projects.get(&project_id) {
+        Some(p) => p.wsl,
+        // The assistant's scope runs where the assistant does.
+        None => inner
+            .assistant_scope
+            .as_ref()
+            .filter(|s| s.id == project_id)
+            .and_then(|s| s.wsl),
+    }
 }
 
 fn insert_process(
@@ -3530,6 +4450,13 @@ fn do_start(
     let mut guard = inner.lock().expect(LOCK_POISONED);
     if guard.shutting_down {
         return Err(CoreError::ShuttingDown);
+    }
+    // A sub-agent stopped between getting its slot and this start stays
+    // stopped (see `subagent_unstarted`).
+    if guard.subagents.get(&id).is_some_and(|r| r.phase.is_ended()) {
+        return Err(CoreError::InvalidInput(
+            "this sub-agent has already ended".to_string(),
+        ));
     }
     // An agent that lost its colour on exit takes it back if no live agent
     // holds it now, else gets a new one picked exactly as at spawn.
@@ -3852,6 +4779,13 @@ fn make_exit_handler(
             });
             if decolored {
                 publish_color_change(&guard, &events, id, project_id);
+            }
+            // A sub-agent's exit decides its phase and frees its slot: the
+            // driver acts on it, on the runtime rather than this wait thread.
+            if guard.subagents.contains(&id) {
+                if let Some(exits) = &guard.subagent_exits {
+                    let _ = exits.send(id);
+                }
             }
             restart
         };
@@ -5711,5 +6645,586 @@ mod tests {
         .unwrap();
         orch.shutdown().await;
         assert!(orch.session_memory.list(&root).is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // The assistant's sub-agents
+    // ---------------------------------------------------------------------
+
+    /// A sub-agent's launch, as [`SubFake`] saw it.
+    #[derive(Debug, Clone)]
+    struct SubLaunch {
+        subagent: Option<SubagentKind>,
+        args: Vec<String>,
+        root: PathBuf,
+        named: bool,
+    }
+
+    /// Adapter for the sub-agent tests: a launch sleeps, unless its prompt
+    /// (the task) starts with "crash", which exits 3 at once. Records every
+    /// launch.
+    #[derive(Default)]
+    struct SubFake {
+        launches: Mutex<Vec<SubLaunch>>,
+    }
+
+    impl crate::agent::AgentAdapter for SubFake {
+        fn id(&self) -> &'static str {
+            "subfake"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Sub fake"
+        }
+
+        fn binary(&self) -> &'static str {
+            "subfake"
+        }
+
+        fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<crate::agent::LaunchPlan> {
+            self.launches.lock().unwrap().push(SubLaunch {
+                subagent: ctx.subagent,
+                args: ctx.extra_args.to_vec(),
+                root: ctx.project_root.to_path_buf(),
+                named: ctx.named,
+            });
+            let crash = ctx.prompt.is_some_and(|p| p.starts_with("crash"));
+            Ok(crate::agent::LaunchPlan {
+                command: if crash { "exit 3" } else { "sleep 30" }.to_string(),
+                env: Vec::new(),
+                restart: None,
+            })
+        }
+
+        fn is_available(&self, _wsl: Option<&WslBackend>) -> bool {
+            true
+        }
+    }
+
+    /// Millisecond sub-agent timings on [`SubFake`], with room for `max`.
+    fn sub_config(max: usize) -> SubagentConfig {
+        SubagentConfig {
+            max_running: max,
+            linger: Duration::from_secs(60),
+            report_grace: Duration::from_millis(50),
+            tick: Duration::from_millis(20),
+            trust_window: Duration::from_millis(100),
+            adapter_id: "subfake".to_string(),
+        }
+    }
+
+    /// An orchestrator ready to run sub-agents: the scope set up, MCP info
+    /// present, and an assistant that cannot be the real CLI (`true` exits
+    /// at once), since sub-agents nudge it.
+    fn sub_orch(data: &Path, config: SubagentConfig) -> (Orchestrator, Arc<SubFake>) {
+        let adapter = Arc::new(SubFake::default());
+        let orch = Orchestrator::new()
+            .with_adapters(AdapterRegistry::new(vec![adapter.clone()]))
+            .with_subagent_config(config);
+        orch.set_agent_settings_path(data.join("agents.json"));
+        orch.set_session_memory_path(data.join("session_memory.json"));
+        orch.configure_assistant(AssistantConfig {
+            command: "true".to_string(),
+            cwd: Some(data.to_path_buf()),
+            data_dir: None,
+        });
+        orch.set_mcp_connect_info(McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: data.join("mcp"),
+        });
+        orch.set_assistant_workspace(data.join("assistant-workspace"))
+            .unwrap();
+        (orch, adapter)
+    }
+
+    fn phase_of(orch: &Orchestrator, id: ProcessId) -> Option<SubagentPhase> {
+        orch.list_subagents()
+            .into_iter()
+            .find(|s| s.id == id)
+            .map(|s| s.phase)
+    }
+
+    async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+        for _ in 0..400 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn sub_agents_run_in_the_assistant_scope_and_no_project_call_takes_it() {
+        let data = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let (orch, adapter) = sub_orch(data.path(), sub_config(4));
+        let project = orch
+            .open_project(project_dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let spawned = orch
+            .spawn_subagent(SubagentKind::Lookup, "Find the release thread", None, None)
+            .await
+            .unwrap();
+        assert_eq!(spawned.state, SubagentPhase::Running);
+        let id = spawned.process_id;
+
+        // Listed as the assistant's, never as a project's.
+        let projects = orch.list_projects();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, project);
+        assert!(orch.list_processes(None).iter().all(|p| p.id != id));
+        assert!(orch.list_processes(Some(project)).is_empty());
+        let info = orch.process_info(id).expect("its own snapshot");
+        let meta = info.subagent.clone().expect("carries its sub-agent meta");
+        assert_eq!(meta.kind, SubagentKind::Lookup);
+        assert_eq!(meta.task, "Find the release thread");
+        assert_eq!(meta.phase, SubagentPhase::Running);
+        assert_eq!(info.name, "Find the release thread");
+        let scope = info.project_id;
+        assert_ne!(scope, project);
+        assert!(orch.list_processes(Some(scope)).is_empty());
+
+        // Launched in the workspace, named, with a lookup's restrictions.
+        let launch = adapter.launches.lock().unwrap()[0].clone();
+        assert_eq!(launch.subagent, Some(SubagentKind::Lookup));
+        assert!(launch.named);
+        assert_eq!(
+            launch.root,
+            dunce::canonicalize(data.path().join("assistant-workspace")).unwrap()
+        );
+        for flag in [
+            "--permission-mode",
+            "bypassPermissions",
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit",
+        ] {
+            assert!(launch.args.iter().any(|a| a == flag), "{flag}: {launch:?}");
+        }
+
+        // Every project call refuses the scope.
+        let not_found = |r: CoreResult<()>, what: &str| {
+            assert!(
+                matches!(r, Err(CoreError::ProjectNotFound)),
+                "{what}: {r:?}"
+            );
+        };
+        not_found(orch.list_todos(scope).map(drop), "list_todos");
+        not_found(orch.add_todo(scope, "x", None).map(drop), "add_todo");
+        not_found(orch.list_scratchpads(scope).map(drop), "list_scratchpads");
+        not_found(
+            orch.add_scratchpad(scope, "agent").map(drop),
+            "add_scratchpad",
+        );
+        not_found(orch.list_worktrees(scope).map(drop), "list_worktrees");
+        not_found(
+            orch.create_worktree(scope, "x").map(drop),
+            "create_worktree",
+        );
+        not_found(orch.rename_project(scope, None).map(drop), "rename_project");
+        not_found(
+            orch.set_project_color(scope, None).map(drop),
+            "set_project_color",
+        );
+        not_found(
+            orch.set_project_sections(scope, ProjectSections::default())
+                .map(drop),
+            "set_project_sections",
+        );
+        not_found(orch.issue_board(scope, true).map(drop), "issue_board");
+        not_found(
+            orch.project_just_recipes(scope).map(drop),
+            "project_just_recipes",
+        );
+        not_found(orch.list_adapters(Some(scope)).map(drop), "list_adapters");
+        not_found(orch.reload_project_config(scope).await, "reload");
+        not_found(
+            orch.add_process(
+                scope,
+                ProcessSpec {
+                    name: "x".to_string(),
+                    command: "sleep 30".to_string(),
+                    cwd: data.path().to_path_buf(),
+                    env: Vec::new(),
+                    kind: ProcessKind::Terminal,
+                    restart_policy: RestartPolicy::Never,
+                    color: None,
+                },
+            )
+            .await
+            .map(drop),
+            "add_process",
+        );
+        not_found(
+            orch.spawn_agent(
+                scope,
+                Some("subfake".to_string()),
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                false,
+                None,
+                None,
+            )
+            .await
+            .map(drop),
+            "spawn_agent",
+        );
+        not_found(orch.close_project(scope).await, "close_project");
+        let reordered = orch.reorder_projects(vec![scope, project]);
+        assert_eq!(
+            reordered.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [project]
+        );
+        // Nor can the folder be opened as a project.
+        assert!(matches!(
+            orch.open_project(data.path().join("assistant-workspace"))
+                .await,
+            Err(CoreError::InvalidInput(_))
+        ));
+
+        // Podium starts and ends sub-agents itself.
+        let managed = |r: CoreResult<()>, what: &str| {
+            assert!(
+                matches!(r, Err(CoreError::InvalidInput(_))),
+                "{what}: {r:?}"
+            );
+        };
+        managed(orch.start_process(id).await, "start_process");
+        managed(orch.restart_process(id).await, "restart_process");
+        managed(orch.remove_process(id).await, "remove_process");
+        managed(
+            orch.respawn_agent(id, "yes", Some("again")).await.map(drop),
+            "respawn_agent",
+        );
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Running));
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn sub_agents_do_not_count_towards_a_projects_agent_cap() {
+        let data = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        let project = orch
+            .open_project(project_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        for n in 0..3 {
+            orch.spawn_subagent(SubagentKind::Full, &format!("check {n}"), None, None)
+                .await
+                .unwrap();
+        }
+        let spawn = || {
+            orch.spawn_agent(
+                project,
+                Some("subfake".to_string()),
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                false,
+                None,
+                None,
+            )
+        };
+        for n in 0..MAX_AGENTS_PER_PROJECT {
+            spawn()
+                .await
+                .unwrap_or_else(|e| panic!("project agent {n}: {e}"));
+        }
+        assert!(matches!(spawn().await, Err(CoreError::AgentLimitReached)));
+        // …and a full project leaves the assistant's own just as free.
+        let more = orch
+            .spawn_subagent(SubagentKind::Lookup, "one more", None, None)
+            .await
+            .unwrap();
+        assert_eq!(more.state, SubagentPhase::Running);
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_quit_guard_counts_a_queued_sub_agent() {
+        let data = tempfile::tempdir().unwrap();
+        // No slot at all: everything queues, and nothing runs.
+        let (orch, _) = sub_orch(data.path(), sub_config(0));
+        assert!(!orch.has_active_agents_or_terminals());
+        let mut events = orch.subscribe_events();
+        let queued = orch
+            .spawn_subagent(SubagentKind::Lookup, "Summarise the week", None, None)
+            .await
+            .unwrap();
+        assert_eq!(queued.state, SubagentPhase::Queued);
+        assert!(orch.has_active_agents_or_terminals());
+        // Its snapshot went out with it.
+        let snapshot = loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::SubagentsChanged { subagents },
+            }) = events.try_recv()
+            {
+                break subagents;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].phase, SubagentPhase::Queued);
+        assert_eq!(snapshot[0].status, ProcessStatus::NotStarted);
+        assert!(snapshot[0].started_at.is_none());
+
+        // The user's stop cancels it without it ever running.
+        orch.stop_subagent(queued.process_id).await.unwrap();
+        assert_eq!(
+            phase_of(&orch, queued.process_id),
+            Some(SubagentPhase::Stopped)
+        );
+        assert!(!orch.has_active_agents_or_terminals());
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_queued_sub_agent_starts_when_the_running_one_ends() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(1));
+        let first = orch
+            .spawn_subagent(SubagentKind::Full, "first", None, None)
+            .await
+            .unwrap();
+        let second = orch
+            .spawn_subagent(SubagentKind::Full, "second", None, None)
+            .await
+            .unwrap();
+        assert_eq!(first.state, SubagentPhase::Running);
+        assert_eq!(second.state, SubagentPhase::Queued);
+        assert_eq!(
+            orch.process_info(second.process_id).unwrap().status,
+            ProcessStatus::NotStarted
+        );
+
+        // The assistant stops the first itself.
+        orch.stop_process(first.process_id).await.unwrap();
+        wait_until("the first to end and the second to start", || {
+            phase_of(&orch, first.process_id) == Some(SubagentPhase::Stopped)
+                && phase_of(&orch, second.process_id) == Some(SubagentPhase::Running)
+        })
+        .await;
+        wait_until("the second's process to run", || {
+            matches!(
+                orch.process_info(second.process_id).unwrap().status,
+                ProcessStatus::Running { .. }
+            )
+        })
+        .await;
+        let second_info = orch
+            .list_subagents()
+            .into_iter()
+            .find(|s| s.id == second.process_id)
+            .unwrap();
+        assert!(second_info.started_at.is_some());
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_sub_agent_that_exits_without_a_report_fails_with_its_reason() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        let crashed = orch
+            .spawn_subagent(SubagentKind::Full, "crash on purpose", None, None)
+            .await
+            .unwrap();
+        wait_until("the crash to fail it", || {
+            phase_of(&orch, crashed.process_id) == Some(SubagentPhase::Failed)
+        })
+        .await;
+        let info = orch
+            .list_subagents()
+            .into_iter()
+            .find(|s| s.id == crashed.process_id)
+            .unwrap();
+        assert!(
+            info.error
+                .as_deref()
+                .is_some_and(|e| e.contains("exit code 3")),
+            "{info:?}"
+        );
+        assert!(info.ended_at.is_some());
+        assert!(info.result.is_none());
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_report_ends_a_sub_agent_done_and_stops_its_session() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        let id = orch
+            .spawn_subagent(SubagentKind::Lookup, "Find the release thread", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        orch.report_subagent_result(id, "Found it: QA signs off Friday.")
+            .await
+            .unwrap();
+        let info = orch
+            .list_subagents()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        assert_eq!(info.phase, SubagentPhase::Done);
+        assert_eq!(
+            info.result.as_deref(),
+            Some("Found it: QA signs off Friday.")
+        );
+        // Podium ends the session after the grace, and it stays done.
+        wait_until("the session to be stopped", || {
+            matches!(
+                orch.process_info(id).unwrap().status,
+                ProcessStatus::Exited { stopped: true, .. }
+            )
+        })
+        .await;
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Done));
+        // A second report changes nothing.
+        orch.report_subagent_result(id, "again").await.unwrap();
+        let info = orch
+            .list_subagents()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        assert_eq!(
+            info.result.as_deref(),
+            Some("Found it: QA signs off Friday.")
+        );
+        // A project agent's report is not a sub-agent's.
+        assert!(matches!(
+            orch.report_subagent_result(ProcessId::new(), "x").await,
+            Err(CoreError::ProcessNotFound)
+        ));
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn an_ended_sub_agent_drops_off_after_the_linger() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(
+            data.path(),
+            SubagentConfig {
+                linger: Duration::from_millis(150),
+                ..sub_config(4)
+            },
+        );
+        let mut events = orch.subscribe_events();
+        let id = orch
+            .spawn_subagent(SubagentKind::Lookup, "Look something up", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        orch.report_subagent_result(id, "Looked it up.")
+            .await
+            .unwrap();
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Done));
+        wait_until("the row to drop off", || {
+            orch.list_subagents().is_empty() && orch.process_info(id).is_none()
+        })
+        .await;
+        assert!(!orch.is_subagent(id));
+        let mut removed = false;
+        while let Ok(event) = events.try_recv() {
+            removed |=
+                matches!(event, PodiumEvent::ProcessRemoved { process_id, .. } if process_id == id);
+        }
+        assert!(removed, "its process row went with it");
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_new_conversation_keeps_sub_agents_unless_asked_to_stop_them() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(1));
+        let running = orch
+            .spawn_subagent(SubagentKind::Full, "keep me", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        let queued = orch
+            .spawn_subagent(SubagentKind::Full, "and me", None, None)
+            .await
+            .unwrap()
+            .process_id;
+
+        orch.assistant_new_conversation(false).await;
+        assert_eq!(phase_of(&orch, running), Some(SubagentPhase::Running));
+        assert_eq!(phase_of(&orch, queued), Some(SubagentPhase::Queued));
+
+        orch.assistant_new_conversation(true).await;
+        assert_eq!(phase_of(&orch, queued), Some(SubagentPhase::Stopped));
+        wait_until("the running one to stop", || {
+            phase_of(&orch, running) == Some(SubagentPhase::Stopped)
+        })
+        .await;
+        // Nothing queued was started by the stop freeing its slot.
+        assert_eq!(
+            orch.process_info(queued).unwrap().status,
+            ProcessStatus::NotStarted
+        );
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_sub_agents_session_is_never_remembered() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        orch.set_agent_remember_sessions(true).unwrap();
+        orch.spawn_subagent(SubagentKind::Full, "a long check", None, None)
+            .await
+            .unwrap();
+        orch.shutdown().await;
+        let root = dunce::canonicalize(data.path().join("assistant-workspace")).unwrap();
+        assert!(orch.session_memory.list(&root).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_sub_agent_needs_a_task_a_workspace_and_the_mcp_server() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        assert!(matches!(
+            orch.spawn_subagent(SubagentKind::Lookup, "  ", None, None)
+                .await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        // No scope set up yet.
+        let bare = Orchestrator::new();
+        bare.set_mcp_connect_info(McpConnectInfo {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "t".to_string(),
+            config_dir: data.path().join("mcp"),
+        });
+        assert!(matches!(
+            bare.spawn_subagent(SubagentKind::Lookup, "look", None, None)
+                .await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        // No MCP server: it could never report back.
+        let offline = Orchestrator::new();
+        offline
+            .set_assistant_workspace(data.path().join("ws"))
+            .unwrap();
+        assert!(matches!(
+            offline
+                .spawn_subagent(SubagentKind::Lookup, "look", None, None)
+                .await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(orch.list_subagents().is_empty());
     }
 }

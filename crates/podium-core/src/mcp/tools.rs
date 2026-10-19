@@ -1,5 +1,6 @@
-//! The 32 MCP tools Podium exposes to agents — all thin calls into
-//! [`Orchestrator`], returning JSON (or plain text for output tails).
+//! The 36 MCP tools Podium exposes — all thin calls into [`Orchestrator`],
+//! returning JSON (or plain text for output tails). Agents get 33 of them:
+//! `add_response`, `spawn_subagent` and `list_subagents` are the assistant's.
 //!
 //! The same surface serves the personal assistant, on its own endpoint
 //! ([`crate::mcp::ASSISTANT_PATH`], built via [`PodiumTools::new_assistant`]).
@@ -18,11 +19,12 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, S
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::assistant::{requires_proposal, ProposalAction};
+use crate::assistant::{requires_proposal_for, ProposalAction};
 use crate::error::CoreError;
 use crate::ids::{ProcessId, ProjectId, ScratchpadId, TodoId};
 use crate::orchestrator::{Orchestrator, PeerSender};
 use crate::responses::ResponseKind;
+use crate::subagent::SubagentKind;
 
 /// Longest argument blob shown on a proposal card.
 const MAX_SUMMARY_CHARS: usize = 300;
@@ -249,6 +251,21 @@ pub struct SpawnAgentParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SpawnSubagentParams {
+    /// `lookup` to read and look things up (no shell, no file edits: Slack,
+    /// Teams, tickets, MCP reads, a summary across projects), `full` for
+    /// shell, file or git work that belongs to no single project.
+    pub kind: SubagentKind,
+    /// What to do, in full — the sub-agent starts knowing nothing else.
+    pub task: String,
+    /// Short display name; derived from the task when omitted.
+    pub name: Option<String>,
+    /// Extra CLI args for this sub-agent, replacing the global default args
+    /// (e.g. `["--model", "sonnet"]`).
+    pub args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetBoardParams {
     /// Project UUID whose Git board to read.
     pub project_id: String,
@@ -367,8 +384,13 @@ impl PodiumTools {
             // it, so the agent route neither lists nor runs `add_response`. A
             // guard against a confused agent, not a boundary: both routes
             // share one bearer token, so the route is identity only by
-            // convention.
-            tool_router: Self::tool_router().with_disabled("add_response"),
+            // convention. The same goes for the assistant's sub-agents: an
+            // agent neither starts nor lists them (and a sub-agent, which is
+            // on this route too, cannot start sub-agents of its own).
+            tool_router: Self::tool_router()
+                .with_disabled("add_response")
+                .with_disabled("spawn_subagent")
+                .with_disabled("list_subagents"),
             assistant: false,
         }
     }
@@ -388,7 +410,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "List managed processes (dev servers, terminals, agents), optionally filtered to one project."
+        description = "List managed processes (dev servers, terminals, agents), optionally filtered to one project. The assistant's sub-agents are not listed here (see list_subagents)."
     )]
     pub async fn list_processes(
         &self,
@@ -469,6 +491,28 @@ impl PodiumTools {
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
+    }
+
+    #[tool(
+        description = "Start one of your own sub-agents on a task and get control back at once: {processId, state}, where state is \"running\", or \"queued\" when 4 already run (it starts by itself when one ends). kind \"lookup\" reads and looks things up (no shell, no file edits: Slack, Teams, tickets, MCP reads, a summary across projects); kind \"full\" has shell, files and git, for work that belongs to no single project (a check across repositories, a one-off script). Code work in a project is not a sub-agent's: use spawn_agent. The sub-agent belongs to no project and reports its result back to you as a [Podium] message. Only the assistant may call this."
+    )]
+    pub async fn spawn_subagent(
+        &self,
+        Parameters(p): Parameters<SpawnSubagentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let spawned = self
+            .orchestrator
+            .spawn_subagent(p.kind, &p.task, p.name, p.args)
+            .await
+            .map_err(core_error)?;
+        json_result(&spawned)
+    }
+
+    #[tool(
+        description = "List your sub-agents, oldest first: queued, running, and those that ended in the last few minutes — id (the process id), name, kind, task, phase (queued/running/done/failed/stopped), process status, startedAt/endedAt, and the result (done) or error (failed)."
+    )]
+    pub async fn list_subagents(&self) -> Result<CallToolResult, McpError> {
+        json_result(&self.orchestrator.list_subagents())
     }
 
     #[tool(
@@ -808,6 +852,13 @@ impl PodiumTools {
                 "session": process.name,
                 "project": project,
             })),
+            // One of the assistant's own sub-agents: no project to name.
+            Some(PeerSender::Subagent { process }) => json_result(&serde_json::json!({
+                "fleet": true,
+                "kind": "subagent",
+                "processId": process.id.to_string(),
+                "session": process.name,
+            })),
         }
     }
 
@@ -824,6 +875,18 @@ impl PodiumTools {
             return Err(McpError::invalid_params(
                 "summary must not be blank".to_string(),
                 None,
+            ));
+        }
+        // One of the assistant's sub-agents handing back its result: that
+        // ends it (see `Orchestrator::report_subagent_result`).
+        if self.orchestrator.is_subagent(process_id) {
+            self.orchestrator
+                .report_subagent_result(process_id, summary)
+                .await
+                .map_err(core_error)?;
+            return Ok(text_result(
+                "Reported to the assistant. Your task is done; Podium ends this session in a moment."
+                    .to_string(),
             ));
         }
         let process = self.find_process(process_id)?;
@@ -1040,11 +1103,11 @@ impl PodiumTools {
         )
     }
 
+    /// One process by id, the assistant's sub-agents included (so it can
+    /// read one's status and stop it).
     fn find_process(&self, id: ProcessId) -> Result<crate::process::ProcessInfo, McpError> {
         self.orchestrator
-            .list_processes(None)
-            .into_iter()
-            .find(|p| p.id == id)
+            .process_info(id)
             .ok_or_else(|| core_error(CoreError::ProcessNotFound))
     }
 }
@@ -1067,9 +1130,10 @@ impl ServerHandler for PodiumTools {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         if self.assistant
-            && requires_proposal(
+            && requires_proposal_for(
                 self.orchestrator.assistant_autonomy(),
                 request.name.as_ref(),
+                request.arguments.as_ref(),
             )
         {
             let tool = request.name.to_string();

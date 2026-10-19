@@ -16,7 +16,8 @@ use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
     CoreResult, LaunchPlan, Orchestrator, PodiumEvent, ProcessId, ProcessKind, ProcessSpec,
-    ProcessStatus, ProjectId, RestartCommands, RestartPolicy, TodoId,
+    ProcessStatus, ProjectId, RestartCommands, RestartPolicy, SubagentConfig, SubagentKind,
+    SubagentPhase, TodoId,
 };
 // Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
 #[cfg(unix)]
@@ -311,8 +312,10 @@ async fn tools_list_includes_scratchpad_tools() {
             "{name} missing from tools/list: {tools:?}"
         );
     }
-    // The assistant's own tool: only its route lists it.
-    assert!(!tools.contains(&"add_response"), "{tools:?}");
+    // The assistant's own tools: only its route lists them.
+    for name in ["add_response", "spawn_subagent", "list_subagents"] {
+        assert!(!tools.contains(&name), "{name}: {tools:?}");
+    }
 
     server.stop();
 }
@@ -2728,6 +2731,10 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     ("create_worktree", false, false),
     ("remove_worktree", false, true),
     ("report_to_assistant", false, false),
+    // Gated by its kind (see `requires_proposal_for`); without arguments it
+    // counts as a full one — classified like spawn_agent.
+    ("spawn_subagent", false, false),
+    ("list_subagents", true, false),
 ];
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3453,4 +3460,549 @@ async fn board_tools_read_the_cache_and_refuse_bad_moves() {
         .expect("cached")
         .expect("mine scope");
     assert_eq!(mine.board.items[0].column, "open");
+}
+
+// ---------------------------------------------------------------------------
+// The assistant's sub-agents
+// ---------------------------------------------------------------------------
+
+/// Sub-agent launches by task: one starting with "crash" exits 3 at once, one
+/// starting with "trust" shows Claude Code's folder-trust prompt and waits for
+/// an answer on stdin, anything else sleeps. Records each launch's kind and
+/// args.
+#[derive(Default)]
+struct TaskScriptAdapter {
+    launches: std::sync::Mutex<Vec<(Option<SubagentKind>, Vec<String>)>>,
+}
+
+impl AgentAdapter for TaskScriptAdapter {
+    fn id(&self) -> &'static str {
+        "taskfake"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Task fake"
+    }
+
+    fn binary(&self) -> &'static str {
+        "taskfake"
+    }
+
+    fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
+        self.launches
+            .lock()
+            .unwrap()
+            .push((ctx.subagent, ctx.extra_args.to_vec()));
+        let task = ctx.prompt.unwrap_or("");
+        let command = if task.starts_with("crash") {
+            "exit 3"
+        } else if task.starts_with("trust") {
+            r#"printf 'Quick safety check: is this a project you trust?\n> 1. Yes, I trust this folder\n  2. No, exit\n'; read -r answer; echo "trusted:$answer"; sleep 30"#
+        } else {
+            "sleep 30"
+        };
+        Ok(LaunchPlan {
+            command: command.to_string(),
+            env: Vec::new(),
+            restart: None,
+        })
+    }
+
+    fn is_available(&self, _wsl: Option<&podium_core::platform::WslBackend>) -> bool {
+        true
+    }
+}
+
+/// Millisecond sub-agent timings on [`TaskScriptAdapter`].
+fn fast_subagents() -> SubagentConfig {
+    SubagentConfig {
+        linger: Duration::from_secs(60),
+        report_grace: Duration::from_millis(50),
+        tick: Duration::from_millis(20),
+        adapter_id: "taskfake".to_string(),
+        ..SubagentConfig::default()
+    }
+}
+
+/// An orchestrator able to run sub-agents, its MCP server, and the adapter.
+async fn subagent_server(
+    dir: &std::path::Path,
+) -> (Arc<Orchestrator>, McpServer, Arc<TaskScriptAdapter>) {
+    let adapter = Arc::new(TaskScriptAdapter::default());
+    let orch = Arc::new(
+        Orchestrator::new()
+            .with_adapters(AdapterRegistry::new(vec![adapter.clone()]))
+            .with_subagent_config(fast_subagents()),
+    );
+    orch.set_assistant_workspace(dir.join("assistant-workspace"))
+        .expect("assistant workspace");
+    let server = mcp::start(Arc::clone(&orch), dir.join("mcp"))
+        .await
+        .expect("mcp server starts");
+    (orch, server, adapter)
+}
+
+fn subagent_phase(orch: &Orchestrator, id: ProcessId) -> Option<SubagentPhase> {
+    orch.list_subagents()
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|s| s.phase)
+}
+
+async fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+    timeout(TEST_TIMEOUT, async {
+        while !cond() {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
+
+/// The names `tools/list` returns on `path`.
+async fn listed_tools(server: &McpServer, path: &str, session: &str) -> Vec<String> {
+    let (status, response) = http_post_path(
+        server.url(),
+        path,
+        Some(server.token()),
+        Some(session),
+        &tools_list_request(9),
+    )
+    .await;
+    assert_eq!(status, 200);
+    extract_json_body(&response)["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_subagent_runs_over_the_assistant_route_and_never_on_the_agents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, adapter) = subagent_server(dir.path()).await;
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+    let agent = open_session(&server, "/mcp").await;
+
+    let own = listed_tools(&server, ASSISTANT_PATH, &assistant).await;
+    for name in ["spawn_subagent", "list_subagents"] {
+        assert!(own.iter().any(|t| t == name), "{name}: {own:?}");
+    }
+    let agents = listed_tools(&server, "/mcp", &agent).await;
+    for name in ["spawn_subagent", "list_subagents"] {
+        assert!(!agents.iter().any(|t| t == name), "{name}: {agents:?}");
+    }
+
+    let answer = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        2,
+        "spawn_subagent",
+        serde_json::json!({ "kind": "lookup", "task": "Find the release thread in Slack" }),
+    )
+    .await;
+    let spawned: serde_json::Value = serde_json::from_str(&answer).expect("json answer");
+    assert_eq!(spawned["state"], "running", "{spawned}");
+    let id: ProcessId = spawned["processId"]
+        .as_str()
+        .expect("processId")
+        .parse()
+        .expect("a process id");
+    let (kind, args) = adapter.launches.lock().unwrap()[0].clone();
+    assert_eq!(kind, Some(SubagentKind::Lookup));
+    assert!(
+        args.iter().any(|a| a == "Bash,Edit,Write,NotebookEdit"),
+        "{args:?}"
+    );
+
+    // It is the assistant's: listed by list_subagents, not list_processes…
+    let listed = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        3,
+        "list_subagents",
+        serde_json::json!({}),
+    )
+    .await;
+    let listed: serde_json::Value = serde_json::from_str(&listed).expect("json list");
+    assert_eq!(listed[0]["id"], id.to_string());
+    assert_eq!(listed[0]["kind"], "lookup");
+    assert_eq!(listed[0]["phase"], "running");
+    assert_eq!(listed[0]["task"], "Find the release thread in Slack");
+    let processes = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        4,
+        "list_processes",
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(!processes.contains(&id.to_string()), "{processes}");
+    // …though its own status still reads, marked as a sub-agent.
+    let status = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        5,
+        "get_process_status",
+        serde_json::json!({ "process_id": id.to_string() }),
+    )
+    .await;
+    let status: serde_json::Value = serde_json::from_str(&status).expect("json status");
+    assert_eq!(status["subagent"]["kind"], "lookup", "{status}");
+    // A message from it verifies as one of Podium's own — the assistant's.
+    let verdict = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        8,
+        "verify_sender",
+        serde_json::json!({
+            "name": podium_core::agent::peer_session_name(&podium_core::agent::peer_tag(
+                &id.to_string()
+            )),
+        }),
+    )
+    .await;
+    let verdict: serde_json::Value = serde_json::from_str(&verdict).expect("json verdict");
+    assert_eq!(verdict["fleet"], true, "{verdict}");
+    assert_eq!(verdict["kind"], "subagent", "{verdict}");
+    assert_eq!(verdict["processId"], id.to_string());
+    assert!(verdict.get("projectId").is_none(), "{verdict}");
+
+    // The assistant stopping one is destructive like any stop.
+    let stop = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        6,
+        "stop_process",
+        serde_json::json!({ "process_id": id.to_string() }),
+    )
+    .await;
+    assert!(stop.contains("waiting for the user"), "{stop}");
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+
+    // An agent cannot start one.
+    let (status, response) = http_post_path(
+        server.url(),
+        "/mcp",
+        Some(server.token()),
+        Some(&agent),
+        &tools_call_request(
+            7,
+            "spawn_subagent",
+            serde_json::json!({ "kind": "full", "task": "anything" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("tool not found")),
+        "{body}"
+    );
+    assert_eq!(orch.list_subagents().len(), 1);
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn under_propose_all_a_lookup_starts_and_a_full_sub_agent_waits_for_the_user() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, _) = subagent_server(dir.path()).await;
+    orch.set_assistant_autonomy(AutonomyMode::ProposeAll)
+        .await
+        .expect("set autonomy");
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+
+    let lookup = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        2,
+        "spawn_subagent",
+        serde_json::json!({ "kind": "lookup", "task": "Read the ticket" }),
+    )
+    .await;
+    assert!(lookup.contains("\"running\""), "{lookup}");
+    let full = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        3,
+        "spawn_subagent",
+        serde_json::json!({ "kind": "full", "task": "Grep every repository" }),
+    )
+    .await;
+    assert!(full.contains("waiting for the user"), "{full}");
+    assert_eq!(orch.list_subagents().len(), 1);
+    let pending = orch.assistant_proposals();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].tool, "spawn_subagent");
+    orch.resolve_assistant_proposal(pending[0].id, true)
+        .await
+        .expect("confirm");
+    assert_eq!(orch.list_subagents().len(), 2);
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fifth_sub_agent_is_queued_and_starts_when_one_of_the_four_ends() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, _) = subagent_server(dir.path()).await;
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+    let mut ids = Vec::new();
+    for n in 0..5 {
+        let answer = call_tool_text(
+            &server,
+            ASSISTANT_PATH,
+            &assistant,
+            10 + n,
+            "spawn_subagent",
+            serde_json::json!({ "kind": "full", "task": format!("check repository {n}") }),
+        )
+        .await;
+        let spawned: serde_json::Value = serde_json::from_str(&answer).expect("json");
+        let expected = if n < 4 { "running" } else { "queued" };
+        assert_eq!(spawned["state"], expected, "sub-agent {n}: {spawned}");
+        ids.push(
+            spawned["processId"]
+                .as_str()
+                .expect("processId")
+                .parse::<ProcessId>()
+                .expect("id"),
+        );
+    }
+    let fifth = ids[4];
+    assert_eq!(subagent_phase(&orch, fifth), Some(SubagentPhase::Queued));
+    // A queued one is work the user asked for: the quit guard counts it.
+    assert!(orch.has_active_agents_or_terminals());
+
+    // One of the four reports back: its slot goes to the fifth.
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    tools
+        .report_to_assistant(Parameters(
+            podium_core::mcp::tools::ReportToAssistantParams {
+                process_id: ids[1].to_string(),
+                summary: "Repository 1 is clean.".to_string(),
+            },
+        ))
+        .await
+        .expect("report");
+    assert_eq!(subagent_phase(&orch, ids[1]), Some(SubagentPhase::Done));
+    wait_for("the fifth to start", || {
+        subagent_phase(&orch, fifth) == Some(SubagentPhase::Running)
+            && matches!(
+                orch.process_info(fifth).map(|p| p.status),
+                Some(ProcessStatus::Running { .. })
+            )
+    })
+    .await;
+    assert_eq!(
+        orch.list_subagents()
+            .iter()
+            .filter(|s| s.phase == SubagentPhase::Running)
+            .count(),
+        4
+    );
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agents_report_ends_it_done_and_reaches_the_assistant() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, _) = subagent_server(dir.path()).await;
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: write_fake_cli(dir.path(), FAKE_ASSISTANT_CLAUDE),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let spawned = orch
+        .spawn_subagent(
+            SubagentKind::Lookup,
+            "Find the release thread in Slack",
+            Some("release-thread".to_string()),
+            None,
+        )
+        .await
+        .expect("spawn sub-agent");
+    let id = spawned.process_id;
+
+    // The sub-agent reports over its own (agent) route, like any agent.
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let answer = tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: id.to_string(),
+            summary: "QA signs off on Friday. Follow-up: update the Webshop changelog.".to_string(),
+        }))
+        .await
+        .expect("report");
+    assert!(first_text(&answer).contains("Your task is done"));
+    let info = orch
+        .list_subagents()
+        .into_iter()
+        .find(|s| s.id == id)
+        .expect("listed");
+    assert_eq!(info.phase, SubagentPhase::Done);
+    assert_eq!(
+        info.result.as_deref(),
+        Some("QA signs off on Friday. Follow-up: update the Webshop changelog.")
+    );
+
+    // The assistant gets a sub-agent nudge, not an agent's report.
+    wait_for("the nudge to reach the assistant", || {
+        orch.assistant_transcript()
+            .iter()
+            .any(|e| e.role == TranscriptRole::Nudge)
+    })
+    .await;
+    let transcript = orch.assistant_transcript();
+    let nudge = transcript
+        .iter()
+        .find(|e| e.role == TranscriptRole::Nudge)
+        .expect("a nudge row");
+    for part in [
+        "Your sub-agent \"release-thread\"",
+        &id.to_string(),
+        "QA signs off on Friday",
+        "at most two lines",
+        "add_todo",
+    ] {
+        assert!(nudge.text.contains(part), "{part}: {}", nudge.text);
+    }
+    // Podium ends its session; the sub-agent stays done.
+    wait_for("the sub-agent's session to end", || {
+        matches!(
+            orch.process_info(id).map(|p| p.status),
+            Some(ProcessStatus::Exited { stopped: true, .. })
+        )
+    })
+    .await;
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Done));
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crashed_sub_agent_fails_and_the_assistant_hears_why() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, _) = subagent_server(dir.path()).await;
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: write_fake_cli(dir.path(), FAKE_ASSISTANT_CLAUDE),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let id = orch
+        .spawn_subagent(SubagentKind::Full, "crash while checking", None, None)
+        .await
+        .expect("spawn sub-agent")
+        .process_id;
+    wait_for("the crash to fail it", || {
+        subagent_phase(&orch, id) == Some(SubagentPhase::Failed)
+    })
+    .await;
+    wait_for("the failure to reach the assistant", || {
+        orch.assistant_transcript()
+            .iter()
+            .any(|e| e.role == TranscriptRole::Nudge && e.text.contains("failed"))
+    })
+    .await;
+    let transcript = orch.assistant_transcript();
+    let nudge = transcript
+        .iter()
+        .find(|e| e.role == TranscriptRole::Nudge)
+        .expect("a nudge row");
+    assert!(nudge.text.contains("exit code 3"), "{}", nudge.text);
+    assert!(nudge.text.contains("one line"), "{}", nudge.text);
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_user_stop_tells_the_assistant_no_summary_is_needed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, _) = subagent_server(dir.path()).await;
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: write_fake_cli(dir.path(), FAKE_ASSISTANT_CLAUDE),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let id = orch
+        .spawn_subagent(SubagentKind::Full, "a long check", None, None)
+        .await
+        .expect("spawn sub-agent")
+        .process_id;
+    orch.stop_subagent(id).await.expect("user stop");
+    wait_for("the stop to end it", || {
+        subagent_phase(&orch, id) == Some(SubagentPhase::Stopped)
+    })
+    .await;
+    wait_for("the assistant to be told", || {
+        orch.assistant_transcript().iter().any(|e| {
+            e.role == TranscriptRole::Nudge
+                && e.text.contains("stopped by the user, no summary needed")
+        })
+    })
+    .await;
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_on_the_folder_trust_prompt_is_answered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, _) = subagent_server(dir.path()).await;
+    let id = orch
+        .spawn_subagent(SubagentKind::Lookup, "trust me", None, None)
+        .await
+        .expect("spawn sub-agent")
+        .process_id;
+    // The fake reads one line once the prompt is up and echoes it back: only
+    // Podium's Enter can get it past the `read`.
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let out = orch.tail_text(id, 4096).await.expect("tail");
+            if out.contains("trusted:") {
+                return;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the trust prompt is answered");
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+
+    server.stop();
+    orch.shutdown().await;
 }

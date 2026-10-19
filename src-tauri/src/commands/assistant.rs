@@ -58,10 +58,13 @@ pub async fn assistant_transcript(
 }
 
 /// Drop the conversation (session, transcript and pending proposals) and
-/// start fresh. The assistant's memory is deliberately kept.
+/// start fresh. The assistant's memory is deliberately kept, and so are its
+/// sub-agents: their results go to the new conversation.
+// ponytail: the keep-or-stop choice (`stopSubagents`) is the panel's to ask;
+// until it does, sub-agents are always kept.
 #[tauri::command]
 pub async fn assistant_new_conversation(state: State<'_, AppState>) -> Result<(), IpcError> {
-    state.orchestrator.assistant_new_conversation().await;
+    state.orchestrator.assistant_new_conversation(false).await;
     Ok(())
 }
 
