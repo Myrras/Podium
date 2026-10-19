@@ -211,7 +211,8 @@ they did.
   your confirmation (a lookup never does). Project code work still goes to a
   project agent. They are listed above the chat log with task, kind, running
   time and status (queued, running, done, failed, stopped); **stop** one, or
-  **open** its terminal in the work area (for a lookup, that is its output).
+  **click** its row to open its terminal in the work area (for a lookup, that
+  is its output).
   At most 4 run at once, the rest queue and start by themselves; finished ones
   stay a few minutes, then drop off. They never show in a project's sidebar
   and do not count towards its agent cap. A sub-agent you stop is reported to

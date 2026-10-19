@@ -89,6 +89,21 @@
   gap: 2px;
 }
 
+/* A started one's row opens its terminal. */
+.body[data-openable] {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.body[data-openable]:hover .name {
+  text-decoration: underline;
+}
+
+.body[data-openable]:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .meta {
   display: flex;
   align-items: center;

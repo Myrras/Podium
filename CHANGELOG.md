@@ -19,7 +19,8 @@ when it merges.
   sub-agent only reads; a *full* one also has shell, files and git. They are
   listed above the chat log with task, kind, running time and status (the result shows when you hover the
   status, and the assistant gets it whole), with
-  stop and open-terminal actions; at most 4 run at once and the rest queue.
+  a stop button, and clicking a row opens its terminal; at most 4 run at once
+  and the rest queue.
   They never appear in a project's sidebar or count towards its agent cap.
   Resetting the conversation asks whether to keep or stop running sub-agents,
   quitting Podium stops them, and the quit warning counts them. Podium marks

@@ -2,13 +2,14 @@
  * The assistant's sub-agents, pinned above the chat log: the work it handed
  * off so it could answer straight away. Per row the name and task (the full
  * task on hover), its kind, how long it has run and where it is; a running
- * or queued one can be stopped, and a started one's terminal opened in the
- * work area (for a lookup that terminal is its output). Ended rows stay for a
+ * or queued one can be stopped, and clicking a started one (or Enter/Space
+ * on it) opens its terminal in the work area (for a lookup that terminal is
+ * its output). Ended rows stay for a
  * few minutes (the backend drops them) with their result or error. Hidden
  * when there are none.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 
 import type { SubagentInfo, SubagentPhase } from "../ipc/types";
 import {
@@ -21,7 +22,7 @@ import { useAgentActivity } from "../lib/useAgentActivity";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { StatusDot } from "./StatusDot";
-import { CaretIcon, StopIcon, TerminalIcon } from "./icons";
+import { CaretIcon, StopIcon } from "./icons";
 import styles from "./SubagentsSection.module.css";
 
 const PHASE_LABELS: Record<SubagentPhase, string> = {
@@ -87,6 +88,14 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
       : elapsed === null
         ? ""
         : formatElapsed(elapsed);
+  const openable = item.startedAt !== null;
+  const open = () => openInWorkArea(item.id);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      open();
+    }
+  };
   // Only the task when the name already says the same thing.
   const showTask = item.task.trim() !== item.name.trim();
 
@@ -104,7 +113,16 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
         status={item.status}
         activity={running ? activity : undefined}
       />
-      <div className={styles.body}>
+      {/* The row itself opens the terminal; a queued one has none yet. */}
+      <div
+        className={styles.body}
+        role={openable ? "button" : undefined}
+        tabIndex={openable ? 0 : undefined}
+        aria-label={openable ? `Open ${item.name}` : undefined}
+        data-openable={openable || undefined}
+        onClick={openable ? open : undefined}
+        onKeyDown={openable ? onKey : undefined}
+      >
         <div className={styles.meta}>
           <span className={styles.name} title={item.task}>
             {item.name}
@@ -124,27 +142,17 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
         )}
       </div>
       <div className={styles.actions}>
-        {/* A queued one has no terminal yet; anything that started has. */}
-        {item.startedAt && (
-          <button
-            type="button"
-            className={styles.iconBtn}
-            aria-label={`Open ${item.name}`}
-            title={
-              item.kind === "lookup" ? "Show its output" : "Open its terminal"
-            }
-            onClick={() => openInWorkArea(item.id)}
-          >
-            <TerminalIcon />
-          </button>
-        )}
         {isSubagentLive(item) && (
           <button
             type="button"
             className={styles.iconBtn}
             aria-label={`Stop ${item.name}`}
             title={item.phase === "queued" ? "Cancel" : "Stop"}
-            onClick={() => void stopSubagent(item.id)}
+            onClick={(e) => {
+              // Never also opens the terminal.
+              e.stopPropagation();
+              void stopSubagent(item.id);
+            }}
           >
             <StopIcon />
           </button>

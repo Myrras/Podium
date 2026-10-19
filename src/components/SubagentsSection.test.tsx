@@ -155,17 +155,60 @@ describe("SubagentsSection", () => {
     expect(assistantSubagentStop).toHaveBeenCalledWith("sub-1");
   });
 
-  it("opens a sub-agent's terminal in the work area", () => {
+  it("opens a sub-agent's terminal when its row is clicked", () => {
     useLayoutStore.setState({ openTodo: { projectId: "p1", todoId: "t1" } });
     useProcessStore.setState({ activeProcessId: "proc-9" });
     seed([subagent()]);
     render(<SubagentsSection />);
 
-    fireEvent.click(screen.getByLabelText("Open Ticket check"));
+    // No separate open button: the row (name and task) is the target.
+    expect(screen.queryAllByRole("button", { name: /^Open/ })).toHaveLength(1);
+    fireEvent.click(screen.getByText("Ticket check"));
     expect(useLayoutStore.getState().openSubagent).toBe("sub-1");
     // It takes over the work area from whatever was there.
     expect(useLayoutStore.getState().openTodo).toBeNull();
     expect(useProcessStore.getState().activeProcessId).toBeNull();
+  });
+
+  it("opens from the keyboard with Enter or Space", () => {
+    seed([subagent()]);
+    render(<SubagentsSection />);
+    const row = screen.getByRole("button", { name: "Open Ticket check" });
+    expect(row).toHaveAttribute("tabindex", "0");
+
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(useLayoutStore.getState().openSubagent).toBe("sub-1");
+    useLayoutStore.setState({ openSubagent: null });
+    fireEvent.keyDown(row, { key: " " });
+    expect(useLayoutStore.getState().openSubagent).toBe("sub-1");
+    useLayoutStore.setState({ openSubagent: null });
+    fireEvent.keyDown(row, { key: "a" });
+    expect(useLayoutStore.getState().openSubagent).toBeNull();
+  });
+
+  it("stops without opening, and a queued row opens nothing", () => {
+    seed([
+      subagent(),
+      subagent({
+        id: "sub-2",
+        name: "Repo sweep",
+        task: "Repo sweep",
+        phase: "queued",
+        status: { state: "notStarted" },
+        startedAt: null,
+      }),
+    ]);
+    render(<SubagentsSection />);
+
+    fireEvent.click(screen.getByLabelText("Stop Ticket check"));
+    expect(assistantSubagentStop).toHaveBeenCalledWith("sub-1");
+    expect(useLayoutStore.getState().openSubagent).toBeNull();
+
+    fireEvent.click(screen.getByText("Repo sweep"));
+    expect(useLayoutStore.getState().openSubagent).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open Repo sweep" }),
+    ).toBeNull();
   });
 
   it("collapses to just its header", () => {

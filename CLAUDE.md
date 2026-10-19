@@ -1682,8 +1682,11 @@ in between. The store also drops an ended row at its `expiresAt` by itself
 (`pruneExpiredSubagents`, one timer re-armed on every list change), and
 `App.tsx` re-pulls the list on window focus / `visibilitychange`, so the panel
 never waits on a snapshot a hidden webview was slow to run. Per row name/task, kind, a live elapsed clock and phase (the
-result or error is only the phase label's tooltip, never a line of the row); stop (`assistant_subagent_stop`) while queued/running, open for a
-started one. Open = `layoutStore.openSubagent` (`openSubagentInWorkArea`):
+result or error is only the phase label's tooltip, never a line of the row); stop (`assistant_subagent_stop`, its click does not propagate) while
+queued/running. The row's name/task area itself opens a started one
+(`role="button"`, Enter/Space, a focus outline; a queued one is not
+clickable) — there is no separate open button. Open =
+`layoutStore.openSubagent` (`openSubagentInWorkArea`):
 fills the work area with a `TerminalPane` on a synthesized process, exclusive
 with the focused process, to-do, scratchpad and board (a sub-agent is never in
 the process store, so it cannot use that focus); the pane shows an "Assistant
