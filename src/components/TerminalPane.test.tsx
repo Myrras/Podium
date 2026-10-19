@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Per-command invoke stub; `process_git_branch` is overridable per test.
@@ -26,6 +26,8 @@ vi.mock("../lib/useAgentActivity", () => ({
 vi.mock("./TerminalView", () => ({
   TerminalView: () => <div data-testid="terminal-view" />,
 }));
+
+import { invoke } from "@tauri-apps/api/core";
 
 import type { ProcessInfo, ProcessKind } from "../ipc/types";
 import { useProcessStore } from "../state/processStore";
@@ -88,5 +90,44 @@ describe("TerminalPane header actions", () => {
 
     expect(await screen.findByText("podium/fix-login")).toBeVisible();
     expect(screen.getByText("fix-login")).toBeVisible();
+  });
+
+  it("labels a sub-agent and stops it through the assistant", () => {
+    const proc = process("sub-1", "Repo sweep", {
+      kind: "agent",
+      adapter: "claude-code",
+    });
+    proc.subagent = {
+      kind: "full",
+      task: "Repo sweep",
+      phase: "running",
+      endedAt: null,
+    };
+    render(<TerminalPane process={proc} />);
+
+    expect(screen.getByText("Assistant sub-agent · full")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Stop Repo sweep" }));
+    expect(invoke).toHaveBeenCalledWith("assistant_subagent_stop", {
+      id: "sub-1",
+    });
+  });
+
+  it("offers no stop once a sub-agent has ended", () => {
+    const proc = process("sub-1", "Repo sweep", {
+      kind: "agent",
+      adapter: "claude-code",
+    });
+    proc.subagent = {
+      kind: "lookup",
+      task: "Repo sweep",
+      phase: "done",
+      endedAt: "2026-01-01T10:05:00Z",
+    };
+    render(<TerminalPane process={proc} />);
+
+    expect(screen.getByText("Assistant sub-agent · lookup")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Stop Repo sweep" }),
+    ).toBeNull();
   });
 });

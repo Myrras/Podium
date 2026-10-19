@@ -33,6 +33,8 @@ import type {
   ProcessKind,
   ProcessStatus,
 } from "../ipc/types";
+import { useAssistantStore } from "./assistantStore";
+import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 import {
   startAgentActivityMonitor,
@@ -79,9 +81,84 @@ describe("agentActivityStore", () => {
     vi.clearAllMocks();
     useAgentActivityStore.setState({ activity: {}, shells: {}, notified: {} });
     useProcessStore.setState({ activeProcessId: null });
+    useAssistantStore.setState({ subagents: [] });
+    useLayoutStore.setState({ openSubagent: null });
     viewport.mockReturnValue(null);
     // Default: the user is not looking at any agent, so waiting agents ping.
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  });
+
+  it("covers the assistant's running sub-agents, which the process store never holds", () => {
+    seed([]);
+    const since = "2026-01-01T10:00:00Z";
+    const base = {
+      kind: "full" as const,
+      createdAt: since,
+      endedAt: null,
+      result: null,
+      error: null,
+    };
+    useAssistantStore.setState({
+      subagents: [
+        {
+          ...base,
+          id: "sub-1",
+          name: "Repo sweep",
+          task: "Repo sweep",
+          phase: "running",
+          status: RUNNING,
+          startedAt: since,
+        },
+        {
+          ...base,
+          id: "sub-2",
+          name: "Queued sweep",
+          task: "Queued sweep",
+          phase: "queued",
+          status: { state: "notStarted" },
+          startedAt: null,
+        },
+      ],
+    });
+    viewport.mockImplementation((id) =>
+      id === "sub-1" ? "Do you want to proceed?\n❯ 1. Yes" : null,
+    );
+
+    tick();
+    expect(useAgentActivityStore.getState().activity).toEqual({
+      "sub-1": "waiting",
+    });
+    expect(notifyAgentWaiting).toHaveBeenCalledWith("Repo sweep", true);
+    // Reported like any agent, so the assistant hears of it at once.
+    expect(processReportWaiting).toHaveBeenCalledWith("sub-1");
+  });
+
+  it("does not ping for a sub-agent whose terminal the user is watching", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    useLayoutStore.setState({ openSubagent: "sub-1" });
+    useAssistantStore.setState({
+      subagents: [
+        {
+          id: "sub-1",
+          name: "Repo sweep",
+          kind: "full",
+          task: "Repo sweep",
+          phase: "running",
+          status: RUNNING,
+          createdAt: "2026-01-01T10:00:00Z",
+          startedAt: "2026-01-01T10:00:00Z",
+          endedAt: null,
+          result: null,
+          error: null,
+        },
+      ],
+    });
+    seed([]);
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+
+    tick();
+    expect(useAgentActivityStore.getState().activity["sub-1"]).toBe("waiting");
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
   });
 
   it("marks recent sustained output as working", () => {

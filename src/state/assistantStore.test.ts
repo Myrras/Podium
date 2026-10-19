@@ -24,6 +24,8 @@ vi.mock("../ipc/commands", () => ({
   assistantResponsesList: vi.fn(() => Promise.resolve([])),
   assistantResponseDismiss: vi.fn(() => Promise.resolve()),
   assistantResponseReply: vi.fn(() => Promise.resolve(true)),
+  assistantSubagentsList: vi.fn(() => Promise.resolve([])),
+  assistantSubagentStop: vi.fn(() => Promise.resolve()),
   toIpcError: (e: unknown) => {
     if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
       return e as { kind: string; message: string };
@@ -44,10 +46,13 @@ import {
   assistantQueueSendNow,
   assistantResponseDismiss,
   assistantResponseReply,
+  assistantNewConversation,
   assistantResponsesList,
   assistantSend,
+  assistantSubagentStop,
+  assistantSubagentsList,
 } from "../ipc/commands";
-import type { ResponseItem } from "../ipc/types";
+import type { ResponseItem, SubagentInfo } from "../ipc/types";
 
 const notifyAssistant = vi.fn();
 vi.mock("../lib/notify", () => ({
@@ -745,5 +750,113 @@ describe("assistantStore", () => {
       // into a notification for a turn that produced nothing new.
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
+  });
+});
+
+function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
+  return {
+    id: "sub-1",
+    name: "Check open tickets",
+    kind: "lookup",
+    task: "Check open tickets",
+    phase: "running",
+    status: { state: "running", pid: 7, since: "2026-01-01T10:00:00Z" },
+    createdAt: "2026-01-01T10:00:00Z",
+    startedAt: "2026-01-01T10:00:00Z",
+    endedAt: null,
+    result: null,
+    error: null,
+    ...overrides,
+  };
+}
+
+describe("assistantStore — sub-agents", () => {
+  beforeEach(() => {
+    vi.mocked(assistantSubagentsList).mockReset();
+    vi.mocked(assistantSubagentsList).mockResolvedValue([]);
+    vi.mocked(assistantSubagentStop).mockReset();
+    vi.mocked(assistantSubagentStop).mockResolvedValue(undefined);
+    vi.mocked(assistantNewConversation).mockClear();
+    useAssistantStore.setState({ messages: [], subagents: [] });
+    useLayoutStore.setState({ openSubagent: null });
+  });
+
+  it("loads the list and mirrors subagentsChanged snapshots", async () => {
+    vi.mocked(assistantSubagentsList).mockResolvedValueOnce([subagent()]);
+    await useAssistantStore.getState().loadSubagents();
+    expect(useAssistantStore.getState().subagents).toEqual([subagent()]);
+
+    const done = subagent({ phase: "done", result: "Two tickets open." });
+    useAssistantStore
+      .getState()
+      .apply({ type: "subagentsChanged", subagents: [done] });
+    expect(useAssistantStore.getState().subagents).toEqual([done]);
+  });
+
+  it("drops a fetched list when a snapshot landed while it was in flight", async () => {
+    let resolve!: (items: SubagentInfo[]) => void;
+    vi.mocked(assistantSubagentsList).mockReturnValueOnce(
+      new Promise((r) => (resolve = r)),
+    );
+    const loading = useAssistantStore.getState().loadSubagents();
+    const newer = subagent({ id: "sub-2", phase: "queued" });
+    useAssistantStore
+      .getState()
+      .apply({ type: "subagentsChanged", subagents: [newer] });
+    resolve([subagent()]);
+    await loading;
+    expect(useAssistantStore.getState().subagents).toEqual([newer]);
+  });
+
+  it("applies a process status to its sub-agent only", () => {
+    useAssistantStore.setState({ subagents: [subagent()] });
+    const exited = {
+      state: "exited" as const,
+      code: 0,
+      crashed: false,
+      stopped: true,
+      at: "2026-01-01T10:05:00Z",
+    };
+    useAssistantStore.getState().applySubagentStatus("other", exited);
+    expect(useAssistantStore.getState().subagents[0].status.state).toBe(
+      "running",
+    );
+    useAssistantStore.getState().applySubagentStatus("sub-1", exited);
+    expect(useAssistantStore.getState().subagents[0].status).toEqual(exited);
+  });
+
+  it("stops a sub-agent through the IPC and reports a failure in the chat", async () => {
+    await useAssistantStore.getState().stopSubagent("sub-1");
+    expect(assistantSubagentStop).toHaveBeenCalledWith("sub-1");
+
+    vi.mocked(assistantSubagentStop).mockRejectedValueOnce({
+      kind: "processNotFound",
+      message: "process not found",
+    });
+    await useAssistantStore.getState().stopSubagent("sub-9");
+    expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
+      role: "notice",
+      text: "process not found",
+    });
+  });
+
+  it("closes the open sub-agent terminal once its row drops off", () => {
+    useLayoutStore.setState({ openSubagent: "sub-1" });
+    useAssistantStore
+      .getState()
+      .apply({ type: "subagentsChanged", subagents: [subagent()] });
+    expect(useLayoutStore.getState().openSubagent).toBe("sub-1");
+
+    useAssistantStore
+      .getState()
+      .apply({ type: "subagentsChanged", subagents: [] });
+    expect(useLayoutStore.getState().openSubagent).toBeNull();
+  });
+
+  it("passes the keep-or-stop choice on to a new conversation", async () => {
+    await useAssistantStore.getState().newConversation();
+    expect(assistantNewConversation).toHaveBeenLastCalledWith(false);
+    await useAssistantStore.getState().newConversation(true);
+    expect(assistantNewConversation).toHaveBeenLastCalledWith(true);
   });
 });

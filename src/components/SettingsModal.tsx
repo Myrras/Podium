@@ -20,6 +20,7 @@ import { useAssistantStore } from "../state/assistantStore";
 import { useIssueStore } from "../state/issueStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
 import { isWindows } from "../lib/platform";
+import { isSubagentLive } from "../lib/subagents";
 import {
   agentSettingsGet,
   agentSettingsSetAdapter,
@@ -309,6 +310,17 @@ function AssistantTab() {
   const setPolling = useAssistantStore((s) => s.setPolling);
   const loadPolling = useAssistantStore((s) => s.loadPolling);
   const newConversation = useAssistantStore((s) => s.newConversation);
+  // Queued or running sub-agents make a reset a question: their results
+  // would go to the new conversation, which may not be what the user wants.
+  const liveSubagents = useAssistantStore(
+    (s) => s.subagents.filter(isSubagentLive).length,
+  );
+  const [askKeep, setAskKeep] = useState(false);
+
+  function reset(stopSubagents: boolean) {
+    setAskKeep(false);
+    void newConversation(stopSubagents);
+  }
 
   useEffect(() => {
     void loadAutonomy();
@@ -395,9 +407,45 @@ function AssistantTab() {
           Day to day you stay in the one ongoing session. Resetting starts a
           fresh conversation; the assistant&apos;s memory is kept.
         </small>
-        <button type="button" onClick={() => void newConversation()}>
+        <button
+          type="button"
+          onClick={() => (liveSubagents > 0 ? setAskKeep(true) : reset(false))}
+        >
           Reset conversation
         </button>
+        {askKeep && (
+          <div
+            className={styles.confirmBox}
+            role="group"
+            aria-label="Sub-agents still running"
+          >
+            <p className={styles.confirmText}>
+              {liveSubagents === 1
+                ? "A sub-agent is still running or queued."
+                : `${liveSubagents} sub-agents are still running or queued.`}{" "}
+              Kept, they report into the new conversation.
+            </p>
+            <div className={styles.editActions}>
+              <button type="button" onClick={() => setAskKeep(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => reset(true)}
+              >
+                Stop them
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => reset(false)}
+              >
+                Keep running
+              </button>
+            </div>
+          </div>
+        )}
       </section>
     </>
   );

@@ -6,6 +6,7 @@ import { processGitBranch } from "../ipc/commands";
 import type { ProcessId, ProcessInfo } from "../ipc/types";
 import { activityLabel, isActive, statusLabel } from "../lib/processStatus";
 import { useAgentActivity, useAgentShells } from "../lib/useAgentActivity";
+import { useAssistantStore } from "../state/assistantStore";
 import { useProcessStore } from "../state/processStore";
 import { StatusDot } from "./StatusDot";
 import { TerminalView } from "./TerminalView";
@@ -27,6 +28,7 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
   const startProcess = useProcessStore((s) => s.startProcess);
   const stopProcess = useProcessStore((s) => s.stopProcess);
   const restartProcess = useProcessStore((s) => s.restartProcess);
+  const stopSubagent = useAssistantStore((s) => s.stopSubagent);
 
   const active = isActive(process.status);
   const isAgent = process.kind.kind === "agent";
@@ -35,6 +37,11 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
   const shells = useAgentShells(process.id);
   // Non-agents only surface "needs input" (see ProcessRow).
   const showActivity = isAgent || activity === "waiting";
+  // One of the assistant's sub-agents: stopped through its own path (the
+  // assistant is told), and only while it still holds or waits for a slot.
+  const subagent = process.subagent;
+  const subagentLive =
+    subagent?.phase === "queued" || subagent?.phase === "running";
 
   // Git branch of the focused process's cwd (null when not a git repo). Fetched
   // on demand — it shells out to git, so it's kept off the process_list path.
@@ -91,6 +98,24 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
             {process.worktree && (
               <span className={styles.gitWorktree}>{process.worktree}</span>
             )}
+          </span>
+        )}
+        {subagent && (
+          <span className={styles.subagentKind}>
+            Assistant sub-agent · {subagent.kind}
+          </span>
+        )}
+        {subagentLive && (
+          <span className={styles.headerActions}>
+            <button
+              type="button"
+              className={styles.headerBtn}
+              aria-label={`Stop ${process.name}`}
+              title="Stop this sub-agent"
+              onClick={() => void stopSubagent(process.id)}
+            >
+              <StopIcon />
+            </button>
           </span>
         )}
         {/* Agents get no start/stop/restart controls — an agent session is

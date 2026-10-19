@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-import type { ProjectId, ScratchpadId, TodoId } from "../ipc/types";
+import type { ProcessId, ProjectId, ScratchpadId, TodoId } from "../ipc/types";
 import { useProcessStore } from "./processStore";
 
 interface LayoutPersisted {
@@ -151,6 +151,13 @@ export interface LayoutState extends LayoutPersisted {
    * exclusive with the focused process, to-do and scratchpad.
    */
   openBoard: OpenBoard | null;
+  /**
+   * The assistant's sub-agent whose terminal fills the work area, or `null`.
+   * Kept apart from the process store's focus because a sub-agent is never
+   * in that store (`process_list` leaves it out). In-memory; mutually
+   * exclusive with the focused process, to-do, scratchpad and board.
+   */
+  openSubagent: ProcessId | null;
   setSidebarWidth: (w: number) => void;
   toggleProjectCollapsed: (root: string) => void;
   /** Collapse or expand one subsection of a project (persisted). */
@@ -185,6 +192,10 @@ export interface LayoutState extends LayoutPersisted {
   openBoardInWorkArea: (projectId: ProjectId) => void;
   /** Clear the open board (e.g. when a process takes the work area). */
   clearOpenBoard: () => void;
+  /** Fill the work area with a sub-agent's terminal (clears everything else). */
+  openSubagentInWorkArea: (id: ProcessId) => void;
+  /** Clear the open sub-agent (e.g. when a process takes the work area). */
+  clearOpenSubagent: () => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => {
@@ -194,6 +205,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     openTodo: null,
     openScratchpad: null,
     openBoard: null,
+    openSubagent: null,
     setSidebarWidth: (w) => {
       const sidebarWidth = Math.min(600, Math.max(160, w));
       const s = get();
@@ -261,6 +273,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         openTodo: { projectId, todoId },
         openScratchpad: null,
         openBoard: null,
+        openSubagent: null,
       });
     },
     clearOpenTodo: () => set({ openTodo: null }),
@@ -270,6 +283,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         openScratchpad: { projectId, scratchpadId },
         openTodo: null,
         openBoard: null,
+        openSubagent: null,
       });
     },
     clearOpenScratchpad: () => set({ openScratchpad: null }),
@@ -279,8 +293,19 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         openBoard: { projectId },
         openTodo: null,
         openScratchpad: null,
+        openSubagent: null,
       });
     },
     clearOpenBoard: () => set({ openBoard: null }),
+    openSubagentInWorkArea: (id) => {
+      useProcessStore.getState().setActiveProcess(null);
+      set({
+        openSubagent: id,
+        openTodo: null,
+        openScratchpad: null,
+        openBoard: null,
+      });
+    },
+    clearOpenSubagent: () => set({ openSubagent: null }),
   };
 });

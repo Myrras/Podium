@@ -295,6 +295,8 @@ pub fn run() {
             commands::assistant::assistant_responses_list,
             commands::assistant::assistant_response_dismiss,
             commands::assistant::assistant_response_reply,
+            commands::assistant::assistant_subagents_list,
+            commands::assistant::assistant_subagent_stop,
             commands::backend::backend_settings_get,
             commands::backend::backend_settings_set_wsl_distro,
             commands::backend::backend_settings_set_native_drive_projects,
