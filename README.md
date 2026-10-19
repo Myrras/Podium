@@ -225,10 +225,11 @@ they did.
   Claude Code args (Settings → Agents) carry your own `--settings`, sub-agents
   use yours instead of Podium's: a lookup then shows Claude Code's one-time
   bypass-mode warning in its terminal, and a full one asks before it reports
-  back. The first
-  sub-agent on a machine may wait on Claude Code's folder-trust question for
-  Podium's assistant folder: open it from the list and answer it once with
-  "Yes, I trust this folder" — Podium reports it but never answers for you.
+  back. Podium marks its own assistant folder as trusted in your Claude Code
+  config (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), so
+  sub-agents never stop on Claude Code's folder-trust question. Only if it
+  cannot (a WSL backend, no Claude Code config yet) does the first one ask:
+  open it from the list and answer "Yes, I trust this folder" once.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.

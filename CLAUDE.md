@@ -133,7 +133,7 @@ podium/
 │  ├─ project.rs               # project open/reload, cwd resolution (traversal-guarded)
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
-│  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
+│  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo, folder_trust.rs (pre-accepted trust for the assistant workspace)
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 36 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ subagent.rs              # the assistant's sub-agents: kinds, phases, cap + queue (SubagentBook), launch restrictions, nudge texts
@@ -1108,11 +1108,8 @@ atomically, before the async `podium.yml` load.
     symlink is removed, never followed). Only a sub-agent can have put them
     there; `--setting-sources user` already ignores all but `.mcp.json`
     (approved anyway when the user's settings carry
-    `enableAllProjectMcpServers`), so the scrub is the second layer. Not one
-    folder per sub-agent: Claude Code checks folder trust up the parent dirs
-    but records an accepted dialog for the session's own cwd (its git root, if
-    any), so a fresh subfolder per sub-agent would ask the trust question every
-    time.
+    `enableAllProjectMcpServers`), so the scrub is the second layer. One
+    folder for all of them keeps the folder trust (below) to one entry.
   - **Cap and phases** (`SubagentBook`, pure bookkeeping): at most
     `MAX_RUNNING_SUBAGENTS` = 4 run, further ones are `queued` (a `notStarted`
     row, never refused) and start oldest-first as slots free; a newcomer never
@@ -1156,15 +1153,44 @@ atomically, before the async `podium.yml` load.
     `false` (nothing runs yet). Known limit: a `lasting` nudge already written
     into the turn the reset kills is not re-sent (the old session got it, the
     new one never hears of it).
-  - **Folder trust.** The first sub-agent on a machine may sit on Claude
-    Code's folder-trust dialog for the workspace. For `trust_window` (30 s)
-    after a start Podium watches its output (`shows_trust_prompt`: header,
-    "Yes, I trust this folder" and "No, exit", no permission prompt, session
-    not yet started) and reports it like a prompt seen on screen
-    (`report_agent_waiting`), so proactivity raises it at once. Podium never
-    answers it: the dialog focuses "No, exit" and ignores an early keypress, an
-    Enter would end the session. The stuck-sub-agent nudge says the user
-    answers it once, from the sub-agent list.
+  - **Folder trust.** Podium pre-accepts Claude Code's folder-trust dialog
+    for the workspace (`agent::folder_trust`), so no sub-agent sits on it.
+    Claude Code records an accepted dialog in its global config file —
+    `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`
+    (`.claude-custom-oauth.json` with `CLAUDE_CODE_CUSTOM_OAUTH_URL`; read
+    from Podium's own environment, like `claude_config_dir`) — as
+    `projects["<abs path>"].hasTrustDialogAccepted = true`, keyed on the
+    session's physical cwd (`/` separators on Windows) and checked up the
+    parent dirs to a git root (Claude Code 2.1.301; verified by starting the
+    CLI on a PTY with a temp `CLAUDE_CONFIG_DIR`). `src-tauri` hands the path
+    in (`Orchestrator::set_claude_config`, before `set_assistant_workspace`;
+    unset, as in every test, nothing is touched). `set_assistant_workspace`
+    writes it once and `Hub::scrub_workspace` checks again before every start,
+    for a key that went missing. `ensure_trusted` is a read-modify-write of
+    that one key for the canonical workspace path: a lock-free read first (key
+    already true → nothing written), then under the CLI's own lock (the
+    `<file>.lock` directory proper-lockfile makes; tried 5 × 40 ms, never taken
+    over) a re-read, the key set (`projects` and the entry created when
+    missing), and an atomic replace (temp file beside the real one — a
+    symlinked config keeps its link — with its permissions, then a rename).
+    serde_json's `preserve_order` + `float_roundtrip` and the CLI's own layout
+    (two-space indent, the original's trailing newline or none) write every
+    other key back byte for byte. Never created: a missing file means the CLI
+    never ran with that config (or Podium resolved another one), and the CLI
+    restores a missing config from its backups, which a file holding only
+    Podium's key would pre-empt. A missing file, malformed JSON, an
+    unexpected shape, a held lock or a failed write leaves the file alone and
+    logs a warn without content; a start never fails on it. **WSL-backend
+    mode** skips it (the CLI's config is inside the distro); there, and
+    whenever the write did not happen, the detection below still applies.
+    *Fallback detection:* for `trust_window` (30 s) after a start Podium
+    watches its output (`shows_trust_prompt`: header, "Yes, I trust this
+    folder" and "No, exit", no permission prompt, session not yet started)
+    and reports it like a prompt seen on screen (`report_agent_waiting`), so
+    proactivity raises it at once. Podium never answers it: the dialog
+    focuses "No, exit" and ignores an early keypress, an Enter would end the
+    session. The stuck-sub-agent nudge says the user answers it once, from
+    the sub-agent list.
   - **Proactivity.** A sub-agent exit is not announced as an agent that
     "finished" (`is_subagent` early return); a stuck one (prompt, silence,
     escalation) gets its own wording (`stuck_subagent_text`): no project, no

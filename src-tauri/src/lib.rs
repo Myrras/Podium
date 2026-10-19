@@ -191,6 +191,11 @@ pub fn run() {
             // The assistant's sub-agents run in a folder of Podium's own, not
             // in one of the user's projects. Without it the assistant simply
             // cannot start sub-agents, so a failure is logged, not fatal.
+            // Claude Code's folder trust for it is pre-accepted in the user's
+            // Claude Code config, so no sub-agent waits on that dialog.
+            state
+                .orchestrator
+                .set_claude_config(podium_core::agent::folder_trust::claude_global_config());
             if let Err(e) = state
                 .orchestrator
                 .set_assistant_workspace(app.path().app_data_dir()?.join("assistant-workspace"))

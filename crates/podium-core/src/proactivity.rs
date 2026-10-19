@@ -334,10 +334,10 @@ impl Watcher {
             format!(
                 "[Podium] {who} is sitting on a prompt and cannot go on without the user. \
                  Read its last output and tell the user what it is asking for — they can \
-                 answer it in its terminal, from your sub-agent list. (A first sub-agent may be \
-                 on Claude Code's folder-trust question for Podium's assistant workspace, a \
-                 folder of Podium's own: the user answers it once, with \"Yes, I trust this \
-                 folder\", and later sub-agents do not ask.)"
+                 answer it in its terminal, from your sub-agent list. (If it is Claude Code's \
+                 folder-trust question for Podium's assistant workspace, a folder of Podium's \
+                 own, Podium could not accept it ahead of time: the user answers it once, with \
+                 \"Yes, I trust this folder\", and later sub-agents do not ask.)"
             )
         } else {
             format!(

@@ -259,6 +259,10 @@ struct Inner {
     /// The personal assistant's scope (see [`AssistantScope`]); `None` until
     /// [`Orchestrator::set_assistant_workspace`].
     assistant_scope: Option<AssistantScope>,
+    /// Claude Code's global config file, where the assistant workspace's
+    /// folder trust is pre-accepted (see [`Orchestrator::set_claude_config`]);
+    /// `None` leaves it alone.
+    claude_config: Option<PathBuf>,
     /// The assistant's sub-agents — kind, task and phase of each, keyed by
     /// process id. Their rows in `processes` live in the assistant's scope.
     subagents: SubagentBook,
@@ -625,19 +629,34 @@ impl Orchestrator {
         // Canonical like a project root, so `open_project` can tell the
         // folder apart from a project the user picks.
         let root = dunce::canonicalize(&dir).unwrap_or(dir);
-        let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        match &mut inner.assistant_scope {
-            // Moved: running sub-agents keep the id they were spawned under.
-            Some(scope) => scope.root = root,
-            None => {
-                inner.assistant_scope = Some(AssistantScope {
-                    id: ProjectId::new(),
-                    root,
-                    wsl: crate::platform::wsl(),
-                })
+        {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            match &mut inner.assistant_scope {
+                // Moved: running sub-agents keep the id they were spawned under.
+                Some(scope) => scope.root = root,
+                None => {
+                    inner.assistant_scope = Some(AssistantScope {
+                        id: ProjectId::new(),
+                        root,
+                        wsl: crate::platform::wsl(),
+                    })
+                }
             }
         }
+        // Once at startup, so the first sub-agent finds it done; every start
+        // checks again in case the key went missing since.
+        self.hub().trust_workspace();
         Ok(())
+    }
+
+    /// Point Podium at Claude Code's global config file
+    /// ([`crate::agent::folder_trust::claude_global_config`]), where it
+    /// pre-accepts Claude Code's folder-trust dialog for the assistant
+    /// workspace, so no sub-agent ever waits on it. Call before
+    /// [`Self::set_assistant_workspace`]. Until then (and in every test that
+    /// does not set it) the user's config is never touched.
+    pub fn set_claude_config(&self, path: Option<PathBuf>) {
+        self.inner.lock().expect(LOCK_POISONED).claude_config = path;
     }
 
     /// Start one of the assistant's sub-agents on `task` and return at once:
@@ -3820,8 +3839,10 @@ impl Hub {
         self.assistant.nudge_lasting(text, mcp).await;
     }
 
-    /// Clear what an earlier sub-agent may have left at the workspace root
-    /// that would shape the next one's session ([`crate::subagent::scrub_workspace`]).
+    /// Get the workspace ready for the next sub-agent start: clear what an
+    /// earlier sub-agent may have left at its root that would shape the next
+    /// one's session ([`crate::subagent::scrub_workspace`]), and make sure
+    /// its folder trust is still accepted ([`Self::trust_workspace`]).
     fn scrub_workspace(&self) {
         let root = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
@@ -3836,6 +3857,41 @@ impl Hub {
                 "removed {} from the assistant workspace before a sub-agent start",
                 removed.join(", ")
             );
+        }
+        self.trust_workspace();
+    }
+
+    /// Pre-accept Claude Code's folder-trust dialog for the workspace in the
+    /// user's Claude Code config ([`crate::agent::folder_trust`]); a no-op
+    /// once it is. Never fails a start: whatever goes wrong is logged, and
+    /// [`Self::watch_trust_prompt`] still reports a dialog that shows anyway.
+    /// Skipped in WSL-backend mode, where the CLI's config lives inside the
+    /// distro.
+    // ponytail: reaching the distro's `~/.claude.json` would mean a JSON
+    // edit through `wsl.exe` and the login shell; the detection covers it.
+    fn trust_workspace(&self) {
+        let (root, config) = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let Some(scope) = inner.assistant_scope.as_ref() else {
+                return;
+            };
+            if scope.wsl.is_some() {
+                return;
+            }
+            let Some(config) = inner.claude_config.clone() else {
+                return;
+            };
+            (scope.root.clone(), config)
+        };
+        use crate::agent::folder_trust::{ensure_trusted, TrustOutcome};
+        match ensure_trusted(&config, &root) {
+            TrustOutcome::AlreadyTrusted => {}
+            TrustOutcome::Written => {
+                tracing::info!("pre-accepted Claude Code's folder trust for the assistant workspace")
+            }
+            TrustOutcome::Skipped(reason) => tracing::warn!(
+                "could not pre-accept Claude Code's folder trust for the assistant workspace: {reason}"
+            ),
         }
     }
 
@@ -6849,6 +6905,44 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("timed out waiting for {what}");
+    }
+
+    /// Whether `config` records the trust dialog as accepted for `dir`.
+    fn trusted_in(config: &Path, dir: &Path) -> bool {
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+        let key = dir.to_str().unwrap().replace('\\', "/");
+        value["projects"][key.as_str()]["hasTrustDialogAccepted"] == serde_json::Value::Bool(true)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn the_workspace_is_trusted_at_setup_and_again_before_a_start() {
+        let data = tempfile::tempdir().unwrap();
+        let config = data.path().join(".claude.json");
+        std::fs::write(&config, "{\n  \"numStartups\": 7\n}").unwrap();
+        let workspace = data.path().join("assistant-workspace");
+
+        // Without a config set, nothing is touched (every other test).
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        assert!(!trusted_in(&config, &workspace));
+
+        // Setup pre-accepts it for the canonical workspace path.
+        orch.set_claude_config(Some(config.clone()));
+        orch.set_assistant_workspace(workspace.clone()).unwrap();
+        let root = dunce::canonicalize(&workspace).unwrap();
+        assert!(trusted_in(&config, &root));
+
+        // Gone again (Claude Code rewrote the file, the user edited it): the
+        // next start puts it back before the launch.
+        std::fs::write(&config, "{\n  \"numStartups\": 8\n}").unwrap();
+        orch.spawn_subagent(SubagentKind::Lookup, "Look something up", None, None)
+            .await
+            .unwrap();
+        assert!(trusted_in(&config, &root));
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(value["numStartups"], 8);
     }
 
     #[tokio::test(flavor = "multi_thread")]

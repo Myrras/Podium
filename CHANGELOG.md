@@ -22,9 +22,11 @@ when it merges.
   stop and open-terminal actions; at most 4 run at once and the rest queue.
   They never appear in a project's sidebar or count towards its agent cap.
   Resetting the conversation asks whether to keep or stop running sub-agents,
-  quitting Podium stops them, and the quit warning counts them. The first
-  sub-agent on a machine may ask Claude Code's folder-trust question once:
-  open it from the list and answer it.
+  quitting Podium stops them, and the quit warning counts them. Podium marks
+  its own assistant folder as trusted in your Claude Code config, so
+  sub-agents do not stop on Claude Code's folder-trust question (on a WSL
+  backend the first one still asks once: open it from the list and answer
+  it).
 - Two new MCP tools for the assistant, `spawn_subagent` and `list_subagents`.
 
 ## [3.1.1] - 2026-10-09
