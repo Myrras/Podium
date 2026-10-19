@@ -591,11 +591,11 @@ export type AssistantEvent =
 
 /**
  * Whether a queued item can be edited or withdrawn before delivery. Only a
- * user message can; a nudge or a proposal-outcome notice is Podium's own
- * text, delivered verbatim once its turn comes
+ * user message can; a nudge, a poll or a proposal-outcome notice is Podium's
+ * own text, delivered verbatim once its turn comes
  * (`podium_core::assistant::PendingKind`).
  */
-export type PendingKind = "user" | "nudge" | "notice";
+export type PendingKind = "user" | "nudge" | "poll" | "notice";
 
 /**
  * One attachment riding along with a chat turn
@@ -639,6 +639,8 @@ export type TranscriptRole =
   | "assistant"
   | "tool"
   | "notice"
+  /** An action that came back as an error; `text` is the error. */
+  | "toolFailed"
   | "nudge"
   /** A reply to a Responses item; `text` is `"<label>\n<reply text>"`. */
   | "reply";

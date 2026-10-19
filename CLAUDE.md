@@ -818,7 +818,27 @@ atomically, before the async `podium.yml` load.
   in the chat calls `assistant_resolve_proposal`, which runs the stored action
   and tells the assistant the outcome as a `[Podium]` turn so it can carry on.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
-  become a `toolFailed` event. The gate only sees Podium's own MCP tools,
+  become a `toolFailed` event, stored under its own `TranscriptRole::ToolFailed`
+  (rows from before that replay as `Notice`). Lines carrying a string
+  `parent_tool_use_id` are the calls of a CLI-internal `Agent`-tool subagent
+  (not one of Podium's _Sub-agents_, which are processes of their own) and
+  yield no events — the parent's `Agent` row stands for them. A `result` with `is_error` reports
+  its `result` text, not the `success` subtype: a usage limit reads `<CLI
+  text>: resumes at HH:MM` (the old `<text with "limit">|<epoch seconds>`
+  form, local time; `Fri HH:MM` when not today; anything else stays verbatim)
+  or the CLI's own wording; the CLI's synthetic text block carrying that old
+  form is dropped, the `result` line reporting it; the store always prefixes
+  it, so the panel shows `The turn failed: Claude AI usage limit reached:
+  resumes at HH:MM`. The panel folds
+  each run of consecutive `tool` / `toolFailed` / `nudge` rows into one
+  collapsed `<details>` line (render-only, the transcript is unchanged; a
+  `nudge` starts a new run unless the current one already holds one, so a
+  user turn's actions are never relabelled as Podium's, and a run with a nudge
+  reads fainter as "Podium check ·"). It only follows the tail while scrolled
+  to the bottom (opening a run keeps a pinned reader pinned, and sending
+  scrolls down directly), else shows a `New activity ↓` button — only when
+  a row other than an action/nudge was appended, cleared when the transcript
+  shrinks. The gate only sees Podium's own MCP tools,
   so the CLI's own `SendMessage` — the way a push go-ahead is relayed — is
   refused outright under `propose-all` instead: that mode adds it to the
   session's `--disallowedTools`. A CLI flag cannot change in a running
@@ -905,8 +925,10 @@ atomically, before the async `podium.yml` load.
   `assistant_send` (and `assistant_day_start`) therefore **return whether the
   message was delivered rather than queued**, and the panel adds its chat
   bubble only on `true`. It cannot work that out on its own: a turn Podium
-  started for itself — the external-sources poll, a nudge — publishes nothing
-  the panel can see, so its `busy` flag reads idle while the session is busy.
+  started for itself — the external-sources poll, a nudge — leaves a `nudge`
+  row (`PendingKind::Poll` / `Nudge`) but publishes nothing that starts or ends
+  the panel's `busy` state or announces the turn as the user's, so `busy` reads
+  idle while the session is busy.
   Guessing from `busy` meant a bubble for a message the backend had in fact
   queued, and `queueChanged` then added a waiting row for the same text: the
   user's message on screen twice, with the poll's unrelated answer landing
@@ -959,7 +981,9 @@ atomically, before the async `podium.yml` load.
   the child's stdin (`record_before_write`): the stdout task records the
   reply on its own task, so appending afterwards let a fast reply land
   *above* the message it answers, and a restart replayed the conversation out
-  of order. It is idempotent, since a failed write re-queues the same item.
+  of order. A nudge's or sweep's `nudge` row is recorded and published there
+  too, since the panel groups a turn's tool rows by the nudge row ahead of
+  them. It is idempotent, since a failed write re-queues the same item.
 
   **Responses** (`responses.rs`) are the short "needs you" / "FYI" points the
   assistant files, one per agent or to-do update, via the `add_response` MCP
@@ -1231,9 +1255,13 @@ atomically, before the async `podium.yml` load.
   need no integration — the assistant already inherits the user's own
   user-scope MCP servers — so this is `poll_prompt` wording plus a timer, and
   it is skipped entirely with both sources off or proactivity off. It is
-  delivered as a `Notice`, not a `Nudge`: a nudge renders a muted `[Podium]`
-  row on arrival, and a routine check doing that every 10 minutes would
-  recreate the very pile-up it exists to prevent.
+  delivered as `PendingKind::Poll`: unlike a proposal-outcome `Notice` it
+  leaves the same `Notice` row a nudge does (`record_before_write`, stored as a
+  `nudge` row), so the panel folds the sweep and its actions into one faint
+  "Podium check" line rather than mixing them with the user's own. The old
+  concern, a row every 10 minutes piling up, is gone because the panel folds
+  consecutive Podium rows into a single line. Unlike nudges, polls are not
+  merged or deduped in the queue.
 
   **The silence contract**: a sweep that found nothing must say nothing. The
   prompt instructs the assistant to answer with exactly `NOTHING_TO_REPORT`,
