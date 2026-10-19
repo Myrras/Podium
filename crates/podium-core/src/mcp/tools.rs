@@ -186,6 +186,21 @@ pub struct ReportToAssistantParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AskAssistantParams {
+    /// The one question you are blocked on, with the options you see and the
+    /// one you would pick.
+    pub question: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnswerSubagentParams {
+    /// The waiting sub-agent's process id (the [Podium] message names it).
+    pub process_id: String,
+    /// The answer, typed into the sub-agent as the user's next message.
+    pub answer: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CommentTodoParams {
     /// Project UUID the to-do belongs to.
     pub project_id: String,
@@ -406,16 +421,18 @@ impl PodiumTools {
             tool_router: Self::tool_router()
                 .with_disabled("add_response")
                 .with_disabled("spawn_subagent")
-                .with_disabled("list_subagents"),
+                .with_disabled("list_subagents")
+                .with_disabled("answer_subagent"),
             route: Route::Agent,
         }
     }
 
     /// The same tools for the personal assistant, gated by its autonomy mode.
+    /// `ask_assistant` is a sub-agent's question *to* it, so not its own.
     pub fn new_assistant(orchestrator: Arc<Orchestrator>) -> Self {
         Self {
             orchestrator,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router().with_disabled("ask_assistant"),
             route: Route::Assistant,
         }
     }
@@ -600,7 +617,49 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "List your sub-agents, oldest first: queued, running, and those that ended in the last few minutes — id (the process id), name, kind, task, phase (queued/running/done/failed/stopped), process status, startedAt/endedAt, and the result (done) or error (failed)."
+        description = "Only for the assistant's sub-agents: ask the assistant the one question you are blocked on — a decision that changes the outcome and cannot cheaply be undone. Podium passes it on and the answer arrives as your next message: end your turn right after this call and wait. Do not use it for anything you can decide sensibly yourself; make that choice and say so in your report."
+    )]
+    pub async fn ask_assistant(
+        &self,
+        Parameters(p): Parameters<AskAssistantParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(id) = self.caller(&context) else {
+            return Err(McpError::invalid_params(
+                "ask_assistant is only for the assistant's sub-agents".to_string(),
+                None,
+            ));
+        };
+        self.orchestrator
+            .ask_subagent_question(id, &p.question)
+            .await
+            .map_err(core_error)?;
+        Ok(text_result(
+            "Your question was passed on. The answer will arrive as your next message: end your \
+             turn now and wait for it."
+                .to_string(),
+        ))
+    }
+
+    #[tool(
+        description = "Answer one of your sub-agents that is waiting on a question (phase \"waiting\"): Podium types the answer into it as the user's next message and it goes on. Refused unless that sub-agent is waiting."
+    )]
+    pub async fn answer_subagent(
+        &self,
+        Parameters(p): Parameters<AnswerSubagentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_process_id(&p.process_id)?;
+        self.orchestrator
+            .answer_subagent(id, &p.answer)
+            .await
+            .map_err(core_error)?;
+        Ok(text_result(
+            "Answer sent; the sub-agent goes on.".to_string(),
+        ))
+    }
+
+    #[tool(
+        description = "List your sub-agents, oldest first: queued, running, waiting (on a question to you, which it carries), and those that ended in the last few minutes — id (the process id), name, kind, task, phase (queued/running/waiting/done/failed/stopped), process status, startedAt/endedAt, and the result (done) or error (failed)."
     )]
     pub async fn list_subagents(&self) -> Result<CallToolResult, McpError> {
         json_result(&self.orchestrator.list_subagents())
@@ -1240,8 +1299,16 @@ impl ServerHandler for PodiumTools {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         // Before the gate, so a refused call is never parked as a proposal.
-        if let Some(reason) = self.refuse(&request, self.caller(&context)) {
+        let caller = self.caller(&context);
+        if let Some(reason) = self.refuse(&request, caller) {
             return Err(McpError::invalid_params(reason, None));
+        }
+        // A waiting sub-agent calling its tools again has gone on (the user
+        // answered it in its terminal, or it decided for itself).
+        if let Some(id) = caller {
+            if request.name.as_ref() != "ask_assistant" {
+                self.orchestrator.subagent_resumed(id);
+            }
         }
         if self.route == Route::Assistant
             && requires_proposal_for(

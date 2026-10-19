@@ -219,7 +219,13 @@ export type SubagentKind = "lookup" | "full";
 
 /** Where a sub-agent is in its life (`podium_core::SubagentPhase`). */
 export type SubagentPhase =
-  "queued" | "running" | "done" | "failed" | "stopped";
+  | "queued"
+  | "running"
+  /** Asked the assistant a question (`ask_assistant`); still holds its slot. */
+  | "waiting"
+  | "done"
+  | "failed"
+  | "stopped";
 
 /** A sub-agent's extra on its `ProcessInfo` (`podium_core::SubagentMeta`). */
 export interface SubagentMeta {
@@ -257,6 +263,8 @@ export interface SubagentInfo {
   result: string | null;
   /** Why it failed, once `failed`. */
   error: string | null;
+  /** What it asked the assistant, while `waiting`. */
+  question: string | null;
 }
 
 /**

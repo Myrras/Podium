@@ -11,7 +11,7 @@ import type { ProcessInfo, SubagentInfo } from "../ipc/types";
 
 /** Whether the sub-agent still holds (or waits for) a slot. */
 export function isSubagentLive(s: SubagentInfo): boolean {
-  return s.phase === "queued" || s.phase === "running";
+  return s.phase === "queued" || s.phase === "running" || s.phase === "waiting";
 }
 
 /**
@@ -66,12 +66,17 @@ export function formatElapsed(ms: number): string {
   return `${sec}s`;
 }
 
-/** "2 running · 1 queued", leaving out the zeros; "" when nothing is live. */
+/**
+ * "2 running · 1 needs input · 1 queued", leaving out the zeros; "" when
+ * nothing is live.
+ */
 export function subagentSummary(subagents: SubagentInfo[]): string {
   const running = subagents.filter((a) => a.phase === "running").length;
   const queued = subagents.filter((a) => a.phase === "queued").length;
+  const waiting = subagents.filter((a) => a.phase === "waiting").length;
   return [
     running > 0 ? `${running} running` : "",
+    waiting > 0 ? `${waiting} needs input` : "",
     queued > 0 ? `${queued} queued` : "",
   ]
     .filter(Boolean)

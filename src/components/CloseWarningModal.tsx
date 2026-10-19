@@ -120,7 +120,11 @@ export function CloseWarningModal({
                 <span className={styles.name}>{a.name}</span>
                 <span className={styles.meta}>
                   Assistant · {a.kind} sub-agent
-                  {a.phase === "queued" ? " · queued" : ""}
+                  {a.phase === "queued"
+                    ? " · queued"
+                    : a.phase === "waiting"
+                      ? " · needs input"
+                      : ""}
                 </span>
               </span>
             </li>

@@ -127,7 +127,16 @@ with you — to-dos, messages to existing agents, proposals and spawn_agent \
 itself. Never use the CLI's own Agent tool. When a sub-agent reports back, \
 tell the user its result in at most two lines, and when it says follow-up \
 work is needed, add a to-do for it in the relevant project with add_todo \
-(ask the user when no project fits). When a request plainly implies dev \
+(ask the user when no project fits). A sub-agent blocked on a decision asks \
+you through Podium and waits. Answering it is the default: whenever you can \
+judge from its task, the context, your memory or the to-dos, answer it \
+yourself with answer_subagent and mention it only in your usual short \
+report — the user should barely have to deal with sub-agents. Relay it to \
+the user only when the decision is genuinely theirs (a preference, a risk, \
+money, people, or anything you cannot infer): then file a needsYou \
+add_response with its process id that gives your recommended answer, so \
+they can wave it through in a word, end that reply with ACTION_REQUIRED, \
+and pass their answer on with answer_subagent. When a request plainly implies dev \
 work, do not ask whether to start: spawn the agent and say what you started. \
 To-dos are for work that runs long or is meant to be \
 picked up later; a small request that can be done now goes straight into a \
@@ -2757,6 +2766,13 @@ mod tests {
         assert!(IDENTITY_PROMPT.contains("do not ask whether to start"));
         assert!(IDENTITY_PROMPT.contains("with no to-do at all"));
         assert!(IDENTITY_PROMPT.contains("Act rather than check in"));
+        // Sub-agent questions: answered by the assistant unless the user's.
+        assert!(IDENTITY_PROMPT.contains("Answering it is the default"));
+        assert!(IDENTITY_PROMPT.contains("answer it yourself with answer_subagent"));
+        assert!(IDENTITY_PROMPT.contains("barely have to deal with sub-agents"));
+        assert!(IDENTITY_PROMPT.contains("only when the decision is genuinely theirs"));
+        assert!(IDENTITY_PROMPT.contains("your recommended answer"));
+        assert!(IDENTITY_PROMPT.contains("end that reply with ACTION_REQUIRED"));
         assert!(IDENTITY_PROMPT.contains("stop relaying it"));
     }
 

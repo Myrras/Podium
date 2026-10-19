@@ -795,7 +795,7 @@ impl Orchestrator {
                         &task,
                     ))
                 }
-                SubagentPhase::Running => {
+                SubagentPhase::Running | SubagentPhase::Waiting => {
                     // Read by the driver when the exit comes in.
                     record.stopped_by_user = true;
                     None
@@ -843,7 +843,8 @@ impl Orchestrator {
             let mut guard = self.inner.lock().expect(LOCK_POISONED);
             let inner = &mut *guard;
             let record = inner.subagents.get(&id).ok_or(CoreError::ProcessNotFound)?;
-            if record.phase != SubagentPhase::Running {
+            // A waiting one may report too: a stale `waiting` never blocks it.
+            if !record.phase.is_active() {
                 None
             } else {
                 let (kind, task) = (record.kind, record.task.clone());
@@ -878,6 +879,86 @@ impl Orchestrator {
         hub.fill_slots().await;
         hub.nudge(text).await;
         Ok(())
+    }
+
+    /// Sub-agent `id` asked the assistant `question` (`ask_assistant`): it is
+    /// `waiting`, the question is on its row, and the assistant gets it as a
+    /// lasting nudge (answer-first, see [`crate::subagent::question_nudge`]).
+    /// The sub-agent itself ends its turn and waits; the answer is typed into
+    /// it by [`Self::answer_subagent`] or by the user in its terminal.
+    pub async fn ask_subagent_question(&self, id: ProcessId, question: &str) -> CoreResult<()> {
+        let question = question.trim();
+        if question.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "question must not be blank".to_string(),
+            ));
+        }
+        let text = {
+            let mut guard = self.inner.lock().expect(LOCK_POISONED);
+            let inner = &mut *guard;
+            inner.subagents.ask(&id, question)?;
+            publish_subagents(inner, &self.events);
+            let record = inner.subagents.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            crate::subagent::question_nudge(
+                &process_name(inner, id),
+                id,
+                record.kind,
+                &record.task,
+                question,
+            )
+        };
+        self.hub().nudge(text).await;
+        Ok(())
+    }
+
+    /// Type `answer` into waiting sub-agent `id` as a user message and send
+    /// it (`answer_subagent`); it is `running` again. Refused unless it is
+    /// `waiting`. Control characters are dropped, so the answer cannot steer
+    /// the terminal; a multi-line answer goes in as one bracketed paste
+    /// (`ESC[200~ … ESC[201~`), since a bare newline would split it, and the
+    /// Enter follows on its own after [`ANSWER_ENTER_DELAY`] — checked
+    /// against Claude Code 2.1.303 on a PTY.
+    pub async fn answer_subagent(&self, id: ProcessId, answer: &str) -> CoreResult<()> {
+        let answer = clean_answer(answer);
+        if answer.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "answer must not be blank".to_string(),
+            ));
+        }
+        let waiting = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner.subagents.get(&id).map(|r| r.phase)
+        };
+        match waiting {
+            None => return Err(CoreError::ProcessNotFound),
+            Some(SubagentPhase::Waiting) => {}
+            Some(_) => {
+                return Err(CoreError::InvalidInput(
+                    "that sub-agent is not waiting on an answer".to_string(),
+                ))
+            }
+        }
+        let pty = self.running_pty(id)?;
+        let typed = if answer.contains('\n') {
+            format!("\x1b[200~{answer}\x1b[201~")
+        } else {
+            answer
+        };
+        pty.write(typed.as_bytes())?;
+        tokio::time::sleep(ANSWER_ENTER_DELAY).await;
+        pty.write(b"\r")?;
+        self.subagent_resumed(id);
+        Ok(())
+    }
+
+    /// A `waiting` sub-agent went on — answered, or calling tools again —
+    /// so it is `running` once more. A no-op for anything else.
+    pub fn subagent_resumed(&self, id: ProcessId) {
+        let mut guard = self.inner.lock().expect(LOCK_POISONED);
+        let inner = &mut *guard;
+        if inner.subagents.resume(&id) {
+            publish_subagents(inner, &self.events);
+        }
     }
 
     /// Stop every sub-agent and cancel the queued ones, telling no one —
@@ -3500,7 +3581,13 @@ impl Orchestrator {
     }
 
     pub async fn write_stdin(&self, id: ProcessId, bytes: &[u8]) -> CoreResult<()> {
-        self.running_pty(id)?.write(bytes)
+        self.running_pty(id)?.write(bytes)?;
+        // The user answering a waiting sub-agent in its own terminal: an
+        // Enter sends what they typed, so it is running again.
+        if bytes.contains(&b'\r') {
+            self.subagent_resumed(id);
+        }
+        Ok(())
     }
 
     pub async fn resize(&self, id: ProcessId, cols: u16, rows: u16) -> CoreResult<()> {
@@ -3720,6 +3807,25 @@ fn subagent_infos(inner: &Inner) -> Vec<SubagentInfo> {
         .collect()
 }
 
+/// How long after typing an answer into a sub-agent its Enter follows, so
+/// the CLI has taken the text (or the paste) in as input before the Enter
+/// arrives.
+const ANSWER_ENTER_DELAY: Duration = Duration::from_millis(150);
+
+/// An answer as it may be typed into a terminal: line breaks normalised to
+/// `\n`, tabs kept, every other control character (escape sequences
+/// included) dropped.
+fn clean_answer(answer: &str) -> String {
+    answer
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Announce the whole sub-agent list after a change. Called under the lock
 /// that made the change, so snapshots arrive in the order the changes did.
 fn publish_subagents(inner: &Inner, events: &EventBus) {
@@ -3737,7 +3843,7 @@ fn publish_subagents(inner: &Inner, events: &EventBus) {
 fn subagent_unstarted(inner: &Inner, id: ProcessId) -> bool {
     match inner.subagents.get(&id).map(|r| r.phase) {
         Some(SubagentPhase::Queued) => true,
-        Some(SubagentPhase::Running) => inner
+        Some(SubagentPhase::Running | SubagentPhase::Waiting) => inner
             .processes
             .get(&id)
             .is_some_and(|p| matches!(p.status, ProcessStatus::NotStarted)),
@@ -3985,7 +4091,7 @@ impl Hub {
             let record = inner
                 .subagents
                 .get(&id)
-                .filter(|r| r.phase == SubagentPhase::Running)
+                .filter(|r| r.phase.is_active())
                 .map(|r| (r.kind, r.task.clone(), r.stopped_by_user));
             match (exited, record) {
                 (Some((_, _, true)), Some((kind, task, by_user))) => {
@@ -4054,10 +4160,7 @@ impl Hub {
                 .ids()
                 .into_iter()
                 .filter(|id| {
-                    inner
-                        .subagents
-                        .get(id)
-                        .is_some_and(|r| r.phase == SubagentPhase::Running)
+                    inner.subagents.get(id).is_some_and(|r| r.phase.is_active())
                         && inner
                             .processes
                             .get(id)
@@ -7351,6 +7454,71 @@ mod tests {
         orch.shutdown().await;
     }
 
+    #[test]
+    fn an_answer_keeps_its_lines_and_loses_every_control_character() {
+        assert_eq!(clean_answer("  yes  "), "yes");
+        assert_eq!(clean_answer("one\r\ntwo\rthree"), "one\ntwo\nthree");
+        assert_eq!(clean_answer("a\tb\u{1b}[201~\u{7}c"), "a\tb[201~c");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_waiting_sub_agent_goes_on_when_the_user_answers_in_its_terminal() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        let mut events = orch.subscribe_events();
+        let id = orch
+            .spawn_subagent(SubagentKind::Full, "Pick a branch", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        // Blank questions and unknown ids are refused.
+        assert!(matches!(
+            orch.ask_subagent_question(id, "  ").await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            orch.ask_subagent_question(ProcessId::new(), "x").await,
+            Err(CoreError::ProcessNotFound)
+        ));
+        orch.ask_subagent_question(id, "main or develop?")
+            .await
+            .unwrap();
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Waiting));
+        // The snapshot carries the question.
+        let mut seen = false;
+        while let Ok(event) = events.try_recv() {
+            if let PodiumEvent::AssistantEvent {
+                event: AssistantEvent::SubagentsChanged { subagents },
+            } = event
+            {
+                seen |= subagents.iter().any(|s| {
+                    s.phase == SubagentPhase::Waiting
+                        && s.question.as_deref() == Some("main or develop?")
+                });
+            }
+        }
+        assert!(seen, "a waiting snapshot with the question");
+        // Typing without Enter is not an answer yet; Enter is.
+        orch.write_stdin(id, b"develop").await.unwrap();
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Waiting));
+        orch.write_stdin(id, b"\r").await.unwrap();
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Running));
+        // A blank answer is refused before anything is typed.
+        orch.ask_subagent_question(id, "again?").await.unwrap();
+        assert!(matches!(
+            orch.answer_subagent(id, " \u{1b} ").await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        // A waiting one can still be stopped.
+        orch.stop_subagent(id).await.unwrap();
+        wait_until("it to stop", || {
+            phase_of(&orch, id) == Some(SubagentPhase::Stopped)
+        })
+        .await;
+        orch.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
     async fn an_expired_row_is_announced_gone_with_nothing_else_happening() {
@@ -7362,6 +7530,8 @@ mod tests {
                 ..sub_config(4)
             },
         );
+        // Every snapshot from the first spawn on.
+        let mut events = orch.subscribe_events();
         // One that fails on its own, one the user stops, one that reports.
         let spawn = |task: &'static str| {
             let orch = &orch;
@@ -7380,27 +7550,28 @@ mod tests {
             .await
             .unwrap();
         let ids = [crashed, stopped, reported];
-        wait_until("all three to end and exit", || {
-            orch.list_subagents()
-                .iter()
-                .all(|s| s.phase.is_ended() && matches!(s.status, ProcessStatus::Exited { .. }))
-        })
-        .await;
-        // Each snapshot says when its row goes.
-        for s in orch.list_subagents() {
-            let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
-            assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
-        }
 
         // From here on nothing calls into the orchestrator: only the
-        // driver's own tick can say the rows are gone.
-        let mut events = orch.subscribe_events();
-        let gone = tokio::time::timeout(Duration::from_secs(5), async {
+        // driver's own tick can drop the rows, and its snapshot says so.
+        let mut ended_seen = false;
+        let gone = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 match events.recv().await {
                     Ok(PodiumEvent::AssistantEvent {
                         event: AssistantEvent::SubagentsChanged { subagents },
-                    }) if subagents.iter().all(|s| !ids.contains(&s.id)) => return,
+                    }) => {
+                        if subagents.len() == 3 && subagents.iter().all(|s| s.phase.is_ended()) {
+                            ended_seen = true;
+                            // Each snapshot says when its row goes.
+                            for s in &subagents {
+                                let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
+                                assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
+                            }
+                        }
+                        if ended_seen && subagents.iter().all(|s| !ids.contains(&s.id)) {
+                            return;
+                        }
+                    }
                     Ok(_) => {}
                     Err(e) => panic!("event bus: {e}"),
                 }

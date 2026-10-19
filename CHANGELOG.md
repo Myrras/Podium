@@ -28,7 +28,14 @@ when it merges.
   sub-agents do not stop on Claude Code's folder-trust question (on a WSL
   backend the first one still asks once: open it from the list and answer
   it).
-- Two new MCP tools for the assistant, `spawn_subagent` and `list_subagents`.
+- **Sub-agents' questions go through the assistant.** A sub-agent that is
+  truly blocked on a decision asks the assistant instead of waiting in a
+  terminal nobody watches; its row shows *Needs input*. The assistant answers
+  it itself whenever it can tell, and only relays a decision that is really
+  yours as a *Needs you* item with its recommended answer (with a desktop
+  notification). Answering in the sub-agent's terminal works too.
+- New MCP tools: `spawn_subagent`, `list_subagents` and `answer_subagent` for
+  the assistant, and `ask_assistant` for its sub-agents.
 
 ## [3.1.1] - 2026-10-09
 

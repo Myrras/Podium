@@ -936,9 +936,15 @@ fn subagent_identity_prompt(ctx: &AgentLaunchCtx, kind: SubagentKind) -> String 
          repositories — and nobody watches this terminal. Do the one task you \
          were given, then call the podium report_to_assistant tool with your \
          process_id and your result in at most two short lines, saying whether \
-         follow-up work is needed and, if so, in which project. If you cannot \
-         finish, report that instead, with the reason, rather than wait for an \
-         answer. Report once: Podium ends this session after your report. \
+         follow-up work is needed and, if so, in which project. Nobody reads \
+         this terminal, so never ask in it (no AskUserQuestion). Ask only when \
+         you are truly blocked on a decision that changes the outcome and \
+         cannot be reversed cheaply: then call the podium ask_assistant tool \
+         with that one question, the options and the one you would pick, end \
+         your turn and wait — the answer arrives as your next message. For \
+         anything else pick the sensible default yourself and state it in \
+         your report. If you cannot finish, report that instead, with the \
+         reason. Report once: Podium ends this session after your report. \
          Never start agents yourself (no spawn_agent).",
         ctx.process_id
     );
@@ -1804,7 +1810,16 @@ mod tests {
             assert!(blurb.contains("report_to_assistant"));
             assert!(blurb.contains("at most two short lines"));
             assert!(blurb.contains("in which project"));
-            assert!(blurb.contains("rather than wait for an answer"));
+            // Ask only when truly blocked, through the assistant, then wait;
+            // otherwise decide and say so.
+            assert!(blurb.contains("no AskUserQuestion"), "{blurb}");
+            assert!(blurb.contains("truly blocked on a decision that changes the outcome"));
+            assert!(blurb.contains("cannot be reversed cheaply"));
+            assert!(blurb.contains("ask_assistant tool"));
+            assert!(blurb.contains("end your turn and wait"));
+            assert!(
+                blurb.contains("pick the sensible default yourself and state it in your report")
+            );
             // None of a project agent's standing instructions.
             assert!(!blurb.contains("git push -u origin HEAD"), "{blurb}");
             assert!(!blurb.contains("create_worktree"), "{blurb}");
@@ -1841,8 +1856,14 @@ mod tests {
             .iter()
             .filter_map(|r| r.as_str())
             .collect();
+        for tool in ["report_to_assistant", "ask_assistant"] {
+            assert!(
+                allow.contains(&format!("mcp__podium__{tool}").as_str()),
+                "{tool}: {allow:?}"
+            );
+        }
         assert!(
-            allow.contains(&"mcp__podium__report_to_assistant"),
+            !allow.contains(&"mcp__podium__answer_subagent"),
             "{allow:?}"
         );
         assert!(!allow.iter().any(|r| r.contains("git push")), "{allow:?}");

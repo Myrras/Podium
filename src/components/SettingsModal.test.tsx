@@ -385,6 +385,7 @@ describe("SettingsModal — Assistant tab", () => {
             expiresAt: null,
             result: null,
             error: null,
+            question: null,
           },
           {
             id: "sub-2",
@@ -399,6 +400,7 @@ describe("SettingsModal — Assistant tab", () => {
             expiresAt: null,
             result: null,
             error: null,
+            question: null,
           },
         ],
       });

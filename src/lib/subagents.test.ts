@@ -23,6 +23,7 @@ function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     expiresAt: null,
     result: null,
     error: null,
+    question: null,
     ...overrides,
   };
 }
@@ -51,15 +52,17 @@ describe("subagents helpers", () => {
 
   it("counts only the live ones", () => {
     expect(isSubagentLive(subagent({ phase: "queued" }))).toBe(true);
+    expect(isSubagentLive(subagent({ phase: "waiting" }))).toBe(true);
     expect(isSubagentLive(subagent({ phase: "stopped" }))).toBe(false);
     expect(
       subagentSummary([
         subagent(),
         subagent({ phase: "running" }),
+        subagent({ phase: "waiting" }),
         subagent({ phase: "queued" }),
         subagent({ phase: "failed" }),
       ]),
-    ).toBe("2 running · 1 queued");
+    ).toBe("2 running · 1 needs input · 1 queued");
     expect(subagentSummary([subagent({ phase: "done" })])).toBe("");
   });
 

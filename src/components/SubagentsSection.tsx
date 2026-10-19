@@ -28,6 +28,7 @@ import styles from "./SubagentsSection.module.css";
 const PHASE_LABELS: Record<SubagentPhase, string> = {
   queued: "Queued",
   running: "Running",
+  waiting: "Needs input",
   done: "Done",
   failed: "Failed",
   stopped: "Stopped",
@@ -38,7 +39,9 @@ export function SubagentsSection() {
   const [open, setOpen] = useState(true);
   // One clock for the whole section, ticking only while something runs, so
   // the running times stay live without a timer per row.
-  const anyRunning = subagents.some((a) => a.phase === "running");
+  const anyRunning = subagents.some(
+    (a) => a.phase === "running" || a.phase === "waiting",
+  );
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!anyRunning) return;
@@ -99,9 +102,14 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
   // Only the task when the name already says the same thing.
   const showTask = item.task.trim() !== item.name.trim();
 
-  // The outcome stays out of the row; hovering the phase shows it whole.
+  // The outcome — or, while waiting, the question — stays out of the row;
+  // hovering the phase shows it whole.
   const detail =
-    (item.phase === "done" ? item.result : item.error) ?? undefined;
+    (item.phase === "done"
+      ? item.result
+      : item.phase === "waiting"
+        ? item.question
+        : item.error) ?? undefined;
 
   return (
     <li

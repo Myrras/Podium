@@ -319,9 +319,16 @@ async fn tools_list_includes_scratchpad_tools() {
         );
     }
     // The assistant's own tools: only its route lists them.
-    for name in ["add_response", "spawn_subagent", "list_subagents"] {
+    for name in [
+        "add_response",
+        "spawn_subagent",
+        "list_subagents",
+        "answer_subagent",
+    ] {
         assert!(!tools.contains(&name), "{name}: {tools:?}");
     }
+    // A full sub-agent's question, on this route like its report.
+    assert!(tools.contains(&"ask_assistant"), "{tools:?}");
 
     server.stop();
 }
@@ -2771,6 +2778,9 @@ const TOOL_CLASSIFICATION: &[(&str, bool, bool)] = &[
     // counts as a full one — classified like spawn_agent.
     ("spawn_subagent", false, false),
     ("list_subagents", true, false),
+    // Types into a waiting sub-agent: an ordinary change, gated only under
+    // propose-all. (`ask_assistant` is a sub-agent's, not on this route.)
+    ("answer_subagent", false, false),
 ];
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3537,6 +3547,10 @@ impl AgentAdapter for TaskScriptAdapter {
         let task = ctx.prompt.unwrap_or("");
         let command = if task.starts_with("crash") {
             "exit 3"
+        } else if task.starts_with("echo-input") {
+            // Shows every byte typed into it (`cat -v`: ESC as `^[`, CR as
+            // `^M`), so a test can see exactly what Podium wrote.
+            "stty raw -echo; cat -v"
         } else if task.starts_with("trust-and-ask") {
             r#"printf 'Quick safety check: Is this a project you created or one you trust?\n> No, exit\n  Yes, I trust this folder\nBash command\n  rm -rf build\nDo you want to proceed?\n'; read -r answer; echo "typed:$answer"; sleep 30"#
         } else if task.starts_with("trust") {
@@ -3634,13 +3648,16 @@ async fn spawn_subagent_runs_over_the_assistant_route_and_never_on_the_agents() 
     let agent = open_session(&server, "/mcp").await;
 
     let own = listed_tools(&server, ASSISTANT_PATH, &assistant).await;
-    for name in ["spawn_subagent", "list_subagents"] {
+    for name in ["spawn_subagent", "list_subagents", "answer_subagent"] {
         assert!(own.iter().any(|t| t == name), "{name}: {own:?}");
     }
+    // A question goes *to* the assistant, so it is not on its route.
+    assert!(!own.iter().any(|t| t == "ask_assistant"), "{own:?}");
     let agents = listed_tools(&server, "/mcp", &agent).await;
-    for name in ["spawn_subagent", "list_subagents"] {
+    for name in ["spawn_subagent", "list_subagents", "answer_subagent"] {
         assert!(!agents.iter().any(|t| t == name), "{name}: {agents:?}");
     }
+    assert!(agents.iter().any(|t| t == "ask_assistant"), "{agents:?}");
 
     let answer = call_tool_text(
         &server,
@@ -4216,6 +4233,7 @@ async fn the_lookup_route_serves_only_reads_and_the_callers_own_report() {
         "list_todos",
         "list_worktrees",
         "report_to_assistant",
+        "ask_assistant",
         "verify_sender",
     ];
     expected.sort_unstable();
@@ -4344,6 +4362,233 @@ async fn an_agent_can_neither_report_for_nor_stop_a_sub_agent() {
         subagent_phase(&orch, id) == Some(SubagentPhase::Stopped)
     })
     .await;
+
+    server.stop();
+    orch.shutdown().await;
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agents_question_reaches_the_assistant_and_its_answer_is_typed_in() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, server, adapter) = subagent_server(dir.path()).await;
+    // The assistant: a fake CLI that announces itself and keeps every turn
+    // it is sent.
+    let turns = dir.path().join("turns.jsonl");
+    let script = dir.path().join("fake-assistant.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fake\"}}'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done\n",
+            turns.display()
+        ),
+    )
+    .expect("write script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: script.display().to_string(),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+
+    let id = orch
+        .spawn_subagent(SubagentKind::Full, "echo-input until told", None, None)
+        .await
+        .expect("spawn")
+        .process_id;
+    let key = adapter.launches.lock().unwrap()[0]
+        .2
+        .clone()
+        .expect("a caller key");
+    let agent = open_session(&server, "/mcp").await;
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+    let ask =
+        serde_json::json!({ "question": "Merge \"main\" into the release branch, or rebase?" });
+
+    // Only a sub-agent, by its own key, may ask.
+    let body = call_as(&server, "/mcp", &agent, None, "ask_assistant", ask.clone()).await;
+    assert!(
+        refusal(&body).contains("only for the assistant's sub-agents"),
+        "{body}"
+    );
+    let body = call_as(
+        &server,
+        "/mcp",
+        &agent,
+        Some("not-a-key"),
+        "ask_assistant",
+        ask.clone(),
+    )
+    .await;
+    assert!(
+        refusal(&body).contains("only for the assistant's sub-agents"),
+        "{body}"
+    );
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+    // Not the assistant's to call: its route does not serve it.
+    let body = call_as(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        Some(&key),
+        "ask_assistant",
+        ask.clone(),
+    )
+    .await;
+    assert!(body.get("error").is_some(), "{body}");
+    // Nor can it be answered before it asked.
+    let answer = |text: &str| serde_json::json!({ "process_id": id.to_string(), "answer": text });
+    let body = call_as(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        None,
+        "answer_subagent",
+        answer("x"),
+    )
+    .await;
+    assert!(refusal(&body).contains("not waiting"), "{body}");
+
+    let body = call_as(
+        &server,
+        "/mcp",
+        &agent,
+        Some(&key),
+        "ask_assistant",
+        ask.clone(),
+    )
+    .await;
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text.contains("passed on") && text.contains("end your turn"),
+        "{body}"
+    );
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Waiting));
+    let row = orch
+        .list_subagents()
+        .into_iter()
+        .find(|s| s.id == id)
+        .expect("row");
+    assert_eq!(
+        row.question.as_deref(),
+        Some("Merge \"main\" into the release branch, or rebase?")
+    );
+
+    // The assistant is told, answer-first, with the question quoted.
+    wait_for("the question nudge", || {
+        std::fs::read_to_string(&turns).is_ok_and(|t| t.contains("asks (its own words)"))
+    })
+    .await;
+    let sent = std::fs::read_to_string(&turns).expect("turns");
+    for part in [
+        &id.to_string(),
+        r#"\\\"main\\\""#,
+        "Answering is the default",
+        "answer_subagent",
+    ] {
+        assert!(sent.contains(part), "{part}: {sent}");
+    }
+
+    // An agent cannot answer it.
+    let body = call_as(
+        &server,
+        "/mcp",
+        &agent,
+        None,
+        "answer_subagent",
+        answer("rebase"),
+    )
+    .await;
+    assert!(body.get("error").is_some(), "{body}");
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Waiting));
+
+    // The assistant's answer is typed in as one pasted message and sent.
+    let body = call_as(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        None,
+        "answer_subagent",
+        answer("Rebase it.\nThen push.\u{1b}[2J"),
+    )
+    .await;
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+    assert!(orch.list_subagents().iter().all(|s| s.question.is_none()));
+    let typed = timeout(TEST_TIMEOUT, async {
+        loop {
+            let out = orch.tail_text(id, 8192).await.unwrap_or_default();
+            if out.contains("^[[201~^M") {
+                return out;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the typed answer");
+    // One bracketed paste holding both lines, then the Enter on its own.
+    assert!(
+        typed.contains("^[[200~Rebase it.\nThen push.[2J^[[201~^M"),
+        "{typed:?}"
+    );
+    // The escape in the answer never reached the terminal as one.
+    assert!(!typed.contains("^[[2J"), "{typed}");
+
+    // Answered again: refused, it is not waiting any more.
+    let body = call_as(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        None,
+        "answer_subagent",
+        answer("x"),
+    )
+    .await;
+    assert!(refusal(&body).contains("not waiting"), "{body}");
+
+    // Asked again, then it goes on by itself (a tool call): running again.
+    call_as(
+        &server,
+        "/mcp",
+        &agent,
+        Some(&key),
+        "ask_assistant",
+        ask.clone(),
+    )
+    .await;
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Waiting));
+    call_as(
+        &server,
+        "/mcp",
+        &agent,
+        Some(&key),
+        "list_projects",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Running));
+    // And a stale wait never blocks the report.
+    call_as(&server, "/mcp", &agent, Some(&key), "ask_assistant", ask).await;
+    let body = call_as(
+        &server,
+        "/mcp",
+        &agent,
+        Some(&key),
+        "report_to_assistant",
+        serde_json::json!({ "process_id": id.to_string(), "summary": "Rebased." }),
+    )
+    .await;
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(subagent_phase(&orch, id), Some(SubagentPhase::Done));
 
     server.stop();
     orch.shutdown().await;

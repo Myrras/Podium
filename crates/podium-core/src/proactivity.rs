@@ -274,6 +274,15 @@ impl Watcher {
         let alive = live_agents(orchestrator);
         self.waiting.retain(|id, _| alive.contains(id));
         for (process, prompting) in agents {
+            // A sub-agent waiting on its own question (ask_assistant) is quiet
+            // on purpose, and the assistant already has the question.
+            if process
+                .subagent
+                .as_ref()
+                .is_some_and(|s| s.phase == crate::subagent::SubagentPhase::Waiting)
+            {
+                continue;
+            }
             let Some(nudges) = self.next_nudge(process.id) else {
                 continue;
             };

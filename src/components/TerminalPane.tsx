@@ -41,7 +41,9 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
   // assistant is told), and only while it still holds or waits for a slot.
   const subagent = process.subagent;
   const subagentLive =
-    subagent?.phase === "queued" || subagent?.phase === "running";
+    subagent?.phase === "queued" ||
+    subagent?.phase === "running" ||
+    subagent?.phase === "waiting";
 
   // Git branch of the focused process's cwd (null when not a git repo). Fetched
   // on demand — it shells out to git, so it's kept off the process_list path.

@@ -210,7 +210,8 @@ they did.
   for permission like any agent, and under `propose-all` starting one needs
   your confirmation (a lookup never does). Project code work still goes to a
   project agent. They are listed above the chat log with task, kind, running
-  time and status (queued, running, done, failed, stopped); **stop** one, or
+  time and status (queued, running, needs input, done, failed, stopped);
+  **stop** one, or
   **click** its row to open its terminal in the work area (for a lookup, that
   is its output).
   At most 4 run at once, the rest queue and start by themselves; finished ones
@@ -221,7 +222,17 @@ they did.
   into the new conversation) or stop them; quitting Podium stops them, and the
   quit warning counts them. They are not restored after a restart. A
   sub-agent stuck on a prompt is reported right away once you have opened its
-  terminal; otherwise after five minutes of silence. Sub-agents load only your
+  terminal; otherwise after five minutes of silence. **Questions:** a
+  sub-agent only asks when it is truly blocked on a decision that changes the
+  outcome; anything else it decides itself and mentions in its report. Its
+  question goes to the assistant (the row shows *Needs input*, the question on
+  hover), which answers it itself whenever it can tell from the task, the
+  context, its memory or your to-dos — you only see it in the usual short
+  report. Only a decision that is really yours (a preference, a risk, money,
+  people) reaches you, as a *Needs you* item with the assistant's recommended
+  answer and a desktop notification; reply to it and the assistant passes the
+  answer on. You can also answer in the sub-agent's terminal yourself.
+  Sub-agents load only your
   own Claude Code settings, not ones a folder could carry. If your default
   Claude Code args (Settings → Agents) carry your own `--settings`, sub-agents
   use yours instead of Podium's: a lookup then shows Claude Code's one-time

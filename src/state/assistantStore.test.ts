@@ -767,6 +767,7 @@ function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     expiresAt: null,
     result: null,
     error: null,
+    question: null,
     ...overrides,
   };
 }

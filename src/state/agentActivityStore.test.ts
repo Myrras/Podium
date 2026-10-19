@@ -98,6 +98,7 @@ describe("agentActivityStore", () => {
       expiresAt: null,
       result: null,
       error: null,
+      question: null,
     };
     useAssistantStore.setState({
       subagents: [
@@ -152,6 +153,7 @@ describe("agentActivityStore", () => {
           expiresAt: null,
           result: null,
           error: null,
+          question: null,
         },
       ],
     });

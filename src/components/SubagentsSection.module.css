@@ -146,6 +146,11 @@
   color: var(--success);
 }
 
+.phase[data-phase="waiting"] {
+  color: var(--warning);
+  font-weight: 600;
+}
+
 .phase[data-phase="failed"] {
   color: var(--danger);
 }

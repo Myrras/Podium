@@ -31,6 +31,7 @@ function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     expiresAt: null,
     result: null,
     error: null,
+    question: null,
     ...overrides,
   };
 }
@@ -209,6 +210,32 @@ describe("SubagentsSection", () => {
     expect(
       screen.queryByRole("button", { name: "Open Repo sweep" }),
     ).toBeNull();
+  });
+
+  it("shows a waiting one as needing input, with its question on hover", () => {
+    seed([
+      subagent({
+        phase: "waiting",
+        question: "Close the stale tickets too, or only list them?",
+      }),
+    ]);
+    render(<SubagentsSection />);
+
+    expect(screen.getByText("1 needs input")).toBeInTheDocument();
+    const phase = screen.getByText("Needs input");
+    expect(phase).toHaveAttribute("data-phase", "waiting");
+    expect(phase).toHaveAttribute(
+      "title",
+      "Close the stale tickets too, or only list them?",
+    );
+    // The question is not a line of the row.
+    expect(
+      screen.queryByText("Close the stale tickets too, or only list them?"),
+    ).toBeNull();
+    // Still live: it can be stopped, and its terminal opened to answer it.
+    expect(screen.getByLabelText("Stop Ticket check")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Ticket check"));
+    expect(useLayoutStore.getState().openSubagent).toBe("sub-1");
   });
 
   it("collapses to just its header", () => {

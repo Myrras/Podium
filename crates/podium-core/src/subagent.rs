@@ -14,7 +14,10 @@
 //! [`SubagentConfig::max_running`] slots is free, else `queued`, and a queued
 //! one starts (oldest first) as soon as a slot frees. It ends `done` when it
 //! reports its result (`report_to_assistant`), `failed` when it exits without
-//! one, or `stopped` when it was stopped (or cancelled while queued). Every
+//! one, or `stopped` when it was stopped (or cancelled while queued). A
+//! running one that asks the assistant a question (`ask_assistant`) is
+//! `waiting` until the answer is typed into it (`answer_subagent`, or the
+//! user in its terminal); it keeps its slot and never expires. Every
 //! ended phase frees its slot; the row stays visible for
 //! [`SubagentConfig::linger`] and is then removed together with its process.
 
@@ -45,6 +48,7 @@ const LOOKUP_DISALLOWED_CLI_TOOLS: &[&str] = &[
     "SendMessage",
     "Agent",
     "Task",
+    "AskUserQuestion",
 ];
 
 /// What the assistant workspace may never hold at its root when a sub-agent
@@ -55,10 +59,15 @@ const LOOKUP_DISALLOWED_CLI_TOOLS: &[&str] = &[
 /// [`scrub_workspace`]).
 const WORKSPACE_PLANTS: &[&str] = &[".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md"];
 
-/// What a full sub-agent may never run: messaging other sessions, or the
-/// CLI's own subagents (`Agent`, once `Task`) — sub-agents never start sub-
-/// agents of their own.
-const FULL_DISALLOWED_CLI_TOOLS: &str = "SendMessage,Agent,Task";
+/// What a full sub-agent may never run: messaging other sessions, the CLI's
+/// own subagents (`Agent`, once `Task`) — sub-agents never start sub-agents
+/// of their own — or the CLI's question dialog (`AskUserQuestion`), which
+/// would sit in a terminal nobody watches: a question goes to the assistant
+/// with `ask_assistant` instead. A lookup is refused the same two.
+const FULL_DISALLOWED_CLI_TOOLS: &str = "SendMessage,Agent,Task,AskUserQuestion";
+
+/// Longest question kept on a sub-agent's row (and quoted in its nudge).
+pub const MAX_QUESTION_CHARS: usize = 2000;
 
 /// The only flags a sub-agent's `args` may carry: which model it runs on and
 /// how hard it thinks. Anything else could change what it may do — a
@@ -109,6 +118,9 @@ pub enum SubagentPhase {
     /// Waiting for a free slot.
     Queued,
     Running,
+    /// Asked the assistant a question (`ask_assistant`) and waits for the
+    /// answer to be typed into it. Still holds its slot.
+    Waiting,
     /// Reported its result.
     Done,
     /// Exited without a result, or could not start.
@@ -122,6 +134,12 @@ impl SubagentPhase {
     /// off after [`SubagentConfig::linger`].
     pub fn is_ended(self) -> bool {
         matches!(self, Self::Done | Self::Failed | Self::Stopped)
+    }
+
+    /// Whether it has a process going and holds a slot: running, or
+    /// waiting on an answer.
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Running | Self::Waiting)
     }
 }
 
@@ -187,6 +205,8 @@ pub struct SubagentInfo {
     pub result: Option<String>,
     /// Why it failed, once `failed`.
     pub error: Option<String>,
+    /// What it asked the assistant, while `waiting`.
+    pub question: Option<String>,
 }
 
 /// What a sub-agent process carries on its [`crate::ProcessInfo`].
@@ -224,6 +244,8 @@ pub(crate) struct SubagentRecord {
     ended: Option<Instant>,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// What it asked the assistant, while `waiting`.
+    pub question: Option<String>,
     /// The stop came from the user (the panel's stop), so the assistant is
     /// told. A stop the assistant asked for itself (`stop_process`), or a new
     /// conversation that cleared them, is not news to anyone.
@@ -276,9 +298,12 @@ impl SubagentBook {
         self.records.get_mut(id)
     }
 
-    /// How many hold a slot.
+    /// How many hold a slot (running or waiting on an answer).
     pub fn running(&self) -> usize {
-        self.count(SubagentPhase::Running)
+        self.records
+            .values()
+            .filter(|r| r.phase.is_active())
+            .count()
     }
 
     /// How many wait for one.
@@ -320,6 +345,7 @@ impl SubagentBook {
                 ended: None,
                 result: None,
                 error: None,
+                question: None,
                 stopped_by_user: false,
                 caller_key: None,
             },
@@ -381,6 +407,7 @@ impl SubagentBook {
         r.phase = phase;
         r.ended_at = Some(now);
         r.ended = Some(at);
+        r.question = None;
         match phase {
             SubagentPhase::Done => {
                 r.result = outcome.map(|o| crate::assistant::truncate(&o, MAX_RESULT_CHARS))
@@ -389,6 +416,37 @@ impl SubagentBook {
             _ => {}
         }
         true
+    }
+
+    /// Sub-agent `id` asked the assistant `question`: it is `waiting` until
+    /// [`Self::resume`]. Asking again while waiting replaces the question.
+    /// Refused for one that is queued (it cannot ask) or already over.
+    pub fn ask(&mut self, id: &ProcessId, question: &str) -> CoreResult<()> {
+        let r = self.records.get_mut(id).ok_or(CoreError::ProcessNotFound)?;
+        if !r.phase.is_active() {
+            return Err(CoreError::InvalidInput(
+                "only a running sub-agent can ask the assistant a question".to_string(),
+            ));
+        }
+        r.phase = SubagentPhase::Waiting;
+        r.question = Some(crate::assistant::truncate(
+            question.trim(),
+            MAX_QUESTION_CHARS,
+        ));
+        Ok(())
+    }
+
+    /// A `waiting` sub-agent got its answer (or went on without one): back
+    /// to `running`, the question cleared. Answers whether it was waiting.
+    pub fn resume(&mut self, id: &ProcessId) -> bool {
+        match self.records.get_mut(id) {
+            Some(r) if r.phase == SubagentPhase::Waiting => {
+                r.phase = SubagentPhase::Running;
+                r.question = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Ended sub-agents whose row has been shown for the linger already, by
@@ -456,6 +514,7 @@ impl SubagentRecord {
             expires_at,
             result: self.result.clone(),
             error: self.error.clone(),
+            question: self.question.clone(),
         }
     }
 }
@@ -521,8 +580,8 @@ pub fn scrub_workspace(root: &std::path::Path) -> Vec<&'static str> {
 }
 
 /// The Podium tools a sub-agent may call without a permission prompt — and
-/// the only ones a lookup may call at all: the read-only ones and its own
-/// report. `add_response` and `list_subagents` count as read-only for the
+/// the only ones a lookup may call at all: the read-only ones, its own
+/// report and its question to the assistant. `add_response` and `list_subagents` count as read-only for the
 /// assistant's gate but are the assistant's own (the agents' route does not
 /// even serve them), so they are left out.
 pub(crate) fn unprompted_podium_tools() -> Vec<&'static str> {
@@ -530,7 +589,7 @@ pub(crate) fn unprompted_podium_tools() -> Vec<&'static str> {
         .iter()
         .copied()
         .filter(|tool| !matches!(*tool, "add_response" | "list_subagents"))
-        .chain(["report_to_assistant"])
+        .chain(["report_to_assistant", "ask_assistant"])
         .collect()
 }
 
@@ -660,6 +719,37 @@ pub fn finished_nudge(
          the user.",
         who(name, id, kind, task),
         crate::assistant::quote_line(&shown)
+    )
+}
+
+/// The nudge for a sub-agent that asked the assistant a question
+/// (`ask_assistant`). Answer-first: the assistant answers it itself whenever
+/// it can judge, so the user barely deals with sub-agents; only a decision
+/// that is genuinely theirs is relayed, with a recommended answer, and only
+/// then does the turn end `ACTION_REQUIRED` (the desktop ping).
+pub fn question_nudge(
+    name: &str,
+    id: ProcessId,
+    kind: SubagentKind,
+    task: &str,
+    question: &str,
+) -> String {
+    format!(
+        "[Podium] Your sub-agent {} asks (its own words): {} It waits until it gets an answer. \
+         Answering is the default: whenever you can judge it from the task, the context, your \
+         memory or the to-dos, answer it yourself with answer_subagent (process_id {id}) and \
+         mention it only in your usual short report, without bothering the user. Relay it only \
+         when the decision is genuinely the user's — a preference, a risk, money, people, or \
+         anything you cannot infer: then file a needsYou add_response with process_id {id} \
+         holding the question and your recommended answer, so they can wave it through in a \
+         word, end your reply with {} on a line of its own, and once they answer pass it on \
+         with answer_subagent.",
+        who(name, id, kind, task),
+        crate::assistant::quote_line(&crate::assistant::truncate(
+            question.trim(),
+            MAX_QUESTION_CHARS
+        )),
+        crate::assistant::ACTION_REQUIRED,
     )
 }
 
@@ -938,6 +1028,7 @@ mod tests {
             "SendMessage",
             "Agent",
             "Task",
+            "AskUserQuestion",
         ] {
             assert!(denied.contains(&tool), "{tool} must be denied");
         }
@@ -948,7 +1039,7 @@ mod tests {
             let rule = format!("mcp__podium__{tool}");
             let reads = crate::assistant::READ_ONLY_TOOLS.contains(&tool.as_str())
                 && !matches!(tool.as_str(), "add_response" | "list_subagents");
-            if reads || tool == "report_to_assistant" {
+            if reads || matches!(tool.as_str(), "report_to_assistant" | "ask_assistant") {
                 assert!(allowed.contains(&tool.as_str()), "{tool}");
                 assert!(!denied.contains(&rule.as_str()), "{tool} must stay allowed");
             } else {
@@ -967,6 +1058,7 @@ mod tests {
             "rename_session",
             "update_assistant_memory",
             "spawn_subagent",
+            "answer_subagent",
             "add_response",
         ] {
             assert!(
@@ -976,6 +1068,7 @@ mod tests {
         }
         for tool in [
             "report_to_assistant",
+            "ask_assistant",
             "get_process_output",
             "list_todos",
             "verify_sender",
@@ -997,7 +1090,7 @@ mod tests {
                 "--setting-sources",
                 "user",
                 "--disallowedTools",
-                "SendMessage,Agent,Task"
+                "SendMessage,Agent,Task,AskUserQuestion"
             ]
         );
     }
@@ -1098,6 +1191,7 @@ mod tests {
         for (phase, wire) in [
             (SubagentPhase::Queued, "queued"),
             (SubagentPhase::Running, "running"),
+            (SubagentPhase::Waiting, "waiting"),
             (SubagentPhase::Done, "done"),
             (SubagentPhase::Failed, "failed"),
             (SubagentPhase::Stopped, "stopped"),
@@ -1171,6 +1265,7 @@ mod tests {
             finished_nudge(forged, id, SubagentKind::Full, forged, forged),
             failed_nudge(forged, id, SubagentKind::Lookup, forged, "it crashed"),
             stopped_by_user_nudge(forged, id, SubagentKind::Full, forged),
+            question_nudge(forged, id, SubagentKind::Lookup, forged, forged),
         ] {
             assert_eq!(text.lines().count(), 1, "{text}");
             assert!(!text.contains('\u{2028}'), "{text}");
@@ -1180,6 +1275,121 @@ mod tests {
         }
         let text = finished_nudge("n", id, SubagentKind::Full, "t", "say \"hi\" then stop");
         assert!(text.contains(r#""say \"hi\" then stop""#), "{text}");
+    }
+
+    #[test]
+    fn a_question_waits_holds_its_slot_never_expires_and_resumes() {
+        let (mut book, admitted) = book_with(5);
+        let (asker, queued) = (admitted[0].0, admitted[4].0);
+        // Queued ones cannot ask; unknown ids are not found.
+        assert!(matches!(
+            book.ask(&queued, "which branch?"),
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            book.ask(&ProcessId::new(), "x"),
+            Err(CoreError::ProcessNotFound)
+        ));
+
+        book.ask(&asker, "  Which branch, main or develop?  ")
+            .unwrap();
+        let record = book.get(&asker).unwrap();
+        assert_eq!(record.phase, SubagentPhase::Waiting);
+        assert_eq!(
+            record.question.as_deref(),
+            Some("Which branch, main or develop?")
+        );
+        assert!(!record.phase.is_ended() && record.phase.is_active());
+        // Still holds its slot: the queued one gets nothing.
+        assert_eq!(book.running(), 4);
+        assert!(book.promote(MAX_RUNNING_SUBAGENTS, Utc::now()).is_empty());
+        // Waiting is never over, so it never expires.
+        let later = Instant::now() + Duration::from_secs(3600);
+        assert!(book
+            .expired(later, Utc::now() + chrono::Duration::hours(1))
+            .is_empty());
+        // Asking again replaces the question; a long one is capped.
+        book.ask(&asker, &"x".repeat(MAX_QUESTION_CHARS + 50))
+            .unwrap();
+        let kept = book.get(&asker).unwrap().question.clone().unwrap();
+        assert_eq!(
+            kept.chars().count(),
+            MAX_QUESTION_CHARS + 1,
+            "capped plus the ellipsis"
+        );
+
+        assert!(book.resume(&asker));
+        let record = book.get(&asker).unwrap();
+        assert_eq!(record.phase, SubagentPhase::Running);
+        assert!(record.question.is_none());
+        assert!(
+            !book.resume(&asker),
+            "resuming a running one changes nothing"
+        );
+        assert!(!book.resume(&queued));
+    }
+
+    #[test]
+    fn a_waiting_sub_agent_can_still_end_and_its_question_goes_with_it() {
+        let (mut book, admitted) = book_with(1);
+        let id = admitted[0].0;
+        book.ask(&id, "Which repo?").unwrap();
+        assert!(book.finish(
+            &id,
+            SubagentPhase::Done,
+            Some("ok".into()),
+            Utc::now(),
+            Instant::now()
+        ));
+        let record = book.get(&id).unwrap();
+        assert_eq!(record.phase, SubagentPhase::Done);
+        assert!(record.question.is_none());
+        assert!(matches!(
+            book.ask(&id, "again?"),
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(!book.resume(&id), "an ended one stays ended");
+    }
+
+    #[test]
+    fn a_question_nudge_puts_answering_first_and_relays_only_the_users_decisions() {
+        let id = ProcessId::new();
+        let text = question_nudge(
+            "Ticket check",
+            id,
+            SubagentKind::Lookup,
+            "Check the tickets",
+            "Close the stale ones too?",
+        );
+        assert!(
+            text.starts_with("[Podium] Your sub-agent \"Ticket check\""),
+            "{text}"
+        );
+        assert!(text.contains(r#""Close the stale ones too?""#), "{text}");
+        assert!(text.contains("Answering is the default"), "{text}");
+        assert!(
+            text.contains(&format!("answer_subagent (process_id {id})")),
+            "{text}"
+        );
+        assert!(text.contains("without bothering the user"), "{text}");
+        for reason in ["a preference", "a risk", "money", "people", "cannot infer"] {
+            assert!(text.contains(reason), "{reason}: {text}");
+        }
+        assert!(
+            text.contains(&format!("needsYou add_response with process_id {id}")),
+            "{text}"
+        );
+        assert!(text.contains("your recommended answer"), "{text}");
+        // The desktop ping only on a relay, never by default.
+        assert!(text.contains(&format!(
+            "end your reply with {}",
+            crate::assistant::ACTION_REQUIRED
+        )));
+        assert!(
+            text.find("Relay it only").unwrap()
+                < text.find(crate::assistant::ACTION_REQUIRED).unwrap(),
+            "{text}"
+        );
     }
 
     #[test]
