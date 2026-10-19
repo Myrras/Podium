@@ -1101,8 +1101,10 @@ atomically, before the async `podium.yml` load.
     handler and sweeps on a 10 s tick (also reconciles a missed exit).
     Timings and the adapter are injectable (`SubagentConfig`).
   - **Ending.** `report_to_assistant` from a sub-agent
-    (`report_subagent_result`) → `done` (result clipped to 600 chars), a
-    `finished_nudge`, the session stopped after a 5 s grace so the tool call
+    (`report_subagent_result`) → `done` (the result kept on the row up to 16 KiB, a memory cap
+    only; `list_subagents` / `assistant_subagents_list` return it whole), a
+    `finished_nudge` (carries the result up to 4000 chars via `quote_line`; only
+    when clipped it adds a pointer to `list_subagents` / `get_process_output`), the session stopped after a 5 s grace so the tool call
     can finish; a second report changes nothing. An exit without a report is
     `failed` (a `failed_nudge` with the reason); an exit Podium caused is
     `stopped`. A queued one handed a slot by `fill_slots` is started outside
@@ -1615,8 +1617,8 @@ above the chat log, hidden when empty; collapsible) lists
 `assistantStore.subagents` — loaded in `App.tsx` at startup (the activity
 monitor and quit warning need it with the panel closed), kept current by
 `subagentsChanged` snapshots plus `applySubagentStatus` from `process:status`
-in between. Per row name/task, kind, a live elapsed clock, phase, result or
-error; stop (`assistant_subagent_stop`) while queued/running, open for a
+in between. Per row name/task, kind, a live elapsed clock and phase (the
+result or error is only the phase label's tooltip, never a line of the row); stop (`assistant_subagent_stop`) while queued/running, open for a
 started one. Open = `layoutStore.openSubagent` (`openSubagentInWorkArea`):
 fills the work area with a `TerminalPane` on a synthesized process, exclusive
 with the focused process, to-do, scratchpad and board (a sub-agent is never in

@@ -831,7 +831,7 @@ impl Orchestrator {
                     Instant::now(),
                 );
                 publish_subagents(inner, &self.events);
-                // The clipped result, as the row shows it.
+                // The row's result (memory-capped only); the nudge clips it itself.
                 let result = inner
                     .subagents
                     .get(&id)

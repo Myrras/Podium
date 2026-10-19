@@ -90,6 +90,10 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
   // Only the task when the name already says the same thing.
   const showTask = item.task.trim() !== item.name.trim();
 
+  // The outcome stays out of the row; hovering the phase shows it whole.
+  const detail =
+    (item.phase === "done" ? item.result : item.error) ?? undefined;
+
   return (
     <li
       className={styles.row}
@@ -108,7 +112,7 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
           <span className={styles.kind} data-kind={item.kind}>
             {item.kind}
           </span>
-          <span className={styles.phase} data-phase={item.phase}>
+          <span className={styles.phase} data-phase={item.phase} title={detail}>
             {PHASE_LABELS[item.phase]}
           </span>
           {time && <span className={styles.time}>{time}</span>}
@@ -117,12 +121,6 @@ function SubagentRow({ item, now }: { item: SubagentInfo; now: number }) {
           <span className={styles.task} title={item.task}>
             {item.task}
           </span>
-        )}
-        {item.phase === "done" && item.result && (
-          <span className={styles.result}>{item.result}</span>
-        )}
-        {item.phase === "failed" && item.error && (
-          <span className={styles.error}>{item.error}</span>
         )}
       </div>
       <div className={styles.actions}>

@@ -17,7 +17,8 @@ when it merges.
   so it answers right away and reports the result in a couple of lines (with a
   to-do in the relevant project when follow-up is needed). A *lookup*
   sub-agent only reads; a *full* one also has shell, files and git. They are
-  listed above the chat log with task, kind, running time and status, with
+  listed above the chat log with task, kind, running time and status (the result shows when you hover the
+  status, and the assistant gets it whole), with
   stop and open-terminal actions; at most 4 run at once and the rest queue.
   They never appear in a project's sidebar or count towards its agent cap.
   Resetting the conversation asks whether to keep or stop running sub-agents,

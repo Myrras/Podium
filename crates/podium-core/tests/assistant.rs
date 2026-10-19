@@ -2327,6 +2327,36 @@ async fn a_crashed_sub_agent_is_reported_once_and_as_a_sub_agent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_long_sub_agent_result_reaches_list_subagents_whole_and_the_nudge_points_to_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (orch, mut rx) = subagent_setup(dir.path(), FAKE_CLAUDE).await;
+    let id = orch
+        .spawn_subagent(SubagentKind::Lookup, "long report", None, None)
+        .await
+        .expect("spawn sub-agent")
+        .process_id;
+    let long = format!("{}THE-END", "line of the report. ".repeat(500));
+    orch.report_subagent_result(id, &long)
+        .await
+        .expect("report");
+
+    // The row has all of it, the end included…
+    let row = orch
+        .list_subagents()
+        .into_iter()
+        .find(|s| s.id == id)
+        .expect("row");
+    assert_eq!(row.result.as_deref(), Some(long.as_str()));
+
+    // …the nudge is clipped and says where the whole text is.
+    let nudge = next_notice(&mut rx).await;
+    assert!(!nudge.contains("THE-END"), "{nudge}");
+    assert!(nudge.contains("list_subagents"), "{nudge}");
+    assert!(nudge.contains(&id.to_string()), "{nudge}");
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_kept_sub_agents_waiting_result_goes_to_the_new_conversation() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (orch, mut rx) = subagent_setup(dir.path(), HANGING_CLAUDE).await;

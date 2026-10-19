@@ -3751,6 +3751,17 @@ async fn spawn_subagent_runs_over_the_assistant_route_and_never_on_the_agents() 
     .await;
     let status: serde_json::Value = serde_json::from_str(&status).expect("json status");
     assert_eq!(status["subagent"]["kind"], "lookup", "{status}");
+    // …and its output reads on the assistant route by its id.
+    let output = call_tool_text(
+        &server,
+        ASSISTANT_PATH,
+        &assistant,
+        9,
+        "get_process_output",
+        serde_json::json!({ "process_id": id.to_string() }),
+    )
+    .await;
+    assert!(!output.contains("not found"), "{output}");
     // A message from it verifies as one of Podium's own — the assistant's.
     let verdict = call_tool_text(
         &server,

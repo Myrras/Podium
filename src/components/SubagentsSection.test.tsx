@@ -125,16 +125,25 @@ describe("SubagentsSection", () => {
     const done = within(rows[2]);
     expect(done.getByText("Done")).toBeInTheDocument();
     expect(done.getByText("42s")).toBeInTheDocument();
+    // The result is a tooltip on the phase, never a line of the row.
+    expect(done.getByText("Done")).toHaveAttribute(
+      "title",
+      "Notes drafted in the Webshop scratchpad.",
+    );
     expect(
-      done.getByText("Notes drafted in the Webshop scratchpad."),
-    ).toBeInTheDocument();
+      done.queryByText("Notes drafted in the Webshop scratchpad."),
+    ).toBeNull();
     // Over: no stop, but its terminal can still be read.
     expect(done.queryByLabelText("Stop Release notes")).toBeNull();
     expect(done.getByLabelText("Open Release notes")).toBeInTheDocument();
 
     const failed = within(rows[3]);
     expect(failed.getByText("Failed")).toBeInTheDocument();
-    expect(failed.getByText("exited without a result")).toBeInTheDocument();
+    expect(failed.getByText("Failed")).toHaveAttribute(
+      "title",
+      "exited without a result",
+    );
+    expect(failed.queryByText("exited without a result")).toBeNull();
   });
 
   it("stops a sub-agent straight away, without a confirm", () => {

@@ -67,10 +67,15 @@ const FULL_DISALLOWED_CLI_TOOLS: &str = "SendMessage,Agent,Task";
 /// read.
 pub const SUBAGENT_ARG_FLAGS: &[&str] = &["--model", "--effort"];
 
-/// Longest reported result kept on a sub-agent's row (and handed on to the
-/// assistant); the sub-agent is asked for two lines, so this only bounds a
-/// runaway report.
-const MAX_RESULT_CHARS: usize = 600;
+/// Longest reported result kept on a sub-agent's row. Only a memory cap on a
+/// runaway report: `list_subagents` and `assistant_subagents_list` return the
+/// row whole, so the assistant can always read the end of it.
+const MAX_RESULT_CHARS: usize = 16 * 1024;
+
+/// Longest result carried inside the completion nudge itself (a nudge is a
+/// turn of the assistant's conversation); a longer one is clipped there with
+/// a pointer to the full text on the row.
+const MAX_RESULT_IN_NUDGE: usize = 4000;
 
 /// Longest slice of the task quoted back in a nudge, so a result that comes
 /// back into a fresh conversation still says what it was for.
@@ -592,13 +597,24 @@ pub fn finished_nudge(
     task: &str,
     result: &str,
 ) -> String {
+    let result = result.trim();
+    let shown = crate::assistant::truncate(result, MAX_RESULT_IN_NUDGE);
+    // Only when clipped: where the whole text is.
+    let pointer = if result.chars().count() > MAX_RESULT_IN_NUDGE {
+        format!(
+            " The result above is clipped: the full text is in list_subagents (process {id}) \
+             or get_process_output."
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "[Podium] Your sub-agent {} finished. Its result (its own words): {} Tell the user \
-         in at most two lines. If it says follow-up work is needed, add a to-do for it in \
+        "[Podium] Your sub-agent {} finished. Its result (its own words): {}{pointer} Tell the \
+         user in at most two lines. If it says follow-up work is needed, add a to-do for it in \
          the relevant project (add_todo); if no project fits or you cannot tell which, ask \
          the user.",
         who(name, id, kind, task),
-        crate::assistant::quote_line(result.trim())
+        crate::assistant::quote_line(&shown)
     )
 }
 
@@ -735,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_keeps_its_reason_and_a_runaway_result_is_clipped() {
+    fn a_failure_keeps_its_reason_and_a_runaway_result_is_capped() {
         let (mut book, admitted) = book_with(2);
         book.finish(
             &admitted[0].0,
@@ -757,6 +773,38 @@ mod tests {
         );
         let result = book.get(&admitted[1].0).unwrap().result.clone().unwrap();
         assert!(result.chars().count() <= MAX_RESULT_CHARS + 1, "{result}");
+    }
+
+    #[test]
+    fn a_long_result_is_kept_whole_on_the_row() {
+        let (mut book, admitted) = book_with(1);
+        let long = format!("{}END", "word ".repeat(MAX_RESULT_IN_NUDGE / 2));
+        assert!(long.chars().count() < MAX_RESULT_CHARS);
+        book.finish(
+            &admitted[0].0,
+            SubagentPhase::Done,
+            Some(long.clone()),
+            Utc::now(),
+            Instant::now(),
+        );
+        assert_eq!(book.get(&admitted[0].0).unwrap().result, Some(long));
+    }
+
+    #[test]
+    fn the_nudge_carries_a_result_up_to_its_limit_and_points_to_the_rest() {
+        let id = ProcessId::new();
+        let short = "a".repeat(MAX_RESULT_IN_NUDGE - 1);
+        let text = finished_nudge("n", id, SubagentKind::Lookup, "t", &short);
+        assert!(text.contains(&short), "{text}");
+        assert!(!text.contains("list_subagents"), "{text}");
+
+        let long = format!("{}END", "a".repeat(MAX_RESULT_IN_NUDGE));
+        let text = finished_nudge("n", id, SubagentKind::Lookup, "t", &long);
+        assert!(!text.contains("END"), "{text}");
+        assert!(text.contains('…'), "{text}");
+        assert!(text.contains("list_subagents"), "{text}");
+        assert!(text.contains("get_process_output"), "{text}");
+        assert!(text.contains(&id.to_string()), "{text}");
     }
 
     #[test]
