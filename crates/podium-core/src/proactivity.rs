@@ -317,8 +317,9 @@ impl Watcher {
     /// also answer it in its terminal, from the sub-agent list.
     fn stuck_subagent_text(&self, process: &ProcessInfo, nudges: u32, prompting: bool) -> String {
         let who = format!(
-            "Your sub-agent \"{}\" (process {})",
-            process.name, process.id
+            "Your sub-agent {} (process {})",
+            crate::assistant::quote_line(&process.name),
+            process.id
         );
         if nudges > 1 {
             format!(
@@ -333,7 +334,10 @@ impl Watcher {
             format!(
                 "[Podium] {who} is sitting on a prompt and cannot go on without the user. \
                  Read its last output and tell the user what it is asking for — they can \
-                 answer it in its terminal, from your sub-agent list."
+                 answer it in its terminal, from your sub-agent list. (A first sub-agent may be \
+                 on Claude Code's folder-trust question for Podium's assistant workspace, a \
+                 folder of Podium's own: the user answers it once, with \"Yes, I trust this \
+                 folder\", and later sub-agents do not ask.)"
             )
         } else {
             format!(
@@ -386,10 +390,15 @@ impl Watcher {
                     // key its Responses item to the to-do (`add_response`'s
                     // `todo_id` + `project_id`) and the next sweep replaces
                     // it instead of filing a duplicate.
+                    // To-do text and project name can be agent-written: quoted
+                    // onto one line (see `quote_line`).
                     .map(|t| {
                         format!(
-                            "\"{}\" (to-do {}) in project \"{}\" (project {})",
-                            t.text, t.id, project.name, project.id
+                            "{} (to-do {}) in project {} (project {})",
+                            crate::assistant::quote_line(&t.text),
+                            t.id,
+                            crate::assistant::quote_line(&project.name),
+                            project.id
                         )
                     }),
             );
@@ -452,10 +461,14 @@ fn describe(orchestrator: &Orchestrator, process: &ProcessInfo) -> String {
         .unwrap_or_else(|| "a closed project".to_string());
     // The process id lets the assistant file the update as a Responses item
     // keyed to this agent (`add_response`'s `process_id`), so a later update
-    // replaces it instead of piling up.
+    // replaces it instead of piling up. The agent names itself
+    // (`rename_session`), so its name is quoted onto one line, like the
+    // project's (see `quote_line`).
     format!(
-        "\"{}\" (process {}) in project \"{project}\"",
-        process.name, process.id
+        "{} (process {}) in project {}",
+        crate::assistant::quote_line(&process.name),
+        process.id,
+        crate::assistant::quote_line(&project)
     )
 }
 

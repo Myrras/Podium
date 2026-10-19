@@ -457,13 +457,20 @@ impl Orchestrator {
     ///
     /// The assistant's sub-agents keep running unless `stop_subagents`: the
     /// results of the ones kept are delivered into the new conversation,
-    /// like any nudge. Stopped ones are stopped quietly — there is no
-    /// conversation left to tell.
+    /// like any nudge — including a result that was still waiting in the
+    /// old conversation's queue. Stopped ones are stopped quietly — there is
+    /// no conversation left to tell.
     pub async fn assistant_new_conversation(&self, stop_subagents: bool) {
         if stop_subagents {
             self.stop_all_subagents();
         }
-        self.assistant.new_conversation().await;
+        let owed = self.assistant.new_conversation(!stop_subagents).await;
+        if !owed.is_empty() {
+            let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+            for text in owed {
+                self.assistant.nudge_lasting(text, mcp.clone()).await;
+            }
+        }
     }
 
     /// What the assistant remembers across conversations (`assistant-memory.md`).
@@ -653,6 +660,12 @@ impl Orchestrator {
                 "a sub-agent needs a task".to_string(),
             ));
         }
+        // Only the model and the effort: the args come from the assistant,
+        // which writes them from what it read, and most other flags change
+        // what the sub-agent may do.
+        if let Some(args) = &args {
+            crate::subagent::validate_args(args)?;
+        }
         let scope = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
             inner.assistant_scope.as_ref().map(|s| s.id)
@@ -760,6 +773,19 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// The user's own stop of any process — the terminal pane, `process_stop`.
+    /// One of the assistant's sub-agents goes through [`Self::stop_subagent`],
+    /// so the assistant hears the user stopped it; anything else is a plain
+    /// [`Self::stop_process`]. (`stop_process` on a sub-agent is the
+    /// assistant's own, quiet stop.)
+    pub async fn user_stop_process(&self, id: ProcessId) -> CoreResult<()> {
+        if self.is_subagent(id) {
+            self.stop_subagent(id).await
+        } else {
+            self.stop_process(id).await
+        }
+    }
+
     /// A sub-agent called `report_to_assistant`: it is `done`, its slot goes
     /// to the next queued one, the assistant gets the result as a nudge
     /// (summarise it in two lines, add a to-do where follow-up is needed),
@@ -815,23 +841,26 @@ impl Orchestrator {
     }
 
     /// Stop every sub-agent and cancel the queued ones, telling no one —
-    /// what a new conversation that drops them does.
+    /// what a new conversation that drops them does. Each one still going
+    /// ends `stopped` right here, under the lock, before its process is even
+    /// signalled: a report racing the stop then finds it ended and changes
+    /// nothing, so no result is nudged into the conversation being cleared.
     fn stop_all_subagents(&self) {
         let live = {
             let mut guard = self.inner.lock().expect(LOCK_POISONED);
             let inner = &mut *guard;
             let mut live = Vec::new();
             for id in inner.subagents.ids() {
-                if subagent_unstarted(inner, id) {
-                    inner.subagents.finish(
-                        &id,
-                        SubagentPhase::Stopped,
-                        None,
-                        Utc::now(),
-                        Instant::now(),
-                    );
-                } else {
-                    // A running one, or a done one still in its grace.
+                let unstarted = subagent_unstarted(inner, id);
+                inner.subagents.finish(
+                    &id,
+                    SubagentPhase::Stopped,
+                    None,
+                    Utc::now(),
+                    Instant::now(),
+                );
+                // A running one, or a done one still in its grace.
+                if !unstarted {
                     live.push(id);
                 }
             }
@@ -3754,7 +3783,9 @@ impl Hub {
             return;
         }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        self.assistant.nudge(text, mcp).await;
+        // Lasting: a reset that keeps the sub-agents running still owes the
+        // new conversation this, should it be waiting in the queue then.
+        self.assistant.nudge_lasting(text, mcp).await;
     }
 
     /// Start queued sub-agents, oldest first, while slots are free. One that
@@ -3965,13 +3996,22 @@ impl Hub {
         });
     }
 
-    /// Accept Claude Code's folder-trust prompt for a sub-agent that just
-    /// started, if it shows one within [`SubagentConfig::trust_window`]. The
-    /// folder is the assistant workspace — Podium's own, made empty for this
-    /// — and the session runs in the background, so nobody would answer it:
-    /// the agent would just sit there until the stuck-agent check noticed.
-    /// The CLI keeps the answer for the folder, so only the first sub-agent
-    /// on a machine ever sees it. One Enter at most, on the default "Yes".
+    /// Report Claude Code's folder-trust dialog on a sub-agent that just
+    /// started, if it shows one within [`SubagentConfig::trust_window`], the
+    /// way the UI reports a prompt it sees on screen
+    /// ([`Orchestrator::report_agent_waiting`]): the stuck-agent check then
+    /// raises it at its next tick instead of after its silence timer. The
+    /// folder is the assistant workspace — Podium's own — and the session
+    /// runs in the background, so otherwise nobody would notice it waiting;
+    /// the CLI keeps the answer for the folder, so only the first sub-agent
+    /// on a machine ever asks.
+    ///
+    /// Podium never answers it: the dialog puts "No, exit" first and focused
+    /// and refuses a keypress that comes too soon (CLI 2.1.301), so an Enter
+    /// would end the session at best — and a screen that shows a permission
+    /// prompt as well is not a trust dialog Podium may speak for at all. The
+    /// watch ends at the first sign the session got going
+    /// ([`crate::subagent::session_started`]).
     fn watch_trust_prompt(&self, id: ProcessId) {
         let inner = Arc::downgrade(&self.inner);
         let window = self.config.trust_window;
@@ -3982,11 +4022,11 @@ impl Hub {
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
-                let (scrollback, pty) = {
+                let scrollback = {
                     let guard = inner.lock().expect(LOCK_POISONED);
                     match guard.processes.get(&id) {
                         Some(p) if matches!(p.status, ProcessStatus::Running { .. }) => {
-                            (Arc::clone(&p.scrollback), p.pty.clone())
+                            Arc::clone(&p.scrollback)
                         }
                         _ => return,
                     }
@@ -3997,10 +4037,14 @@ impl Hub {
                     .tail_bytes(TRUST_TAIL_BYTES);
                 let screen =
                     String::from_utf8_lossy(&strip_ansi_escapes::strip(&tail)).into_owned();
+                if crate::subagent::session_started(&screen) {
+                    return;
+                }
                 if crate::subagent::shows_trust_prompt(&screen) {
-                    if let Some(pty) = pty {
-                        if let Err(e) = pty.write(b"\r") {
-                            tracing::debug!(process_id = %id, "could not answer the trust prompt: {e}");
+                    let mut guard = inner.lock().expect(LOCK_POISONED);
+                    if let Some(p) = guard.processes.get_mut(&id) {
+                        if matches!(p.status, ProcessStatus::Running { .. }) {
+                            p.waiting_since = Some(Instant::now());
                         }
                     }
                     return;
@@ -6801,10 +6845,16 @@ mod tests {
             "--permission-mode",
             "bypassPermissions",
             "--disallowedTools",
-            "Bash,Edit,Write,NotebookEdit",
         ] {
             assert!(launch.args.iter().any(|a| a == flag), "{flag}: {launch:?}");
         }
+        assert!(
+            launch
+                .args
+                .iter()
+                .any(|a| *a == crate::subagent::lookup_disallowed_tools().join(",")),
+            "{launch:?}"
+        );
 
         // Every project call refuses the scope.
         let not_found = |r: CoreResult<()>, what: &str| {
@@ -7226,5 +7276,158 @@ mod tests {
             Err(CoreError::InvalidInput(_))
         ));
         assert!(orch.list_subagents().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_sub_agent_takes_no_args_but_its_model_and_effort() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, adapter) = sub_orch(data.path(), sub_config(4));
+        for args in [
+            vec!["--mcp-config".to_string(), "/tmp/other.json".to_string()],
+            vec!["--settings".to_string(), r#"{"hooks":{}}"#.to_string()],
+            vec!["--dangerously-skip-permissions".to_string()],
+            vec!["--permission-mode=bypassPermissions".to_string()],
+        ] {
+            let refused = orch
+                .spawn_subagent(SubagentKind::Full, "check", None, Some(args.clone()))
+                .await;
+            assert!(
+                matches!(refused, Err(CoreError::InvalidInput(_))),
+                "{args:?}: {refused:?}"
+            );
+        }
+        // Refused before anything was made.
+        assert!(orch.list_subagents().is_empty());
+        assert!(adapter.launches.lock().unwrap().is_empty());
+
+        orch.spawn_subagent(
+            SubagentKind::Full,
+            "check",
+            None,
+            Some(vec![
+                "--model".to_string(),
+                "sonnet".to_string(),
+                "--effort=high".to_string(),
+            ]),
+        )
+        .await
+        .unwrap();
+        let launch = adapter.launches.lock().unwrap()[0].clone();
+        assert!(launch.args.starts_with(&[
+            "--model".to_string(),
+            "sonnet".to_string(),
+            "--effort=high".to_string()
+        ]));
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn a_new_conversation_that_stops_them_ends_them_before_a_report_can_land() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        let id = orch
+            .spawn_subagent(SubagentKind::Lookup, "look it up", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        orch.assistant_new_conversation(true).await;
+        // Ended at once, before its process is even down…
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Stopped));
+        // …so a report racing the stop is a no-op: no result, no nudge.
+        orch.report_subagent_result(id, "Found it.").await.unwrap();
+        let info = orch
+            .list_subagents()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        assert_eq!(info.phase, SubagentPhase::Stopped);
+        assert!(info.result.is_none());
+        wait_until("its process to be down", || {
+            matches!(
+                orch.process_info(id).unwrap().status,
+                ProcessStatus::Exited { .. }
+            )
+        })
+        .await;
+        assert_eq!(phase_of(&orch, id), Some(SubagentPhase::Stopped));
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn the_users_stop_of_a_sub_agent_goes_through_its_own_path() {
+        let data = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(1));
+        let running = orch
+            .spawn_subagent(SubagentKind::Full, "running", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        let queued = orch
+            .spawn_subagent(SubagentKind::Full, "queued", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        let by_user = |id: ProcessId| {
+            orch.inner
+                .lock()
+                .unwrap()
+                .subagents
+                .get(&id)
+                .map(|r| r.stopped_by_user)
+        };
+
+        // The terminal pane's stop (IPC `process_stop`) on a sub-agent is the
+        // user's, like the panel's: the assistant is to be told.
+        orch.user_stop_process(queued).await.unwrap();
+        assert_eq!(phase_of(&orch, queued), Some(SubagentPhase::Stopped));
+        assert_eq!(by_user(queued), Some(true));
+        orch.user_stop_process(running).await.unwrap();
+        assert_eq!(by_user(running), Some(true));
+        wait_until("the running one to stop", || {
+            phase_of(&orch, running) == Some(SubagentPhase::Stopped)
+        })
+        .await;
+
+        // The assistant's own stop of one stays quiet.
+        let quiet = orch
+            .spawn_subagent(SubagentKind::Full, "quiet", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        orch.stop_process(quiet).await.unwrap();
+        assert_eq!(by_user(quiet), Some(false));
+
+        // Anything else is a plain stop.
+        let project = orch
+            .open_project(project_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let agent = orch
+            .spawn_agent(
+                project,
+                Some("subfake".to_string()),
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        orch.user_stop_process(agent).await.unwrap();
+        wait_until("the project agent to stop", || {
+            matches!(
+                orch.process_info(agent).unwrap().status,
+                ProcessStatus::Exited { stopped: true, .. }
+            )
+        })
+        .await;
+        orch.shutdown().await;
     }
 }

@@ -249,7 +249,7 @@ reason for the order you put things in. Where the priority cannot be worked \
 out from the to-dos and agents alone, ask me instead of guessing.";
 
 /// Tools that only read state. Never gated — in any mode.
-const READ_ONLY_TOOLS: &[&str] = &[
+pub(crate) const READ_ONLY_TOOLS: &[&str] = &[
     "list_projects",
     "list_processes",
     "get_process_status",
@@ -558,6 +558,11 @@ struct PendingInput {
     /// that failed re-queues the item, and the retry must not append it a
     /// second time.
     recorded: bool,
+    /// News that outlives the conversation: a kept sub-agent's result. A new
+    /// conversation that starts while it still waits hands it to the new one
+    /// instead of reporting it undelivered (see
+    /// [`AssistantManager::new_conversation`]).
+    lasting: bool,
 }
 
 /// UI-facing snapshot of one waiting item.
@@ -1167,6 +1172,7 @@ impl AssistantManager {
             attachments,
             reply_to,
             recorded: false,
+            lasting: false,
         };
         Ok(deliver_or_queue(&mut state, item, &self.store, &self.events).await)
     }
@@ -1176,8 +1182,12 @@ impl AssistantManager {
     /// to it. Whatever was still waiting is reported as undelivered in the
     /// fresh (otherwise empty) transcript. The next turn starts a session
     /// with no `--resume`.
-    pub async fn new_conversation(&self) {
-        let dropped = {
+    ///
+    /// With `keep_lasting`, a waiting [`nudge_lasting`](Self::nudge_lasting)
+    /// item (a kept sub-agent's result) is neither dropped nor reported:
+    /// its text is returned, for the caller to hand to the new conversation.
+    pub async fn new_conversation(&self, keep_lasting: bool) -> Vec<String> {
+        let waiting = {
             let mut state = self.state.lock().await;
             if let Some(mut session) = state.session.take() {
                 // A deliberate kill: the panel is being cleared, so the
@@ -1189,11 +1199,15 @@ impl AssistantManager {
             state.end_turn();
             std::mem::take(&mut state.pending)
         };
+        let (kept, dropped): (VecDeque<PendingInput>, VecDeque<PendingInput>) = waiting
+            .into_iter()
+            .partition(|item| keep_lasting && item.lasting);
         self.proposals.lock().expect(LOCK_POISONED).clear();
         self.store.clear();
         // After clearing, so the notice survives as the first line of the
         // fresh conversation rather than being wiped along with the old one.
         report_undelivered(&self.store, &self.events, dropped);
+        kept.into_iter().map(|item| item.text).collect()
     }
 
     /// Stop the turn in progress, if any, and immediately hand the next
@@ -1408,7 +1422,17 @@ impl AssistantManager {
     ///
     /// [`send`]: Self::send
     pub async fn nudge(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Nudge, text, mcp).await;
+        self.deliver_own(PendingKind::Nudge, text, mcp, false).await;
+    }
+
+    /// A [`nudge`](Self::nudge) that outlives the conversation: how one of
+    /// the assistant's own sub-agents ended. The user may reset the
+    /// conversation and keep its sub-agents running; their results are then
+    /// still owed to the new one, so a result waiting in the queue at that
+    /// moment is carried over rather than dropped (see
+    /// [`new_conversation`](Self::new_conversation)).
+    pub async fn nudge_lasting(&self, text: String, mcp: Option<McpConnectInfo>) {
+        self.deliver_own(PendingKind::Nudge, text, mcp, true).await;
     }
 
     /// Ask the assistant to sweep the user's external sources (the slow lane
@@ -1418,12 +1442,19 @@ impl AssistantManager {
     /// only when there is one: a sweep that found nothing replies
     /// [`NOTHING_TO_REPORT`], which is swallowed.
     pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Notice, text, mcp).await;
+        self.deliver_own(PendingKind::Notice, text, mcp, false)
+            .await;
     }
 
     /// The shared body of [`nudge`](Self::nudge) and [`poll`](Self::poll):
     /// Podium's own input, into a session it starts if there is none.
-    async fn deliver_own(&self, kind: PendingKind, text: String, mcp: Option<McpConnectInfo>) {
+    async fn deliver_own(
+        &self,
+        kind: PendingKind,
+        text: String,
+        mcp: Option<McpConnectInfo>,
+        lasting: bool,
+    ) {
         let mut state = self.state.lock().await;
         if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
             tracing::warn!("could not start the assistant for a nudge: {e}");
@@ -1435,6 +1466,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -1458,6 +1490,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -2205,6 +2238,15 @@ fn json_quote(text: &str) -> String {
     serde_json::Value::from(text).to_string()
 }
 
+/// `text` as one JSON-quoted line, for agent-controlled text (a name, a
+/// task, a report) inside a `[Podium]` message: every run of whitespace —
+/// line breaks of any kind included — becomes one space, and the quoting
+/// escapes the rest. So nothing an agent writes can start a line of its own
+/// that reads like Podium speaking, or close the quotes around it.
+pub(crate) fn quote_line(text: &str) -> String {
+    json_quote(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// Build one turn's `content` array: the text block first (a `Path` or
 /// `Text` attachment is folded into it, since the assistant only needs to
 /// *read* those, not see them as separate blocks), then one `image` block
@@ -2473,6 +2515,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
 
         record_before_write(&store, &mut item);
@@ -2496,6 +2539,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
 
         record_before_write(&store, &mut item);
@@ -3216,6 +3260,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
         deliver_or_queue(&mut state, item, &manager.store, &manager.events).await;
     }
@@ -3241,7 +3286,7 @@ mod tests {
         ));
 
         // …and it is dropped along with the conversation it was meant for.
-        manager.new_conversation().await;
+        manager.new_conversation(false).await;
         assert!(manager.state.lock().await.pending.is_empty());
     }
 
@@ -3264,6 +3309,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         });
         id
     }
@@ -3293,6 +3339,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: Some(answered("Merge the PR now or wait for review?")),
             recorded: false,
+            lasting: false,
         }
     }
 
@@ -3488,6 +3535,56 @@ mod tests {
         manager.shutdown().await;
         assert_eq!(manager.store.responses().list(), vec![answered]);
         assert!(manager.state.lock().await.pending.is_empty());
+    }
+
+    /// A kept sub-agent's result still waiting when the conversation resets
+    /// is owed to the new conversation, not lost; anything else waiting is
+    /// reported undelivered as before.
+    #[tokio::test]
+    async fn a_lasting_nudge_waiting_at_a_reset_is_handed_on_not_dropped() {
+        let manager = AssistantManager::new(EventBus::new());
+        let seed = |text: &str, kind: PendingKind, lasting: bool| PendingInput {
+            id: PendingId::new(),
+            kind,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+            lasting,
+        };
+        {
+            let mut state = manager.state.lock().await;
+            state.pending.push_back(seed(
+                "[Podium] Your sub-agent finished.",
+                PendingKind::Nudge,
+                true,
+            ));
+            state
+                .pending
+                .push_back(seed("what is open?", PendingKind::User, false));
+        }
+        let owed = manager.new_conversation(true).await;
+        assert_eq!(owed, vec!["[Podium] Your sub-agent finished.".to_string()]);
+        let notices: Vec<String> = manager
+            .store
+            .transcript()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("what is open?"), "{notices:?}");
+        assert!(!notices[0].contains("sub-agent"), "{notices:?}");
+
+        // Told not to keep them (the sub-agents were stopped), it goes the
+        // way of everything else.
+        manager.state.lock().await.pending.push_back(seed(
+            "[Podium] Your sub-agent failed.",
+            PendingKind::Nudge,
+            true,
+        ));
+        assert!(manager.new_conversation(false).await.is_empty());
+        let notices = manager.store.transcript();
+        assert!(notices[0].text.contains("sub-agent failed"), "{notices:?}");
     }
 
     #[tokio::test]

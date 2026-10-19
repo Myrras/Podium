@@ -260,8 +260,10 @@ pub struct SpawnSubagentParams {
     pub task: String,
     /// Short display name; derived from the task when omitted.
     pub name: Option<String>,
-    /// Extra CLI args for this sub-agent, replacing the global default args
-    /// (e.g. `["--model", "sonnet"]`).
+    /// The model and effort it runs with, replacing the global default args:
+    /// only `--model <model>` and `--effort <level>` (or `--model=<model>`,
+    /// `--effort=<level>`), e.g. `["--model", "sonnet"]`. Anything else is
+    /// refused.
     pub args: Option<Vec<String>>,
 }
 
@@ -852,11 +854,11 @@ impl PodiumTools {
                 "session": process.name,
                 "project": project,
             })),
-            // One of the assistant's own sub-agents: no project to name.
+            // One of the assistant's own sub-agents: no project to name, and
+            // no process id an agent could go on to act on.
             Some(PeerSender::Subagent { process }) => json_result(&serde_json::json!({
                 "fleet": true,
                 "kind": "subagent",
-                "processId": process.id.to_string(),
                 "session": process.name,
             })),
         }
@@ -897,11 +899,16 @@ impl PodiumTools {
             .find(|proj| proj.id == process.project_id)
             .map(|proj| proj.name)
             .unwrap_or_else(|| "a closed project".to_string());
+        // Name, project and summary are agent-written: quoted onto one line,
+        // so a report cannot start a line that reads like Podium speaking.
         self.orchestrator
             .assistant_nudge(format!(
-                "[Podium] The agent \"{}\" (process {}) in project \"{project}\" reports: \
-                 {summary} Tell the user in a line or two.",
-                process.name, process.id
+                "[Podium] The agent {} (process {}) in project {} reports (its own words): {} \
+                 Tell the user in a line or two.",
+                crate::assistant::quote_line(&process.name),
+                process.id,
+                crate::assistant::quote_line(&project),
+                crate::assistant::quote_line(summary)
             ))
             .await;
         Ok(text_result("Reported to the assistant.".to_string()))
@@ -1109,6 +1116,20 @@ impl PodiumTools {
         self.orchestrator
             .process_info(id)
             .ok_or_else(|| core_error(CoreError::ProcessNotFound))
+    }
+}
+
+impl PodiumTools {
+    /// The name of every tool the server has, on either route. What the
+    /// lookup sub-agents' deny list is generated from
+    /// ([`crate::subagent::lookup_disallowed_tools`]), so a tool added later
+    /// is refused to them by default.
+    pub fn all_tool_names() -> Vec<String> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 }
 

@@ -708,22 +708,17 @@ fn agent_session_settings() -> String {
     .to_string()
 }
 
-/// The Podium tools a sub-agent may call without a permission prompt: its
-/// report, which comes at the very end with nobody watching its terminal, and
-/// the read-only ones. Named after the server Podium registers itself as in
-/// the session's `--mcp-config` (`podium`).
-const SUBAGENT_ALLOW_RULES: &[&str] = &[
-    "mcp__podium__report_to_assistant",
-    "mcp__podium__list_projects",
-    "mcp__podium__list_processes",
-    "mcp__podium__get_process_status",
-    "mcp__podium__get_process_output",
-    "mcp__podium__list_todos",
-    "mcp__podium__list_scratchpads",
-    "mcp__podium__list_worktrees",
-    "mcp__podium__get_board",
-    "mcp__podium__verify_sender",
-];
+/// The Podium tools a sub-agent may call without a permission prompt
+/// ([`crate::subagent::unprompted_podium_tools`]: its report, which comes at
+/// the very end with nobody watching its terminal, and the read-only ones),
+/// as allow rules. Named after the server Podium registers itself as in the
+/// session's `--mcp-config` (`podium`).
+fn subagent_allow_rules() -> Vec<String> {
+    crate::subagent::unprompted_podium_tools()
+        .into_iter()
+        .map(|tool| format!("mcp__podium__{tool}"))
+        .collect()
+}
 
 /// What a sub-agent's `--settings` carries: the same inbound setting as every
 /// Podium session, the allow rules above, and — for a lookup, which runs
@@ -734,7 +729,7 @@ const SUBAGENT_ALLOW_RULES: &[&str] = &[
 fn subagent_session_settings(kind: SubagentKind) -> String {
     let mut settings = serde_json::json!({
         PEER_INBOUND_KEY: PEER_INBOUND_VALUE,
-        "permissions": { "allow": SUBAGENT_ALLOW_RULES },
+        "permissions": { "allow": subagent_allow_rules() },
     });
     if kind == SubagentKind::Lookup {
         settings["skipDangerousModePermissionPrompt"] = serde_json::Value::Bool(true);
