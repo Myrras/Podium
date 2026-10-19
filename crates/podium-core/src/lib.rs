@@ -56,5 +56,5 @@ pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartP
 pub use project::ProjectSections;
 pub use responses::{LabelledResponse, ResponseItem, ResponseKind};
 pub use scratchpad::ScratchpadInfo;
-pub use todo::{TodoComment, TodoInfo, TodoLink};
+pub use todo::{TodoComment, TodoInfo, TodoLink, TodoSession, TodoSessionInfo};
 pub use worktree::WorktreeInfo;

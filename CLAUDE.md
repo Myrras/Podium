@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 34 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **97 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **98 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -80,7 +80,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 97 commands.
+  IPC wrappers over all 98 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -175,6 +175,17 @@ Presentation only: hiding never stops processes, deletes data or affects MCP.
 Agents and Processes are never hidden. Persisted per project in
 `workspace.json` (`WorkspaceEntry.sections`, `None` = defaults) and
 re-applied in `project_open`.
+
+**Ids that survive a restart.** A `ProjectId` is not random: it is a v5
+UUID of the canonical root path (`ProjectId::for_root`, a fixed namespace), so
+the same folder has the same id on every app run, and a resumed agent's
+remembered `project_id` keeps resolving in the MCP tools. A `ProcessId` is
+random, except for an agent spawned to resume a session
+(`AgentSpawn.resume_session_id` — a session-memory restore or a to-do's
+Resume): it takes the session id as its process id when that is free, which
+is the process id the conversation first ran under (a fresh launch passes
+`--session-id <process id>`). Best-effort: after a `/clear` or a fresh
+relaunch the two differ, and the identity prompt names the current id anyway.
 
 Sidebar projects are a **persistent workspace**: `project_open` adds the
 project's root to `workspace.json` (app data dir) and `project_close` removes
@@ -415,6 +426,26 @@ atomically, before the async `podium.yml` load.
   (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
   `false`, the row gets its spawn button back and can join a multi-select
   again, and spawning on it (or `assign_todo`) hands it to the new agent.
+  **Session history**: every to-do persists the agent sessions (CLI
+  conversations) that worked on it — `StoredTodo.sessions`, a
+  `TodoSession { sessionId, adapter, name, startedAt, lastSeenAt, args }`,
+  oldest first on disk, capped at `MAX_TODO_SESSIONS` (20), listed newest
+  first as `TodoInfo.sessions` with runtime `processId`/`running` (the process
+  in this run on that session, via `enrich_todo`). Unlike `AssignedAgent` it
+  survives restarts and process removal. `Orchestrator::record_todo_sessions`
+  writes the owning agent's current `AgentSession.id` onto each to-do it owns
+  (upsert by session id) at an assignment, a start (a fresh relaunch is a new
+  conversation, so a new entry), a stop, a rename, a removal and shutdown — a
+  `/clear` is therefore picked up at the next of those, not as it happens. An
+  agent without an `AgentSession` (Auggie, the user's own session flags)
+  records nothing. `resume_todo_session` (IPC `todo_session_resume`) takes a
+  session from that list: a process in this run on it is returned (running)
+  or started (exited, through the normal restart path), otherwise a new agent
+  is spawned with `resume_session_id`, no prompt, the stored name/adapter/args
+  — `restore_one`'s path — after `session_stored` confirms the CLI still has
+  it (`CoreError::SessionNotFound` otherwise); then the to-do is assigned to
+  it. A different live owner refuses it with `TodoAlreadyAssigned`. The to-do
+  pane lists every session with Resume (or Open while running).
   **Restart resumes the session**: Claude Code agents launch with
   `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
   (`RestartCommands`, the launch line in parts) spells the two commands a
@@ -1322,6 +1353,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `todo_remove_link`      | `{ projectId, todoId, linkId }`             | `TodoInfo`        |
 | `todo_remove`           | `{ projectId, todoId }`                     | –                 |
 | `todo_unassign`         | `{ projectId, todoId }`                     | `TodoInfo`        |
+| `todo_session_resume`   | `{ projectId, todoId, sessionId }` (from `TodoInfo.sessions`) | `ProcessInfo` (refusals: `sessionNotFound`, `todoAlreadyAssigned`) |
 | `scratchpad_list`       | `{ projectId }`                             | `ScratchpadInfo[]`|
 | `scratchpad_list_archived` | `{ projectId }`                          | `ScratchpadInfo[]`|
 | `scratchpad_add`        | `{ projectId }`                             | `ScratchpadInfo`  |

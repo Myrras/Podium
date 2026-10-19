@@ -46,6 +46,7 @@ function todo(id: string, text: string) {
     links: [],
     comments: [],
     assignedAgent: null,
+    sessions: [],
   };
 }
 

@@ -38,6 +38,7 @@ function todo(id: string, text: string): TodoInfo {
     links: [],
     comments: [],
     assignedAgent: null,
+    sessions: [],
   };
 }
 

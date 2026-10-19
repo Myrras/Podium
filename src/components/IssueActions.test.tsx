@@ -58,6 +58,7 @@ function todo(over: Partial<TodoInfo> = {}): TodoInfo {
     links: [],
     comments: [],
     assignedAgent: null,
+    sessions: [],
     ...over,
   };
 }

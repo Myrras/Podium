@@ -10,6 +10,18 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **Resume a to-do's earlier agent sessions.** A to-do now remembers every
+  agent session that worked on it, also across restarts, and its detail pane
+  lists them under Sessions with a Resume button each (Open while running).
+
+### Fixed
+
+- **Resumed agents keep their Podium tools working.** A project keeps the
+  same id across app restarts, and a resumed agent gets its old process id
+  back where possible, so ids from earlier in its conversation still work.
+
 ## [3.1.1] - 2026-10-09
 
 ### Changed

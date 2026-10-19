@@ -15,9 +15,48 @@ use serde::{Deserialize, Serialize};
 
 use crate::assignment::AssignedAgent;
 use crate::error::{CoreError, CoreResult};
-use crate::ids::{CommentId, LinkId, ProjectId, TodoId};
+use crate::ids::{CommentId, LinkId, ProcessId, ProjectId, TodoId};
 
 const LOCK_POISONED: &str = "todo store lock poisoned";
+
+/// How many agent sessions one to-do remembers; the oldest drop off first.
+pub const MAX_TODO_SESSIONS: usize = 20;
+
+/// One agent session (CLI conversation) that has worked on a to-do. Persisted,
+/// unlike the runtime-only [`AssignedAgent`], so the user can resume any past
+/// conversation on the to-do — also after an app restart. A to-do collects
+/// one entry per conversation: a second agent, a fresh relaunch or a `/clear`
+/// each add one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoSession {
+    /// The CLI's session id (a UUID), what `--resume` takes.
+    pub session_id: String,
+    /// The agent adapter that ran it (e.g. `claude-code`).
+    pub adapter: String,
+    /// The agent's display name when last seen.
+    pub name: String,
+    /// When the session was first linked to this to-do.
+    pub started_at: DateTime<Utc>,
+    /// When it was last recorded as working on this to-do.
+    pub last_seen_at: DateTime<Utc>,
+    /// The per-spawn args override it was started with, so a resume launches
+    /// the same model/effort.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+}
+
+/// A [`TodoSession`] as listed: plus whether a process in this run holds it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoSessionInfo {
+    #[serde(flatten)]
+    pub session: TodoSession,
+    /// The process currently on this session in this run, running or exited.
+    pub process_id: Option<ProcessId>,
+    /// Whether that process is running.
+    pub running: bool,
+}
 
 /// One progress note on a to-do. Agents post these over MCP (`comment_todo`)
 /// so the user — and other agents — can track what has been done.
@@ -80,6 +119,9 @@ pub struct TodoInfo {
     /// The agent currently working on this to-do, if any. Runtime-only, so
     /// it is `None` after a restart until an agent is (re)assigned.
     pub assigned_agent: Option<AssignedAgent>,
+    /// Every agent session that worked on this to-do, newest first. The
+    /// runtime fields are filled in by the orchestrator's listing code.
+    pub sessions: Vec<TodoSessionInfo>,
 }
 
 /// One to-do as persisted on disk; the project association is the map key
@@ -105,6 +147,9 @@ struct StoredTodo {
     links: Vec<TodoLink>,
     #[serde(default)]
     comments: Vec<TodoComment>,
+    /// Oldest first, capped at [`MAX_TODO_SESSIONS`].
+    #[serde(default)]
+    sessions: Vec<TodoSession>,
 }
 
 impl StoredTodo {
@@ -124,6 +169,16 @@ impl StoredTodo {
             // Assignments live in the orchestrator (runtime-only); listing
             // code enriches this after fetching from the store.
             assigned_agent: None,
+            sessions: self
+                .sessions
+                .iter()
+                .rev()
+                .map(|session| TodoSessionInfo {
+                    session: session.clone(),
+                    process_id: None,
+                    running: false,
+                })
+                .collect(),
         }
     }
 }
@@ -254,6 +309,7 @@ impl TodoStore {
             archived_at: None,
             links: Vec::new(),
             comments: Vec::new(),
+            sessions: Vec::new(),
         };
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.todos.entry(key(root)).or_default().push(todo.clone());
@@ -520,6 +576,45 @@ impl TodoStore {
         let info = todo.info(project_id);
         save(&inner)?;
         Ok(info)
+    }
+
+    /// Record that `session` is working on to-do `id`: appended when new,
+    /// else its `name`, `last_seen_at` and `args` are refreshed (keeping
+    /// `started_at`). Trims the oldest beyond [`MAX_TODO_SESSIONS`]. Returns
+    /// whether anything was written; a to-do that no longer exists is `false`.
+    pub fn record_session(
+        &self,
+        root: &Path,
+        id: TodoId,
+        session: TodoSession,
+    ) -> CoreResult<bool> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        let Some(todo) = inner
+            .todos
+            .get_mut(&key(root))
+            .and_then(|items| items.iter_mut().find(|t| t.id == id))
+        else {
+            return Ok(false);
+        };
+        match todo
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session.session_id)
+        {
+            Some(existing) => {
+                existing.name = session.name;
+                existing.last_seen_at = session.last_seen_at;
+                existing.adapter = session.adapter;
+                existing.args = session.args;
+            }
+            None => {
+                todo.sessions.push(session);
+                let excess = todo.sessions.len().saturating_sub(MAX_TODO_SESSIONS);
+                todo.sessions.drain(..excess);
+            }
+        }
+        save(&inner)?;
+        Ok(true)
     }
 
     pub fn remove(&self, root: &Path, id: TodoId) -> CoreResult<()> {
@@ -989,5 +1084,106 @@ mod tests {
         store.set_path(file);
         let (project, root) = ids();
         assert!(store.list(project, &root).is_empty());
+    }
+
+    fn session(id: &str, name: &str) -> TodoSession {
+        let now = Utc::now();
+        TodoSession {
+            session_id: id.to_string(),
+            adapter: "claude-code".to_string(),
+            name: name.to_string(),
+            started_at: now,
+            last_seen_at: now,
+            args: None,
+        }
+    }
+
+    #[test]
+    fn record_session_appends_new_and_refreshes_known_sessions() {
+        let store = TodoStore::new();
+        let (project, root) = ids();
+        let todo = store.add(project, &root, "fix login", None).unwrap();
+        assert!(store
+            .record_session(&root, todo.id, session("s-1", "first"))
+            .unwrap());
+        store
+            .record_session(&root, todo.id, session("s-2", "second"))
+            .unwrap();
+        let started = store.get(project, &root, todo.id).unwrap().sessions[1]
+            .session
+            .started_at;
+        store
+            .record_session(&root, todo.id, session("s-1", "renamed"))
+            .unwrap();
+        let sessions = store.get(project, &root, todo.id).unwrap().sessions;
+        let ids: Vec<&str> = sessions
+            .iter()
+            .map(|s| s.session.session_id.as_str())
+            .collect();
+        assert_eq!(ids, ["s-2", "s-1"], "newest first, no duplicate");
+        assert_eq!(sessions[1].session.name, "renamed");
+        assert_eq!(sessions[1].session.started_at, started, "kept");
+        assert!(sessions
+            .iter()
+            .all(|s| s.process_id.is_none() && !s.running));
+    }
+
+    #[test]
+    fn record_session_keeps_only_the_newest_sessions() {
+        let store = TodoStore::new();
+        let (project, root) = ids();
+        let todo = store.add(project, &root, "fix login", None).unwrap();
+        for n in 0..MAX_TODO_SESSIONS + 3 {
+            store
+                .record_session(&root, todo.id, session(&format!("s-{n}"), "agent"))
+                .unwrap();
+        }
+        let sessions = store.get(project, &root, todo.id).unwrap().sessions;
+        assert_eq!(sessions.len(), MAX_TODO_SESSIONS);
+        assert_eq!(
+            sessions[0].session.session_id,
+            format!("s-{}", MAX_TODO_SESSIONS + 2)
+        );
+        assert_eq!(sessions.last().unwrap().session.session_id, "s-3");
+    }
+
+    #[test]
+    fn record_session_on_an_unknown_todo_writes_nothing() {
+        let store = TodoStore::new();
+        let (_, root) = ids();
+        assert!(!store
+            .record_session(&root, TodoId::new(), session("s-1", "agent"))
+            .unwrap());
+    }
+
+    #[test]
+    fn sessions_persist_and_files_without_them_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("todos.json");
+        let (project, root) = ids();
+        let todo_id = TodoId::new();
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"{}": [{{"id": "{todo_id}", "text": "old", "done": false, "createdAt": "2026-01-01T00:00:00Z"}}]}}"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+        let store = TodoStore::new();
+        store.set_path(file.clone());
+        assert!(store
+            .get(project, &root, todo_id)
+            .unwrap()
+            .sessions
+            .is_empty());
+        store
+            .record_session(&root, todo_id, session("s-1", "agent"))
+            .unwrap();
+        let reloaded = TodoStore::new();
+        reloaded.set_path(file);
+        let sessions = reloaded.get(project, &root, todo_id).unwrap().sessions;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session.session_id, "s-1");
     }
 }

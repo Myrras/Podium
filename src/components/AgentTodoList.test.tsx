@@ -45,6 +45,7 @@ function todo(
     assignedAgent: assignedAgent
       ? { color: null, active: true, ...assignedAgent }
       : null,
+    sessions: [],
   };
 }
 

@@ -12,13 +12,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 
-import type { TodoComment, TodoInfo } from "../ipc/types";
+import type { TodoComment, TodoInfo, TodoSession } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
+import { useProcessStore } from "../state/processStore";
 import { useTodoStore } from "../state/todoStore";
 import { TodoDetailPane } from "./TodoDetailPane";
 
 const initialTodo = useTodoStore.getState();
 const initialLayout = useLayoutStore.getState();
+const initialProcess = useProcessStore.getState();
 
 const PROJECT = "proj-1";
 const TODO = "todo-1";
@@ -30,6 +32,20 @@ function comment(overrides: Partial<TodoComment> = {}): TodoComment {
     text: "Started on the export.",
     createdAt: "2024-04-03T13:00:00Z",
     editedAt: null,
+    ...overrides,
+  };
+}
+
+function session(overrides: Partial<TodoSession> = {}): TodoSession {
+  return {
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    adapter: "claude-code",
+    name: "export-agent",
+    startedAt: "2024-04-03T12:30:00Z",
+    lastSeenAt: "2024-04-03T13:30:00Z",
+    args: null,
+    processId: null,
+    running: false,
     ...overrides,
   };
 }
@@ -48,6 +64,7 @@ function todo(overrides: Partial<TodoInfo> = {}): TodoInfo {
     links: [],
     comments: [],
     assignedAgent: null,
+    sessions: [],
     ...overrides,
   };
 }
@@ -87,7 +104,56 @@ describe("TodoDetailPane", () => {
   beforeEach(() => {
     useTodoStore.setState(initialTodo, true);
     useLayoutStore.setState(initialLayout, true);
+    useProcessStore.setState(initialProcess, true);
     openUrlMock.mockClear();
+  });
+
+  it("hides the Sessions section when no agent worked on the to-do", () => {
+    seed();
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    expect(screen.queryByText("Sessions")).not.toBeInTheDocument();
+  });
+
+  it("lists every past session, each with its own Resume", () => {
+    seed({
+      sessions: [
+        session({ sessionId: "s-2", name: "second-try" }),
+        session({ sessionId: "s-1", name: "first-try" }),
+      ],
+    });
+    const resumeTodoSession = vi.fn(() => Promise.resolve(null));
+    useProcessStore.setState({ resumeTodoSession });
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    expect(screen.getByText("second-try")).toBeInTheDocument();
+    expect(screen.getByText("first-try")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Resume session first-try" }),
+    );
+
+    expect(resumeTodoSession).toHaveBeenCalledWith(PROJECT, TODO, "s-1");
+  });
+
+  it("offers Open instead of Resume for a running session", () => {
+    seed({
+      sessions: [session({ processId: "proc-7", running: true })],
+    });
+    const setActiveProcess = vi.fn();
+    const resumeTodoSession = vi.fn(() => Promise.resolve(null));
+    useProcessStore.setState({ setActiveProcess, resumeTodoSession });
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Resume session export-agent" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open session export-agent" }),
+    );
+
+    expect(setActiveProcess).toHaveBeenCalledWith("proc-7");
+    expect(resumeTodoSession).not.toHaveBeenCalled();
   });
 
   it("renders the to-do title, description, and comments", () => {

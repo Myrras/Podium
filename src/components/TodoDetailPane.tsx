@@ -1,8 +1,8 @@
 /**
  * Work-area pane for an opened to-do: a header (editable title, done toggle,
  * close) over the description (what the to-do is about; edits save
- * automatically) and the comment thread (progress notes from you and agents)
- * with a composer. The description and comments also change from agents over
+ * automatically), the agent sessions that worked on it (each resumable) and
+ * the comment thread (progress notes from you and agents) with a composer. The description and comments also change from agents over
  * MCP, so the pane reads the live to-do from the store by id and reflects
  * `todo:changed` refreshes while open.
  */
@@ -10,13 +10,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { CommentId, ProjectId, TodoId, TodoInfo } from "../ipc/types";
-import { formatTime } from "../lib/dateFormat";
+import { formatRelativeTime, formatTime } from "../lib/dateFormat";
 import { openExternalLink } from "../lib/links";
 import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
+import { useProcessStore } from "../state/processStore";
 import { useTodoStore } from "../state/todoStore";
 import { CopyIdButton } from "./CopyIdButton";
 import {
+  AgentIcon,
   CloseIcon,
   CommentIcon,
   DeleteIcon,
@@ -46,6 +48,10 @@ export function TodoDetailPane({
   const removeLink = useTodoStore((s) => s.removeLink);
   const setTodoDone = useTodoStore((s) => s.setTodoDone);
   const clearOpenTodo = useLayoutStore((s) => s.clearOpenTodo);
+  const resumeTodoSession = useProcessStore((s) => s.resumeTodoSession);
+  const setActiveProcess = useProcessStore((s) => s.setActiveProcess);
+  // The session a resume is in flight for, so its button can't double-fire.
+  const [resuming, setResuming] = useState<string | null>(null);
 
   const [description, setDescription] = useState("");
   const [comment, setComment] = useState("");
@@ -292,6 +298,59 @@ export function TodoDetailPane({
             onBlur={() => void saveDescription()}
           />
         </section>
+
+        {todo.sessions.length > 0 && (
+          <section className={styles.field}>
+            <label>
+              <AgentIcon size={13} /> Sessions
+            </label>
+            <ul className={styles.sessions}>
+              {todo.sessions.map((s) => (
+                <li key={s.sessionId} className={styles.session}>
+                  <span className={styles.sessionName} title={s.name}>
+                    {s.name}
+                  </span>
+                  {s.running && (
+                    <span className={styles.sessionRunning}>running</span>
+                  )}
+                  <span
+                    className={styles.sessionTime}
+                    title={`Started ${formatTime(s.startedAt)} · ${s.adapter}`}
+                  >
+                    {formatRelativeTime(s.lastSeenAt)}
+                  </span>
+                  {s.running && s.processId !== null ? (
+                    <button
+                      type="button"
+                      className={styles.linkBtn}
+                      aria-label={`Open session ${s.name}`}
+                      onClick={() => setActiveProcess(s.processId)}
+                    >
+                      Open
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.linkBtn}
+                      aria-label={`Resume session ${s.name}`}
+                      disabled={resuming !== null}
+                      onClick={() => {
+                        setResuming(s.sessionId);
+                        void resumeTodoSession(
+                          projectId,
+                          todoId,
+                          s.sessionId,
+                        ).finally(() => setResuming(null));
+                      }}
+                    >
+                      {resuming === s.sessionId ? "Resuming…" : "Resume"}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section className={styles.field}>
           <label>

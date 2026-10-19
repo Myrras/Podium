@@ -33,7 +33,7 @@ use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, Resta
 use crate::project::{self, ConfiguredProcess, ProjectSections};
 use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
-use crate::todo::{TodoInfo, TodoStore};
+use crate::todo::{TodoInfo, TodoSession, TodoStore};
 use crate::worktree::WorktreeInfo;
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
@@ -911,7 +911,10 @@ impl Orchestrator {
             {
                 (existing, false)
             } else {
-                let id = ProjectId::new();
+                // Derived from the root, not random: the same folder keeps
+                // its id across app runs, so a resumed agent's remembered
+                // `project_id` still resolves (see `ProjectId::for_root`).
+                let id = ProjectId::for_root(&path);
                 let name = project::folder_name(&path);
                 let icon_initials = project::derive_icon_initials(&name);
                 inner.projects.insert(
@@ -1377,7 +1380,7 @@ impl Orchestrator {
         let mut todos = self.todos.list(project_id, &root);
         let inner = self.inner.lock().expect(LOCK_POISONED);
         for todo in &mut todos {
-            todo.assigned_agent = assigned_agent_of(&inner, todo.id);
+            enrich_todo(&inner, todo);
         }
         Ok(todos)
     }
@@ -1388,7 +1391,7 @@ impl Orchestrator {
         let mut todos = self.todos.list_archived(project_id, &root);
         let inner = self.inner.lock().expect(LOCK_POISONED);
         for todo in &mut todos {
-            todo.assigned_agent = assigned_agent_of(&inner, todo.id);
+            enrich_todo(&inner, todo);
         }
         Ok(todos)
     }
@@ -1422,8 +1425,59 @@ impl Orchestrator {
                 inner.todo_assignments.insert(*id, process_id);
             }
         }
+        self.record_todo_sessions(process_id);
         self.events
             .publish(PodiumEvent::TodosChanged { project_id });
+    }
+
+    /// Note `process_id`'s current CLI session on every to-do it owns (see
+    /// [`TodoSession`]), so the to-do can offer to resume it later — also
+    /// after a restart. Called wherever that session can have changed or the
+    /// agent is about to go: an assignment, a start (a fresh relaunch is a
+    /// new conversation), a stop, a rename, a removal and the app's exit. A
+    /// `/clear` is thereby picked up at the next of those, not the moment it
+    /// happens. An agent without a Podium-tracked session (an adapter that
+    /// cannot resume, or the user's own session flags) records nothing.
+    /// Publishes `TodosChanged` itself when a to-do changed.
+    fn record_todo_sessions(&self, process_id: ProcessId) {
+        let found = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner.processes.get(&process_id).and_then(|p| {
+                let ProcessKind::Agent { adapter } = &p.spec.kind else {
+                    return None;
+                };
+                let session = p.session.as_ref()?;
+                let root = inner.projects.get(&p.project_id)?.root.clone();
+                let now = Utc::now();
+                Some((
+                    p.project_id,
+                    root,
+                    owned_by(&inner.todo_assignments, process_id),
+                    TodoSession {
+                        session_id: session.id.clone(),
+                        adapter: adapter.clone(),
+                        name: p.spec.name.clone(),
+                        started_at: now,
+                        last_seen_at: now,
+                        args: p.spawn_args.clone(),
+                    },
+                ))
+            })
+        };
+        let Some((project_id, root, todo_ids, session)) = found else {
+            return;
+        };
+        let mut changed = false;
+        for todo_id in todo_ids {
+            match self.todos.record_session(&root, todo_id, session.clone()) {
+                Ok(c) => changed |= c,
+                Err(e) => tracing::warn!("recording a to-do's agent session failed: {e}"),
+            }
+        }
+        if changed {
+            self.events
+                .publish(PodiumEvent::TodosChanged { project_id });
+        }
     }
 
     /// Self-assign a single to-do to a running agent (used by the MCP
@@ -1461,8 +1515,12 @@ impl Orchestrator {
                 return Err(CoreError::TodoAlreadyAssigned);
             }
             inner.todo_assignments.insert(todo_id, process_id);
-            info.assigned_agent = assigned_agent_of(&inner, todo_id);
         }
+        self.record_todo_sessions(process_id);
+        if let Some(fresh) = self.todos.get(project_id, &root, todo_id) {
+            info = fresh;
+        }
+        enrich_todo(&self.inner.lock().expect(LOCK_POISONED), &mut info);
         self.events
             .publish(PodiumEvent::TodosChanged { project_id });
         Ok(info)
@@ -1481,11 +1539,100 @@ impl Orchestrator {
         {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             inner.todo_assignments.remove(&todo_id);
-            info.assigned_agent = assigned_agent_of(&inner, todo_id);
+            enrich_todo(&inner, &mut info);
         }
         self.events
             .publish(PodiumEvent::TodosChanged { project_id });
         Ok(info)
+    }
+
+    /// Resume one of the agent sessions that worked on a to-do (its
+    /// [`TodoSession`] history) and hand the to-do to it. Returns the process
+    /// now on that session:
+    ///
+    /// - a process in this run already on it: returned as is when running,
+    ///   started (resuming it, see [`Self::start_process`]) when exited — no
+    ///   second row for one conversation;
+    /// - otherwise a new agent launched with `--resume <session>` and no
+    ///   prompt, like a remembered session's restore, under its stored name,
+    ///   adapter and args. Its process id is the session id where that is
+    ///   free, so ids the conversation already knows keep working. A
+    ///   conversation the CLI no longer has is [`CoreError::SessionNotFound`]:
+    ///   resuming it would only start a blank agent.
+    ///
+    /// Refused with [`CoreError::TodoAlreadyAssigned`] while a different live
+    /// agent owns the to-do, as for `assign_todo`.
+    pub async fn resume_todo_session(
+        &self,
+        project_id: ProjectId,
+        todo_id: TodoId,
+        session_id: &str,
+    ) -> CoreResult<ProcessId> {
+        let (root, wsl) = self.project_root_and_backend(project_id)?;
+        let todo = self
+            .todos
+            .get(project_id, &root, todo_id)
+            .ok_or(CoreError::TodoNotFound)?;
+        let entry = todo
+            .sessions
+            .into_iter()
+            .map(|s| s.session)
+            .find(|s| s.session_id == session_id)
+            .ok_or_else(|| {
+                CoreError::InvalidInput("that session never worked on this to-do".to_string())
+            })?;
+        // The file is user-writable and the id lands unquoted on a shell
+        // line: never hand `--resume` anything but a UUID.
+        if !session_memory::is_valid_session_id(&entry.session_id) {
+            return Err(CoreError::InvalidInput(
+                "that session has an invalid id".to_string(),
+            ));
+        }
+        let existing = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let existing = process_on_session(&inner, &entry.session_id)
+                .filter(|(_, p)| p.project_id == project_id)
+                .map(|(id, p)| (id, p.is_active()));
+            if assigned_agent_of(&inner, todo_id)
+                .is_some_and(|a| a.active && Some(a.process_id) != existing.map(|(id, _)| id))
+            {
+                return Err(CoreError::TodoAlreadyAssigned);
+            }
+            existing
+        };
+        if let Some((process_id, active)) = existing {
+            if !active {
+                self.start_process(process_id).await?;
+            }
+            self.assign_todos(project_id, process_id, &[todo_id]);
+            return Ok(process_id);
+        }
+        if !self
+            .session_stored(&entry.adapter, &entry.session_id, wsl)
+            .await
+        {
+            return Err(CoreError::SessionNotFound);
+        }
+        // No prompt and no to-do hand-over: anything composed would land in
+        // the resumed conversation as a new user message. The to-do is
+        // re-assigned instead.
+        let process_id = self
+            .spawn_agent_inner(AgentSpawn {
+                project_id,
+                adapter_id: Some(entry.adapter),
+                name: Some(entry.name),
+                args_override: entry.args,
+                resume_session_id: Some(entry.session_id),
+                prompt: None,
+                todo_ids: Vec::new(),
+                scratchpad_ids: Vec::new(),
+                worktree: false,
+                worktree_name: None,
+                suggest_worktree: false,
+            })
+            .await?;
+        self.assign_todos(project_id, process_id, &[todo_id]);
+        Ok(process_id)
     }
 
     /// The agent process currently assigned to a to-do, if any (so the
@@ -2167,7 +2314,26 @@ impl Orchestrator {
             ),
         };
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        let process_id = ProcessId::new();
+        // A resumed session gets back the process id it was first launched
+        // under — which is its session id, since a fresh launch passes
+        // `--session-id <process id>` — so `process_id`s the conversation
+        // already holds (rename_session, assign_todo, …) keep working after
+        // an app restart. Best-effort: after a `/clear` or a fresh relaunch the
+        // session id no longer matches, and an id already taken in this run
+        // falls back to a new one. The identity prompt names the current id
+        // either way.
+        let process_id = resume_session_id
+            .as_deref()
+            .and_then(ProcessId::from_session_id)
+            .filter(|id| {
+                !self
+                    .inner
+                    .lock()
+                    .expect(LOCK_POISONED)
+                    .processes
+                    .contains_key(id)
+            })
+            .unwrap_or_default();
         // To-dos seed a context-rich prompt; failing that, scratchpads;
         // otherwise use the raw one.
         let final_prompt: Option<String> = if !todos.is_empty() {
@@ -2256,6 +2422,12 @@ impl Orchestrator {
                 Some(CoreError::ProjectNotFound)
             } else if active_agent_count(&inner, project_id) >= MAX_AGENTS_PER_PROJECT {
                 Some(CoreError::AgentLimitReached)
+            } else if inner.processes.contains_key(&process_id) {
+                // A concurrent resume of the same session took the reused id
+                // between the pick above and here.
+                Some(CoreError::InvalidInput(
+                    "that session is already open".to_string(),
+                ))
             } else {
                 None
             };
@@ -2301,6 +2473,9 @@ impl Orchestrator {
     /// Remove a process, stopping it first if it is still running. Also
     /// cancels any pending supervised restart.
     pub async fn remove_process(&self, id: ProcessId) -> CoreResult<()> {
+        // While the to-do links still exist: the session it ends on is the
+        // one a later resume wants.
+        self.record_todo_sessions(id);
         let (project_id, cleared) = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
             // Drop the process's to-do/scratchpad assignments while it is
@@ -2735,6 +2910,7 @@ impl Orchestrator {
             project_id,
             process_id: id,
         });
+        self.record_todo_sessions(id);
         Ok(info)
     }
 
@@ -2776,7 +2952,9 @@ impl Orchestrator {
             id,
             true,
             relaunch,
-        )
+        )?;
+        self.record_todo_sessions(id);
+        Ok(())
     }
 
     /// Stop a stuck agent and put a fresh one on the same work, with the
@@ -2909,6 +3087,7 @@ impl Orchestrator {
             status: ProcessStatus::Stopping,
         });
         pty.stop();
+        self.record_todo_sessions(id);
         Ok(())
     }
 
@@ -3004,6 +3183,18 @@ impl Orchestrator {
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions().await;
+        }
+        let agents: Vec<ProcessId> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .processes
+                .iter()
+                .filter(|(_, p)| p.session.is_some())
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        for id in agents {
+            self.record_todo_sessions(id);
         }
         let stopped: Vec<(ProjectId, ProcessId)> = {
             let mut inner = self.inner.lock().expect(LOCK_POISONED);
@@ -3214,6 +3405,30 @@ fn assigned_agent_of(inner: &Inner, todo_id: TodoId) -> Option<AssignedAgent> {
         color: p.spec.color.clone(),
         active: p.is_active(),
     })
+}
+
+/// Fill in a listed to-do's runtime fields: its assigned agent, and for each
+/// remembered session the process in this run (if any) that is on it.
+fn enrich_todo(inner: &Inner, todo: &mut TodoInfo) {
+    todo.assigned_agent = assigned_agent_of(inner, todo.id);
+    for entry in &mut todo.sessions {
+        if let Some((id, p)) = process_on_session(inner, &entry.session.session_id) {
+            entry.process_id = Some(id);
+            entry.running = p.is_active();
+        }
+    }
+}
+
+/// The process in this run whose current CLI session is `session_id`.
+fn process_on_session<'a>(
+    inner: &'a Inner,
+    session_id: &str,
+) -> Option<(ProcessId, &'a ManagedProcess)> {
+    inner
+        .processes
+        .iter()
+        .find(|(_, p)| p.session.as_ref().is_some_and(|s| s.id == session_id))
+        .map(|(id, p)| (*id, p))
 }
 
 /// Resolve a scratchpad's assignment to an [`AssignedAgent`] snapshot,
@@ -3993,6 +4208,7 @@ mod tests {
             links: Vec::new(),
             comments: Vec::new(),
             assigned_agent: None,
+            sessions: Vec::new(),
         }
     }
 
@@ -4945,6 +5161,7 @@ mod tests {
         let procs = restarted.list_processes(Some(id));
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0].name, "agent-1");
+        assert_eq!(procs[0].id, agent, "the process id the conversation knows");
         wait_for_launch(&restarted, procs[0].id, |flag, s| {
             flag == "--resume" && s == session
         })
@@ -5711,5 +5928,200 @@ mod tests {
         .unwrap();
         orch.shutdown().await;
         assert!(orch.session_memory.list(&root).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_project_keeps_its_id_across_close_and_reopen() {
+        let project = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = Orchestrator::new();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        assert_eq!(id, ProjectId::for_root(&root));
+        orch.close_project(id).await.unwrap();
+        // A new app run is a new orchestrator: the same folder, the same id.
+        let other = Orchestrator::new();
+        assert_eq!(other.open_project(root.clone()).await.unwrap(), id);
+        assert_eq!(orch.open_project(root).await.unwrap(), id);
+    }
+
+    /// A to-do in a fresh `memory_orch` project, plus that project's id.
+    async fn todo_project(orch: &Orchestrator, root: &Path) -> (ProjectId, TodoId) {
+        let id = orch.open_project(root.to_path_buf()).await.unwrap();
+        let todo = orch.add_todo(id, "fix the login form", None).unwrap();
+        (id, todo.id)
+    }
+
+    fn todo_session(session_id: &str) -> TodoSession {
+        let now = Utc::now();
+        TodoSession {
+            session_id: session_id.to_string(),
+            adapter: "memory".to_string(),
+            name: "agent-1".to_string(),
+            started_at: now,
+            last_seen_at: now,
+            args: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_session_of_that_todo_can_be_resumed() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        let (id, todo) = todo_project(&orch, &root).await;
+        assert!(matches!(
+            orch.resume_todo_session(id, todo, SESS_1).await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        orch.todos
+            .record_session(&root, todo, todo_session("-x"))
+            .unwrap();
+        assert!(matches!(
+            orch.resume_todo_session(id, todo, "-x").await,
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert!(orch.list_processes(Some(id)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_todo_session_the_cli_no_longer_has_is_not_resumed() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = memory_orch(data.path(), MemoryAdapter::new(false));
+        let (id, todo) = todo_project(&orch, &root).await;
+        orch.todos
+            .record_session(&root, todo, todo_session(SESS_1))
+            .unwrap();
+        assert!(matches!(
+            orch.resume_todo_session(id, todo, SESS_1).await,
+            Err(CoreError::SessionNotFound)
+        ));
+        assert!(orch.list_processes(Some(id)).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_todo_remembers_its_session_and_resumes_it_after_a_restart() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        let (id, todo) = todo_project(&orch, &root).await;
+        let agent = spawn_memory_agent(&orch, id, "agent-1", vec![todo], None).await;
+        let session = agent.to_string();
+        wait_for_launch(&orch, agent, |flag, s| {
+            flag == "--session-id" && s == session
+        })
+        .await;
+        let listed = &orch.list_todos(id).unwrap()[0].sessions;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session.session_id, session);
+        assert_eq!(listed[0].process_id, Some(agent));
+        assert!(listed[0].running);
+        orch.shutdown().await;
+
+        // The next run: no agent comes back on its own (the setting is off),
+        // but the to-do still knows the session.
+        adapter.store(&session);
+        let restarted = memory_orch(data.path(), adapter);
+        let id = restarted.open_project(root.clone()).await.unwrap();
+        let listed = &restarted.list_todos(id).unwrap()[0].sessions;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].process_id, None);
+        let resumed = restarted
+            .resume_todo_session(id, todo, &session)
+            .await
+            .unwrap();
+        assert_eq!(resumed, agent, "the process id the conversation knows");
+        wait_for_launch(&restarted, resumed, |flag, s| {
+            flag == "--resume" && s == session
+        })
+        .await;
+        let todos = restarted.list_todos(id).unwrap();
+        assert_eq!(
+            todos[0].assigned_agent.as_ref().unwrap().process_id,
+            resumed
+        );
+        assert_eq!(todos[0].sessions.len(), 1, "the same conversation");
+        // Asking again while it runs opens the same one.
+        assert_eq!(
+            restarted
+                .resume_todo_session(id, todo, &session)
+                .await
+                .unwrap(),
+            resumed
+        );
+        assert_eq!(restarted.list_processes(Some(id)).len(), 1);
+        restarted.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn resuming_an_exited_session_restarts_its_own_row() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        let (id, todo) = todo_project(&orch, &root).await;
+        let agent = spawn_memory_agent(&orch, id, "agent-1", vec![todo], None).await;
+        let session = agent.to_string();
+        orch.stop_process(agent).await.unwrap();
+        wait_for_exit(&orch, agent).await;
+        adapter.store(&session);
+        let resumed = orch.resume_todo_session(id, todo, &session).await.unwrap();
+        assert_eq!(resumed, agent);
+        wait_for_launch(&orch, agent, |flag, s| flag == "--resume" && s == session).await;
+        assert_eq!(orch.list_processes(Some(id)).len(), 1);
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_fresh_relaunch_adds_a_second_session_to_the_todo() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let orch = memory_orch(data.path(), MemoryAdapter::new(false));
+        let (id, todo) = todo_project(&orch, &root).await;
+        let agent = spawn_memory_agent(&orch, id, "agent-1", vec![todo], None).await;
+        orch.stop_process(agent).await.unwrap();
+        wait_for_exit(&orch, agent).await;
+        // No transcript stored: the start is fresh, under a new session id.
+        orch.start_process(agent).await.unwrap();
+        let (_, fresh) = wait_for_launch(&orch, agent, |flag, s| {
+            flag == "--session-id" && s != agent.to_string()
+        })
+        .await;
+        let sessions = &orch.list_todos(id).unwrap()[0].sessions;
+        let ids: Vec<&str> = sessions
+            .iter()
+            .map(|s| s.session.session_id.as_str())
+            .collect();
+        assert_eq!(ids, [fresh.as_str(), agent.to_string().as_str()]);
+        assert!(sessions[0].running);
+        assert_eq!(sessions[1].process_id, None, "no process is on it any more");
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_todo_owned_by_another_live_agent_is_not_resumed_onto() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        adapter.store(SESS_1);
+        let orch = memory_orch(data.path(), adapter);
+        let (id, todo) = todo_project(&orch, &root).await;
+        orch.todos
+            .record_session(&root, todo, todo_session(SESS_1))
+            .unwrap();
+        spawn_memory_agent(&orch, id, "agent-2", vec![todo], None).await;
+        assert!(matches!(
+            orch.resume_todo_session(id, todo, SESS_1).await,
+            Err(CoreError::TodoAlreadyAssigned)
+        ));
+        assert_eq!(orch.list_processes(Some(id)).len(), 1);
+        orch.shutdown().await;
     }
 }

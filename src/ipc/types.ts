@@ -423,6 +423,31 @@ export interface TodoComment {
 }
 
 /**
+ * One agent session (CLI conversation) that worked on a to-do
+ * (`podium_core::TodoSessionInfo`). Persisted with the to-do, so a past
+ * session can be resumed — also after a restart. A to-do collects one per
+ * conversation: a second agent, a fresh relaunch or a `/clear` each add one.
+ */
+export interface TodoSession {
+  /** The CLI's session id, what a resume picks up. */
+  sessionId: string;
+  /** The agent adapter that ran it (e.g. `claude-code`). */
+  adapter: string;
+  /** The agent's display name when last seen. */
+  name: string;
+  /** RFC 3339: when the session was first linked to the to-do. */
+  startedAt: string;
+  /** RFC 3339: when it was last seen working on the to-do. */
+  lastSeenAt: string;
+  /** Per-spawn args it was started with; `null` for the defaults. */
+  args: string[] | null;
+  /** The process on this session in this run (running or exited), if any. */
+  processId: ProcessId | null;
+  /** Whether that process is running. */
+  running: boolean;
+}
+
+/**
  * One to-do item (`podium_core::TodoInfo`). To-dos are keyed by project
  * root on the Rust side, so they survive app restarts. Agents keep the
  * description current and append comments over MCP as they work.
@@ -448,6 +473,8 @@ export interface TodoInfo {
   comments: TodoComment[];
   /** The agent currently working on this to-do, or `null` if unassigned. */
   assignedAgent: AssignedAgent | null;
+  /** Every agent session that worked on this to-do, newest first. */
+  sessions: TodoSession[];
 }
 
 /**

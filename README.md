@@ -111,6 +111,14 @@ by hand and found again in the Archive modal.
 An agent **claims** a to-do when it starts working on it, so the list doubles
 as a who-is-doing-what board.
 
+A to-do also remembers **every agent session** that worked on it — a second
+agent, a fresh restart or a `/clear` each add one — also across app restarts.
+Its detail pane lists them under **Sessions**, newest first, each with a
+**Resume** button that picks that Claude Code conversation back up (or
+**Open** while it runs). A conversation Claude Code has since pruned can no
+longer be resumed. Project ids stay the same across restarts, so a resumed
+agent's Podium tools keep working with the ids it already knows.
+
 ### Scratchpads
 
 Shared freeform markdown notes per project, again visible to you and to

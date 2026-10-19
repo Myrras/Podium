@@ -291,6 +291,7 @@ pub fn run() {
             commands::backend::backend_wsl_networking_mode,
             commands::agent::adapters_list,
             commands::agent::agent_spawn,
+            commands::agent::todo_session_resume,
             commands::agent::agent_settings_get,
             commands::agent::agent_settings_set_adapter,
             commands::agent::agent_settings_set_default_adapter,

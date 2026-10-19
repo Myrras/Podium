@@ -30,6 +30,7 @@ function todo(id: string, text: string, done = false): TodoInfo {
     links: [],
     comments: [],
     assignedAgent: null,
+    sessions: [],
   };
 }
 

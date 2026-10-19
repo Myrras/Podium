@@ -19,6 +19,7 @@ import {
   processRestart,
   processStart,
   processStop,
+  todoSessionResume,
   toIpcError,
 } from "../ipc/commands";
 import type {
@@ -28,6 +29,7 @@ import type {
   ProcessInfo,
   ProcessStatus,
   ProjectId,
+  TodoId,
 } from "../ipc/types";
 import { disposeTerminal } from "../lib/terminalRegistry";
 import { useLayoutStore } from "./layoutStore";
@@ -48,6 +50,13 @@ interface ProcessState {
     projectId: ProjectId,
     options: AgentSpawnOptions,
   ) => Promise<ProcessInfo | null>;
+  /** Resume one of a to-do's past agent sessions; returns it (and focuses
+   * it) on success. */
+  resumeTodoSession: (
+    projectId: ProjectId,
+    todoId: TodoId,
+    sessionId: string,
+  ) => Promise<ProcessInfo | null>;
   removeProcess: (id: ProcessId) => Promise<void>;
   /** Rename a process's display label; blank names are rejected. */
   renameProcess: (id: ProcessId, name: string) => Promise<void>;
@@ -61,7 +70,7 @@ interface ProcessState {
   applyRemoved: (processId: ProcessId) => void;
 }
 
-export const useProcessStore = create<ProcessState>((set) => ({
+export const useProcessStore = create<ProcessState>((set, get) => ({
   processes: [],
   activeProcessId: null,
 
@@ -111,6 +120,23 @@ export const useProcessStore = create<ProcessState>((set) => ({
       return info;
     } catch (e) {
       toastError("Could not start agent", toIpcError(e).message);
+      return null;
+    }
+  },
+
+  resumeTodoSession: async (projectId, todoId, sessionId) => {
+    try {
+      const info = await todoSessionResume(projectId, todoId, sessionId);
+      // An exited row is restarted in place, so replace rather than skip.
+      set((s) => ({
+        processes: s.processes.some((p) => p.id === info.id)
+          ? s.processes.map((p) => (p.id === info.id ? info : p))
+          : [...s.processes, info],
+      }));
+      get().setActiveProcess(info.id);
+      return info;
+    } catch (e) {
+      toastError("Could not resume session", toIpcError(e).message);
       return null;
     }
   },

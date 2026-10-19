@@ -63,6 +63,7 @@ impl From<CoreError> for IpcError {
             CoreError::ProcessNotFound => "processNotFound",
             CoreError::TodoNotFound => "todoNotFound",
             CoreError::TodoAlreadyAssigned => "todoAlreadyAssigned",
+            CoreError::SessionNotFound => "sessionNotFound",
             CoreError::CommentNotFound => "commentNotFound",
             CoreError::LinkNotFound => "linkNotFound",
             CoreError::ScratchpadNotFound => "scratchpadNotFound",

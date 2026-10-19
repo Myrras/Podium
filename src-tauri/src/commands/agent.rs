@@ -75,6 +75,29 @@ pub async fn agent_spawn(
         .ok_or_else(|| IpcError::new("processNotFound", "process vanished after spawn"))
 }
 
+/// Resume one of the agent sessions that worked on a to-do (from its
+/// `sessions` history) and hand the to-do to it: a running session is
+/// returned as is, an exited one restarted, any other relaunched with
+/// `--resume`. A conversation the CLI no longer has is `sessionNotFound`.
+#[tauri::command]
+pub async fn todo_session_resume(
+    state: State<'_, AppState>,
+    project_id: ProjectId,
+    todo_id: TodoId,
+    session_id: String,
+) -> Result<ProcessInfo, IpcError> {
+    let id = state
+        .orchestrator
+        .resume_todo_session(project_id, todo_id, &session_id)
+        .await?;
+    state
+        .orchestrator
+        .list_processes(Some(project_id))
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| IpcError::new("processNotFound", "process vanished after resume"))
+}
+
 /// One adapter row for the Settings → Agents tab: the adapter catalog entry
 /// merged with its stored global override (if any).
 #[derive(Serialize)]

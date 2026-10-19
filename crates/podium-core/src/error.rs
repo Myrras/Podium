@@ -20,6 +20,9 @@ pub enum CoreError {
     #[error("to-do is already assigned to another session")]
     TodoAlreadyAssigned,
 
+    #[error("that session's conversation is no longer stored, so it cannot be resumed")]
+    SessionNotFound,
+
     #[error("comment not found")]
     CommentNotFound,
 

@@ -536,6 +536,20 @@ export function todoRemove(
  * best-effort cancel/rollback request to the agent's stdin first, then clears
  * the link. Returns the updated to-do.
  */
+/**
+ * Resume one of a to-do's past agent sessions and hand the to-do to it: a
+ * running session is returned as is, an exited one restarted, any other
+ * relaunched with `--resume`. Fails with `sessionNotFound` when the CLI no
+ * longer has the conversation.
+ */
+export function todoSessionResume(
+  projectId: ProjectId,
+  todoId: TodoId,
+  sessionId: string,
+): Promise<ProcessInfo> {
+  return invoke("todo_session_resume", { projectId, todoId, sessionId });
+}
+
 export function todoUnassign(
   projectId: ProjectId,
   todoId: TodoId,
