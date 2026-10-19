@@ -10,6 +10,22 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **The assistant hands work to its own sub-agents.** Lookups, checks and
+  one-off scripts now go to a sub-agent instead of the assistant's own turn,
+  so it answers right away and reports the result in a couple of lines (with a
+  to-do in the relevant project when follow-up is needed). A *lookup*
+  sub-agent only reads; a *full* one also has shell, files and git. They are
+  listed above the chat log with task, kind, running time and status, with
+  stop and open-terminal actions; at most 4 run at once and the rest queue.
+  They never appear in a project's sidebar or count towards its agent cap.
+  Resetting the conversation asks whether to keep or stop running sub-agents,
+  quitting Podium stops them, and the quit warning counts them. The first
+  sub-agent on a machine may ask Claude Code's folder-trust question once:
+  open it from the list and answer it.
+- Two new MCP tools for the assistant, `spawn_subagent` and `list_subagents`.
+
 ## [3.1.0] - 2026-10-08
 
 ### Added
