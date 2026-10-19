@@ -103,6 +103,9 @@ pub struct AgentSettingsDto {
     /// Whether a running agent's session is remembered and resumed across
     /// app restarts.
     pub remember_sessions: bool,
+    /// Minutes after which an exited agent is removed from the list; 0 =
+    /// never.
+    pub remove_exited_after_minutes: u32,
     pub adapters: Vec<AgentAdapterConfig>,
 }
 
@@ -131,6 +134,7 @@ fn build_settings_dto(orchestrator: &Orchestrator) -> AgentSettingsDto {
         default_adapter: settings.default_adapter.unwrap_or_default(),
         suggest_worktree: settings.suggest_worktree,
         remember_sessions: settings.remember_sessions,
+        remove_exited_after_minutes: settings.remove_exited_agents_after_minutes,
         adapters,
     }
 }
@@ -212,6 +216,20 @@ pub async fn agent_settings_set_remember_sessions(
     enabled: bool,
 ) -> Result<AgentSettingsDto, IpcError> {
     state.orchestrator.set_agent_remember_sessions(enabled)?;
+    let orchestrator = Arc::clone(&state.orchestrator);
+    tauri::async_runtime::spawn_blocking(move || build_settings_dto(&orchestrator))
+        .await
+        .map_err(|e| IpcError::new("io", format!("adapter probe task failed: {e}")))
+}
+
+/// Set how many minutes an exited agent stays in the list before it is
+/// removed automatically (0 = never). Returns the refreshed settings.
+#[tauri::command]
+pub async fn agent_settings_set_remove_exited_after(
+    state: State<'_, AppState>,
+    minutes: u32,
+) -> Result<AgentSettingsDto, IpcError> {
+    state.orchestrator.set_agent_remove_exited_after(minutes)?;
     let orchestrator = Arc::clone(&state.orchestrator);
     tauri::async_runtime::spawn_blocking(move || build_settings_dto(&orchestrator))
         .await

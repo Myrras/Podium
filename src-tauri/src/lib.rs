@@ -216,6 +216,16 @@ pub fn run() {
                     podium_core::ProactivityConfig::default(),
                 );
             });
+            // Remove agents that have been exited for the configured time
+            // (Settings → Agents, default 5 minutes, 0 = never). Same reason
+            // as above for spawning it from inside the runtime.
+            let orchestrator = Arc::clone(&state.orchestrator);
+            tauri::async_runtime::spawn(async move {
+                podium_core::agent::cleanup::spawn(
+                    &orchestrator,
+                    podium_core::AgentCleanupConfig::default(),
+                );
+            });
             // Start the built-in MCP server (ephemeral localhost port, per-run
             // bearer token). Agents get the URL + token via 0600 config files
             // under `{app_data_dir}/mcp`, which is wiped on every start. A
@@ -297,6 +307,7 @@ pub fn run() {
             commands::agent::agent_settings_set_merge_mode,
             commands::agent::agent_settings_set_suggest_worktree,
             commands::agent::agent_settings_set_remember_sessions,
+            commands::agent::agent_settings_set_remove_exited_after,
             commands::mcp::mcp_status,
             commands::mcp::mcp_clients_status,
             commands::mcp::mcp_client_install,

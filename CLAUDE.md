@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 34 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **97 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **98 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -80,7 +80,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 97 commands.
+  IPC wrappers over all 98 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -133,7 +133,7 @@ podium/
 │  ├─ project.rs               # project open/reload, cwd resolution (traversal-guarded)
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
-│  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo
+│  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo, settings.rs (agents.json), session_memory.rs, cleanup.rs (exited-agent sweep)
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 34 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
 │  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
@@ -415,6 +415,31 @@ atomically, before the async `podium.yml` load.
   (`ManagedProcess::is_active`, also in the `list_todos` MCP output) is
   `false`, the row gets its spawn button back and can join a multi-select
   again, and spawning on it (or `assign_todo`) hands it to the new agent.
+  **Exited agents are removed automatically** (`agent/cleanup.rs`, setting
+  `remove_exited_agents_after_minutes` in `agents.json` — on disk
+  `removeExitedAgentsAfterMinutes`, on `AgentSettingsDto`
+  `removeExitedAfterMinutes` — default 5, missing = 5, `0` = never, at most
+  1440, refused above that in core): a sweep task (`cleanup::spawn`, started
+  in `setup` next to the proactivity watcher, weak orchestrator ref, every
+  15 s) reads the setting fresh each tick and calls
+  `Orchestrator::remove_exited_agents`. That picks, under one `inner` lock,
+  every `Agent`-kind process whose status is `Exited` with `at` (wall clock,
+  so sleep counts; a clock that went back reads as not due) at least that
+  long ago and no supervised restart pending, and takes each out with
+  `take_process` — the same path `remove_process` uses (links cleared,
+  restart cancelled), then publishes `ProcessRemoved` plus
+  `TodosChanged`/`ScratchpadsChanged` per affected project. Terminals and
+  services are never touched; a restart puts the agent back to running, and
+  its next exit writes a new `at`, so the clock runs from the latest exit.
+  The exit nudge is published with the exit, long before the removal; a
+  Responses item keeps the names it resolved at add time, so a removed
+  process id there breaks nothing (a later `get_process_output` or
+  `respawn_agent` on it answers `ProcessNotFound`). The frontend's
+  `applyRemoved` already disposes the terminal and clears the focus, so an
+  open agent's work area falls back to the empty state. A removed agent can
+  no longer be restarted from the sidebar, so its conversation is not
+  resumable from Podium after that. `AgentCleanupConfig { tick, minute }` is
+  injectable (tests use millisecond minutes).
   **Restart resumes the session**: Claude Code agents launch with
   `--session-id <process id>`, and the adapter's `LaunchPlan.restart`
   (`RestartCommands`, the launch line in parts) spells the two commands a
@@ -1306,6 +1331,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `agent_settings_set_merge_mode` | `{ mode }`                       | `AgentSettingsDto` |
 | `agent_settings_set_suggest_worktree` | `{ enabled }`             | `AgentSettingsDto` |
 | `agent_settings_set_remember_sessions` | `{ enabled }`            | `AgentSettingsDto` |
+| `agent_settings_set_remove_exited_after` | `{ minutes }` (0 = never, max 1440) | `AgentSettingsDto` (`removeExitedAfterMinutes`) |
 | `mcp_status`            | –                                           | `{ running, url? }` (token-free by design) |
 | `mcp_clients_status`    | –                                           | `McpClientInfo[]` |
 | `mcp_client_install`    | `{ clientId }`                              | `McpClientInfo[]` |

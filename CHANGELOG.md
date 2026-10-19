@@ -10,6 +10,15 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **Exited agents clean themselves up.** An agent that finished, crashed or
+  was stopped is now removed from the list 5 minutes after it exited, in
+  every project, together with its terminal and its to-do links. Restarting
+  it before then keeps it, and the time counts again from its next exit.
+  Terminals and services are not touched. Set the delay, or `0` for never,
+  in Settings → Agents → Exited agents.
+
 ## [3.1.1] - 2026-10-09
 
 ### Changed

@@ -6,6 +6,7 @@
 //! line and environment look like. The MCP seam ([`McpConnectInfo`]) is
 //! designed in now but stays `None` until the built-in MCP server lands.
 
+pub mod cleanup;
 pub mod session_memory;
 pub mod settings;
 
