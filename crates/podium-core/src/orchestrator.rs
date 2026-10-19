@@ -377,6 +377,11 @@ impl Orchestrator {
     /// Replace the sub-agents' cap and timings (tests use milliseconds and a
     /// fake adapter).
     pub fn with_subagent_config(mut self, config: SubagentConfig) -> Self {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .subagents
+            .set_linger(config.linger);
         self.subagent_config = config;
         self
     }
@@ -3705,7 +3710,12 @@ fn subagent_infos(inner: &Inner) -> Vec<SubagentInfo> {
         .filter_map(|id| {
             let record = inner.subagents.get(&id)?;
             let process = inner.processes.get(&id)?;
-            Some(record.info(id, process.spec.name.clone(), process.status.clone()))
+            Some(record.info(
+                id,
+                process.spec.name.clone(),
+                process.status.clone(),
+                inner.subagents.linger(),
+            ))
         })
         .collect()
 }
@@ -4063,7 +4073,7 @@ impl Hub {
             let inner = &mut *guard;
             let expired: Vec<ProcessId> = inner
                 .subagents
-                .expired(self.config.linger, Instant::now())
+                .expired(Instant::now(), Utc::now())
                 .into_iter()
                 // A done one still in its grace keeps its row until it is down.
                 .filter(|id| inner.processes.get(id).is_none_or(|p| !p.is_active()))
@@ -7338,6 +7348,67 @@ mod tests {
                 matches!(event, PodiumEvent::ProcessRemoved { process_id, .. } if process_id == id);
         }
         assert!(removed, "its process row went with it");
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn an_expired_row_is_announced_gone_with_nothing_else_happening() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(
+            data.path(),
+            SubagentConfig {
+                linger: Duration::from_millis(300),
+                ..sub_config(4)
+            },
+        );
+        // One that fails on its own, one the user stops, one that reports.
+        let spawn = |task: &'static str| {
+            let orch = &orch;
+            async move {
+                orch.spawn_subagent(SubagentKind::Lookup, task, None, None)
+                    .await
+                    .unwrap()
+                    .process_id
+            }
+        };
+        let crashed = spawn("crash at once").await;
+        let stopped = spawn("stop me").await;
+        let reported = spawn("report back").await;
+        orch.stop_subagent(stopped).await.unwrap();
+        orch.report_subagent_result(reported, "Found it.")
+            .await
+            .unwrap();
+        let ids = [crashed, stopped, reported];
+        wait_until("all three to end and exit", || {
+            orch.list_subagents()
+                .iter()
+                .all(|s| s.phase.is_ended() && matches!(s.status, ProcessStatus::Exited { .. }))
+        })
+        .await;
+        // Each snapshot says when its row goes.
+        for s in orch.list_subagents() {
+            let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
+            assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
+        }
+
+        // From here on nothing calls into the orchestrator: only the
+        // driver's own tick can say the rows are gone.
+        let mut events = orch.subscribe_events();
+        let gone = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(PodiumEvent::AssistantEvent {
+                        event: AssistantEvent::SubagentsChanged { subagents },
+                    }) if subagents.iter().all(|s| !ids.contains(&s.id)) => return,
+                    Ok(_) => {}
+                    Err(e) => panic!("event bus: {e}"),
+                }
+            }
+        })
+        .await;
+        assert!(gone.is_ok(), "no snapshot without the expired rows");
+        assert!(orch.list_subagents().is_empty());
         orch.shutdown().await;
     }
 

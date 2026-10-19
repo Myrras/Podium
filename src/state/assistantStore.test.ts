@@ -764,6 +764,7 @@ function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     createdAt: "2026-01-01T10:00:00Z",
     startedAt: "2026-01-01T10:00:00Z",
     endedAt: null,
+    expiresAt: null,
     result: null,
     error: null,
     ...overrides,
@@ -851,6 +852,51 @@ describe("assistantStore — sub-agents", () => {
       .getState()
       .apply({ type: "subagentsChanged", subagents: [] });
     expect(useLayoutStore.getState().openSubagent).toBeNull();
+  });
+
+  it("lets an ended row go at its expiresAt with no snapshot", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T10:10:00Z"));
+      useLayoutStore.setState({ openSubagent: "sub-1" });
+      const ended = subagent({
+        phase: "done",
+        endedAt: "2026-01-01T10:10:00Z",
+        expiresAt: "2026-01-01T10:15:00Z",
+      });
+      const live = subagent({ id: "sub-2" });
+      useAssistantStore
+        .getState()
+        .apply({ type: "subagentsChanged", subagents: [ended, live] });
+
+      vi.advanceTimersByTime(4 * 60 * 1000);
+      expect(useAssistantStore.getState().subagents).toHaveLength(2);
+
+      // Nothing else happens: no event, no snapshot.
+      vi.advanceTimersByTime(60 * 1000);
+      expect(useAssistantStore.getState().subagents).toEqual([live]);
+      expect(useLayoutStore.getState().openSubagent).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prunes only the rows already past their expiresAt", () => {
+    const at = Date.parse("2026-01-01T10:15:00Z");
+    const gone = subagent({
+      id: "a",
+      phase: "failed",
+      expiresAt: "2026-01-01T10:14:59Z",
+    });
+    const due = subagent({
+      id: "b",
+      phase: "done",
+      expiresAt: "2026-01-01T10:15:01Z",
+    });
+    const live = subagent({ id: "c" });
+    useAssistantStore.setState({ subagents: [gone, due, live] });
+    useAssistantStore.getState().pruneExpiredSubagents(at);
+    expect(useAssistantStore.getState().subagents).toEqual([due, live]);
   });
 
   it("passes the keep-or-stop choice on to a new conversation", async () => {

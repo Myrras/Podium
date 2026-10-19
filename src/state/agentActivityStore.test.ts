@@ -95,6 +95,7 @@ describe("agentActivityStore", () => {
       kind: "full" as const,
       createdAt: since,
       endedAt: null,
+      expiresAt: null,
       result: null,
       error: null,
     };
@@ -148,6 +149,7 @@ describe("agentActivityStore", () => {
           createdAt: "2026-01-01T10:00:00Z",
           startedAt: "2026-01-01T10:00:00Z",
           endedAt: null,
+          expiresAt: null,
           result: null,
           error: null,
         },

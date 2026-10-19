@@ -179,6 +179,10 @@ pub struct SubagentInfo {
     pub started_at: Option<DateTime<Utc>>,
     /// When it ended (reported, exited or was stopped).
     pub ended_at: Option<DateTime<Utc>>,
+    /// When its ended row drops off ([`SubagentConfig::linger`] after
+    /// `ended_at`), so the panel can let it go on its own even when the
+    /// snapshot that removes it is late.
+    pub expires_at: Option<DateTime<Utc>>,
     /// What it reported, once `done`.
     pub result: Option<String>,
     /// Why it failed, once `failed`.
@@ -215,7 +219,8 @@ pub(crate) struct SubagentRecord {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub ended_at: Option<DateTime<Utc>>,
-    /// The same moment on the monotonic clock, for the linger timer.
+    /// The same moment on the monotonic clock, for the linger timer (beside
+    /// `ended_at`: see [`SubagentBook::expired`]).
     ended: Option<Instant>,
     pub result: Option<String>,
     pub error: Option<String>,
@@ -232,13 +237,33 @@ pub(crate) struct SubagentRecord {
 /// Every sub-agent of the run, keyed by process id. Pure bookkeeping — no
 /// processes are touched here, so the cap and the phase rules are unit
 /// testable on their own.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct SubagentBook {
     records: HashMap<ProcessId, SubagentRecord>,
     admitted: u64,
+    /// How long an ended row stays ([`SubagentConfig::linger`]).
+    linger: Duration,
+}
+
+impl Default for SubagentBook {
+    fn default() -> Self {
+        Self {
+            records: HashMap::new(),
+            admitted: 0,
+            linger: SubagentConfig::default().linger,
+        }
+    }
 }
 
 impl SubagentBook {
+    pub fn set_linger(&mut self, linger: Duration) {
+        self.linger = linger;
+    }
+
+    pub fn linger(&self) -> Duration {
+        self.linger
+    }
+
     pub fn contains(&self, id: &ProcessId) -> bool {
         self.records.contains_key(id)
     }
@@ -366,11 +391,19 @@ impl SubagentBook {
         true
     }
 
-    /// Ended sub-agents whose row has been shown for `linger` already.
-    pub fn expired(&self, linger: Duration, now: Instant) -> Vec<ProcessId> {
+    /// Ended sub-agents whose row has been shown for the linger already, by
+    /// either clock: `Instant` does not count a sleep on macOS (a row ended
+    /// before the lid closed would otherwise stay up to five more minutes
+    /// after the wake), and the wall clock can be set back.
+    pub fn expired(&self, now: Instant, now_wall: DateTime<Utc>) -> Vec<ProcessId> {
+        let linger = self.linger;
+        let wall = chrono::Duration::from_std(linger).unwrap_or(chrono::Duration::MAX);
         self.records
             .iter()
-            .filter(|(_, r)| r.ended.is_some_and(|at| now.duration_since(at) >= linger))
+            .filter(|(_, r)| {
+                r.ended.is_some_and(|at| now.duration_since(at) >= linger)
+                    || r.ended_at.is_some_and(|at| now_wall - at >= wall)
+            })
             .map(|(id, _)| *id)
             .collect()
     }
@@ -398,7 +431,18 @@ impl SubagentRecord {
         }
     }
 
-    pub fn info(&self, id: ProcessId, name: String, status: ProcessStatus) -> SubagentInfo {
+    pub fn info(
+        &self,
+        id: ProcessId,
+        name: String,
+        status: ProcessStatus,
+        linger: Duration,
+    ) -> SubagentInfo {
+        let expires_at = self.ended_at.and_then(|at| {
+            chrono::Duration::from_std(linger)
+                .ok()
+                .and_then(|d| at.checked_add_signed(d))
+        });
         SubagentInfo {
             id,
             name,
@@ -409,6 +453,7 @@ impl SubagentRecord {
             created_at: self.created_at,
             started_at: self.started_at,
             ended_at: self.ended_at,
+            expires_at,
             result: self.result.clone(),
             error: self.error.clone(),
         }
@@ -835,15 +880,26 @@ mod tests {
             ended_at,
         );
         let linger = Duration::from_secs(300);
-        assert!(book.expired(linger, ended_at).is_empty(), "too soon");
+        book.set_linger(linger);
+        let wall = book.get(&admitted[0].0).unwrap().ended_at.unwrap();
+        assert!(book.expired(ended_at, wall).is_empty(), "too soon");
         assert!(book
-            .expired(linger, ended_at + Duration::from_secs(299))
+            .expired(ended_at + Duration::from_secs(299), wall)
             .is_empty());
         assert_eq!(
-            book.expired(linger, ended_at + linger),
+            book.expired(ended_at + linger, wall),
             vec![admitted[0].0],
             "only the ended one, once its linger is up"
         );
+        // A sleep: the monotonic clock stood still, the wall clock did not.
+        assert_eq!(
+            book.expired(ended_at, wall + chrono::Duration::seconds(300)),
+            vec![admitted[0].0],
+            "the wall clock alone ends the linger"
+        );
+        assert!(book
+            .expired(ended_at, wall + chrono::Duration::seconds(299))
+            .is_empty());
         book.remove(&admitted[0].0);
         assert_eq!(book.ids(), vec![admitted[1].0]);
     }

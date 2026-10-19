@@ -37,6 +37,7 @@ function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     createdAt: "2020",
     startedAt: "2020",
     endedAt: null,
+    expiresAt: null,
     result: null,
     error: null,
     ...overrides,

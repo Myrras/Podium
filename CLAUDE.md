@@ -1116,10 +1116,17 @@ atomically, before the async `podium.yml` load.
     jumps the queue. Phases `queued` / `running` / `done` / `failed` /
     `stopped`; an ended phase frees the slot and sticks (a stop after a report
     stays `done`). Admission happens under the same lock as the row insert.
-    Ended rows linger 5 min (`SubagentConfig::linger`) and are then removed
-    with their process; a driver task (`run_subagent_driver`, started lazily on
-    the first spawn, weak reference) acts on exits handed over by the exit
-    handler and sweeps on a 10 s tick (also reconciles a missed exit).
+    Ended rows linger 5 min (`SubagentConfig::linger`, held by the book) and
+    are then removed with their process; a driver task (`run_subagent_driver`,
+    started lazily on the first spawn, weak reference) acts on exits handed
+    over by the exit handler and sweeps on a 10 s tick (also reconciles a
+    missed exit), publishing the snapshot without them by itself. The linger
+    counts on **either clock** (`SubagentBook::expired`): `Instant` stops
+    during a macOS sleep, so a row ended before the lid closed would otherwise
+    stay up to five awake minutes after the wake; the wall clock alone could
+    be set back. Each `SubagentInfo` carries `expiresAt` (`endedAt` + linger),
+    and the frontend lets a row go at that moment on its own (below), since a
+    snapshot can reach a webview late.
     Timings and the adapter are injectable (`SubagentConfig`).
   - **Ending.** `report_to_assistant` from a sub-agent
     (`report_subagent_result`) → `done` (the result kept on the row up to 16 KiB, a memory cap
@@ -1671,7 +1678,10 @@ above the chat log, hidden when empty; collapsible) lists
 `assistantStore.subagents` — loaded in `App.tsx` at startup (the activity
 monitor and quit warning need it with the panel closed), kept current by
 `subagentsChanged` snapshots plus `applySubagentStatus` from `process:status`
-in between. Per row name/task, kind, a live elapsed clock and phase (the
+in between. The store also drops an ended row at its `expiresAt` by itself
+(`pruneExpiredSubagents`, one timer re-armed on every list change), and
+`App.tsx` re-pulls the list on window focus / `visibilitychange`, so the panel
+never waits on a snapshot a hidden webview was slow to run. Per row name/task, kind, a live elapsed clock and phase (the
 result or error is only the phase label's tooltip, never a line of the row); stop (`assistant_subagent_stop`) while queued/running, open for a
 started one. Open = `layoutStore.openSubagent` (`openSubagentInWorkArea`):
 fills the work area with a `TerminalPane` on a synthesized process, exclusive

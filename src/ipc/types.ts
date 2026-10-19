@@ -248,6 +248,11 @@ export interface SubagentInfo {
   startedAt: string | null;
   /** When it ended (reported, exited or was stopped). */
   endedAt: string | null;
+  /**
+   * When its ended row drops off (`endedAt` plus the backend's linger); the
+   * store lets it go then on its own, even if the snapshot is late.
+   */
+  expiresAt: string | null;
   /** What it reported, once `done`. */
   result: string | null;
   /** Why it failed, once `failed`. */

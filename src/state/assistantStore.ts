@@ -100,6 +100,23 @@ let responsesSnapshotGen = 0;
 /** Same guard for `loadSubagents` against `subagentsChanged` snapshots. */
 let subagentsSnapshotGen = 0;
 
+/**
+ * The ended sub-agent rows that are past their `expiresAt` at `now`. The
+ * backend drops them itself and says so in a snapshot, but that snapshot can
+ * come late (a sleeping laptop, a webview held back while its window was
+ * hidden), so the store also lets them go on its own.
+ */
+function expiredSubagents(subagents: SubagentInfo[], now: number): Set<string> {
+  return new Set(
+    subagents
+      .filter((a) => a.expiresAt !== null && Date.parse(a.expiresAt) <= now)
+      .map((a) => a.id),
+  );
+}
+
+/** The one timer for the next row to expire (see `scheduleSubagentExpiry`). */
+let subagentExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
 /** A gated action awaiting (or carrying) the user's decision. */
 export interface ChatProposal {
   id: string;
@@ -178,6 +195,8 @@ interface AssistantState {
   stopSubagent: (id: ProcessId) => Promise<void>;
   /** Event applier for `process:status` on a sub-agent's process. */
   applySubagentStatus: (id: ProcessId, status: ProcessStatus) => void;
+  /** Drop the ended rows past their `expiresAt` (driven by its own timer). */
+  pruneExpiredSubagents: (now?: number) => void;
   /** Tick a Responses item off. */
   dismissResponse: (id: string) => Promise<void>;
   /** Reply to a Responses item; returns whether it was accepted. */
@@ -285,6 +304,17 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     set((s) => ({
       subagents: s.subagents.map((a) => (a.id === id ? { ...a, status } : a)),
     }));
+  },
+  pruneExpiredSubagents: (now = Date.now()) => {
+    const expired = expiredSubagents(get().subagents, now);
+    if (expired.size === 0) return;
+    // A row that dropped off takes its open terminal with it, as for a
+    // snapshot without it.
+    const layout = useLayoutStore.getState();
+    if (layout.openSubagent !== null && expired.has(layout.openSubagent)) {
+      layout.clearOpenSubagent();
+    }
+    set((s) => ({ subagents: s.subagents.filter((a) => !expired.has(a.id)) }));
   },
   loadResponses: async () => {
     const gen = responsesSnapshotGen;
@@ -724,3 +754,29 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     });
   },
 }));
+
+/**
+ * Keep one timer armed for the earliest `expiresAt` in the list, re-armed on
+ * every change to it, so an ended row leaves the panel about when the
+ * backend drops it — with no other event needed.
+ */
+function scheduleSubagentExpiry(subagents: SubagentInfo[]) {
+  if (subagentExpiryTimer !== null) clearTimeout(subagentExpiryTimer);
+  subagentExpiryTimer = null;
+  const next = Math.min(
+    ...subagents
+      .filter((a) => a.expiresAt !== null)
+      .map((a) => Date.parse(a.expiresAt as string)),
+  );
+  if (!Number.isFinite(next)) return;
+  subagentExpiryTimer = setTimeout(
+    () => useAssistantStore.getState().pruneExpiredSubagents(),
+    Math.max(0, next - Date.now()),
+  );
+}
+
+useAssistantStore.subscribe((state, prev) => {
+  if (state.subagents !== prev.subagents) {
+    scheduleSubagentExpiry(state.subagents);
+  }
+});

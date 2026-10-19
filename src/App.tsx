@@ -159,6 +159,23 @@ export default function App() {
     };
   }, []);
 
+  // Re-pull the sub-agent list whenever the window comes back into view: a
+  // webview held back while hidden may have missed snapshots, and the panel
+  // should be right the moment the user looks.
+  useEffect(() => {
+    const resync = () => {
+      if (document.visibilityState === "visible") {
+        void useAssistantStore.getState().loadSubagents();
+      }
+    };
+    window.addEventListener("focus", resync);
+    document.addEventListener("visibilitychange", resync);
+    return () => {
+      window.removeEventListener("focus", resync);
+      document.removeEventListener("visibilitychange", resync);
+    };
+  }, []);
+
   // Poll running agents for their activity (working / waiting / idle) and
   // raise the "needs input" alert on transitions. One loop for the whole app,
   // so the alert fires once no matter how many views show the agent.
