@@ -8124,22 +8124,26 @@ mod tests {
 
         // From here on nothing calls into the orchestrator: only the
         // driver's own tick can drop the rows, and its snapshot says so.
-        let mut ended_seen = false;
+        // The rows end at different moments (the crash only once its login
+        // shell has started, which can take longer than the linger), so one
+        // may already be gone before another ends: each is checked on its
+        // own, never all three in one snapshot.
+        let mut ended_seen = std::collections::HashSet::new();
         let gone = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 match events.recv().await {
                     Ok(PodiumEvent::AssistantEvent {
                         event: AssistantEvent::SubagentsChanged { subagents },
                     }) => {
-                        if subagents.len() == 3 && subagents.iter().all(|s| s.phase.is_ended()) {
-                            ended_seen = true;
-                            // Each snapshot says when its row goes.
-                            for s in &subagents {
-                                let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
-                                assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
-                            }
+                        // Each snapshot says when an ended row goes.
+                        for s in subagents.iter().filter(|s| s.phase.is_ended()) {
+                            let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
+                            assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
+                            ended_seen.insert(s.id);
                         }
-                        if ended_seen && subagents.iter().all(|s| !ids.contains(&s.id)) {
+                        if ids.iter().all(|id| ended_seen.contains(id))
+                            && subagents.iter().all(|s| !ids.contains(&s.id))
+                        {
                             return;
                         }
                     }
