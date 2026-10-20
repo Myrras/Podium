@@ -31,7 +31,9 @@ import type { OutputActivity, ProcessId } from "../ipc/types";
 import { detectBackgroundShells, detectInputPrompt } from "../lib/agentPrompt";
 import { processActivity, processReportWaiting } from "../ipc/commands";
 import { notifyAgentWaiting } from "../lib/notify";
+import { subagentProcess } from "../lib/subagents";
 import { readViewportText } from "../lib/terminalRegistry";
+import { useAssistantStore } from "./assistantStore";
 import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 
@@ -86,6 +88,9 @@ function isViewingAgent(processId: ProcessId): boolean {
   if (!document.hasFocus()) return false;
   const layout = useLayoutStore.getState();
   if (layout.openTodo !== null || layout.openBoard !== null) return false;
+  // A sub-agent's terminal is opened through the layout store, not the
+  // process store's focus (it is never in that store).
+  if (layout.openSubagent !== null) return layout.openSubagent === processId;
   return useProcessStore.getState().activeProcessId === processId;
 }
 
@@ -119,7 +124,16 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   shells: {},
   notified: {},
   tick: (output) => {
-    const { processes } = useProcessStore.getState();
+    // The assistant's sub-agents are running agents too, but never in the
+    // process store — so add them, or a sub-agent stuck on a prompt would
+    // only surface through the backend's five-minute silence timer.
+    const processes = [
+      ...useProcessStore.getState().processes,
+      ...useAssistantStore
+        .getState()
+        .subagents.filter((a) => a.status.state === "running")
+        .map(subagentProcess),
+    ];
     const prev = get().activity;
     const prevNotified = get().notified;
     const next: Record<string, AgentActivity> = {};

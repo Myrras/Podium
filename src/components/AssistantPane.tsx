@@ -10,6 +10,7 @@
  * Settings → Assistant — day to day you stay in the one session). Podium's own
  * proactive nudges (an agent finished, one looks stuck, a day-start summary)
  * arrive as notice rows, so an unprompted reply always has a visible reason.
+ * The work it handed to its own sub-agents is listed above the log.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +27,7 @@ import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { Markdown } from "./Markdown";
 import { ResponsesSection } from "./ResponsesSection";
+import { SubagentsSection } from "./SubagentsSection";
 import {
   AssistantIcon,
   AttachIcon,
@@ -501,6 +503,8 @@ export function AssistantPane() {
       {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
 
       <ResponsesSection />
+
+      <SubagentsSection />
 
       <div className={styles.log} ref={logRef} onScroll={syncAtBottom}>
         {!messages.some((m) => !isActivity(m)) && pending.length === 0 && (

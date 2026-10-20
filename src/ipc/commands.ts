@@ -37,6 +37,7 @@ import type {
   ResponseItem,
   ScratchpadId,
   ScratchpadInfo,
+  SubagentInfo,
   TermEvent,
   TodoId,
   TodoInfo,
@@ -708,10 +709,21 @@ export function assistantDayStart(): Promise<boolean> {
 
 /**
  * Drop the conversation (session, transcript and pending proposals) and start
- * fresh. The assistant's memory is kept.
+ * fresh. The assistant's memory is kept, and so are its sub-agents unless
+ * `stopSubagents` (their results then go to the new conversation).
  */
-export function assistantNewConversation(): Promise<void> {
-  return invoke("assistant_new_conversation");
+export function assistantNewConversation(stopSubagents = false): Promise<void> {
+  return invoke("assistant_new_conversation", { stopSubagents });
+}
+
+/** The assistant's sub-agents, oldest first. */
+export function assistantSubagentsList(): Promise<SubagentInfo[]> {
+  return invoke("assistant_subagents_list");
+}
+
+/** Stop (or, while queued, cancel) one sub-agent — the user's own click. */
+export function assistantSubagentStop(id: ProcessId): Promise<void> {
+  return invoke("assistant_subagent_stop", { id });
 }
 
 /** What the assistant remembers across conversations (markdown, may be ""). */

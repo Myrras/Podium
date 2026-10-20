@@ -207,6 +207,64 @@ export interface ProcessInfo {
    * match the to-dos it owns; `null` for services/terminals.
    */
   color: string | null;
+  /**
+   * Set only on one of the personal assistant's sub-agents (which never show
+   * in `process_list`); absent on every other process.
+   */
+  subagent?: SubagentMeta;
+}
+
+/** What a sub-agent may do (`podium_core::SubagentKind`). */
+export type SubagentKind = "lookup" | "full";
+
+/** Where a sub-agent is in its life (`podium_core::SubagentPhase`). */
+export type SubagentPhase =
+  | "queued"
+  | "running"
+  /** Asked the assistant a question (`ask_assistant`); still holds its slot. */
+  | "waiting"
+  | "done"
+  | "failed"
+  | "stopped";
+
+/** A sub-agent's extra on its `ProcessInfo` (`podium_core::SubagentMeta`). */
+export interface SubagentMeta {
+  kind: SubagentKind;
+  task: string;
+  phase: SubagentPhase;
+  endedAt: string | null;
+}
+
+/**
+ * One of the assistant's sub-agents (`podium_core::SubagentInfo`): the
+ * panel's row, from `assistant_subagents_list` and the `subagentsChanged`
+ * snapshot. `id` is its process id — what attach and stop take.
+ */
+export interface SubagentInfo {
+  id: ProcessId;
+  name: string;
+  kind: SubagentKind;
+  /** The task it was given, as the assistant wrote it. */
+  task: string;
+  phase: SubagentPhase;
+  /** Its process's own status (a queued one has not started). */
+  status: ProcessStatus;
+  createdAt: string;
+  /** When it got a slot; `null` while queued. */
+  startedAt: string | null;
+  /** When it ended (reported, exited or was stopped). */
+  endedAt: string | null;
+  /**
+   * When its ended row drops off (`endedAt` plus the backend's linger); the
+   * store lets it go then on its own, even if the snapshot is late.
+   */
+  expiresAt: string | null;
+  /** What it reported, once `done`. */
+  result: string | null;
+  /** Why it failed, once `failed`. */
+  error: string | null;
+  /** What it asked the assistant, while `waiting`. */
+  question: string | null;
 }
 
 /**
@@ -539,7 +597,12 @@ export type AssistantEvent =
    * The Responses list changed (an item added, superseded, ticked or
    * replied to). Carries the whole list, newest first — a snapshot.
    */
-  | { type: "responsesChanged"; items: ResponseItem[] };
+  | { type: "responsesChanged"; items: ResponseItem[] }
+  /**
+   * The assistant's sub-agents changed (spawned, started, ended, dropped
+   * off). Carries the whole list, oldest first — a snapshot.
+   */
+  | { type: "subagentsChanged"; subagents: SubagentInfo[] };
 
 /**
  * Whether a queued item can be edited or withdrawn before delivery. Only a

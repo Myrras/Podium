@@ -11,13 +11,39 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ProcessInfo, ProcessKind, ProcessStatus } from "../ipc/types";
+import type {
+  ProcessInfo,
+  ProcessKind,
+  ProcessStatus,
+  SubagentInfo,
+} from "../ipc/types";
+import { useAssistantStore } from "../state/assistantStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { CloseWarningModal } from "./CloseWarningModal";
 
 const initialProcess = useProcessStore.getState();
 const initialProject = useProjectStore.getState();
+const initialAssistant = useAssistantStore.getState();
+
+function subagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
+  return {
+    id: "sub-1",
+    name: "Ticket check",
+    kind: "lookup",
+    task: "Ticket check",
+    phase: "running",
+    status: running,
+    createdAt: "2020",
+    startedAt: "2020",
+    endedAt: null,
+    expiresAt: null,
+    result: null,
+    error: null,
+    question: null,
+    ...overrides,
+  };
+}
 
 const running: ProcessStatus = { state: "running", pid: 1, since: "2020" };
 const exited: ProcessStatus = {
@@ -52,6 +78,7 @@ describe("CloseWarningModal", () => {
     vi.clearAllMocks();
     useProcessStore.setState(initialProcess, true);
     useProjectStore.setState(initialProject, true);
+    useAssistantStore.setState(initialAssistant, true);
     useProjectStore.setState({
       projects: [
         {
@@ -125,5 +152,54 @@ describe("CloseWarningModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(invoke).not.toHaveBeenCalledWith("window_confirm_close");
+  });
+
+  it("names the assistant's sub-agents when only they are running", () => {
+    useAssistantStore.setState({
+      subagents: [
+        subagent(),
+        subagent({
+          id: "sub-2",
+          name: "Repo sweep",
+          kind: "full",
+          phase: "queued",
+          status: { state: "notStarted" },
+          startedAt: null,
+        }),
+        // Ended ones are not interrupted by a quit.
+        subagent({ id: "sub-3", name: "Old lookup", phase: "done" }),
+      ],
+    });
+    render(<CloseWarningModal open onClose={() => undefined} />);
+
+    expect(
+      screen.getByText(
+        "Closing Podium will stop the assistant's 2 sub-agents. Their work will be interrupted.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ticket check")).toBeInTheDocument();
+    expect(
+      screen.getByText("Assistant · lookup sub-agent"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Assistant · full sub-agent · queued"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Old lookup")).not.toBeInTheDocument();
+  });
+
+  it("counts sub-agents alongside agents and terminals", () => {
+    useProcessStore.setState({
+      processes: [proc("t1", "zsh", { kind: "terminal" }, running)],
+    });
+    useAssistantStore.setState({ subagents: [subagent()] });
+    render(<CloseWarningModal open onClose={() => undefined} />);
+
+    expect(
+      screen.getByText(
+        "Closing Podium will stop these 2 processes. Any in-progress work will be interrupted.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("zsh")).toBeInTheDocument();
+    expect(screen.getByText("Ticket check")).toBeInTheDocument();
   });
 });

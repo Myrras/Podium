@@ -58,10 +58,10 @@ them in sync when you add a command or MCP tool.
   backoff + circuit breaker), agent adapters (Claude Code, Auggie), per-project
   to-dos and scratchpads (persisted, shared with agents), git worktree
   management for agent isolation, and the built-in MCP server (axum + rmcp
-  streamable-HTTP, bearer auth, 34 tools). Zero Tauri
+  streamable-HTTP, bearer auth, 38 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **98 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **100 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -75,12 +75,12 @@ them in sync when you add a command or MCP tool.
   detail views that fill the work area (description/comment thread; scratchpad
   editor with TOC, mutually exclusive with the focused process), settings +
   theme (dark/light/retro) + toasts, a collapsible, resizable right-side
-  assistant chat panel (replayed transcript, a Responses list pinned above it,
-  action + proposal cards,
+  assistant chat panel (replayed transcript, a Responses list and the sub-agent
+  list (`SubagentsSection`) pinned above it, action + proposal cards,
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 98 commands.
+  IPC wrappers over all 100 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -133,9 +133,10 @@ podium/
 │  ├─ project.rs               # project open/reload, cwd resolution (traversal-guarded)
 │  ├─ config.rs                # podium.yml serde types (deny_unknown_fields)
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
-│  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo, settings.rs (agents.json), session_memory.rs, cleanup.rs (exited-agent sweep)
-│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 34 tools (tools.rs) + stdio bridge (bridge.rs)
+│  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo, settings.rs (agents.json), session_memory.rs, cleanup.rs (exited-agent sweep), folder_trust.rs (pre-accepted trust for the assistant workspace)
+│  ├─ mcp/                     # built-in MCP server (mod.rs) + the 38 tools (tools.rs) + stdio bridge (bridge.rs)
 │  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ subagent.rs              # the assistant's sub-agents: kinds, phases, cap + queue (SubagentBook), launch restrictions, nudge texts
 │  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
@@ -302,11 +303,46 @@ atomically, before the async `podium.yml` load.
   other nudge), `get_board` / `move_board_item` (the Git board, see _Git board_),
   `verify_sender` (see _Cross-session messaging_), and
   `add_response` (the assistant filing a Responses item — see _Personal
-  assistant_; only the assistant route lists or runs it).
+  assistant_; only the assistant route lists or runs it), and
+  `spawn_subagent` / `list_subagents` / `answer_subagent` (the assistant's
+  sub-agents — see _Sub-agents_; assistant route only, like `add_response`),
+  and `ask_assistant` (a sub-agent's question to the assistant; every route
+  but the assistant's, run only for a valid sub-agent caller key): 37 tools
+  on the assistant route, 34 on the agents' route, 11 on the lookup route. `spawn_subagent { kind, task, name?, args? }` is
+  gated by its `kind` (`assistant::requires_proposal_for`): `lookup` never,
+  `full` like `spawn_agent` (a missing/unknown kind too), and `args` may only
+  be `--model`/`--effort` with a plain value (`subagent::validate_args`).
+  `list_subagents` is read-only. `answer_subagent { process_id, answer }` is
+  an ordinary state-changing tool (gated only under `propose-all`).
+  `ask_assistant { question }` takes no process id: the caller is resolved
+  from its key (an `RequestContext` argument, `PodiumTools::caller`), and a
+  call without one is refused.
   The same surface is served a second time at **`/mcp-assistant`**
   (`mcp::ASSISTANT_PATH`, same bearer token) for the personal assistant: that
   route is its identity, and `PodiumTools::call_tool` puts calls arriving there
-  through the autonomy gate (see _Personal assistant_).
+  through the autonomy gate (see _Personal assistant_). A third route,
+  **`/mcp-lookup`** (`mcp::LOOKUP_PATH`, same token), is a *lookup*
+  sub-agent's: `PodiumTools::new_lookup` lists and runs only
+  `subagent::unprompted_podium_tools` (the read-only tools without
+  `add_response`/`list_subagents`, plus `report_to_assistant` and
+  `ask_assistant`), and
+  `call_tool` refuses anything else before dispatch, so a lookup's "no writes"
+  holds on the server, not only through the tool names the CLI hides.
+  **Caller identity**: the bearer token is shared, so each sub-agent's MCP
+  config also carries a per-sub-agent secret as `X-Podium-Caller`
+  (`mcp::CALLER_HEADER`; `SubagentRecord.caller_key`, generated at spawn,
+  resolved by `Orchestrator::subagent_for_caller` in constant time).
+  `call_tool` (`refuse`, before the gate, so a refusal is never a proposal)
+  refuses `report_to_assistant` for a sub-agent id unless the call carries
+  that sub-agent's own key — on the lookup route any report but the caller's
+  own — and, on the agents' and lookup routes, `stop_process` of a sub-agent by
+  anyone but itself (the assistant's gated stop and the user's are the ways).
+  Any other call carrying a sub-agent's key (bar `ask_assistant`) also counts
+  as that sub-agent going on: a `waiting` one is `running` again
+  (`Orchestrator::subagent_resumed`).
+  The key lives in the sub-agent's 0600 config file under `{app_data_dir}/mcp`,
+  which a lookup is denied reading; a project agent with a shell could read it,
+  like the bearer token — the OS user stays the trust boundary.
   Spawned agents get the URL + token via 0600 per-agent config files under
   `{app_data_dir}/mcp` (wiped on every start); the same dir holds
   `server.json` (current URL + token, 0600) for the **stdio bridge**:
@@ -333,7 +369,9 @@ atomically, before the async `podium.yml` load.
     (`bypassPermissions`) never matches an agent (prompting): a message to an
     agent is held for approval, and one to the assistant expires after
     `dialogExpiry` because a `-p` session has no TTY to show the dialog on.
-    A `--settings` the user put in `extra_args` wins over Podium's.
+    A `--settings` the user put in `extra_args` wins over Podium's. The
+    assistant's sub-agents get neither this nor the rules below: the assistant
+    never messages them, and they are denied `SendMessage`.
   - **Go-ahead rules.** A Claude Code agent's `--settings`
     (`agent::agent_session_settings`, built on the same inbound setting)
     also allows `git push`, `gh pr create` and `glab mr create`, so a
@@ -425,8 +463,10 @@ atomically, before the async `podium.yml` load.
   `Orchestrator::remove_exited_agents`. That picks, under one `inner` lock,
   every `Agent`-kind process whose status is `Exited` with `at` (wall clock,
   so sleep counts; a clock that went back reads as not due) at least that
-  long ago and no supervised restart pending, and takes each out with
-  `take_process` — the same path `remove_process` uses (links cleared,
+  long ago and no supervised restart pending — never one of the assistant's
+  sub-agents (`inner.subagents`), which the sub-agent hub expires itself
+  after its linger, keeping the result for the assistant — and takes each
+  out with `take_process` — the same path `remove_process` uses (links cleared,
   restart cancelled), then publishes `ProcessRemoved` plus
   `TodosChanged`/`ScratchpadsChanged` per affected project. Terminals and
   services are never touched; a restart puts the agent back to running, and
@@ -762,7 +802,7 @@ atomically, before the async `podium.yml` load.
   `parse_stream_line` into `AssistantEvent`s (`started` / `message` / `tool` /
   `toolFailed` / `notice` / `proposal` / `proposalResolved` / `turnEnd` /
   `exited` / `queueChanged` / `queueNotice` / `queueItemDelivered` /
-  `responsesChanged`) published
+  `responsesChanged` / `subagentsChanged`) published
   on the `EventBus` and forwarded to the webview as `assistant:event`.
   Unparseable lines (a chatty shell profile) are
   skipped, stderr is dropped, and the binary + cwd are injectable
@@ -776,9 +816,15 @@ atomically, before the async `podium.yml` load.
   for later** — a small request that can be done now goes into the agent's
   prompt with no to-do at all. Asking is reserved for what it genuinely
   cannot tell; everything else takes the sensible default and reports what it
-  did. It is also told to stay a **pure orchestrator** (shell/file work and
-  lookups go to `spawn_agent`, never its own Agent-tool subagents, which have
-  no shell here), to keep agent updates to warnings and done-ness, how to stop
+  did. It is also told to stay a **pure orchestrator** that delegates almost
+  everything: anything beyond a reply from what it already knows (a lookup, a
+  check, shell/file work belonging to no single project) goes to
+  `spawn_subagent`, then it answers in one line and **ends its turn** — the
+  result comes back as a `[Podium]` message; project code work still goes to
+  `spawn_agent`, routing (to-dos, messages, proposals) stays its own, and it
+  never uses the CLI's own `Agent` tool (`Agent` and its old name `Task` are in
+  its `--disallowedTools`, beside `Edit,Write,NotebookEdit,Bash`). It is told
+  to keep agent updates to warnings and done-ness, how to stop
   agents safely (only the project in question; check the output for follow-up
   work and complete the to-do first), and how to pass on a push go-ahead (a
   message to an existing Claude Code agent, which accepts it once
@@ -811,8 +857,9 @@ atomically, before the async `podium.yml` load.
   A failed tool call is never silent: `tool_result` blocks flagged `is_error`
   become a `toolFailed` event, stored under its own `TranscriptRole::ToolFailed`
   (rows from before that replay as `Notice`). Lines carrying a string
-  `parent_tool_use_id` are a subagent's own calls and yield no events — the
-  parent's `Agent` row stands for them. A `result` with `is_error` reports
+  `parent_tool_use_id` are the calls of a CLI-internal `Agent`-tool subagent
+  (not one of Podium's _Sub-agents_, which are processes of their own) and
+  yield no events — the parent's `Agent` row stands for them. A `result` with `is_error` reports
   its `result` text, not the `success` subtype: a usage limit reads `<CLI
   text>: resumes at HH:MM` (the old `<text with "limit">|<epoch seconds>`
   form, local time; `Fri HH:MM` when not today; anything else stays verbatim)
@@ -1044,6 +1091,206 @@ atomically, before the async `podium.yml` load.
   item that replaced it (the backend's rule mirrored in `supersedes`), so
   two items side by side never share one. The reply box takes focus only
   when its Reply button is clicked.
+
+  **Sub-agents** (`subagent.rs`, `Orchestrator::spawn_subagent`): work the
+  assistant hands off so its turn ends at once. Each is an ordinary interactive
+  PTY Claude Code agent process in the assistant's own **scope**
+  (`AssistantScope`, `Orchestrator::set_assistant_workspace`, called from
+  `setup`): a Podium-internal project rooted at `{app_data_dir}/assistant-workspace`
+  that is deliberately kept **out of `Inner.projects`**, so every project call
+  (close, rename, sections, to-dos, scratchpads, worktrees, Git board,
+  `spawn_agent`, `add_process`, session memory) answers `ProjectNotFound` for
+  it, and `open_project` refuses that folder (root compared canonical). It
+  runs on the assistant's backend (`platform::wsl()`). `spawn_subagent` is
+  refused until the scope is set and while there is no MCP server (the result
+  only comes back over MCP).
+  - **Kinds and launch** (`subagent::launch_args`, after the user's default
+    args so the restrictions win; `args` is `--model`/`--effort` only — both
+    flags, the `--effort` levels and the CLI's `Task`→`Agent` alias checked
+    against Claude Code 2.1.301). Both kinds load **only the user's own
+    settings** (`--setting-sources user`): no project or local settings files
+    (hooks, permissions), no project/local `CLAUDE.md` or `.claude/rules` (the
+    CLI's walk up the parent dirs included) and no settings-based approval of
+    a project `.mcp.json`. *lookup*: `--permission-mode bypassPermissions` (it
+    runs in the background, a prompt for an MCP read would only block it), its
+    Podium tools over the **lookup route** (above), and `--disallowedTools`
+    Bash, Edit, MultiEdit, Write, NotebookEdit, SendMessage, Agent, Task,
+    AskUserQuestion plus
+    `mcp__podium__<tool>` for **every tool not on the lookup route**, generated
+    from the router (`PodiumTools::all_tool_names` minus
+    `unprompted_podium_tools`) — a second layer under the route, so a tool
+    added later is refused until classified read-only. Its `--settings` also
+    deny `Read(//{app_data_dir}/mcp/**)` (the CLI's absolute-path rule
+    spelling, `agent::absolute_path_rule`; Read rules cover Grep/Glob, and the
+    shell is denied): the token files and every caller key. A lookup **can
+    still call the user's own other MCP servers** (Slack, Teams, a ticket
+    system) **without a prompt**, as the assistant itself can — it is told to
+    change nothing, but Podium cannot enforce that for servers that are not
+    its own. *full*: the normal permission prompts, `--disallowedTools
+    SendMessage,Agent,Task,AskUserQuestion`, the agents' route (the CLI's own
+    question dialog would sit in a terminal nobody watches; questions go
+    through `ask_assistant`, below). Both kinds' `--settings` allow
+    `ask_assistant` and `report_to_assistant` unprompted. A sub-agent never gets the
+    go-ahead push rules or `crossSessionInbound`, has its own identity prompt
+    (no project; do the task, then call `report_to_assistant` with two lines
+    and whether follow-up is needed; ask via `ask_assistant` only when truly
+    blocked on a decision that changes the outcome and cannot be reversed
+    cheaply, then end the turn and wait — else pick the sensible default and
+    state it in the report; no peer-message note) and no session
+    (`AgentSession`): never restarted, never remembered by session memory.
+    **A `--settings` in the user's own default args** (Settings → Agents)
+    replaces Podium's for sub-agents too (`has_flag`, as for agents): then a
+    lookup shows Claude Code's one-time bypass-mode warning in its terminal
+    (no `skipDangerousModePermissionPrompt`) and has no deny rule on the MCP
+    dir, and a full one asks before its report (no allow rules). The flags in
+    `launch_args` still apply.
+  - **Shared workspace.** All sub-agents run in the one
+    `{app_data_dir}/assistant-workspace`, and before every start
+    (`Hub::scrub_workspace` → `subagent::scrub_workspace`) Podium removes what
+    an earlier sub-agent may have left at its root that would shape the next
+    session — `.claude/`, `.mcp.json`, `CLAUDE.md`, `CLAUDE.local.md` (a
+    symlink is removed, never followed). Only a sub-agent can have put them
+    there; `--setting-sources user` already ignores all but `.mcp.json`
+    (approved anyway when the user's settings carry
+    `enableAllProjectMcpServers`), so the scrub is the second layer. One
+    folder for all of them keeps the folder trust (below) to one entry.
+  - **Cap and phases** (`SubagentBook`, pure bookkeeping): at most
+    `MAX_RUNNING_SUBAGENTS` = 4 run, further ones are `queued` (a `notStarted`
+    row, never refused) and start oldest-first as slots free; a newcomer never
+    jumps the queue. Phases `queued` / `running` / `waiting` / `done` / `failed` /
+    `stopped`; an ended phase frees the slot and sticks (a stop after a report
+    stays `done`). Admission happens under the same lock as the row insert.
+    Ended rows linger 5 min (`SubagentConfig::linger`, held by the book) and
+    are then removed with their process; a driver task (`run_subagent_driver`,
+    started lazily on the first spawn, weak reference) acts on exits handed
+    over by the exit handler and sweeps on a 10 s tick (also reconciles a
+    missed exit), publishing the snapshot without them by itself. The linger
+    counts on **either clock** (`SubagentBook::expired`): `Instant` stops
+    during a macOS sleep, so a row ended before the lid closed would otherwise
+    stay up to five awake minutes after the wake; the wall clock alone could
+    be set back. Each `SubagentInfo` carries `expiresAt` (`endedAt` + linger),
+    and the frontend lets a row go at that moment on its own (below), since a
+    snapshot can reach a webview late.
+    Timings and the adapter are injectable (`SubagentConfig`).
+  - **Ending.** `report_to_assistant` from a sub-agent
+    (`report_subagent_result`) → `done` (the result kept on the row up to 16 KiB, a memory cap
+    only; `list_subagents` / `assistant_subagents_list` return it whole), a
+    `finished_nudge` (carries the result up to 4000 chars via `quote_line`; only
+    when clipped it adds a pointer to `list_subagents` / `get_process_output`), the session stopped after a 5 s grace so the tool call
+    can finish; a second report changes nothing. An exit without a report is
+    `failed` (a `failed_nudge` with the reason); an exit Podium caused is
+    `stopped`. A queued one handed a slot by `fill_slots` is started outside
+    the lock; a stop landing in between ends it (`subagent_unstarted`), and
+    `do_start` re-checks the phase under the lock and refuses an ended
+    sub-agent, so no untracked process is left. **Who is told:** the *user's* stop (`assistant_subagent_stop`, and
+    IPC `process_stop`, which calls `Orchestrator::user_stop_process` and so
+    routes a sub-agent through `stop_subagent`) nudges the assistant
+    ("stopped by the user, no summary needed"); the assistant's own
+    `stop_process` (gated destructive) is quiet, as is a new conversation that
+    clears them. A queued one stopped is cancelled and never runs. These
+    nudges go through `quote_line` (name, task and result are agent-written:
+    whitespace runs collapse to one space and the text is JSON-quoted, so
+    nothing can start a line that reads like Podium speaking; the other agent
+    nudges use it too) and are **not** behind the proactivity switch — the
+    result is what the user asked for.
+  - **`lasting` nudges.** Sub-agent nudges go out via
+    `AssistantManager::nudge_lasting`; `new_conversation(keep_lasting)` hands a
+    waiting `lasting` item to the new conversation instead of reporting it
+    undelivered (when the sub-agents were kept). `assistant_new_conversation
+    { stopSubagents }`: with stop, `stop_all_subagents` first marks each ended
+    `stopped` under the lock (so a racing report finds it ended and nudges
+    nothing), then signals the processes — and runs once more after the old
+    session is gone, for a spawn that raced the reset; the `setup` call passes
+    `false` (nothing runs yet). Known limit: a `lasting` nudge already written
+    into the turn the reset kills is not re-sent (the old session got it, the
+    new one never hears of it).
+  - **Questions** (`ask_assistant` → `Orchestrator::ask_subagent_question`;
+    `answer_subagent` → `answer_subagent`). A running sub-agent that asks
+    becomes `waiting` (`SubagentBook::ask`: the question on the row, capped
+    at `MAX_QUESTION_CHARS` = 2000, a second ask replaces it; refused for a
+    queued or ended one). `waiting` holds its slot (`SubagentPhase::is_active`,
+    counted by `running()`), never expires (it is not ended), counts as live
+    for the quit guard, the keep/stop dialog and `isSubagentLive`, and is
+    skipped by proactivity's stuck checks (the assistant already has the
+    question). The tool answers at once that the answer arrives as the next
+    message, so the sub-agent ends its turn. The assistant gets a `lasting`
+    nudge (`subagent::question_nudge`, the question via `quote_line`) worded
+    **answer-first**: answer it yourself with `answer_subagent` whenever the
+    task, context, memory or to-dos settle it, and mention it only in the
+    usual short report; relay only a decision that is genuinely the user's
+    (preference, risk, money, people, anything it cannot infer) as a needsYou
+    `add_response` keyed by the process id with a recommended answer, and only
+    then end with `ACTION_REQUIRED` — so a question does not ping the
+    desktop by default. The identity prompt says the same (pinned by tests).
+    `answer_subagent` is refused unless the sub-agent is `waiting`; it types
+    the answer in through the PTY: control characters dropped (no escape can
+    steer the terminal), `\r\n`/`\r` → `\n`, a multi-line answer wrapped in
+    bracketed paste (`ESC[200~ … ESC[201~`, which Claude Code enables; a bare
+    `\n` would insert a line break in its own input box), then `\r` after
+    `ANSWER_ENTER_DELAY` (150 ms) — verified on Claude Code 2.1.303 on a PTY
+    (both lines land in one message). Then `running`, question cleared. **The
+    user answering in the terminal** instead: `write_stdin` carrying a `\r`
+    to a waiting sub-agent resumes it, and so does any later tool call with
+    its key. A stale `waiting` never blocks anything: a report, a stop or an
+    exit ends it as from `running`.
+  - **Folder trust.** Podium pre-accepts Claude Code's folder-trust dialog
+    for the workspace (`agent::folder_trust`), so no sub-agent sits on it.
+    Claude Code records an accepted dialog in its global config file —
+    `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`
+    (`.claude-custom-oauth.json` with `CLAUDE_CODE_CUSTOM_OAUTH_URL`; read
+    from Podium's own environment, like `claude_config_dir`) — as
+    `projects["<abs path>"].hasTrustDialogAccepted = true`, keyed on the
+    session's physical cwd (`/` separators on Windows) and checked up the
+    parent dirs to a git root (Claude Code 2.1.301; verified by starting the
+    CLI on a PTY with a temp `CLAUDE_CONFIG_DIR`). `src-tauri` hands the path
+    in (`Orchestrator::set_claude_config`, before `set_assistant_workspace`;
+    unset, as in every test, nothing is touched). `set_assistant_workspace`
+    writes it once and `Hub::scrub_workspace` checks again before every start,
+    for a key that went missing. `ensure_trusted` is a read-modify-write of
+    that one key for the canonical workspace path: a lock-free read first (key
+    already true → nothing written), then under the CLI's own lock (the
+    `<file>.lock` directory proper-lockfile makes; tried 5 × 40 ms, never taken
+    over) a re-read, the key set (`projects` and the entry created when
+    missing), and an atomic replace (temp file beside the real one — a
+    symlinked config keeps its link — with its permissions, then a rename).
+    serde_json's `preserve_order` + `float_roundtrip` and the CLI's own layout
+    (two-space indent, the original's trailing newline or none) write every
+    other key back byte for byte. Never created: a missing file means the CLI
+    never ran with that config (or Podium resolved another one), and the CLI
+    restores a missing config from its backups, which a file holding only
+    Podium's key would pre-empt. A missing file, malformed JSON, an
+    unexpected shape, a held lock or a failed write leaves the file alone and
+    logs a warn without content; a start never fails on it. **WSL-backend
+    mode** skips it (the CLI's config is inside the distro); there, and
+    whenever the write did not happen, the detection below still applies.
+    *Fallback detection:* for `trust_window` (30 s) after a start Podium
+    watches its output (`shows_trust_prompt`: header, "Yes, I trust this
+    folder" and "No, exit", no permission prompt, session not yet started)
+    and reports it like a prompt seen on screen (`report_agent_waiting`), so
+    proactivity raises it at once. Podium never answers it: the dialog
+    focuses "No, exit" and ignores an early keypress, an Enter would end the
+    session. The stuck-sub-agent nudge says the user answers it once, from
+    the sub-agent list.
+  - **Proactivity.** A sub-agent exit is not announced as an agent that
+    "finished" (`is_subagent` early return); a stuck one (prompt, silence,
+    escalation) gets its own wording (`stuck_subagent_text`): no project, no
+    `respawn_agent` (refused for sub-agents) — stop it and start a fresh
+    `spawn_subagent` carrying the answer; the user can answer in its terminal.
+    `processes_with_subagents` feeds the dedupe so stuck reports don't restart
+    from scratch.
+  - **Visibility.** `ProcessInfo.subagent` (`SubagentMeta { kind, task, phase,
+    endedAt? }`) is set by `process_info_in`/`process_info`. `process_list` /
+    `list_processes` never return them (`list_subagents` /
+    `assistant_subagents_list` do, oldest first, as `SubagentInfo`), but
+    `process:added/updated/status/removed` events still fire for them with the
+    internal project id, and `process_attach`/`process_write`/`get_process_*`
+    work on their ids. `start_process`/`restart_process`/`remove_process`/
+    `respawn_agent` are refused (Podium starts a queued one and removes ended
+    ones itself). Every change publishes a full `subagentsChanged` snapshot
+    (never recorded). The quit guard (`has_active_agents_or_terminals`) counts
+    queued and running ones, and `shutdown()` stops them. `verify_sender`
+    answers `{ fleet: true, kind: "subagent", session }` for one — no project,
+    and no process id an agent could act on.
 
   **Memory** is a separate `assistant-memory.md` in the same dir: free-form
   markdown appended to the identity prompt at spawn under `# Your memory`, so
@@ -1372,7 +1619,9 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | `bool` — delivered, not queued (reply streams as `assistant:event`) |
 | `assistant_day_start`   | –                                           | `bool` — as `assistant_send` |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
-| `assistant_new_conversation` | –                                      | –                 |
+| `assistant_new_conversation` | `{ stopSubagents }` (false = sub-agents keep running into the new conversation) | – |
+| `assistant_subagents_list` | –                                         | `SubagentInfo[]` (oldest first; changes stream as `subagentsChanged`) |
+| `assistant_subagent_stop` | `{ id }` (process id; ungated user stop, queued = cancelled; the assistant is told) | –   |
 | `assistant_memory_get`  | –                                           | `string`          |
 | `assistant_memory_set`  | `{ content }` (blank clears)                | –                 |
 | `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
@@ -1489,7 +1738,42 @@ credential request (`sudo` password, ssh passphrase) reads as **"needs
 input"** instead — that half still reads the xterm viewport, so it needs an
 opened terminal — derived for **every** running process, not just agents, so
 a terminal stalled on `sudo` surfaces the same way; non-agents only show that
-state ("working…"/"idle" is noise for a plain shell).
+state ("working…"/"idle" is noise for a plain shell). The monitor also
+covers the assistant's sub-agents, which are never in `processStore`:
+`agentActivityStore` adds the running ones from `assistantStore.subagents`
+(through `subagentProcess`) to its input, so one stuck on a prompt is reported
+at once — **once its terminal has been opened** (the prompt is read off the
+xterm viewport). A sub-agent whose terminal was never opened is caught by the
+backend's 5-minute silence timer instead; only its folder-trust dialog the
+backend spots on its own (see _Sub-agents_).
+
+**Sub-agents (frontend).** `SubagentsSection` (rendered by `AssistantPane`
+above the chat log, hidden when empty; collapsible) lists
+`assistantStore.subagents` — loaded in `App.tsx` at startup (the activity
+monitor and quit warning need it with the panel closed), kept current by
+`subagentsChanged` snapshots plus `applySubagentStatus` from `process:status`
+in between. The store also drops an ended row at its `expiresAt` by itself
+(`pruneExpiredSubagents`, one timer re-armed on every list change), and
+`App.tsx` re-pulls the list on window focus / `visibilitychange`, so the panel
+never waits on a snapshot a hidden webview was slow to run. Per row name/task, kind, a live elapsed clock and phase (the
+result or error is only the phase label's tooltip, never a line of the row); stop (`assistant_subagent_stop`, its click does not propagate) while
+queued/running. The row's name/task area itself opens a started one
+(`role="button"`, Enter/Space, a focus outline; a queued one is not
+clickable) — there is no separate open button. A `waiting` row reads
+"Needs input" (warning colour, the question as the phase tooltip), counts in
+the header summary (`N needs input`) and stays live (stop, open, ticking
+clock, `isSubagentLive`, `TerminalPane`'s stop, the quit warning's "needs
+input" tag). Open =
+`layoutStore.openSubagent` (`openSubagentInWorkArea`):
+fills the work area with a `TerminalPane` on a synthesized process, exclusive
+with the focused process, to-do, scratchpad and board (a sub-agent is never in
+the process store, so it cannot use that focus); the pane shows an "Assistant
+sub-agent · kind" label and a stop button, and its stop goes through the
+sub-agent path. `CloseWarningModal` lists live sub-agents (queued marked)
+beside processes. **Settings → Assistant**'s reset: with live sub-agents the
+button shows an inline Keep running / Stop them / Cancel choice before calling
+`assistant_new_conversation { stopSubagents }`; the choice is withdrawn when the
+live count drops to 0 while it is open, and the next Reset just resets.
 
 `notifyAgentWaiting` (`src/lib/notify.ts`) has a sibling, `notifyAssistant`,
 for the same toast+OS-notification+sound treatment on the personal assistant.
