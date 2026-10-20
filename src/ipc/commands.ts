@@ -37,6 +37,7 @@ import type {
   ResponseItem,
   ScratchpadId,
   ScratchpadInfo,
+  SubagentInfo,
   TermEvent,
   TodoId,
   TodoInfo,
@@ -384,6 +385,20 @@ export function agentSettingsSetRememberSessions(
   return invoke("agent_settings_set_remember_sessions", { enabled });
 }
 
+/** Longest delay the core accepts for removing exited agents (a day). */
+export const MAX_REMOVE_EXITED_AFTER_MINUTES = 24 * 60;
+
+/**
+ * Set how many minutes an exited agent stays in the list before it is
+ * removed automatically (0 = never, at most a day). Returns the refreshed
+ * settings.
+ */
+export function agentSettingsSetRemoveExitedAfter(
+  minutes: number,
+): Promise<AgentSettingsDto> {
+  return invoke("agent_settings_set_remove_exited_after", { minutes });
+}
+
 // ---------------------------------------------------------------------------
 // Worktrees
 // ---------------------------------------------------------------------------
@@ -705,10 +720,21 @@ export function assistantDayStart(): Promise<boolean> {
 
 /**
  * Drop the conversation (session, transcript and pending proposals) and start
- * fresh. The assistant's memory is kept.
+ * fresh. The assistant's memory is kept, and so are its sub-agents unless
+ * `stopSubagents` (their results then go to the new conversation).
  */
-export function assistantNewConversation(): Promise<void> {
-  return invoke("assistant_new_conversation");
+export function assistantNewConversation(stopSubagents = false): Promise<void> {
+  return invoke("assistant_new_conversation", { stopSubagents });
+}
+
+/** The assistant's sub-agents, oldest first. */
+export function assistantSubagentsList(): Promise<SubagentInfo[]> {
+  return invoke("assistant_subagents_list");
+}
+
+/** Stop (or, while queued, cancel) one sub-agent — the user's own click. */
+export function assistantSubagentStop(id: ProcessId): Promise<void> {
+  return invoke("assistant_subagent_stop", { id });
 }
 
 /** What the assistant remembers across conversations (markdown, may be ""). */

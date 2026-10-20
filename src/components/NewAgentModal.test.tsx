@@ -44,6 +44,7 @@ const SETTINGS: AgentSettingsDto = {
   defaultAdapter: "claude-code",
   suggestWorktree: true,
   rememberSessions: false,
+  removeExitedAfterMinutes: 5,
   adapters: [],
 };
 

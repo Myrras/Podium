@@ -188,6 +188,20 @@ pub fn run() {
                     cwd: Some(app.path().app_data_dir()?),
                     data_dir: Some(app.path().app_data_dir()?),
                 });
+            // The assistant's sub-agents run in a folder of Podium's own, not
+            // in one of the user's projects. Without it the assistant simply
+            // cannot start sub-agents, so a failure is logged, not fatal.
+            // Claude Code's folder trust for it is pre-accepted in the user's
+            // Claude Code config, so no sub-agent waits on that dialog.
+            state
+                .orchestrator
+                .set_claude_config(podium_core::agent::folder_trust::claude_global_config());
+            if let Err(e) = state
+                .orchestrator
+                .set_assistant_workspace(app.path().app_data_dir()?.join("assistant-workspace"))
+            {
+                tracing::warn!("could not set up the assistant workspace: {e}");
+            }
             // Every launch starts the assistant on a blank conversation: the
             // panel's day-start button is the way back in, and a transcript
             // replayed from days ago is mostly noise. `assistant-memory.md`
@@ -198,7 +212,8 @@ pub fn run() {
             // the frontend asks for the transcript — a task racing that call
             // would replay the old conversation into a fresh panel. There is
             // no session to kill this early, so this only rewrites one file.
-            tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation());
+            // Nothing runs yet, so there are no sub-agents to keep or stop.
+            tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation(false));
             // Watch the workspace on the assistant's behalf: an agent that
             // finished or crashed, one that looks stuck and lingering to-dos
             // become chat nudges — each starting the assistant's CLI if it is
@@ -214,6 +229,16 @@ pub fn run() {
                 podium_core::proactivity::spawn(
                     &orchestrator,
                     podium_core::ProactivityConfig::default(),
+                );
+            });
+            // Remove agents that have been exited for the configured time
+            // (Settings → Agents, default 5 minutes, 0 = never). Same reason
+            // as above for spawning it from inside the runtime.
+            let orchestrator = Arc::clone(&state.orchestrator);
+            tauri::async_runtime::spawn(async move {
+                podium_core::agent::cleanup::spawn(
+                    &orchestrator,
+                    podium_core::AgentCleanupConfig::default(),
                 );
             });
             // Start the built-in MCP server (ephemeral localhost port, per-run
@@ -286,6 +311,8 @@ pub fn run() {
             commands::assistant::assistant_responses_list,
             commands::assistant::assistant_response_dismiss,
             commands::assistant::assistant_response_reply,
+            commands::assistant::assistant_subagents_list,
+            commands::assistant::assistant_subagent_stop,
             commands::backend::backend_settings_get,
             commands::backend::backend_settings_set_wsl_distro,
             commands::backend::backend_settings_set_native_drive_projects,
@@ -298,6 +325,7 @@ pub fn run() {
             commands::agent::agent_settings_set_merge_mode,
             commands::agent::agent_settings_set_suggest_worktree,
             commands::agent::agent_settings_set_remember_sessions,
+            commands::agent::agent_settings_set_remove_exited_after,
             commands::mcp::mcp_status,
             commands::mcp::mcp_clients_status,
             commands::mcp::mcp_client_install,

@@ -25,9 +25,11 @@ pub mod process;
 pub mod project;
 pub mod responses;
 pub mod scratchpad;
+pub mod subagent;
 pub mod todo;
 pub mod worktree;
 
+pub use agent::cleanup::AgentCleanupConfig;
 pub use agent::settings::{AdapterOverride, AgentSettings, MergeMode};
 pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, LiveProcess,
@@ -56,5 +58,8 @@ pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartP
 pub use project::ProjectSections;
 pub use responses::{LabelledResponse, ResponseItem, ResponseKind};
 pub use scratchpad::ScratchpadInfo;
+pub use subagent::{
+    SubagentConfig, SubagentInfo, SubagentKind, SubagentMeta, SubagentPhase, SubagentSpawned,
+};
 pub use todo::{TodoComment, TodoInfo, TodoLink};
 pub use worktree::WorktreeInfo;

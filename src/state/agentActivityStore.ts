@@ -35,7 +35,9 @@ import {
   processReportWaiting,
 } from "../ipc/commands";
 import { notifyAgentWaiting } from "../lib/notify";
+import { subagentProcess } from "../lib/subagents";
 import { readViewportText } from "../lib/terminalRegistry";
+import { useAssistantStore } from "./assistantStore";
 import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 
@@ -95,12 +97,16 @@ function viewedProcessId(): ProcessId | null {
   ) {
     return null;
   }
+  // A sub-agent's terminal is opened through the layout store, not the
+  // process store's focus (it is never in that store).
+  if (layout.openSubagent !== null) return layout.openSubagent;
   return useProcessStore.getState().activeProcessId;
 }
 
 /**
  * The agent the user is looking at right now, or `null` (another view, a
- * non-agent process, or the window is not in front). The one definition of
+ * non-agent process, one of the assistant's sub-agents — never in the process
+ * store — or the window is not in front). The one definition of
  * "viewing": the activity monitor reports it to the backend so the assistant
  * stays quiet about that agent, and the assistant store skips its desktop
  * ping for it.
@@ -151,7 +157,16 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   shells: {},
   notified: {},
   tick: (output) => {
-    const { processes } = useProcessStore.getState();
+    // The assistant's sub-agents are running agents too, but never in the
+    // process store — so add them, or a sub-agent stuck on a prompt would
+    // only surface through the backend's five-minute silence timer.
+    const processes = [
+      ...useProcessStore.getState().processes,
+      ...useAssistantStore
+        .getState()
+        .subagents.filter((a) => a.status.state === "running")
+        .map(subagentProcess),
+    ];
     const prev = get().activity;
     const prevNotified = get().notified;
     const next: Record<string, AgentActivity> = {};

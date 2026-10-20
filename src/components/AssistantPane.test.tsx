@@ -169,11 +169,13 @@ describe("AssistantPane", () => {
     });
 
     expect(screen.getByText("Two")).toBeInTheDocument();
-    // The action card names the action, without its MCP plumbing.
-    expect(screen.getByText("list processes")).toBeInTheDocument();
-    expect(
-      screen.getByText("That action failed: to-do not found"),
-    ).toBeInTheDocument();
+    // The action and its failure fold into one line; the action is named
+    // without its MCP plumbing and the error is only a hover.
+    expect(screen.getByText("Podium · list processes")).toBeInTheDocument();
+    expect(screen.getByText("Ran 1 action · Podium ⚠ 1")).toBeInTheDocument();
+    expect(screen.getByTitle("to-do not found")).toHaveTextContent(
+      "⚠ action failed: to-do not found",
+    );
     expect(
       screen.getByText("The turn failed: error_max_turns"),
     ).toBeInTheDocument();
@@ -256,7 +258,430 @@ describe("AssistantPane", () => {
         .getState()
         .apply({ type: "tool", name: "mcp__podium__list_todos" });
     });
-    expect(screen.getByRole("status")).toHaveTextContent("list todos…");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Podium · list todos…",
+    );
+  });
+
+  it("labels an MCP tool by its server, even when the server name holds underscores", () => {
+    render(<AssistantPane />);
+    act(() => {
+      useAssistantStore.getState().apply({
+        type: "tool",
+        name: "mcp__claude_ai_Slack__slack_read_channel",
+      });
+      useAssistantStore.getState().apply({
+        type: "tool",
+        name: "mcp__claude_ai_Microsoft_365__outlook_email_search",
+      });
+    });
+    expect(screen.getByText("Slack · slack read channel")).toBeInTheDocument();
+    expect(
+      screen.getByText("Microsoft 365 · outlook email search"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Ran 2 actions · Slack, Microsoft 365"),
+    ).toBeInTheDocument();
+  });
+
+  describe("folded activity", () => {
+    const apply = (
+      e: Parameters<ReturnType<typeof useAssistantStore.getState>["apply"]>[0],
+    ) => act(() => useAssistantStore.getState().apply(e));
+
+    it("folds a run into one collapsed line with counts, top servers and failures", () => {
+      render(<AssistantPane />);
+      for (const name of [
+        "mcp__claude_ai_Slack__slack_read_channel",
+        "mcp__claude_ai_Slack__slack_read_channel",
+        "mcp__podium__list_todos",
+        "mcp__claude_ai_Notion__notion_search",
+        "mcp__claude_ai_Linear__list_issues",
+        "Agent",
+      ]) {
+        apply({ type: "tool", name });
+      }
+      apply({ type: "toolFailed", message: "channel_not_found" });
+
+      const summary = screen.getByText(
+        "Ran 6 actions · Slack, Podium, Notion, +2 ⚠ 1",
+      );
+      const details = summary.closest("details") as HTMLDetailsElement;
+      expect(details.open).toBe(false);
+      expect(document.querySelectorAll("details")).toHaveLength(1);
+      // Distinct labels once each, with a count when repeated.
+      expect(details).toHaveTextContent("Slack · slack read channel ×2");
+      expect(details).toHaveTextContent("Podium · list todos");
+      expect(screen.getByTitle("channel_not_found")).toBeInTheDocument();
+    });
+
+    it("starts a new run after prose", () => {
+      render(<AssistantPane />);
+      apply({ type: "tool", name: "Agent" });
+      apply({ type: "message", text: "Working on it" });
+      apply({ type: "tool", name: "ToolSearch" });
+      expect(document.querySelectorAll("details")).toHaveLength(2);
+      expect(screen.getByText("Ran 1 action · Agent")).toBeInTheDocument();
+      expect(screen.getByText("Ran 1 action · ToolSearch")).toBeInTheDocument();
+    });
+
+    it("reads a nudge-only run as Podium nudging, with ×n and the text on hover", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] first nudge" });
+      apply({ type: "notice", text: "[Podium] second nudge" });
+      const summary = screen.getByText("Podium nudged the assistant ×2");
+      expect(summary.title).toContain("first nudge");
+      expect(summary.title).toContain("second nudge");
+    });
+
+    it("renders a nudge-only run as a plain line, not a disclosure", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] first nudge" });
+      expect(document.querySelector("details")).toBeNull();
+      expect(screen.getByText("Podium nudged the assistant")).toHaveAttribute(
+        "data-podium",
+        "true",
+      );
+    });
+
+    it("counts the nudges in an opened mixed run like tools", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] first nudge" });
+      apply({ type: "notice", text: "[Podium] second nudge" });
+      apply({ type: "tool", name: "Agent" });
+      const item = screen.getByText("Podium nudged the assistant ×2");
+      expect(item.tagName).toBe("LI");
+      expect(item.title).toContain("first nudge");
+      expect(item.title).toContain("second nudge");
+    });
+
+    it("marks a run holding a nudge as Podium's own and prefixes its summary", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] sweep" });
+      apply({ type: "tool", name: "mcp__claude_ai_Slack__slack_read_channel" });
+      const summary = screen.getByText("Podium check · Ran 1 action · Slack");
+      expect(summary.closest("details")).toHaveAttribute("data-podium", "true");
+    });
+
+    it("keeps a user turn's actions out of a following nudge's run", () => {
+      render(<AssistantPane />);
+      // An interrupted turn: actions, no prose, then Podium speaks.
+      apply({ type: "tool", name: "Agent" });
+      apply({ type: "notice", text: "[Podium] sweep" });
+      apply({ type: "tool", name: "mcp__claude_ai_Slack__slack_read_channel" });
+      apply({ type: "notice", text: "[Podium] sweep again" });
+      const runs = document.querySelectorAll("details");
+      // The plain run stays plain; the nudge, its action and the next nudge
+      // share one faint run.
+      expect(runs).toHaveLength(2);
+      expect(runs[0]).not.toHaveAttribute("data-podium");
+      expect(screen.getByText("Ran 1 action · Agent")).toBeInTheDocument();
+      expect(runs[1]).toHaveAttribute("data-podium", "true");
+      expect(runs[1]).toHaveTextContent("Podium check · Ran 1 action · Slack");
+    });
+
+    it("leaves a plain run unmarked", () => {
+      render(<AssistantPane />);
+      apply({ type: "tool", name: "Agent" });
+      expect(document.querySelector("details")).not.toHaveAttribute(
+        "data-podium",
+      );
+    });
+
+    it("replays stored failures as part of the run", async () => {
+      vi.mocked(assistantTranscript).mockResolvedValue([
+        { role: "tool", text: "Agent", at: "2026-01-02T09:00:00Z" },
+        { role: "toolFailed", text: "boom", at: "2026-01-02T09:00:01Z" },
+      ]);
+      render(<AssistantPane />);
+      expect(
+        await screen.findByText("Ran 1 action · Agent ⚠ 1"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows a failed turn's reason after 'The turn failed:'", () => {
+      render(<AssistantPane />);
+      apply({
+        type: "turnEnd",
+        error: "Usage limit reached: resumes at 15:00",
+      });
+      expect(
+        screen.getByText(
+          "The turn failed: Usage limit reached: resumes at 15:00",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps 'Start my day' while the transcript holds only activity rows", () => {
+      render(<AssistantPane />);
+      apply({ type: "notice", text: "[Podium] sweep" });
+      apply({ type: "tool", name: "Agent" });
+      expect(screen.getByLabelText("Start my day")).toBeInTheDocument();
+      apply({ type: "message", text: "hello" });
+      expect(screen.queryByLabelText("Start my day")).toBeNull();
+    });
+
+    it("splits an action name on the first '__' and collapses '_' runs", () => {
+      render(<AssistantPane />);
+      apply({
+        type: "tool",
+        name: "mcp__claude_ai_Notion__pages__search",
+      });
+      expect(screen.getByText("Ran 1 action · Notion")).toBeInTheDocument();
+      expect(
+        screen.getByText("Notion · pages search", { exact: false }),
+      ).toBeInTheDocument();
+    });
+
+    it("caps a long multi-line failure reason", () => {
+      render(<AssistantPane />);
+      apply({
+        type: "turnEnd",
+        error: `{\n  "detail": "${"x ".repeat(400)}"\n}`,
+      });
+      const text = screen.getByText(/^The turn failed: /).textContent ?? "";
+      expect(text.length).toBeLessThanOrEqual(330);
+      expect(text).not.toContain("\n");
+      expect(text.endsWith("…")).toBe(true);
+    });
+
+    it("summarises a run of only failures as '⚠ n failed'", () => {
+      render(<AssistantPane />);
+      apply({ type: "toolFailed", message: "boom" });
+      apply({ type: "toolFailed", message: "bang" });
+      expect(screen.getByText("⚠ 2 failed")).toBeInTheDocument();
+    });
+
+    it("flattens a multi-line failure in its tooltip", () => {
+      render(<AssistantPane />);
+      apply({ type: "toolFailed", message: "line one\n\nline two" });
+      expect(screen.getByTitle("line one line two")).toBeInTheDocument();
+    });
+
+    it("clips a huge failure to a one-line preview, full text in the title", () => {
+      render(<AssistantPane />);
+      const long = `${"word ".repeat(100)}end`;
+      apply({ type: "toolFailed", message: long });
+      const item = screen.getByTitle(long);
+      expect(item.textContent?.endsWith("…")).toBe(true);
+      expect(item.textContent!.length).toBeLessThan(120);
+    });
+  });
+
+  describe("following the tail", () => {
+    // jsdom does no layout: stub the geometry the follow logic reads.
+    function stubLog(log: HTMLElement, scrollTop: number) {
+      let top = scrollTop;
+      Object.defineProperty(log, "scrollHeight", {
+        configurable: true,
+        get: () => 1000,
+      });
+      Object.defineProperty(log, "clientHeight", {
+        configurable: true,
+        get: () => 300,
+      });
+      Object.defineProperty(log, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => {
+          top = v;
+        },
+      });
+      return () => top;
+    }
+    const logOf = () =>
+      document.querySelector(`.${styles.log}`) as HTMLDivElement;
+
+    it("does not yank a reader who scrolled up, and offers a pill instead", () => {
+      render(<AssistantPane />);
+      const top = stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      expect(top()).toBe(100);
+      expect(
+        screen.getByRole("button", { name: "New activity ↓" }),
+      ).toBeInTheDocument();
+    });
+
+    it("jumps to the bottom from the pill and hides it", async () => {
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const top = stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      await user.click(screen.getByRole("button", { name: "New activity ↓" }));
+      expect(top()).toBe(1000);
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("hides the pill when the user scrolls to the bottom by hand", () => {
+      render(<AssistantPane />);
+      const log = logOf();
+      stubLog(log, 100);
+      fireEvent.scroll(log);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      stubLog(log, 700);
+      fireEvent.scroll(log);
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("follows the tail while at the bottom", () => {
+      render(<AssistantPane />);
+      const top = stubLog(logOf(), 700);
+      fireEvent.scroll(logOf());
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      expect(top()).toBe(1000);
+    });
+
+    it("shows no pill when only the busy flag changes", () => {
+      render(<AssistantPane />);
+      stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      act(() => useAssistantStore.setState({ busy: true }));
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps a pinned reader at the bottom when a folded run opens", () => {
+      render(<AssistantPane />);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "tool", name: "Agent" }),
+      );
+      const log = logOf();
+      const top = stubLog(log, 700);
+      fireEvent.scroll(log);
+      // The list grows below the viewport: no scroll event, just a toggle.
+      fireEvent(
+        document.querySelector("details") as HTMLDetailsElement,
+        new Event("toggle"),
+      );
+      expect(top()).toBe(1000);
+      // Still following: the next reply is not announced by a pill.
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("leaves a reader who scrolled up alone when a run opens", () => {
+      render(<AssistantPane />);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "tool", name: "Agent" }),
+      );
+      const log = logOf();
+      const top = stubLog(log, 100);
+      fireEvent.scroll(log);
+      fireEvent(
+        document.querySelector("details") as HTMLDetailsElement,
+        new Event("toggle"),
+      );
+      expect(top()).toBe(100);
+    });
+
+    it("does not scroll down when an earlier run opens", () => {
+      render(<AssistantPane />);
+      act(() => {
+        const { apply } = useAssistantStore.getState();
+        apply({ type: "tool", name: "Agent" });
+        apply({ type: "message", text: "between" });
+        apply({ type: "tool", name: "Agent" });
+      });
+      const log = logOf();
+      const top = stubLog(log, 700);
+      fireEvent.scroll(log);
+      fireEvent(
+        document.querySelectorAll("details")[0] as HTMLDetailsElement,
+        new Event("toggle"),
+      );
+      expect(top()).toBe(700);
+    });
+
+    it("re-pins to the bottom when the transcript shrinks", () => {
+      render(<AssistantPane />);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "hi" }),
+      );
+      const log = logOf();
+      const top = stubLog(log, 100);
+      fireEvent.scroll(log);
+      act(() => useAssistantStore.setState({ messages: [] }));
+      expect(top()).toBe(1000);
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "new" }),
+      );
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("offers no pill for new actions or nudges alone", () => {
+      render(<AssistantPane />);
+      stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      act(() => {
+        const { apply } = useAssistantStore.getState();
+        apply({ type: "tool", name: "Agent" });
+        apply({ type: "toolFailed", message: "boom" });
+        apply({ type: "notice", text: "[Podium] sweep" });
+      });
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("clears the pill when the transcript is emptied", () => {
+      render(<AssistantPane />);
+      stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      act(() =>
+        useAssistantStore.getState().apply({ type: "message", text: "more" }),
+      );
+      expect(
+        screen.getByRole("button", { name: "New activity ↓" }),
+      ).toBeInTheDocument();
+      act(() => useAssistantStore.setState({ messages: [] }));
+      expect(
+        screen.queryByRole("button", { name: "New activity ↓" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("'Start my day' jumps to the bottom directly", async () => {
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const top = stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      await user.click(screen.getByLabelText("Start my day"));
+      expect(top()).toBe(1000);
+    });
+
+    it("sending a message always jumps to the bottom", async () => {
+      const user = userEvent.setup();
+      render(<AssistantPane />);
+      const top = stubLog(logOf(), 100);
+      fireEvent.scroll(logOf());
+      await user.type(screen.getByLabelText("Message the assistant"), "hi");
+      await user.click(screen.getByLabelText("Send"));
+      expect(top()).toBe(1000);
+    });
   });
 
   it("reports a failed send in the log instead of losing it", async () => {
@@ -367,7 +792,7 @@ describe("AssistantPane", () => {
 
       expect(await screen.findByText("what is open?")).toBeInTheDocument();
       expect(screen.getByText("Two to-dos.")).toBeInTheDocument();
-      expect(screen.getByText("list todos")).toBeInTheDocument();
+      expect(screen.getByText("Ran 1 action · list todos")).toBeInTheDocument();
     });
 
     it("demotes a replayed nudge just like a live one", async () => {

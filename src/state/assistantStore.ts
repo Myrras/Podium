@@ -32,6 +32,8 @@ import {
   assistantResponseReply,
   assistantResponsesList,
   assistantSend,
+  assistantSubagentStop,
+  assistantSubagentsList,
   assistantTranscript,
   toIpcError,
 } from "../ipc/commands";
@@ -40,10 +42,14 @@ import type {
   AssistantEvent,
   AutonomyMode,
   PollingSettings,
+  ProcessId,
+  ProcessStatus,
   QueuedMessage,
   ResponseItem,
+  SubagentInfo,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
+import { textPreview } from "../lib/textPreview";
 import { viewedAgentId } from "./agentActivityStore";
 import { useLayoutStore } from "./layoutStore";
 
@@ -62,6 +68,13 @@ export type ChatRole =
   | "assistant"
   | "tool"
   | "notice"
+  /**
+   * An action that came back as an error; `text` is the raw error. The panel
+   * folds it into the run of action rows around it. Persisted under
+   * `TranscriptRole::ToolFailed` (rows from before that existed replay as
+   * plain notices).
+   */
+  | "toolFailed"
   | "proposal"
   /**
    * Podium spoke to the *assistant*, not the user — an internal nudge (an
@@ -85,6 +98,26 @@ export type ChatRole =
  * that started before one can tell its answer is stale.
  */
 let responsesSnapshotGen = 0;
+
+/** Same guard for `loadSubagents` against `subagentsChanged` snapshots. */
+let subagentsSnapshotGen = 0;
+
+/**
+ * The ended sub-agent rows that are past their `expiresAt` at `now`. The
+ * backend drops them itself and says so in a snapshot, but that snapshot can
+ * come late (a sleeping laptop, a webview held back while its window was
+ * hidden), so the store also lets them go on its own.
+ */
+function expiredSubagents(subagents: SubagentInfo[], now: number): Set<string> {
+  return new Set(
+    subagents
+      .filter((a) => a.expiresAt !== null && Date.parse(a.expiresAt) <= now)
+      .map((a) => a.id),
+  );
+}
+
+/** The one timer for the next row to expire (see `scheduleSubagentExpiry`). */
+let subagentExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Ids of every Responses item this app run has seen — in a snapshot or in
@@ -187,14 +220,30 @@ interface AssistantState {
   responses: ResponseItem[];
   /** Load the Responses list (on mount). */
   loadResponses: () => Promise<void>;
+  /**
+   * The assistant's sub-agents, oldest first — mirrors the backend via
+   * `subagentsChanged` snapshots, with `process:status` applied in between.
+   */
+  subagents: SubagentInfo[];
+  /** Load the sub-agent list (on app start). */
+  loadSubagents: () => Promise<void>;
+  /** Stop (or cancel, while queued) one sub-agent — no confirm, the user's click. */
+  stopSubagent: (id: ProcessId) => Promise<void>;
+  /** Event applier for `process:status` on a sub-agent's process. */
+  applySubagentStatus: (id: ProcessId, status: ProcessStatus) => void;
+  /** Drop the ended rows past their `expiresAt` (driven by its own timer). */
+  pruneExpiredSubagents: (now?: number) => void;
   /** Tick a Responses item off. */
   dismissResponse: (id: string) => Promise<void>;
   /** Reply to a Responses item; returns whether it was accepted. */
   replyResponse: (id: string, text: string) => Promise<boolean>;
   /** Replay the persisted transcript into the log (once, on mount). */
   hydrate: () => Promise<void>;
-  /** Drop the conversation and start over (memory is kept). */
-  newConversation: () => Promise<void>;
+  /**
+   * Drop the conversation and start over (memory is kept). Sub-agents keep
+   * running into the new conversation unless `stopSubagents`.
+   */
+  newConversation: (stopSubagents?: boolean) => Promise<void>;
   /** Load the stored memory (when the user opens the memory view). */
   loadMemory: () => Promise<void>;
   /** Replace the memory; `""` clears it. */
@@ -264,6 +313,44 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   hydrated: false,
   pending: [],
   responses: [],
+  subagents: [],
+  loadSubagents: async () => {
+    const gen = subagentsSnapshotGen;
+    try {
+      const subagents = await assistantSubagentsList();
+      // A snapshot that landed while this was in flight is newer.
+      if (gen === subagentsSnapshotGen) set({ subagents });
+    } catch {
+      // An empty list is a fine fallback; the next snapshot corrects it.
+    }
+  },
+  stopSubagent: async (id) => {
+    try {
+      // The phase change arrives as a `subagentsChanged` snapshot.
+      await assistantSubagentStop(id);
+    } catch (e) {
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  applySubagentStatus: (id, status) => {
+    if (!get().subagents.some((a) => a.id === id)) return;
+    set((s) => ({
+      subagents: s.subagents.map((a) => (a.id === id ? { ...a, status } : a)),
+    }));
+  },
+  pruneExpiredSubagents: (now = Date.now()) => {
+    const expired = expiredSubagents(get().subagents, now);
+    if (expired.size === 0) return;
+    // A row that dropped off takes its open terminal with it, as for a
+    // snapshot without it.
+    const layout = useLayoutStore.getState();
+    if (layout.openSubagent !== null && expired.has(layout.openSubagent)) {
+      layout.clearOpenSubagent();
+    }
+    set((s) => ({ subagents: s.subagents.filter((a) => !expired.has(a.id)) }));
+  },
   loadResponses: async () => {
     const gen = responsesSnapshotGen;
     try {
@@ -333,9 +420,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // An empty panel is a fine fallback — the conversation is still there.
     }
   },
-  newConversation: async () => {
+  newConversation: async (stopSubagents = false) => {
     try {
-      await assistantNewConversation();
+      await assistantNewConversation(stopSubagents);
       // The backend may have recorded an "undelivered messages" notice as
       // the first row of the now-otherwise-empty transcript (the queue is
       // dropped too, quietly — no `queueChanged` event is sent for it), so
@@ -381,8 +468,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // message gets a chat bubble, because a queued one already shows as a
       // waiting row via `queueChanged`. `busy` is not usable as a stand-in
       // here: a turn Podium started for itself (the external-sources poll, a
-      // nudge) publishes nothing the panel can see, so the panel reads as
-      // idle while the session is busy — and the bubble it added on that
+      // nudge) leaves a nudge row but publishes nothing that sets `busy` or
+      // marks the turn as the user's, so the panel reads as idle while the
+      // session is busy — and the bubble it added on that
       // guess put the same message on screen twice, once as sent and once as
       // waiting.
       if (await assistantSend(trimmed, attachments)) {
@@ -565,6 +653,17 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       responsesSnapshotGen++;
       notifyNewResponses(event.items);
     }
+    if (event.type === "subagentsChanged") {
+      subagentsSnapshotGen++;
+      // A sub-agent whose row dropped off takes its open terminal with it.
+      const layout = useLayoutStore.getState();
+      if (
+        layout.openSubagent !== null &&
+        !event.subagents.some((a) => a.id === layout.openSubagent)
+      ) {
+        layout.clearOpenSubagent();
+      }
+    }
     set((s) => {
       switch (event.type) {
         case "message":
@@ -584,10 +683,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           };
         case "toolFailed":
           return {
-            messages: [
-              ...s.messages,
-              message("notice", `That action failed: ${event.message}`),
-            ],
+            messages: [...s.messages, message("toolFailed", event.message)],
           };
         case "proposal":
           // No ping of its own: the backend files a "needs you" Responses
@@ -621,7 +717,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             messages: event.error
               ? [
                   ...s.messages,
-                  message("notice", `The turn failed: ${event.error}`),
+                  message(
+                    "notice",
+                    `The turn failed: ${textPreview(event.error, 300)}`,
+                  ),
                 ]
               : s.messages,
           };
@@ -663,7 +762,35 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           };
         case "responsesChanged":
           return { responses: event.items };
+        case "subagentsChanged":
+          return { subagents: event.subagents };
       }
     });
   },
 }));
+
+/**
+ * Keep one timer armed for the earliest `expiresAt` in the list, re-armed on
+ * every change to it, so an ended row leaves the panel about when the
+ * backend drops it — with no other event needed.
+ */
+function scheduleSubagentExpiry(subagents: SubagentInfo[]) {
+  if (subagentExpiryTimer !== null) clearTimeout(subagentExpiryTimer);
+  subagentExpiryTimer = null;
+  const next = Math.min(
+    ...subagents
+      .filter((a) => a.expiresAt !== null)
+      .map((a) => Date.parse(a.expiresAt as string)),
+  );
+  if (!Number.isFinite(next)) return;
+  subagentExpiryTimer = setTimeout(
+    () => useAssistantStore.getState().pruneExpiredSubagents(),
+    Math.max(0, next - Date.now()),
+  );
+}
+
+useAssistantStore.subscribe((state, prev) => {
+  if (state.subagents !== prev.subagents) {
+    scheduleSubagentExpiry(state.subagents);
+  }
+});

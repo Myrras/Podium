@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -49,6 +55,7 @@ const sampleDto: AgentSettingsDto = {
   defaultAdapter: "",
   suggestWorktree: true,
   rememberSessions: false,
+  removeExitedAfterMinutes: 5,
   adapters: [
     {
       id: "claude-code",
@@ -103,6 +110,11 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
     case "agent_settings_set_suggest_worktree":
     case "agent_settings_set_remember_sessions":
       return Promise.resolve(sampleDto);
+    case "agent_settings_set_remove_exited_after":
+      return Promise.resolve({
+        ...sampleDto,
+        removeExitedAfterMinutes: (args as { minutes: number }).minutes,
+      });
     case "issues_settings_get":
     case "issues_setup_save":
     case "issues_setup_remove":
@@ -167,6 +179,7 @@ vi.mock("@tauri-apps/plugin-log", () => ({
   warn: () => Promise.resolve(),
 }));
 
+import { useAssistantStore } from "../state/assistantStore";
 import { useIssueStore } from "../state/issueStore";
 import { SettingsModal } from "./SettingsModal";
 import { useSettingsStore } from "../state/settingsStore";
@@ -270,11 +283,88 @@ describe("SettingsModal — Agents tab", () => {
       ),
     );
   });
+
+  it("shows the exited-agent removal delay and saves it on blur, not per keystroke", async () => {
+    await openAgentsTab();
+    const field = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+    expect(field).toHaveValue(5); // default
+
+    fireEvent.change(field, { target: { value: "1" } });
+    fireEvent.change(field, { target: { value: "15" } });
+    expect(invoke).not.toHaveBeenCalledWith(
+      "agent_settings_set_remove_exited_after",
+      expect.anything(),
+    );
+
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remove_exited_after",
+        { minutes: 15 },
+      ),
+    );
+    expect(
+      invoke.mock.calls.filter(
+        ([cmd]) => cmd === "agent_settings_set_remove_exited_after",
+      ),
+    ).toHaveLength(1);
+    // The saved value comes back from the backend and stays in the field.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(
+          "Remove exited agents after, in minutes (0 = never)",
+        ),
+      ).toHaveValue(15),
+    );
+  });
+
+  it("saves 0 (never) on Enter and clamps to the bounds", async () => {
+    await openAgentsTab();
+    const field = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+
+    fireEvent.change(field, { target: { value: "0" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remove_exited_after",
+        { minutes: 0 },
+      ),
+    );
+
+    const again = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+    fireEvent.change(again, { target: { value: "99999" } });
+    fireEvent.blur(again);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remove_exited_after",
+        { minutes: 1440 },
+      ),
+    );
+  });
+
+  it("leaves an unchanged value unsaved", async () => {
+    await openAgentsTab();
+    const field = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+    fireEvent.blur(field);
+    expect(invoke).not.toHaveBeenCalledWith(
+      "agent_settings_set_remove_exited_after",
+      expect.anything(),
+    );
+  });
 });
 
 describe("SettingsModal — Assistant tab", () => {
   beforeEach(() => {
     invoke.mockClear();
+    useAssistantStore.setState({ subagents: [] });
   });
 
   it("saves the autonomy mode and the proactivity toggle", async () => {
@@ -349,12 +439,134 @@ describe("SettingsModal — Assistant tab", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Reset conversation" }),
     );
+    // No sub-agents running: nothing to ask.
+    expect(
+      screen.queryByRole("group", { name: "Sub-agents still running" }),
+    ).toBeNull();
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith(
-        "assistant_new_conversation",
-        undefined,
-      ),
+      expect(invoke).toHaveBeenCalledWith("assistant_new_conversation", {
+        stopSubagents: false,
+      }),
     );
+  });
+
+  describe("with sub-agents still running", () => {
+    beforeEach(() => {
+      useAssistantStore.setState({
+        subagents: [
+          {
+            id: "sub-1",
+            name: "Ticket check",
+            kind: "lookup",
+            task: "Ticket check",
+            phase: "running",
+            status: { state: "running", pid: 7, since: "2026-01-01T10:00:00Z" },
+            createdAt: "2026-01-01T10:00:00Z",
+            startedAt: "2026-01-01T10:00:00Z",
+            endedAt: null,
+            expiresAt: null,
+            result: null,
+            error: null,
+            question: null,
+          },
+          {
+            id: "sub-2",
+            name: "Repo sweep",
+            kind: "full",
+            task: "Repo sweep",
+            phase: "queued",
+            status: { state: "notStarted" },
+            createdAt: "2026-01-01T10:00:00Z",
+            startedAt: null,
+            endedAt: null,
+            expiresAt: null,
+            result: null,
+            error: null,
+            question: null,
+          },
+        ],
+      });
+    });
+
+    async function askReset() {
+      render(<SettingsModal open onClose={() => undefined} />);
+      fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Reset conversation" }),
+      );
+      const question = screen.getByRole("group", {
+        name: "Sub-agents still running",
+      });
+      expect(question).toHaveTextContent(
+        "2 sub-agents are still running or queued.",
+      );
+      // Nothing is reset before the user picks.
+      expect(invoke).not.toHaveBeenCalledWith(
+        "assistant_new_conversation",
+        expect.anything(),
+      );
+    }
+
+    it("keeps them running", async () => {
+      await askReset();
+      fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("assistant_new_conversation", {
+          stopSubagents: false,
+        }),
+      );
+      expect(
+        screen.queryByRole("group", { name: "Sub-agents still running" }),
+      ).toBeNull();
+    });
+
+    it("stops them", async () => {
+      await askReset();
+      fireEvent.click(screen.getByRole("button", { name: "Stop them" }));
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("assistant_new_conversation", {
+          stopSubagents: true,
+        }),
+      );
+    });
+
+    it("withdraws the question once no sub-agent is live any more", async () => {
+      await askReset();
+      act(() => {
+        const ended = useAssistantStore
+          .getState()
+          .subagents.map((s) => ({ ...s, phase: "done" as const }));
+        useAssistantStore.setState({ subagents: ended });
+      });
+      expect(
+        screen.queryByRole("group", { name: "Sub-agents still running" }),
+      ).toBeNull();
+      expect(invoke).not.toHaveBeenCalledWith(
+        "assistant_new_conversation",
+        expect.anything(),
+      );
+      // The next reset just resets.
+      fireEvent.click(
+        screen.getByRole("button", { name: "Reset conversation" }),
+      );
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("assistant_new_conversation", {
+          stopSubagents: false,
+        }),
+      );
+    });
+
+    it("cancels without resetting", async () => {
+      await askReset();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(
+        screen.queryByRole("group", { name: "Sub-agents still running" }),
+      ).toBeNull();
+      expect(invoke).not.toHaveBeenCalledWith(
+        "assistant_new_conversation",
+        expect.anything(),
+      );
+    });
   });
 });
 

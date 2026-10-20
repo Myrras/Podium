@@ -1,8 +1,8 @@
 /**
  * App settings dialog with four tabs: General (appearance, terminal, and on
  * Windows the WSL backend), Agents
- * (per-adapter command override + default arguments, plus the argument merge
- * mode), Assistant (autonomy mode, proactive nudges, external polling), and
+ * (per-adapter command override + default arguments, the argument merge
+ * mode, and when exited agents are removed), Assistant (autonomy mode, proactive nudges, external polling), and
  * MCP (one-click registration of the stdio bridge with external clients like
  * Claude Code and Auggie).
  */
@@ -20,6 +20,7 @@ import { useAssistantStore } from "../state/assistantStore";
 import { useIssueStore } from "../state/issueStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
 import { isWindows } from "../lib/platform";
+import { isSubagentLive } from "../lib/subagents";
 import {
   agentSettingsGet,
   agentSettingsSetAdapter,
@@ -27,6 +28,8 @@ import {
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
   agentSettingsSetRememberSessions,
+  agentSettingsSetRemoveExitedAfter,
+  MAX_REMOVE_EXITED_AFTER_MINUTES,
   backendSettingsGet,
   backendSettingsSetNativeDriveProjects,
   backendSettingsSetWslDistro,
@@ -309,6 +312,22 @@ function AssistantTab() {
   const setPolling = useAssistantStore((s) => s.setPolling);
   const loadPolling = useAssistantStore((s) => s.loadPolling);
   const newConversation = useAssistantStore((s) => s.newConversation);
+  // Queued or running sub-agents make a reset a question: their results
+  // would go to the new conversation, which may not be what the user wants.
+  const liveSubagents = useAssistantStore(
+    (s) => s.subagents.filter(isSubagentLive).length,
+  );
+  const [askKeep, setAskKeep] = useState(false);
+  // The question only stands while there is something to keep: once the last
+  // one ends (or is stopped from the panel) it is withdrawn, and the next
+  // Reset simply resets. Adjusted during render, not in an effect, so the
+  // box never shows a count of zero.
+  if (askKeep && liveSubagents === 0) setAskKeep(false);
+
+  function reset(stopSubagents: boolean) {
+    setAskKeep(false);
+    void newConversation(stopSubagents);
+  }
 
   useEffect(() => {
     void loadAutonomy();
@@ -395,9 +414,45 @@ function AssistantTab() {
           Day to day you stay in the one ongoing session. Resetting starts a
           fresh conversation; the assistant&apos;s memory is kept.
         </small>
-        <button type="button" onClick={() => void newConversation()}>
+        <button
+          type="button"
+          onClick={() => (liveSubagents > 0 ? setAskKeep(true) : reset(false))}
+        >
           Reset conversation
         </button>
+        {askKeep && (
+          <div
+            className={styles.confirmBox}
+            role="group"
+            aria-label="Sub-agents still running"
+          >
+            <p className={styles.confirmText}>
+              {liveSubagents === 1
+                ? "A sub-agent is still running or queued."
+                : `${liveSubagents} sub-agents are still running or queued.`}{" "}
+              Kept, they report into the new conversation.
+            </p>
+            <div className={styles.editActions}>
+              <button type="button" onClick={() => setAskKeep(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => reset(true)}
+              >
+                Stop them
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => reset(false)}
+              >
+                Keep running
+              </button>
+            </div>
+          </div>
+        )}
       </section>
     </>
   );
@@ -657,6 +712,7 @@ function AgentsTab() {
             defaultAdapter: "",
             suggestWorktree: true,
             rememberSessions: false,
+            removeExitedAfterMinutes: 5,
             adapters: [],
           });
       });
@@ -794,6 +850,33 @@ function AgentsTab() {
       </section>
 
       <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Exited agents</h3>
+        <small className={styles.rowHelp}>
+          An agent that finished, crashed or was stopped leaves the list this
+          long after its last exit, with its terminal and its to-do links. A
+          restart in the meantime keeps it. Terminals and services stay.
+        </small>
+        <RemoveExitedAfterField
+          // Keyed on the saved value so the draft follows it after a save.
+          key={data.removeExitedAfterMinutes}
+          value={data.removeExitedAfterMinutes}
+          onSave={(minutes) => {
+            const previous = data;
+            setData({ ...data, removeExitedAfterMinutes: minutes });
+            agentSettingsSetRemoveExitedAfter(minutes)
+              .then(setData)
+              .catch((err) => {
+                setData(previous);
+                toastError(
+                  "Could not save the exited-agent setting",
+                  toIpcError(err).message,
+                );
+              });
+          }}
+        />
+      </section>
+
+      <section className={styles.section}>
         <h3 className={styles.sectionLabel}>Agents</h3>
         <small className={styles.rowHelp}>
           Set a command override and default arguments applied whenever an agent
@@ -812,6 +895,49 @@ function AgentsTab() {
         )}
       </section>
     </>
+  );
+}
+
+/**
+ * Minutes after which an exited agent is removed (0 = never). Saved on blur
+ * or Enter, not per keystroke: typing "15" would otherwise save "1" first,
+ * and a sweep in between would remove agents exited over a minute ago.
+ */
+function RemoveExitedAfterField({
+  value,
+  onSave,
+}: {
+  value: number;
+  onSave: (minutes: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const commit = () => {
+    const parsed = Math.floor(Number(draft));
+    const minutes = Number.isFinite(parsed)
+      ? Math.min(MAX_REMOVE_EXITED_AFTER_MINUTES, Math.max(0, parsed))
+      : value;
+    setDraft(String(minutes));
+    if (minutes !== value) onSave(minutes);
+  };
+  return (
+    <div className={styles.field}>
+      <label htmlFor="remove-exited-after">
+        Remove exited agents after, in minutes (0 = never)
+      </label>
+      <input
+        id="remove-exited-after"
+        type="number"
+        min={0}
+        max={MAX_REMOVE_EXITED_AFTER_MINUTES}
+        step={1}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+        }}
+      />
+    </div>
   );
 }
 

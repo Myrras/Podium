@@ -34,6 +34,7 @@ import {
   applyFontSizeToTerminals,
   applyThemeToTerminals,
 } from "./lib/terminalRegistry";
+import { subagentProcess } from "./lib/subagents";
 import { readTerminalTheme } from "./lib/terminalTheme";
 import { startAgentActivityMonitor } from "./state/agentActivityStore";
 import { useAssistantStore } from "./state/assistantStore";
@@ -84,6 +85,12 @@ export default function App() {
   const activeProcess = useProcessStore(
     (s) => s.processes.find((p) => p.id === s.activeProcessId) ?? null,
   );
+  // A sub-agent opened from the assistant panel: never in the process store,
+  // so its terminal pane is fed from the assistant store's snapshot.
+  const openSubagentId = useLayoutStore((s) => s.openSubagent);
+  const openSubagent = useAssistantStore(
+    (s) => s.subagents.find((a) => a.id === openSubagentId) ?? null,
+  );
 
   // Initial state pull + lifecycle-event subscriptions. Startup restores the
   // persisted workspace (re-opening every project), then re-pulls processes.
@@ -97,14 +104,20 @@ export default function App() {
       .then(() => useProcessStore.getState().refresh());
     void useProjectStore.getState().refreshRecents();
     void useProcessStore.getState().refresh();
+    // Loaded here rather than by the panel: the activity monitor and the
+    // quit warning need the assistant's sub-agents with the panel closed too.
+    void useAssistantStore.getState().loadSubagents();
     const subscriptions: Promise<UnlistenFn>[] = [
       onProcessAdded(() => void useProcessStore.getState().refresh()),
       onProcessRemoved((e) =>
         useProcessStore.getState().applyRemoved(e.processId),
       ),
-      onProcessStatus((e) =>
-        useProcessStore.getState().applyStatus(e.processId, e.status),
-      ),
+      onProcessStatus((e) => {
+        useProcessStore.getState().applyStatus(e.processId, e.status);
+        // Sub-agent processes report their status here too, in between the
+        // `subagentsChanged` snapshots (a no-op for any other process).
+        useAssistantStore.getState().applySubagentStatus(e.processId, e.status);
+      }),
       onProcessUpdated(() => void useProcessStore.getState().refresh()),
       onProjectOpened((e) => {
         void useProjectStore.getState().refresh();
@@ -143,6 +156,23 @@ export default function App() {
       for (const sub of subscriptions) {
         sub.then((unlisten) => unlisten()).catch(() => undefined);
       }
+    };
+  }, []);
+
+  // Re-pull the sub-agent list whenever the window comes back into view: a
+  // webview held back while hidden may have missed snapshots, and the panel
+  // should be right the moment the user looks.
+  useEffect(() => {
+    const resync = () => {
+      if (document.visibilityState === "visible") {
+        void useAssistantStore.getState().loadSubagents();
+      }
+    };
+    window.addEventListener("focus", resync);
+    document.addEventListener("visibilitychange", resync);
+    return () => {
+      window.removeEventListener("focus", resync);
+      document.removeEventListener("visibilitychange", resync);
     };
   }, []);
 
@@ -353,6 +383,11 @@ export default function App() {
               key={openTodo.todoId}
               projectId={openTodo.projectId}
               todoId={openTodo.todoId}
+            />
+          ) : openSubagent ? (
+            <TerminalPane
+              key={openSubagent.id}
+              process={subagentProcess(openSubagent)}
             />
           ) : activeProcess ? (
             <TerminalPane process={activeProcess} />

@@ -166,15 +166,48 @@
 
 /* Executed actions are bookkeeping, not conversation: one quiet line, marked
    so it reads as something that happened rather than something said. */
-.message[data-role="tool"] {
+.activity {
   padding: 0 var(--sp-2);
   color: var(--text-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
 }
 
-.message[data-role="tool"]::before {
-  content: "✓ ";
+.activity > summary {
+  cursor: pointer;
+}
+
+.activity > ul {
+  margin: var(--sp-1) 0 0;
+  padding-left: var(--sp-3);
+}
+
+.activityFailed {
+  color: var(--danger);
+}
+
+/* A run holding one of Podium's own nudges: fainter and italic, like a
+   lone nudge. */
+.activity[data-podium="true"] {
+  font-family: inherit;
+  font-style: italic;
+  opacity: 0.8;
+}
+
+/* Sits between the log and the composer rather than over the log, so it never
+   covers the sticky tail (the working row / queue). */
+.newActivity {
+  align-self: center;
+  margin: var(--sp-1) 0;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  animation: messageIn var(--dur-2) var(--ease-out);
 }
 
 .message[data-role="proposal"] {
@@ -293,15 +326,6 @@
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-/* Podium nudging the assistant, not the user: a quiet aside, not a message —
-   no background, small and muted, unlike `[data-role="notice"]` above. */
-.message[data-role="nudge"] {
-  padding: 0 var(--sp-2);
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-  font-style: italic;
 }
 
 /* A message waiting for the current turn to end: dashed border reads as

@@ -114,3 +114,18 @@
   background: var(--surface-hover);
   color: var(--text);
 }
+
+/* "Assistant sub-agent · lookup" — pushed right like the git pill, which a
+   sub-agent (no project, no repo) normally does not have. */
+.subagentKind {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.gitInfo + .subagentKind,
+.subagentKind + .headerActions {
+  margin-left: var(--sp-2);
+}

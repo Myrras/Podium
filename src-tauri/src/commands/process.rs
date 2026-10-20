@@ -236,9 +236,11 @@ pub async fn process_stop(
     state: State<'_, AppState>,
     process_id: ProcessId,
 ) -> Result<(), IpcError> {
+    // The user's stop: on one of the assistant's sub-agents it is routed so
+    // the assistant hears of it, like the panel's stop.
     state
         .orchestrator
-        .stop_process(process_id)
+        .user_stop_process(process_id)
         .await
         .map_err(Into::into)
 }

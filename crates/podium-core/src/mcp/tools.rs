@@ -1,5 +1,8 @@
-//! The 32 MCP tools Podium exposes to agents — all thin calls into
-//! [`Orchestrator`], returning JSON (or plain text for output tails).
+//! The 36 MCP tools Podium exposes — all thin calls into [`Orchestrator`],
+//! returning JSON (or plain text for output tails). Agents get 33 of them:
+//! `add_response`, `spawn_subagent` and `list_subagents` are the assistant's.
+//! A lookup sub-agent's route ([`crate::mcp::LOOKUP_PATH`]) gets 10: the
+//! read-only ones and `report_to_assistant`.
 //!
 //! The same surface serves the personal assistant, on its own endpoint
 //! ([`crate::mcp::ASSISTANT_PATH`], built via [`PodiumTools::new_assistant`]).
@@ -18,11 +21,12 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, S
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::assistant::{requires_proposal, ProposalAction};
+use crate::assistant::{requires_proposal_for, ProposalAction};
 use crate::error::CoreError;
 use crate::ids::{ProcessId, ProjectId, ScratchpadId, TodoId};
 use crate::orchestrator::{Orchestrator, PeerSender};
 use crate::responses::ResponseKind;
+use crate::subagent::SubagentKind;
 
 /// Longest argument blob shown on a proposal card.
 const MAX_SUMMARY_CHARS: usize = 300;
@@ -182,6 +186,21 @@ pub struct ReportToAssistantParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AskAssistantParams {
+    /// The one question you are blocked on, with the options you see and the
+    /// one you would pick.
+    pub question: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnswerSubagentParams {
+    /// The waiting sub-agent's process id (the [Podium] message names it).
+    pub process_id: String,
+    /// The answer, typed into the sub-agent as the user's next message.
+    pub answer: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CommentTodoParams {
     /// Project UUID the to-do belongs to.
     pub project_id: String,
@@ -245,6 +264,23 @@ pub struct SpawnAgentParams {
     /// just this agent (e.g. `["--model", "opus"]` or
     /// `["--permission-mode", "plan"]`). This is how to pick the model or
     /// reasoning effort a spawned agent runs with.
+    pub args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SpawnSubagentParams {
+    /// `lookup` to read and look things up (no shell, no file edits: Slack,
+    /// Teams, tickets, MCP reads, a summary across projects), `full` for
+    /// shell, file or git work that belongs to no single project.
+    pub kind: SubagentKind,
+    /// What to do, in full — the sub-agent starts knowing nothing else.
+    pub task: String,
+    /// Short display name; derived from the task when omitted.
+    pub name: Option<String>,
+    /// The model and effort it runs with, replacing the global default args:
+    /// only `--model <model>` and `--effort <level>` (or `--model=<model>`,
+    /// `--effort=<level>`), e.g. `["--model", "sonnet"]`. Anything else is
+    /// refused.
     pub args: Option<Vec<String>>,
 }
 
@@ -346,15 +382,27 @@ pub struct SetScratchpadArchivedParams {
     pub archived: bool,
 }
 
+/// Which endpoint a [`PodiumTools`] instance serves — the route is the
+/// caller's role on this server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// `/mcp`: project agents and full sub-agents. Never gated.
+    Agent,
+    /// [`crate::mcp::ASSISTANT_PATH`]: the personal assistant, through the
+    /// autonomy gate.
+    Assistant,
+    /// [`crate::mcp::LOOKUP_PATH`]: lookup sub-agents — the read-only tools
+    /// and their own report, nothing else.
+    Lookup,
+}
+
 /// The MCP tool surface. One instance is created per HTTP session; all state
 /// lives in the shared [`Orchestrator`].
 #[derive(Clone)]
 pub struct PodiumTools {
     orchestrator: Arc<Orchestrator>,
     tool_router: ToolRouter<Self>,
-    /// True for the personal assistant's endpoint: its calls go through the
-    /// autonomy gate. Agents are never gated.
-    assistant: bool,
+    route: Route,
 }
 
 #[tool_router]
@@ -367,18 +415,100 @@ impl PodiumTools {
             // it, so the agent route neither lists nor runs `add_response`. A
             // guard against a confused agent, not a boundary: both routes
             // share one bearer token, so the route is identity only by
-            // convention.
-            tool_router: Self::tool_router().with_disabled("add_response"),
-            assistant: false,
+            // convention. The same goes for the assistant's sub-agents: an
+            // agent neither starts nor lists them (and a sub-agent, which is
+            // on this route too, cannot start sub-agents of its own).
+            tool_router: Self::tool_router()
+                .with_disabled("add_response")
+                .with_disabled("spawn_subagent")
+                .with_disabled("list_subagents")
+                .with_disabled("answer_subagent"),
+            route: Route::Agent,
         }
     }
 
     /// The same tools for the personal assistant, gated by its autonomy mode.
+    /// `ask_assistant` is a sub-agent's question *to* it, so not its own.
     pub fn new_assistant(orchestrator: Arc<Orchestrator>) -> Self {
         Self {
             orchestrator,
-            tool_router: Self::tool_router(),
-            assistant: true,
+            tool_router: Self::tool_router().with_disabled("ask_assistant"),
+            route: Route::Assistant,
+        }
+    }
+
+    /// The lookup sub-agents' tools: only the read-only ones and
+    /// `report_to_assistant` ([`crate::subagent::unprompted_podium_tools`]).
+    /// Everything else is neither listed nor run — and [`Self::call_tool`]
+    /// refuses it before dispatch as well, so a lookup's "no writes" holds
+    /// here on the server whatever the CLI lets through.
+    pub fn new_lookup(orchestrator: Arc<Orchestrator>) -> Self {
+        let allowed = crate::subagent::unprompted_podium_tools();
+        let mut tool_router = Self::tool_router();
+        for tool in Self::all_tool_names() {
+            if !allowed.contains(&tool.as_str()) {
+                tool_router.disable_route(tool);
+            }
+        }
+        Self {
+            orchestrator,
+            tool_router,
+            route: Route::Lookup,
+        }
+    }
+
+    /// The sub-agent a call comes from, by the caller key its MCP config
+    /// sends ([`crate::mcp::CALLER_HEADER`]); `None` for anyone else.
+    fn caller(&self, context: &RequestContext<RoleServer>) -> Option<ProcessId> {
+        let parts = context.extensions.get::<axum::http::request::Parts>()?;
+        let key = parts
+            .headers
+            .get(crate::mcp::CALLER_HEADER)?
+            .to_str()
+            .ok()?;
+        self.orchestrator.subagent_for_caller(key)
+    }
+
+    /// What this route refuses before anything runs (or is proposed):
+    ///
+    /// - on the lookup route, every tool but its own read-only set;
+    /// - a sub-agent's report from anyone but that sub-agent — on the lookup
+    ///   route, any report but the caller's own — since a report ends it
+    ///   `done` and hands its "result" to the assistant;
+    /// - on the agent and lookup routes, a stop of one of the assistant's
+    ///   sub-agents by anyone but itself: those are the assistant's (gated)
+    ///   and the user's to stop.
+    fn refuse(&self, request: &CallToolRequestParams, caller: Option<ProcessId>) -> Option<String> {
+        let tool = request.name.as_ref();
+        if self.route == Route::Lookup
+            && !crate::subagent::unprompted_podium_tools().contains(&tool)
+        {
+            return Some(format!(
+                "{tool} is not available to a lookup sub-agent: it only reads, and reports its own result"
+            ));
+        }
+        let target = request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("process_id"))
+            .and_then(|id| id.as_str())
+            .and_then(|id| ProcessId::from_str(id).ok())?;
+        let own = caller == Some(target);
+        match tool {
+            "report_to_assistant"
+                if !own && (self.route == Route::Lookup || self.orchestrator.is_subagent(target)) =>
+            {
+                Some("a sub-agent's result can only be reported by that sub-agent itself".to_string())
+            }
+            "stop_process"
+                if self.route != Route::Assistant && !own && self.orchestrator.is_subagent(target) =>
+            {
+                Some(
+                    "the assistant's sub-agents are stopped by the assistant or the user, not by an agent"
+                        .to_string(),
+                )
+            }
+            _ => None,
         }
     }
 
@@ -388,7 +518,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "List managed processes (dev servers, terminals, agents), optionally filtered to one project. `viewing: true` marks the agent the user has open on screen right now."
+        description = "List managed processes (dev servers, terminals, agents), optionally filtered to one project. `viewing: true` marks the agent the user has open on screen right now. The assistant's sub-agents are not listed here (see list_subagents)."
     )]
     pub async fn list_processes(
         &self,
@@ -469,6 +599,70 @@ impl PodiumTools {
             .await
             .map_err(core_error)?;
         json_result(&self.find_process(id)?)
+    }
+
+    #[tool(
+        description = "Start one of your own sub-agents on a task and get control back at once: {processId, state}, where state is \"running\", or \"queued\" when 4 already run (it starts by itself when one ends). kind \"lookup\" reads and looks things up (no shell, no file edits: Slack, Teams, tickets, MCP reads, a summary across projects); kind \"full\" has shell, files and git, for work that belongs to no single project (a check across repositories, a one-off script). Code work in a project is not a sub-agent's: use spawn_agent. The sub-agent belongs to no project and reports its result back to you as a [Podium] message. Only the assistant may call this."
+    )]
+    pub async fn spawn_subagent(
+        &self,
+        Parameters(p): Parameters<SpawnSubagentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let spawned = self
+            .orchestrator
+            .spawn_subagent(p.kind, &p.task, p.name, p.args)
+            .await
+            .map_err(core_error)?;
+        json_result(&spawned)
+    }
+
+    #[tool(
+        description = "Only for the assistant's sub-agents: ask the assistant the one question you are blocked on — a decision that changes the outcome and cannot cheaply be undone. Podium passes it on and the answer arrives as your next message: end your turn right after this call and wait. Do not use it for anything you can decide sensibly yourself; make that choice and say so in your report."
+    )]
+    pub async fn ask_assistant(
+        &self,
+        Parameters(p): Parameters<AskAssistantParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(id) = self.caller(&context) else {
+            return Err(McpError::invalid_params(
+                "ask_assistant is only for the assistant's sub-agents".to_string(),
+                None,
+            ));
+        };
+        self.orchestrator
+            .ask_subagent_question(id, &p.question)
+            .await
+            .map_err(core_error)?;
+        Ok(text_result(
+            "Your question was passed on. The answer will arrive as your next message: end your \
+             turn now and wait for it."
+                .to_string(),
+        ))
+    }
+
+    #[tool(
+        description = "Answer one of your sub-agents that is waiting on a question (phase \"waiting\"): Podium types the answer into it as the user's next message and it goes on. Refused unless that sub-agent is waiting."
+    )]
+    pub async fn answer_subagent(
+        &self,
+        Parameters(p): Parameters<AnswerSubagentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = parse_process_id(&p.process_id)?;
+        self.orchestrator
+            .answer_subagent(id, &p.answer)
+            .await
+            .map_err(core_error)?;
+        Ok(text_result(
+            "Answer sent; the sub-agent goes on.".to_string(),
+        ))
+    }
+
+    #[tool(
+        description = "List your sub-agents, oldest first: queued, running, waiting (on a question to you, which it carries), and those that ended in the last few minutes — id (the process id), name, kind, task, phase (queued/running/waiting/done/failed/stopped), process status, startedAt/endedAt, and the result (done) or error (failed)."
+    )]
+    pub async fn list_subagents(&self) -> Result<CallToolResult, McpError> {
+        json_result(&self.orchestrator.list_subagents())
     }
 
     #[tool(
@@ -808,6 +1002,13 @@ impl PodiumTools {
                 "session": process.name,
                 "project": project,
             })),
+            // One of the assistant's own sub-agents: no project to name, and
+            // no process id an agent could go on to act on.
+            Some(PeerSender::Subagent { process }) => json_result(&serde_json::json!({
+                "fleet": true,
+                "kind": "subagent",
+                "session": process.name,
+            })),
         }
     }
 
@@ -826,6 +1027,18 @@ impl PodiumTools {
                 None,
             ));
         }
+        // One of the assistant's sub-agents handing back its result: that
+        // ends it (see `Orchestrator::report_subagent_result`).
+        if self.orchestrator.is_subagent(process_id) {
+            self.orchestrator
+                .report_subagent_result(process_id, summary)
+                .await
+                .map_err(core_error)?;
+            return Ok(text_result(
+                "Reported to the assistant. Your task is done; Podium ends this session in a moment."
+                    .to_string(),
+            ));
+        }
         let process = self.find_process(process_id)?;
         let project = self
             .orchestrator
@@ -842,11 +1055,16 @@ impl PodiumTools {
         } else {
             ""
         };
+        // Name, project and summary are agent-written: quoted onto one line,
+        // so a report cannot start a line that reads like Podium speaking.
         self.orchestrator
             .assistant_nudge(format!(
-                "[Podium] The agent \"{}\" (process {}) in project \"{project}\" reports: \
-                 {summary} Tell the user in a line or two.{viewing}",
-                process.name, process.id
+                "[Podium] The agent {} (process {}) in project {} reports (its own words): {} \
+                 Tell the user in a line or two.{viewing}",
+                crate::assistant::quote_line(&process.name),
+                process.id,
+                crate::assistant::quote_line(&project),
+                crate::assistant::quote_line(summary)
             ))
             .await;
         Ok(text_result("Reported to the assistant.".to_string()))
@@ -1053,12 +1271,26 @@ impl PodiumTools {
         }
     }
 
+    /// One process by id, the assistant's sub-agents included (so it can
+    /// read one's status and stop it).
     fn find_process(&self, id: ProcessId) -> Result<crate::process::ProcessInfo, McpError> {
         self.orchestrator
-            .list_processes(None)
-            .into_iter()
-            .find(|p| p.id == id)
+            .process_info(id)
             .ok_or_else(|| core_error(CoreError::ProcessNotFound))
+    }
+}
+
+impl PodiumTools {
+    /// The name of every tool the server has, on either route. What the
+    /// lookup sub-agents' deny list is generated from
+    /// ([`crate::subagent::lookup_disallowed_tools`]), so a tool added later
+    /// is refused to them by default.
+    pub fn all_tool_names() -> Vec<String> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 }
 
@@ -1079,10 +1311,23 @@ impl ServerHandler for PodiumTools {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        if self.assistant
-            && requires_proposal(
+        // Before the gate, so a refused call is never parked as a proposal.
+        let caller = self.caller(&context);
+        if let Some(reason) = self.refuse(&request, caller) {
+            return Err(McpError::invalid_params(reason, None));
+        }
+        // A waiting sub-agent calling its tools again has gone on (the user
+        // answered it in its terminal, or it decided for itself).
+        if let Some(id) = caller {
+            if request.name.as_ref() != "ask_assistant" {
+                self.orchestrator.subagent_resumed(id);
+            }
+        }
+        if self.route == Route::Assistant
+            && requires_proposal_for(
                 self.orchestrator.assistant_autonomy(),
                 request.name.as_ref(),
+                request.arguments.as_ref(),
             )
         {
             let tool = request.name.to_string();

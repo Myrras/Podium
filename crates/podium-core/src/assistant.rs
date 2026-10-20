@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -81,8 +81,11 @@ use crate::ids::{PendingId, ProjectId, ProposalId, ResponseId};
 use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
 
 /// Tools the assistant is never allowed to run: it delegates implementation
-/// work to spawned agents instead of touching the filesystem itself.
-const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash";
+/// work to spawned agents instead of touching the filesystem itself, and
+/// everything else to its own Podium sub-agents (`spawn_subagent`) rather than
+/// the CLI's in-session ones — `Agent`, which older CLIs call `Task` — whose
+/// work would hold its turn and which no panel would show.
+const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash,Agent,Task";
 
 /// Added to [`DISALLOWED_TOOLS`] under `propose-all`: `SendMessage` is the
 /// CLI's own tool, so Podium's autonomy gate never sees it, and a relayed
@@ -111,13 +114,35 @@ You are the personal assistant docked in the right-hand panel of Podium, a \
 desktop cockpit for AI coding agents. You work across the user's whole \
 workspace, not one project: call the podium MCP tools (start with \
 list_projects) to see and change to-dos, agents, processes, scratchpads and \
-worktrees. You orchestrate; you do not do the work. Your own tool calls are \
-for Podium's tools and for a message the user directly asks you to send — \
-writing or editing code, shell or file-system work, and lookups the user asks \
-for all go to an agent you start with spawn_agent. Never hand such work to \
-your own Agent-tool subagents: they have no shell here. When a request \
-plainly implies dev work, do not ask whether to start: spawn the agent and \
-say what you started. To-dos are for work that runs long or is meant to be \
+worktrees. You orchestrate; you do not do the work, so that you stay free to \
+answer the user at once. Your own tool calls are for Podium's tools and for a \
+message the user directly asks you to send. Anything beyond a reply from what \
+you already know — a lookup, a check, shell or file work — goes to a \
+sub-agent you start with spawn_subagent: kind \"lookup\" to read and look \
+things up (Slack, Teams, tickets, MCP reads, a summary across projects; no \
+shell, no file edits), kind \"full\" for shell, file or git work that belongs \
+to no single project (a check across repositories, a one-off script). Start \
+it, answer the user in one line and end your turn: do not wait for it — its \
+result reaches you as a [Podium] message. At most 4 run at once and the rest \
+simply queue, so never hold one back; list_subagents shows yours, and \
+stop_process stops one. Writing or editing code in a project is not a \
+sub-agent's: start a project agent for it with spawn_agent. Routing stays \
+with you — to-dos, messages to existing agents, proposals and spawn_agent \
+itself. Never use the CLI's own Agent tool. When a sub-agent reports back, \
+tell the user its result in at most two lines, and when it says follow-up \
+work is needed, add a to-do for it in the relevant project with add_todo \
+(ask the user when no project fits). A sub-agent blocked on a decision asks \
+you through Podium and waits. Answering it is the default: whenever you can \
+judge from its task, the context, your memory or the to-dos, answer it \
+yourself with answer_subagent and mention it only in your usual short \
+report — the user should barely have to deal with sub-agents. Relay it to \
+the user only when the decision is genuinely theirs (a preference, a risk, \
+money, people, or anything you cannot infer): then file a needsYou \
+add_response with its process id that gives your recommended answer, so \
+they can wave it through in a word (that item is what reaches their \
+desktop), and pass their answer on with answer_subagent. When a request plainly implies dev \
+work, do not ask whether to start: spawn the agent and say what you started. \
+To-dos are for work that runs long or is meant to be \
 picked up later; a small request that can be done now goes straight into a \
 spawned agent's prompt, with no to-do at all. When an agent will open an \
 MR/PR for a sub-issue, tell it to link the parent issue in the description. \
@@ -244,7 +269,7 @@ reason for the order you put things in. Where the priority cannot be worked \
 out from the to-dos and agents alone, ask me instead of guessing.";
 
 /// Tools that only read state. Never gated — in any mode.
-const READ_ONLY_TOOLS: &[&str] = &[
+pub(crate) const READ_ONLY_TOOLS: &[&str] = &[
     "list_projects",
     "list_processes",
     "get_process_status",
@@ -261,7 +286,11 @@ const READ_ONLY_TOOLS: &[&str] = &[
     // assistant can call it. A card asking whether it may tell the user
     // something would be the very noise the list exists to cut.
     "add_response",
+    "list_subagents",
 ];
+
+/// The tool whose gate depends on its arguments (see [`requires_proposal_for`]).
+const SPAWN_SUBAGENT_TOOL: &str = "spawn_subagent";
 
 /// Tools that stop, archive or remove something. These are what
 /// [`AutonomyMode::ConfirmDestructive`] holds back.
@@ -407,6 +436,24 @@ pub fn requires_proposal(mode: AutonomyMode, tool: &str) -> bool {
     }
 }
 
+/// [`requires_proposal`] for one concrete call. `spawn_subagent` is the one
+/// tool gated by its arguments: a `lookup` sub-agent only reads, so it never
+/// needs a card, while a `full` one — shell and files — is classified like
+/// `spawn_agent`, which is also what a missing or unknown kind gets (it would
+/// be refused anyway, but never by skipping the gate).
+pub fn requires_proposal_for(
+    mode: AutonomyMode,
+    tool: &str,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    let lookup = tool == SPAWN_SUBAGENT_TOOL
+        && arguments
+            .and_then(|args| args.get("kind"))
+            .and_then(|kind| kind.as_str())
+            == Some(crate::subagent::SubagentKind::Lookup.as_str());
+    !lookup && requires_proposal(mode, tool)
+}
+
 /// A gated tool call, parked until the user decides. Running it returns the
 /// tool's own result text, or its error message.
 pub type ProposalAction =
@@ -511,6 +558,10 @@ fn file_name(path: &str) -> String {
 pub enum PendingKind {
     User,
     Nudge,
+    /// The external-sources sweep. Delivered like a proposal-outcome `Notice`,
+    /// but it also leaves the same chat row a nudge does (see
+    /// [`record_before_write`]).
+    Poll,
     Notice,
 }
 
@@ -531,6 +582,11 @@ struct PendingInput {
     /// that failed re-queues the item, and the retry must not append it a
     /// second time.
     recorded: bool,
+    /// News that outlives the conversation: a kept sub-agent's result. A new
+    /// conversation that starts while it still waits hands it to the new one
+    /// instead of reporting it undelivered (see
+    /// [`AssistantManager::new_conversation`]).
+    lasting: bool,
 }
 
 /// UI-facing snapshot of one waiting item.
@@ -656,6 +712,13 @@ pub enum AssistantEvent {
         #[serde(serialize_with = "crate::responses::serialize_labelled")]
         items: Vec<ResponseItem>,
     },
+    /// The assistant's sub-agents changed (one was spawned, started, ended,
+    /// renamed or dropped off after lingering). The whole list, oldest first
+    /// — a snapshot like [`AssistantEvent::ResponsesChanged`], and likewise
+    /// never recorded.
+    SubagentsChanged {
+        subagents: Vec<crate::subagent::SubagentInfo>,
+    },
 }
 
 /// Who spoke in one persisted transcript row. A subset of the live event
@@ -668,8 +731,12 @@ pub enum TranscriptRole {
     Assistant,
     /// An action the assistant ran (the tool name).
     Tool,
-    /// Something Podium reports, e.g. an action that failed.
+    /// Something Podium reports, e.g. a dropped queue message. Rows from
+    /// before `ToolFailed` existed also hold failed actions.
     Notice,
+    /// An action that came back as an error (the error text). Its own role so
+    /// the panel can fold it in with the action rows around it.
+    ToolFailed,
     /// A proactivity nudge Podium sent the assistant (an internal
     /// instruction, not a user-facing notice). Kept distinct from `Notice`
     /// so a replayed row renders the same muted way a live nudge does.
@@ -821,7 +888,7 @@ impl AssistantStore {
             }
             AssistantEvent::Tool { name } => self.append(TranscriptRole::Tool, name.clone()),
             AssistantEvent::ToolFailed { message } => {
-                self.append(TranscriptRole::Notice, message.clone())
+                self.append(TranscriptRole::ToolFailed, message.clone())
             }
             AssistantEvent::Notice { text } => self.append(TranscriptRole::Nudge, text.clone()),
             AssistantEvent::QueueNotice { text } => {
@@ -1122,6 +1189,7 @@ impl AssistantManager {
             attachments,
             reply_to,
             recorded: false,
+            lasting: false,
         };
         Ok(deliver_or_queue(&mut state, item, &self.store, &self.events).await)
     }
@@ -1131,8 +1199,12 @@ impl AssistantManager {
     /// to it. Whatever was still waiting is reported as undelivered in the
     /// fresh (otherwise empty) transcript. The next turn starts a session
     /// with no `--resume`.
-    pub async fn new_conversation(&self) {
-        let dropped = {
+    ///
+    /// With `keep_lasting`, a waiting [`nudge_lasting`](Self::nudge_lasting)
+    /// item (a kept sub-agent's result) is neither dropped nor reported:
+    /// its text is returned, for the caller to hand to the new conversation.
+    pub async fn new_conversation(&self, keep_lasting: bool) -> Vec<String> {
+        let waiting = {
             let mut state = self.state.lock().await;
             if let Some(mut session) = state.session.take() {
                 // A deliberate kill: the panel is being cleared, so the
@@ -1144,6 +1216,9 @@ impl AssistantManager {
             state.end_turn();
             std::mem::take(&mut state.pending)
         };
+        let (kept, dropped): (VecDeque<PendingInput>, VecDeque<PendingInput>) = waiting
+            .into_iter()
+            .partition(|item| keep_lasting && item.lasting);
         self.proposals.lock().expect(LOCK_POISONED).clear();
         // Every proposal went with the conversation — including ones a
         // restart already lost, whose items are still on the persisted list.
@@ -1157,6 +1232,7 @@ impl AssistantManager {
         // After clearing, so the notice survives as the first line of the
         // fresh conversation rather than being wiped along with the old one.
         report_undelivered(&self.store, &self.events, dropped);
+        kept.into_iter().map(|item| item.text).collect()
     }
 
     /// Stop the turn in progress, if any, and immediately hand the next
@@ -1431,22 +1507,39 @@ impl AssistantManager {
     ///
     /// [`send`]: Self::send
     pub async fn nudge(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Nudge, text, mcp).await;
+        self.deliver_own(PendingKind::Nudge, text, mcp, false).await;
+    }
+
+    /// A [`nudge`](Self::nudge) that outlives the conversation: how one of
+    /// the assistant's own sub-agents ended. The user may reset the
+    /// conversation and keep its sub-agents running; their results are then
+    /// still owed to the new one, so a result waiting in the queue at that
+    /// moment is carried over rather than dropped (see
+    /// [`new_conversation`](Self::new_conversation)).
+    pub async fn nudge_lasting(&self, text: String, mcp: Option<McpConnectInfo>) {
+        self.deliver_own(PendingKind::Nudge, text, mcp, true).await;
     }
 
     /// Ask the assistant to sweep the user's external sources (the slow lane
     /// in [`crate::proactivity`]). Spawns the session like a nudge, but goes
-    /// in as a `Notice` — Podium's own errand, not something worth a row in
-    /// the chat every interval. The user only ever sees the *answer*, and
-    /// only when there is one: a sweep that found nothing replies
-    /// [`NOTHING_TO_REPORT`], which is swallowed.
+    /// in as a `Poll`, which leaves the same row a nudge does so the panel
+    /// folds the sweep's actions into one faint "Podium check" line instead
+    /// of mixing them with the user's own. The user only ever sees the
+    /// *answer*, and only when there is one: a sweep that found nothing
+    /// replies [`NOTHING_TO_REPORT`], which is swallowed.
     pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Notice, text, mcp).await;
+        self.deliver_own(PendingKind::Poll, text, mcp, false).await;
     }
 
     /// The shared body of [`nudge`](Self::nudge) and [`poll`](Self::poll):
     /// Podium's own input, into a session it starts if there is none.
-    async fn deliver_own(&self, kind: PendingKind, text: String, mcp: Option<McpConnectInfo>) {
+    async fn deliver_own(
+        &self,
+        kind: PendingKind,
+        text: String,
+        mcp: Option<McpConnectInfo>,
+        lasting: bool,
+    ) {
         let mut state = self.state.lock().await;
         if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
             tracing::warn!("could not start the assistant for a nudge: {e}");
@@ -1458,6 +1551,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -1481,6 +1575,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -1818,11 +1913,10 @@ async fn deliver_bypassing_queue(
     events: &EventBus,
 ) {
     if let Some(session) = state.session.as_mut() {
-        record_before_write(store, &mut item);
+        record_before_write(store, events, &mut item);
         match write_turn(session, &item).await {
             Ok(()) => {
                 state.in_flight = true;
-                record_delivered(store, events, &item);
                 return;
             }
             Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
@@ -1849,11 +1943,10 @@ async fn deliver_or_queue(
 ) -> bool {
     if !state.in_flight && state.pending.is_empty() {
         if let Some(session) = state.session.as_mut() {
-            record_before_write(store, &mut item);
+            record_before_write(store, events, &mut item);
             match write_turn(session, &item).await {
                 Ok(()) => {
                     state.in_flight = true;
-                    record_delivered(store, events, &item);
                     return true;
                 }
                 Err(e) => tracing::warn!("could not deliver an assistant message: {e}"),
@@ -1867,9 +1960,10 @@ async fn deliver_or_queue(
     // are deduped: two identical user messages are two deliberate sends, and
     // two identical proposal outcomes are two real answers the assistant is
     // waiting on.
-    // ponytail: that leaves an external poll (a `Notice`) able to stack when
-    // a turn outlives two intervals — harmless, since a poll shows no chat
-    // row and a duplicate "nothing to report" answer is swallowed anyway.
+    // ponytail: that leaves an external poll able to stack when a turn
+    // outlives two intervals — harmless, since the panel folds its rows into
+    // one faint line and a duplicate "nothing to report" answer is swallowed
+    // anyway.
     if item.kind == PendingKind::Nudge
         && state
             .pending
@@ -1922,7 +2016,9 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     // yesterday before answering today's question. Read together they are a
     // summary of where things stand, which is what they are for. User
     // messages are still never merged — those are separate thoughts.
-    if item.kind == PendingKind::Nudge {
+    // One whose row is already in (a failed write re-queued it) is not
+    // merged into: its row would no longer match the turn's text.
+    if item.kind == PendingKind::Nudge && !item.recorded {
         while state
             .pending
             .front()
@@ -1933,11 +2029,10 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
             item.text.push_str(&next.text);
         }
     }
-    record_before_write(store, &mut item);
+    record_before_write(store, events, &mut item);
     match write_turn(session, &item).await {
         Ok(()) => {
             state.in_flight = true;
-            record_delivered(store, events, &item);
             // Shrink the queue *before* announcing the delivery: the panel
             // applies these two in order, and the other way round left one
             // render where the message sat in the log and in the waiting
@@ -1963,42 +2058,36 @@ async fn drain_next(state: &mut SessionState, store: &AssistantStore, events: &E
     }
 }
 
-/// Record/publish a just-delivered item the same way it always would have
-/// been, had it never needed to wait: a user turn joins the transcript, a
-/// nudge shows as a muted row, and a proposal-outcome notice stays invisible
-/// (it is for the assistant, not the user).
-/// Put a user turn in the transcript *before* the child can see it. The
-/// stdout task records the reply on its own task, so appending the user row
-/// after the write let a fast reply land *above* the message it answers —
-/// and a restart then replayed the conversation out of order. Idempotent, so
-/// a re-queued item is not appended twice.
-fn record_before_write(store: &AssistantStore, item: &mut PendingInput) {
-    if item.kind == PendingKind::User && !item.recorded {
-        match &item.reply_to {
+/// Put an item's own chat row in *before* the child can see the turn: a user
+/// turn joins the transcript, a nudge or sweep shows as a muted row, and a
+/// proposal-outcome notice stays invisible (it is for the assistant, not the
+/// user). The stdout task records the reply on its own task, so a row added
+/// after the write could land *below* the turn's own actions or reply — which
+/// misorders a restart's replay, and the panel groups a turn's tool rows by
+/// the nudge row that precedes them. Idempotent, so a re-queued item is not
+/// recorded twice.
+fn record_before_write(store: &AssistantStore, events: &EventBus, item: &mut PendingInput) {
+    if item.recorded {
+        return;
+    }
+    match item.kind {
+        PendingKind::User => match &item.reply_to {
             None => store.append(TranscriptRole::User, item.text.clone()),
             Some(r) => store.append(
                 TranscriptRole::Reply,
                 format!("{}\n{}", r.label(), item.text),
             ),
-        }
-        item.recorded = true;
-    }
-}
-
-/// What is recorded *after* a turn went out — the user's own row is already
-/// in by then (see [`record_before_write`]).
-fn record_delivered(store: &AssistantStore, events: &EventBus, item: &PendingInput) {
-    match item.kind {
-        PendingKind::User => {}
-        PendingKind::Nudge => {
+        },
+        PendingKind::Nudge | PendingKind::Poll => {
             let event = AssistantEvent::Notice {
                 text: item.text.clone(),
             };
             store.record(&event);
             events.publish(PodiumEvent::AssistantEvent { event });
         }
-        PendingKind::Notice => {}
+        PendingKind::Notice => return,
     }
+    item.recorded = true;
 }
 
 /// Publish the current queue as a snapshot for the UI.
@@ -2084,6 +2173,16 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
         return Vec::new();
     };
+    // A subagent's own tool calls and results arrive on this stream too,
+    // tagged with the id of the call that spawned it. They are not the
+    // assistant's actions, so they stay out of the chat (the parent's `Agent`
+    // row already stands for them).
+    if value
+        .get("parent_tool_use_id")
+        .is_some_and(|p| p.is_string())
+    {
+        return Vec::new();
+    }
     match value.get("type").and_then(|t| t.as_str()) {
         Some("system") if value.get("subtype").and_then(|s| s.as_str()) == Some("init") => value
             .get("session_id")
@@ -2108,17 +2207,63 @@ pub fn parse_stream_line(line: &str) -> Vec<AssistantEvent> {
             .unwrap_or_default(),
         Some("result") => {
             let failed = value.get("is_error").and_then(|e| e.as_bool()) == Some(true);
+            // A usage limit arrives as `is_error` with subtype `success`, the
+            // reason being in `result`; the subtype alone reads "success".
             let error = failed.then(|| {
                 value
-                    .get("subtype")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("the assistant turn failed")
-                    .to_string()
+                    .get("result")
+                    .and_then(|r| r.as_str())
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .map(|r| usage_limit_text(r, &Local, Utc::now()))
+                    .unwrap_or_else(|| {
+                        value
+                            .get("subtype")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("the assistant turn failed")
+                            .to_string()
+                    })
             });
             vec![AssistantEvent::TurnEnd { error }]
         }
         _ => Vec::new(),
     }
+}
+
+/// Older CLIs report a usage limit as `<text mentioning "limit">|<unix
+/// seconds>`: the CLI's own text and the reset time. Anything else — another
+/// error that happens to hold a `|`, a milliseconds stamp — is `None`.
+fn parse_usage_limit(result: &str) -> Option<(&str, DateTime<Utc>)> {
+    let (text, secs) = result.split_once('|')?;
+    if !text.to_lowercase().contains("limit") {
+        return None;
+    }
+    let secs = secs.trim().parse::<i64>().ok()?;
+    // Plausible epoch seconds only (2001..5138); a ms value falls through.
+    if !(1_000_000_000..100_000_000_000).contains(&secs) {
+        return None;
+    }
+    Some((text.trim(), DateTime::from_timestamp(secs, 0)?))
+}
+
+/// Turn the old usage-limit form into the CLI's text plus a readable reset
+/// time in `tz` (with the weekday when it is not today). Anything else is
+/// kept verbatim.
+fn usage_limit_text<Tz: TimeZone>(result: &str, tz: &Tz, now: DateTime<Utc>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    parse_usage_limit(result)
+        .map(|(text, at)| {
+            let at = at.with_timezone(tz);
+            let fmt = if at.date_naive() == now.with_timezone(tz).date_naive() {
+                "%H:%M"
+            } else {
+                "%a %H:%M"
+            };
+            format!("{text}: resumes at {}", at.format(fmt))
+        })
+        .unwrap_or_else(|| result.to_string())
 }
 
 fn content_block_event(block: &serde_json::Value) -> Option<AssistantEvent> {
@@ -2127,6 +2272,10 @@ fn content_block_event(block: &serde_json::Value) -> Option<AssistantEvent> {
             .get("text")
             .and_then(|t| t.as_str())
             .filter(|t| !t.trim().is_empty())
+            // The CLI also emits the usage limit as a synthetic text block
+            // before the `is_error` result, which reports it as the turn's
+            // error; as a message it would show twice, one of them raw.
+            .filter(|t| parse_usage_limit(t.trim()).is_none())
             .map(|t| AssistantEvent::Message {
                 text: t.to_string(),
             }),
@@ -2213,6 +2362,15 @@ fn wire_text(item: &PendingInput) -> String {
 
 fn json_quote(text: &str) -> String {
     serde_json::Value::from(text).to_string()
+}
+
+/// `text` as one JSON-quoted line, for agent-controlled text (a name, a
+/// task, a report) inside a `[Podium]` message: every run of whitespace —
+/// line breaks of any kind included — becomes one space, and the quoting
+/// escapes the rest. So nothing an agent writes can start a line of its own
+/// that reads like Podium speaking, or close the quotes around it.
+pub(crate) fn quote_line(text: &str) -> String {
+    json_quote(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Build one turn's `content` array: the text block first (a `Path` or
@@ -2483,35 +2641,67 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
 
-        record_before_write(&store, &mut item);
-        record_before_write(&store, &mut item);
+        record_before_write(&store, &EventBus::new(), &mut item);
+        record_before_write(&store, &EventBus::new(), &mut item);
 
         let rows: Vec<String> = store.transcript().into_iter().map(|e| e.text).collect();
         assert_eq!(rows, vec!["what is open?".to_string()]);
     }
 
     #[test]
-    fn a_nudge_is_not_written_to_the_transcript_before_it_goes_out() {
-        // Only a user turn is pre-recorded: a nudge's own row is the
-        // `Notice` event `record_delivered` publishes once it is delivered,
-        // so pre-recording it would double it up.
+    fn a_nudge_or_poll_row_goes_in_before_the_write_exactly_once() {
+        // The panel groups a turn's tool rows by the nudge row ahead of them,
+        // so the row must exist before the child can answer. A re-queued item
+        // must not leave a second one; a proposal outcome leaves none.
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(dir.path());
-        let mut item = PendingInput {
+        let events = EventBus::new();
+        let mut rx = events.subscribe();
+        let item = |kind| PendingInput {
             id: PendingId::new(),
-            kind: PendingKind::Nudge,
-            text: "[Podium] an agent finished".to_string(),
+            kind,
+            text: "[Podium] check Slack".to_string(),
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
 
-        record_before_write(&store, &mut item);
-
+        let mut notice = item(PendingKind::Notice);
+        record_before_write(&store, &events, &mut notice);
         assert!(store.transcript().is_empty());
-        assert!(!item.recorded);
+        assert!(rx.try_recv().is_err());
+
+        for kind in [PendingKind::Poll, PendingKind::Nudge] {
+            let mut it = item(kind);
+            record_before_write(&store, &events, &mut it);
+            record_before_write(&store, &events, &mut it);
+            assert!(it.recorded);
+        }
+        let rows: Vec<_> = store
+            .transcript()
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (TranscriptRole::Nudge, "[Podium] check Slack".to_string()),
+                (TranscriptRole::Nudge, "[Podium] check Slack".to_string()),
+            ]
+        );
+        for _ in 0..2 {
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(PodiumEvent::AssistantEvent {
+                    event: AssistantEvent::Notice { .. }
+                })
+            ));
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -2548,7 +2738,7 @@ mod tests {
                 (TranscriptRole::User, "what is open?".to_string()),
                 (TranscriptRole::Assistant, "two to-dos".to_string()),
                 (TranscriptRole::Tool, "list_todos".to_string()),
-                (TranscriptRole::Notice, "project not found".to_string()),
+                (TranscriptRole::ToolFailed, "project not found".to_string()),
             ]
         );
     }
@@ -2628,6 +2818,13 @@ mod tests {
         assert!(IDENTITY_PROMPT.contains("do not ask whether to start"));
         assert!(IDENTITY_PROMPT.contains("with no to-do at all"));
         assert!(IDENTITY_PROMPT.contains("Act rather than check in"));
+        // Sub-agent questions: answered by the assistant unless the user's.
+        assert!(IDENTITY_PROMPT.contains("Answering it is the default"));
+        assert!(IDENTITY_PROMPT.contains("answer it yourself with answer_subagent"));
+        assert!(IDENTITY_PROMPT.contains("barely have to deal with sub-agents"));
+        assert!(IDENTITY_PROMPT.contains("only when the decision is genuinely theirs"));
+        assert!(IDENTITY_PROMPT.contains("your recommended answer"));
+        assert!(IDENTITY_PROMPT.contains("(that item is what reaches their desktop)"));
         assert!(IDENTITY_PROMPT.contains("stop relaying it"));
     }
 
@@ -2637,7 +2834,6 @@ mod tests {
     fn the_identity_carries_the_orchestrator_rules() {
         for rule in [
             "You orchestrate; you do not do the work",
-            "they have no shell here",
             "never recap what an agent did",
             "stop only that project's agents",
             "get_process_output for follow-up work",
@@ -2672,6 +2868,106 @@ mod tests {
         // With the user's own --settings, --allowedTools would grant a push
         // with no deny list behind it, so the fallback must not pass one.
         assert!(!IDENTITY_PROMPT.contains("Bash(git push:*)"));
+    }
+
+    /// Delegation is what keeps the assistant free to answer, and nothing but
+    /// this wording makes it delegate — pin each rule.
+    #[test]
+    fn the_identity_hands_almost_everything_to_sub_agents() {
+        for rule in [
+            "so that you stay free to answer the user at once",
+            "goes to a sub-agent you start with spawn_subagent",
+            "kind \"lookup\" to read and look things up",
+            "no shell, no file edits",
+            "kind \"full\" for shell, file or git work that belongs to no single project",
+            "answer the user in one line and end your turn",
+            "do not wait for it",
+            "At most 4 run at once and the rest simply queue",
+            "list_subagents shows yours",
+            "Writing or editing code in a project is not a sub-agent's",
+            "start a project agent for it with spawn_agent",
+            "Routing stays with you",
+            "Never use the CLI's own Agent tool",
+            "tell the user its result in at most two lines",
+            "add a to-do for it in the relevant project with add_todo",
+        ] {
+            assert!(IDENTITY_PROMPT.contains(rule), "missing: {rule}");
+        }
+        // The old rule sent lookups to spawn_agent; that is a sub-agent's now.
+        assert!(!IDENTITY_PROMPT.contains("lookups the user asks for all go to an agent"));
+    }
+
+    /// The CLI's own subagents would do the work inside the assistant's turn,
+    /// out of every panel's sight — under both of its names.
+    #[test]
+    fn the_cli_s_own_agent_tool_is_refused() {
+        let refused: Vec<&str> = DISALLOWED_TOOLS.split(',').collect();
+        for tool in ["Edit", "Write", "NotebookEdit", "Bash", "Agent", "Task"] {
+            assert!(refused.contains(&tool), "{tool} must be refused");
+        }
+    }
+
+    /// A lookup sub-agent only reads, so starting one never needs a card; a
+    /// full one is gated like spawn_agent, and so is one whose kind is
+    /// missing or unknown.
+    #[test]
+    fn spawn_subagent_is_gated_by_its_kind() {
+        let args = |kind: &str| {
+            serde_json::json!({ "kind": kind, "task": "Find the release thread" })
+                .as_object()
+                .cloned()
+                .expect("object")
+        };
+        let lookup = args("lookup");
+        let full = args("full");
+        let odd = args("everything");
+        for mode in [
+            AutonomyMode::Full,
+            AutonomyMode::ConfirmDestructive,
+            AutonomyMode::ProposeAll,
+        ] {
+            assert!(!requires_proposal_for(
+                mode,
+                "spawn_subagent",
+                Some(&lookup)
+            ));
+            for gated in [Some(&full), Some(&odd), None] {
+                assert_eq!(
+                    requires_proposal_for(mode, "spawn_subagent", gated),
+                    requires_proposal(mode, "spawn_agent"),
+                    "{mode:?}"
+                );
+            }
+        }
+        // The kind only matters for spawn_subagent.
+        assert!(requires_proposal_for(
+            AutonomyMode::ConfirmDestructive,
+            "stop_process",
+            Some(&lookup)
+        ));
+        // Listing them is a read.
+        assert!(!requires_proposal(
+            AutonomyMode::ProposeAll,
+            "list_subagents"
+        ));
+    }
+
+    #[test]
+    fn a_sub_agents_snapshot_is_tagged_and_camel_case() {
+        let json = serde_json::to_value(AssistantEvent::SubagentsChanged {
+            subagents: Vec::new(),
+        })
+        .expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "subagentsChanged", "subagents": [] })
+        );
+        // Not conversation: never a transcript row.
+        let store = AssistantStore::new();
+        store.record(&AssistantEvent::SubagentsChanged {
+            subagents: Vec::new(),
+        });
+        assert!(store.transcript().is_empty());
     }
 
     /// Desktop notifications come from the Responses list only, so the
@@ -2867,6 +3163,102 @@ mod tests {
                 {"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#
         )
         .is_empty());
+    }
+
+    #[test]
+    fn a_subagents_own_calls_stay_out_of_the_chat() {
+        assert!(parse_stream_line(
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[
+                {"type":"tool_use","name":"Bash"}]}}"#
+        )
+        .is_empty());
+        assert!(parse_stream_line(
+            r#"{"type":"user","parent_tool_use_id":"toolu_1","message":{"content":[
+                {"type":"tool_result","is_error":true,"content":"nope"}]}}"#
+        )
+        .is_empty());
+        for parent in [r#""parent_tool_use_id":null,"#, ""] {
+            let line = format!(
+                r#"{{"type":"assistant",{parent}"message":{{"content":[
+                    {{"type":"tool_use","name":"Agent"}}]}}}}"#
+            );
+            assert_eq!(
+                parse_stream_line(&line),
+                vec![AssistantEvent::Tool {
+                    name: "Agent".to_string()
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn a_usage_limit_turn_ends_with_the_reason_not_the_subtype() {
+        let end = |line: &str| match parse_stream_line(line).as_slice() {
+            [AssistantEvent::TurnEnd { error, .. }] => error.clone(),
+            other => panic!("unexpected {other:?}"),
+        };
+        // Newer CLIs: prose, kept verbatim.
+        assert_eq!(
+            end(
+                r#"{"type":"result","is_error":true,"subtype":"success","result":" You've hit your limit · resets 3pm "}"#
+            ),
+            Some("You've hit your limit · resets 3pm".to_string())
+        );
+        // No reason given: the subtype fallback.
+        assert_eq!(
+            end(r#"{"type":"result","is_error":true,"subtype":"error_max_turns"}"#),
+            Some("error_max_turns".to_string())
+        );
+        assert_eq!(
+            end(r#"{"type":"result","is_error":false,"subtype":"success","result":"ok"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn the_old_usage_limit_form_becomes_a_reset_time() {
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).expect("offset");
+        // 1760000000 = 2025-10-09 08:53:20 UTC -> 10:53 at +02:00.
+        let same_day = DateTime::from_timestamp(1_759_990_000, 0).expect("ts");
+        assert_eq!(
+            usage_limit_text("Claude AI usage limit reached|1760000000", &tz, same_day),
+            "Claude AI usage limit reached: resumes at 10:53"
+        );
+        // Not today: the weekday (2025-10-09 is a Thursday) disambiguates.
+        let next_day = DateTime::from_timestamp(1_759_900_000, 0).expect("ts");
+        assert_eq!(
+            usage_limit_text("Claude AI usage limit reached|1760000000", &tz, next_day),
+            "Claude AI usage limit reached: resumes at Thu 10:53"
+        );
+    }
+
+    #[test]
+    fn the_synthetic_usage_limit_text_block_is_not_a_message() {
+        // The CLI emits it before the `is_error` result that reports it.
+        let blocks = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Claude AI usage limit reached|1760000000"}]}}"#,
+        );
+        assert!(blocks.is_empty(), "{blocks:?}");
+        // A reply that merely mentions a limit is still a message.
+        let real = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"The rate limit is 5|6 per minute"}]}}"#,
+        );
+        assert_eq!(real.len(), 1, "{real:?}");
+    }
+
+    #[test]
+    fn other_errors_and_non_second_stamps_stay_verbatim() {
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).expect("offset");
+        let now = DateTime::from_timestamp(1_759_990_000, 0).expect("ts");
+        for text in [
+            "Something else | later",
+            "Error|404",
+            "Tool execution failed|2",
+            // Milliseconds: not a plausible epoch in seconds.
+            "Claude AI usage limit reached|1760000000000",
+        ] {
+            assert_eq!(usage_limit_text(text, &tz, now), text);
+        }
     }
 
     #[test]
@@ -3135,7 +3527,7 @@ mod tests {
         manager.store.responses().add(keep.clone(), |_| {}).unwrap();
         assert_eq!(manager.store.responses().list().len(), 3);
 
-        manager.new_conversation().await;
+        manager.new_conversation(false).await;
         assert!(manager.proposals().is_empty());
         assert_eq!(manager.store.responses().list(), vec![keep]);
     }
@@ -3240,9 +3632,9 @@ mod tests {
                     TranscriptRole::Nudge,
                     "[Podium] The agent \"fix-login\" finished.".to_string()
                 ),
-                (TranscriptRole::Notice, "project not found".to_string()),
+                (TranscriptRole::ToolFailed, "project not found".to_string()),
             ],
-            "a nudge must replay as muted (Nudge), a real tool failure as a visible Notice"
+            "a nudge must replay as muted (Nudge), a tool failure as ToolFailed"
         );
     }
 
@@ -3258,6 +3650,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
         deliver_or_queue(&mut state, item, &manager.store, &manager.events).await;
     }
@@ -3283,7 +3676,7 @@ mod tests {
         ));
 
         // …and it is dropped along with the conversation it was meant for.
-        manager.new_conversation().await;
+        manager.new_conversation(false).await;
         assert!(manager.state.lock().await.pending.is_empty());
     }
 
@@ -3306,6 +3699,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         });
         id
     }
@@ -3335,6 +3729,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: Some(answered("Merge the PR now or wait for review?")),
             recorded: false,
+            lasting: false,
         }
     }
 
@@ -3375,7 +3770,7 @@ mod tests {
     fn a_reply_is_recorded_as_a_reply_row_led_by_its_label() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = store_in(dir.path());
-        record_before_write(&store, &mut reply("merge it"));
+        record_before_write(&store, &EventBus::new(), &mut reply("merge it"));
         let rows: Vec<(TranscriptRole, String)> = store
             .transcript()
             .into_iter()
@@ -3568,6 +3963,56 @@ mod tests {
         manager.shutdown().await;
         assert_eq!(manager.store.responses().list(), vec![answered]);
         assert!(manager.state.lock().await.pending.is_empty());
+    }
+
+    /// A kept sub-agent's result still waiting when the conversation resets
+    /// is owed to the new conversation, not lost; anything else waiting is
+    /// reported undelivered as before.
+    #[tokio::test]
+    async fn a_lasting_nudge_waiting_at_a_reset_is_handed_on_not_dropped() {
+        let manager = AssistantManager::new(EventBus::new());
+        let seed = |text: &str, kind: PendingKind, lasting: bool| PendingInput {
+            id: PendingId::new(),
+            kind,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+            lasting,
+        };
+        {
+            let mut state = manager.state.lock().await;
+            state.pending.push_back(seed(
+                "[Podium] Your sub-agent finished.",
+                PendingKind::Nudge,
+                true,
+            ));
+            state
+                .pending
+                .push_back(seed("what is open?", PendingKind::User, false));
+        }
+        let owed = manager.new_conversation(true).await;
+        assert_eq!(owed, vec!["[Podium] Your sub-agent finished.".to_string()]);
+        let notices: Vec<String> = manager
+            .store
+            .transcript()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("what is open?"), "{notices:?}");
+        assert!(!notices[0].contains("sub-agent"), "{notices:?}");
+
+        // Told not to keep them (the sub-agents were stopped), it goes the
+        // way of everything else.
+        manager.state.lock().await.pending.push_back(seed(
+            "[Podium] Your sub-agent failed.",
+            PendingKind::Nudge,
+            true,
+        ));
+        assert!(manager.new_conversation(false).await.is_empty());
+        let notices = manager.store.transcript();
+        assert!(notices[0].text.contains("sub-agent failed"), "{notices:?}");
     }
 
     #[tokio::test]

@@ -3152,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "podium"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3174,7 +3174,7 @@ dependencies = [
 
 [[package]]
 name = "podium-core"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4144,6 +4144,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",

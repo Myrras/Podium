@@ -3,7 +3,8 @@
 //! autonomy, proactivity, external-poll and
 //! message-queue settings, deciding on a proposed action, and managing the
 //! pending-input queue (edit/remove a waiting message, interrupt the running
-//! turn), and the Responses list (read, mark as read, reply). Replies (and the
+//! turn), the Responses list (read, mark as read, reply), and its sub-agents
+//! (list, stop). Replies (and the
 //! outcome of a proposal, queue and Responses changes) stream back as global
 //! `assistant:event` events (see `events.rs`).
 
@@ -11,7 +12,8 @@ use tauri::State;
 
 use podium_core::assistant::AssistantPolling;
 use podium_core::{
-    Attachment, AutonomyMode, LabelledResponse, PendingId, ProposalId, ResponseId, TranscriptEntry,
+    Attachment, AutonomyMode, LabelledResponse, PendingId, ProcessId, ProposalId, ResponseId,
+    SubagentInfo, TranscriptEntry,
 };
 
 use crate::error::IpcError;
@@ -58,10 +60,39 @@ pub async fn assistant_transcript(
 }
 
 /// Drop the conversation (session, transcript and pending proposals) and
-/// start fresh. The assistant's memory is deliberately kept.
+/// start fresh. The assistant's memory is deliberately kept. Its sub-agents
+/// keep running into the new conversation unless `stop_subagents` — the
+/// keep-or-stop choice the UI asks the user for when any are queued or
+/// running.
 #[tauri::command]
-pub async fn assistant_new_conversation(state: State<'_, AppState>) -> Result<(), IpcError> {
-    state.orchestrator.assistant_new_conversation().await;
+pub async fn assistant_new_conversation(
+    state: State<'_, AppState>,
+    stop_subagents: bool,
+) -> Result<(), IpcError> {
+    state
+        .orchestrator
+        .assistant_new_conversation(stop_subagents)
+        .await;
+    Ok(())
+}
+
+/// The assistant's sub-agents, oldest first: queued, running, and ended ones
+/// still lingering. Changes stream as `assistant:event` `subagentsChanged`.
+#[tauri::command]
+pub async fn assistant_subagents_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<SubagentInfo>, IpcError> {
+    Ok(state.orchestrator.list_subagents())
+}
+
+/// The user stopped one sub-agent from the panel: ungated (it is their own
+/// click); a queued one is cancelled, a running one stopped.
+#[tauri::command]
+pub async fn assistant_subagent_stop(
+    state: State<'_, AppState>,
+    id: ProcessId,
+) -> Result<(), IpcError> {
+    state.orchestrator.stop_subagent(id).await?;
     Ok(())
 }
 

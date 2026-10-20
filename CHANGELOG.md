@@ -10,6 +10,39 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **Exited agents clean themselves up.** An agent that finished, crashed or
+  was stopped is now removed from the list 5 minutes after it exited, in
+  every project, together with its terminal and its to-do links. Restarting
+  it before then keeps it, and the time counts again from its next exit.
+  Terminals and services are not touched. Set the delay, or `0` for never,
+  in Settings → Agents → Exited agents.
+- **The assistant hands work to its own sub-agents.** Lookups, checks and
+  one-off scripts now go to a sub-agent instead of the assistant's own turn,
+  so it answers right away and reports the result in a couple of lines (with a
+  to-do in the relevant project when follow-up is needed). A *lookup*
+  sub-agent only reads; a *full* one also has shell, files and git. They are
+  listed above the chat log with task, kind, running time and status (the result shows when you hover the
+  status, and the assistant gets it whole), with
+  a stop button, and clicking a row opens its terminal; at most 4 run at once
+  and the rest queue.
+  They never appear in a project's sidebar or count towards its agent cap.
+  Resetting the conversation asks whether to keep or stop running sub-agents,
+  quitting Podium stops them, and the quit warning counts them. Podium marks
+  its own assistant folder as trusted in your Claude Code config, so
+  sub-agents do not stop on Claude Code's folder-trust question (on a WSL
+  backend the first one still asks once: open it from the list and answer
+  it).
+- **Sub-agents' questions go through the assistant.** A sub-agent that is
+  truly blocked on a decision asks the assistant instead of waiting in a
+  terminal nobody watches; its row shows *Needs input*. The assistant answers
+  it itself whenever it can tell, and only relays a decision that is really
+  yours as a *Needs you* item with its recommended answer (with a desktop
+  notification). Answering in the sub-agent's terminal works too.
+- New MCP tools: `spawn_subagent`, `list_subagents` and `answer_subagent` for
+  the assistant, and `ask_assistant` for its sub-agents.
+
 ### Changed
 
 - **Only Responses items reach your desktop.** The assistant no longer
@@ -29,6 +62,23 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+
+## [3.1.1] - 2026-10-09
+
+### Changed
+
+- **The assistant panel is quieter.** A run of actions shows as one collapsed
+  line (open it for the details), failed actions as a ⚠ count with the error
+  inside (full text on hover), and Podium's own nudges and the Slack/Teams
+  sweep fainter, as one "Podium check" line. Slack and Microsoft 365 actions
+  read as `Slack · slack read channel`. The panel no longer jumps to the
+  bottom while you read back; a "New activity ↓" button appears instead.
+
+### Fixed
+
+- A usage limit now says so ("The turn failed: Claude AI usage limit reached:
+  resumes at 15:00") instead of "The turn failed: success".
+- A subagent's own tool calls no longer show up in the assistant's chat.
 
 ## [3.1.0] - 2026-10-08
 

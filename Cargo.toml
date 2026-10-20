@@ -3,7 +3,7 @@ resolver = "2"
 members = ["src-tauri", "crates/*"]
 
 [workspace.package]
-version = "3.1.0"
+version = "3.1.1"
 edition = "2021"
 rust-version = "1.82"
 authors = ["Podium contributors"]
@@ -11,7 +11,10 @@ authors = ["Podium contributors"]
 [workspace.dependencies]
 # Shared across podium-core and the Tauri shell.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# A JSON file Podium edits in place (Claude Code's config,
+# `agent::folder_trust`) is written back as it was: `preserve_order` keeps its
+# keys in their order, `float_roundtrip` its floats digit for digit.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tracing = "0.1"

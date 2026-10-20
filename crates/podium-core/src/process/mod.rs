@@ -21,7 +21,7 @@ pub enum ProcessKind {
 }
 
 /// Lifecycle state of a managed process.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum ProcessStatus {
     NotStarted,
@@ -90,6 +90,10 @@ pub struct ProcessInfo {
     /// `Orchestrator::set_viewing`). True for at most one agent. The assistant
     /// reads it in `list_processes`: it must not mention that agent.
     pub viewing: bool,
+    /// Set only on one of the personal assistant's sub-agents (which never
+    /// appear in a project's listing), and left off the wire otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<crate::subagent::SubagentMeta>,
 }
 
 /// The worktree name a cwd implies: the directory name when its parent is
