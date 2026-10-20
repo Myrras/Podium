@@ -1,8 +1,8 @@
 /**
  * App settings dialog with four tabs: General (appearance, terminal, and on
  * Windows the WSL backend), Agents
- * (per-adapter command override + default arguments, plus the argument merge
- * mode), Assistant (autonomy mode, proactive nudges, external polling), and
+ * (per-adapter command override + default arguments, the argument merge
+ * mode, and when exited agents are removed), Assistant (autonomy mode, proactive nudges, external polling), and
  * MCP (one-click registration of the stdio bridge with external clients like
  * Claude Code and Auggie).
  */
@@ -28,6 +28,8 @@ import {
   agentSettingsSetMergeMode,
   agentSettingsSetSuggestWorktree,
   agentSettingsSetRememberSessions,
+  agentSettingsSetRemoveExitedAfter,
+  MAX_REMOVE_EXITED_AFTER_MINUTES,
   backendSettingsGet,
   backendSettingsSetNativeDriveProjects,
   backendSettingsSetWslDistro,
@@ -710,6 +712,7 @@ function AgentsTab() {
             defaultAdapter: "",
             suggestWorktree: true,
             rememberSessions: false,
+            removeExitedAfterMinutes: 5,
             adapters: [],
           });
       });
@@ -847,6 +850,33 @@ function AgentsTab() {
       </section>
 
       <section className={styles.section}>
+        <h3 className={styles.sectionLabel}>Exited agents</h3>
+        <small className={styles.rowHelp}>
+          An agent that finished, crashed or was stopped leaves the list this
+          long after its last exit, with its terminal and its to-do links. A
+          restart in the meantime keeps it. Terminals and services stay.
+        </small>
+        <RemoveExitedAfterField
+          // Keyed on the saved value so the draft follows it after a save.
+          key={data.removeExitedAfterMinutes}
+          value={data.removeExitedAfterMinutes}
+          onSave={(minutes) => {
+            const previous = data;
+            setData({ ...data, removeExitedAfterMinutes: minutes });
+            agentSettingsSetRemoveExitedAfter(minutes)
+              .then(setData)
+              .catch((err) => {
+                setData(previous);
+                toastError(
+                  "Could not save the exited-agent setting",
+                  toIpcError(err).message,
+                );
+              });
+          }}
+        />
+      </section>
+
+      <section className={styles.section}>
         <h3 className={styles.sectionLabel}>Agents</h3>
         <small className={styles.rowHelp}>
           Set a command override and default arguments applied whenever an agent
@@ -865,6 +895,49 @@ function AgentsTab() {
         )}
       </section>
     </>
+  );
+}
+
+/**
+ * Minutes after which an exited agent is removed (0 = never). Saved on blur
+ * or Enter, not per keystroke: typing "15" would otherwise save "1" first,
+ * and a sweep in between would remove agents exited over a minute ago.
+ */
+function RemoveExitedAfterField({
+  value,
+  onSave,
+}: {
+  value: number;
+  onSave: (minutes: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const commit = () => {
+    const parsed = Math.floor(Number(draft));
+    const minutes = Number.isFinite(parsed)
+      ? Math.min(MAX_REMOVE_EXITED_AFTER_MINUTES, Math.max(0, parsed))
+      : value;
+    setDraft(String(minutes));
+    if (minutes !== value) onSave(minutes);
+  };
+  return (
+    <div className={styles.field}>
+      <label htmlFor="remove-exited-after">
+        Remove exited agents after, in minutes (0 = never)
+      </label>
+      <input
+        id="remove-exited-after"
+        type="number"
+        min={0}
+        max={MAX_REMOVE_EXITED_AFTER_MINUTES}
+        step={1}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+        }}
+      />
+    </div>
   );
 }
 

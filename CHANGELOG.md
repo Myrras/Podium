@@ -12,6 +12,12 @@ when it merges.
 
 ### Added
 
+- **Exited agents clean themselves up.** An agent that finished, crashed or
+  was stopped is now removed from the list 5 minutes after it exited, in
+  every project, together with its terminal and its to-do links. Restarting
+  it before then keeps it, and the time counts again from its next exit.
+  Terminals and services are not touched. Set the delay, or `0` for never,
+  in Settings → Agents → Exited agents.
 - **The assistant hands work to its own sub-agents.** Lookups, checks and
   one-off scripts now go to a sub-agent instead of the assistant's own turn,
   so it answers right away and reports the result in a couple of lines (with a

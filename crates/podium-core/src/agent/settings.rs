@@ -23,6 +23,13 @@ use crate::error::{CoreError, CoreResult};
 
 const LOCK_POISONED: &str = "agent settings store lock poisoned";
 
+/// How long an exited agent stays in the list before the sweep in
+/// [`crate::agent::cleanup`] removes it, unless the user picks another value.
+pub const DEFAULT_REMOVE_EXITED_AGENTS_AFTER_MINUTES: u32 = 5;
+/// The longest delay accepted (a day). Anything longer is better served by
+/// `0` (never): the point of the setting is a tidy list.
+pub const MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES: u32 = 24 * 60;
+
 /// How global default args combine with a project's `agents.extra_args`.
 /// Serialized kebab-case to match the `RestartPolicy` convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -74,6 +81,11 @@ pub struct AgentSettings {
     /// own data dir and auto-launches processes at startup, so it is opt-in.
     #[serde(default)]
     pub remember_sessions: bool,
+    /// Minutes after which an exited agent is removed from the list
+    /// automatically, counted from its latest exit; `0` = never. Missing
+    /// (a file written before this field existed) is the default, 5.
+    #[serde(default = "default_remove_exited_after")]
+    pub remove_exited_agents_after_minutes: u32,
     /// The personal assistant's preferences. It is not an adapter-driven
     /// agent, but it is the same kind of global, cross-project setting, so it
     /// shares this document rather than adding a second one-field file.
@@ -102,6 +114,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_remove_exited_after() -> u32 {
+    DEFAULT_REMOVE_EXITED_AGENTS_AFTER_MINUTES
+}
+
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
@@ -110,6 +126,7 @@ impl Default for AgentSettings {
             overrides: BTreeMap::new(),
             suggest_worktree: true,
             remember_sessions: false,
+            remove_exited_agents_after_minutes: DEFAULT_REMOVE_EXITED_AGENTS_AFTER_MINUTES,
             assistant: AssistantSettings::default(),
             issues: IssueSettings::default(),
         }
@@ -117,6 +134,18 @@ impl Default for AgentSettings {
 }
 
 impl AgentSettings {
+    /// How long an exited agent is kept before it is removed, or `None` for
+    /// never. A hand-edited file past the maximum is held to it.
+    pub fn remove_exited_agents_after(
+        &self,
+        minute: std::time::Duration,
+    ) -> Option<std::time::Duration> {
+        let minutes = self
+            .remove_exited_agents_after_minutes
+            .min(MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES);
+        (minutes > 0).then(|| minute.saturating_mul(minutes))
+    }
+
     /// The override configured for `adapter_id`, if any.
     pub fn override_for(&self, adapter_id: &str) -> Option<&AdapterOverride> {
         self.overrides.get(adapter_id)
@@ -199,6 +228,21 @@ impl AgentSettingsStore {
     pub fn set_remember_sessions(&self, enabled: bool) -> CoreResult<AgentSettings> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
         inner.settings.remember_sessions = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
+    /// Set how many minutes an exited agent stays before it is removed
+    /// (`0` = never); returns the updated settings. Over
+    /// [`MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES`] is refused.
+    pub fn set_remove_exited_agents_after(&self, minutes: u32) -> CoreResult<AgentSettings> {
+        if minutes > MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES {
+            return Err(CoreError::InvalidInput(format!(
+                "remove exited agents after at most {MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES} minutes (0 = never)"
+            )));
+        }
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.remove_exited_agents_after_minutes = minutes;
         save(&inner)?;
         Ok(inner.settings.clone())
     }
@@ -504,6 +548,69 @@ mod tests {
         let reloaded = AgentSettingsStore::new();
         reloaded.set_path(file);
         assert!(reloaded.get().remember_sessions);
+    }
+
+    #[test]
+    fn remove_exited_agents_after_defaults_to_five_minutes_and_persists() {
+        assert_eq!(
+            AgentSettings::default().remove_exited_agents_after_minutes,
+            5
+        );
+        // A legacy file without the field loads as the default, so an
+        // existing install gets the cleanup too.
+        let legacy: AgentSettings = serde_json::from_str(r#"{"mergeMode":"merge"}"#).unwrap();
+        assert_eq!(legacy.remove_exited_agents_after_minutes, 5);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agents.json");
+        let store = AgentSettingsStore::new();
+        store.set_path(file.clone());
+        let updated = store.set_remove_exited_agents_after(0).unwrap();
+        assert_eq!(updated.remove_exited_agents_after_minutes, 0);
+        let raw = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            raw.contains(r#""removeExitedAgentsAfterMinutes": 0"#),
+            "file: {raw}"
+        );
+
+        let reloaded = AgentSettingsStore::new();
+        reloaded.set_path(file);
+        assert_eq!(reloaded.get().remove_exited_agents_after_minutes, 0);
+    }
+
+    #[test]
+    fn remove_exited_agents_after_is_bounded() {
+        let store = AgentSettingsStore::new();
+        let max = MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES;
+        assert_eq!(
+            store
+                .set_remove_exited_agents_after(max)
+                .unwrap()
+                .remove_exited_agents_after_minutes,
+            max
+        );
+        let err = store.set_remove_exited_agents_after(max + 1).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+        // The refused value left the stored one alone.
+        assert_eq!(store.get().remove_exited_agents_after_minutes, max);
+    }
+
+    #[test]
+    fn remove_exited_agents_after_scales_by_the_minute_and_zero_is_never() {
+        let minute = std::time::Duration::from_millis(10);
+        let mut settings = AgentSettings::default();
+        assert_eq!(
+            settings.remove_exited_agents_after(minute),
+            Some(std::time::Duration::from_millis(50))
+        );
+        settings.remove_exited_agents_after_minutes = 0;
+        assert_eq!(settings.remove_exited_agents_after(minute), None);
+        // A hand-edited value past the bound is held to it.
+        settings.remove_exited_agents_after_minutes = u32::MAX;
+        assert_eq!(
+            settings.remove_exited_agents_after(minute),
+            Some(minute * MAX_REMOVE_EXITED_AGENTS_AFTER_MINUTES)
+        );
     }
 
     #[test]

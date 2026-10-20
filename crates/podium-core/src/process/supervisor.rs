@@ -86,6 +86,11 @@ impl RestartState {
         self.pending = Some(handle);
     }
 
+    /// Whether a supervised restart is scheduled and has not run yet.
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Detach the pending handle without aborting (the task is about to run).
     pub(crate) fn clear_pending(&mut self) {
         self.pending = None;

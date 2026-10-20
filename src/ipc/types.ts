@@ -338,6 +338,8 @@ export interface AgentSettingsDto {
   suggestWorktree: boolean;
   /** Whether a running agent's session is remembered and resumed across app restarts. */
   rememberSessions: boolean;
+  /** Minutes after which an exited agent is removed from the list; 0 = never. */
+  removeExitedAfterMinutes: number;
   adapters: AgentAdapterConfig[];
 }
 
