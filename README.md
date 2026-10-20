@@ -182,10 +182,11 @@ demand; a failed refresh keeps the last board with the error inline.
 
 A workspace-wide chat panel backed by a long-lived headless Claude Code
 session with its own MCP endpoint into Podium. It reads and drives everything
-Podium manages, but **only orchestrates** — code, shell and file work and the
-lookups you ask for go out to a spawned agent; the one thing it does itself is
-send a message you ask it to send. Its replies stay short: real warnings and
-whether agents are done, no recap of what they did.
+Podium manages, but **only orchestrates** — project code work goes out to a
+spawned agent, and lookups and other one-off work go to its own sub-agents (see
+below); the one thing it does itself is send a message you ask it to send. Its
+replies stay short: real warnings and whether agents are done, no recap of what
+they did.
 
 - **Autonomy** — `full`, `confirm-destructive` (default) or `propose-all`.
   Enforced server-side, not by prompt wording: a gated call never runs, it
@@ -195,6 +196,52 @@ whether agents are done, no recap of what they did.
   session (between turns, keeping the conversation). The block applies from
   the next turn boundary: a turn already running when you switch can still
   message an agent until it ends.
+- **Sub-agents** — anything beyond a reply from what it already knows (a
+  lookup, a check, a one-off script) goes to a sub-agent, so the assistant
+  answers you at once with one line and its result comes back later as a
+  short summary, plus a to-do in the right project when follow-up is needed.
+  A *lookup* sub-agent only reads (Slack, Teams, tickets, your MCP servers,
+  summaries across projects): no shell, no file edits, and of Podium's own
+  tools only the read-only ones — Podium's server refuses the rest. It runs
+  without permission prompts, so it can still call your *other* MCP servers
+  without asking, just as the assistant itself can; it is told to change
+  nothing, but Podium cannot check that for servers that are not its own. A *full* one also has
+  shell, files and git, for work that belongs to no single project; it asks
+  for permission like any agent, and under `propose-all` starting one needs
+  your confirmation (a lookup never does). Project code work still goes to a
+  project agent. They are listed above the chat log with task, kind, running
+  time and status (queued, running, needs input, done, failed, stopped);
+  **stop** one, or
+  **click** its row to open its terminal in the work area (for a lookup, that
+  is its output).
+  At most 4 run at once, the rest queue and start by themselves; finished ones
+  stay a few minutes, then drop off. They never show in a project's sidebar
+  and do not count towards its agent cap. A sub-agent you stop is reported to
+  the assistant without a summary. Resetting the conversation while some are
+  queued or running asks whether to keep them (their results then report
+  into the new conversation) or stop them; quitting Podium stops them, and the
+  quit warning counts them. They are not restored after a restart. A
+  sub-agent stuck on a prompt is reported right away once you have opened its
+  terminal; otherwise after five minutes of silence. **Questions:** a
+  sub-agent only asks when it is truly blocked on a decision that changes the
+  outcome; anything else it decides itself and mentions in its report. Its
+  question goes to the assistant (the row shows *Needs input*, the question on
+  hover), which answers it itself whenever it can tell from the task, the
+  context, its memory or your to-dos — you only see it in the usual short
+  report. Only a decision that is really yours (a preference, a risk, money,
+  people) reaches you, as a *Needs you* item with the assistant's recommended
+  answer and a desktop notification; reply to it and the assistant passes the
+  answer on. You can also answer in the sub-agent's terminal yourself.
+  Sub-agents load only your
+  own Claude Code settings, not ones a folder could carry. If your default
+  Claude Code args (Settings → Agents) carry your own `--settings`, sub-agents
+  use yours instead of Podium's: a lookup then shows Claude Code's one-time
+  bypass-mode warning in its terminal, and a full one asks before it reports
+  back. Podium marks its own assistant folder as trusted in your Claude Code
+  config (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), so
+  sub-agents never stop on Claude Code's folder-trust question. Only if it
+  cannot (a WSL backend, no Claude Code config yet) does the first one ask:
+  open it from the list and answer "Yes, I trust this folder" once.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
@@ -240,10 +287,10 @@ whether agents are done, no recap of what they did.
 ### Built-in MCP server
 
 Podium runs a bearer-authenticated MCP server on an ephemeral localhost port
-and exposes **34 tools** over it: process inspection and control, agent
+and exposes **36 tools** over it (33 to the agents it spawns; the assistant's route adds `add_response`, `spawn_subagent` and `list_subagents`; a lookup sub-agent's own route serves only the read-only tools and its report): process inspection and control, agent
 spawning (and respawning a stuck agent with the answer in its prompt), the
 full to-do, scratchpad and worktree surfaces, the Git board (`get_board`,
-`move_board_item`), assistant memory and Responses items, and sender
+`move_board_item`), assistant memory, Responses items and sub-agents, and sender
 verification for cross-session messages.
 
 Agents Podium spawns get the URL + token automatically. External clients go
@@ -304,7 +351,7 @@ you added by hand alone.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation (after a `/clear`, the one from after it, with the same limits as a restart) the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off |
-| **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation                                    |
+| **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation (asks keep or stop when sub-agents are running)                                 |
 | **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
 

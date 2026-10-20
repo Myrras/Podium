@@ -14,6 +14,8 @@ vi.mock("./lib/platform", () => ({
 }));
 // What `backend_wsl_networking_mode` answers (`null` = native backend).
 const backend = vi.hoisted(() => ({ networkingMode: null as string | null }));
+// What `assistant_subagents_list` answers.
+const assistant = vi.hoisted(() => ({ subagents: [] as unknown[] }));
 
 // App wires up IPC on mount; jsdom has no Tauri bridge, so stub it out.
 // `invoke` resolves per-command fixtures (all list commands — including
@@ -25,7 +27,9 @@ const invoke = vi.hoisted(() =>
         ? [{ id: "claude-code", displayName: "Claude Code", available: true }]
         : cmd === "backend_wsl_networking_mode"
           ? backend.networkingMode
-          : [],
+          : cmd === "assistant_subagents_list"
+            ? assistant.subagents
+            : [],
     ),
   ),
 );
@@ -42,6 +46,10 @@ import { listen } from "@tauri-apps/api/event";
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
+// xterm needs a real canvas; an opened sub-agent's pane header is enough.
+vi.mock("./components/TerminalView", () => ({
+  TerminalView: () => <div data-testid="terminal-view" />,
+}));
 // WindowControls (Windows only) talks to the window API on mount.
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
@@ -55,6 +63,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 import userEvent from "@testing-library/user-event";
 
+import { useAssistantStore } from "./state/assistantStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useToastStore } from "./state/toastStore";
 import App from "./App";
@@ -63,6 +72,9 @@ beforeEach(() => {
   platform.mac = false;
   platform.windows = false;
   backend.networkingMode = null;
+  assistant.subagents = [];
+  useAssistantStore.setState({ subagents: [] });
+  useLayoutStore.setState({ openSubagent: null });
   invoke.mockClear();
   useToastStore.setState({ toasts: [] });
 });
@@ -178,5 +190,64 @@ describe("App", () => {
       "data-tauri-drag-region",
       "true",
     );
+  });
+});
+
+describe("App — assistant sub-agents", () => {
+  const subagent = {
+    id: "sub-1",
+    name: "Repo sweep",
+    kind: "full",
+    task: "Repo sweep",
+    phase: "running",
+    status: { state: "running", pid: 7, since: "2026-01-01T10:00:00Z" },
+    createdAt: "2026-01-01T10:00:00Z",
+    startedAt: "2026-01-01T10:00:00Z",
+    endedAt: null,
+    result: null,
+    error: null,
+  };
+
+  it("loads them on start, panel closed or not", async () => {
+    useLayoutStore.setState({ assistantOpen: false });
+    assistant.subagents = [subagent];
+    render(<App />);
+
+    await waitFor(() =>
+      expect(useAssistantStore.getState().subagents).toHaveLength(1),
+    );
+    expect(invoke).toHaveBeenCalledWith("assistant_subagents_list");
+  });
+
+  it("shows an opened sub-agent's terminal in the work area", async () => {
+    assistant.subagents = [subagent];
+    useLayoutStore.setState({ openSubagent: "sub-1" });
+    render(<App />);
+
+    expect(
+      await screen.findByText("Assistant sub-agent · full"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Welcome to Podium")).toBeNull();
+  });
+
+  it("applies process status events to a sub-agent", async () => {
+    assistant.subagents = [subagent];
+    render(<App />);
+    await waitFor(() =>
+      expect(useAssistantStore.getState().subagents).toHaveLength(1),
+    );
+    const handler = () =>
+      vi
+        .mocked(listen)
+        .mock.calls.find(([name]) => name === "process:status")?.[1];
+    await waitFor(() => expect(handler()).toBeDefined());
+
+    const status = { state: "stopping" };
+    handler()?.({
+      event: "process:status",
+      id: 0,
+      payload: { projectId: "internal", processId: "sub-1", status },
+    });
+    expect(useAssistantStore.getState().subagents[0].status).toEqual(status);
   });
 });

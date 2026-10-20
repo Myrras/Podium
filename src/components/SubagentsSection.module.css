@@ -1,0 +1,201 @@
+/* Pinned between the Responses tray and the log, styled like that tray.
+   Capped so a burst of sub-agents never pushes the chat out of view — the
+   rows scroll instead. */
+.section {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: 35%;
+  min-height: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+.header:hover {
+  background: var(--surface-hover);
+}
+
+.caret {
+  display: flex;
+  color: var(--text-faint);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.caret[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.summary {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--surface-2);
+  animation: rowIn var(--dur-2) var(--ease-out);
+}
+
+/* Its terminal is the one in the work area. */
+.row[data-open="true"] {
+  background: var(--surface-hover);
+}
+
+/* Over: dimmed, so the live ones stand out. */
+.row[data-phase="done"],
+.row[data-phase="failed"],
+.row[data-phase="stopped"] {
+  opacity: 0.75;
+}
+
+.row > :first-child {
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A started one's row opens its terminal. */
+.body[data-openable] {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.body[data-openable]:hover .name {
+  text-decoration: underline;
+}
+
+.body[data-openable]:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.kind {
+  flex-shrink: 0;
+  padding: 0 var(--sp-1);
+  border: 1px solid currentcolor;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.kind[data-kind="full"] {
+  color: var(--info);
+}
+
+.phase {
+  flex-shrink: 0;
+}
+
+.phase[data-phase="running"] {
+  color: var(--success);
+}
+
+.phase[data-phase="waiting"] {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.phase[data-phase="failed"] {
+  color: var(--danger);
+}
+
+.time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.task {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+
+.iconBtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+@keyframes rowIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}

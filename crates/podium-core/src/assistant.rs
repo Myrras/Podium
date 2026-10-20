@@ -81,8 +81,11 @@ use crate::ids::{PendingId, ProjectId, ProposalId};
 use crate::responses::{ResponseItem, ResponseStore};
 
 /// Tools the assistant is never allowed to run: it delegates implementation
-/// work to spawned agents instead of touching the filesystem itself.
-const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash";
+/// work to spawned agents instead of touching the filesystem itself, and
+/// everything else to its own Podium sub-agents (`spawn_subagent`) rather than
+/// the CLI's in-session ones — `Agent`, which older CLIs call `Task` — whose
+/// work would hold its turn and which no panel would show.
+const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit,Bash,Agent,Task";
 
 /// Added to [`DISALLOWED_TOOLS`] under `propose-all`: `SendMessage` is the
 /// CLI's own tool, so Podium's autonomy gate never sees it, and a relayed
@@ -107,13 +110,35 @@ You are the personal assistant docked in the right-hand panel of Podium, a \
 desktop cockpit for AI coding agents. You work across the user's whole \
 workspace, not one project: call the podium MCP tools (start with \
 list_projects) to see and change to-dos, agents, processes, scratchpads and \
-worktrees. You orchestrate; you do not do the work. Your own tool calls are \
-for Podium's tools and for a message the user directly asks you to send — \
-writing or editing code, shell or file-system work, and lookups the user asks \
-for all go to an agent you start with spawn_agent. Never hand such work to \
-your own Agent-tool subagents: they have no shell here. When a request \
-plainly implies dev work, do not ask whether to start: spawn the agent and \
-say what you started. To-dos are for work that runs long or is meant to be \
+worktrees. You orchestrate; you do not do the work, so that you stay free to \
+answer the user at once. Your own tool calls are for Podium's tools and for a \
+message the user directly asks you to send. Anything beyond a reply from what \
+you already know — a lookup, a check, shell or file work — goes to a \
+sub-agent you start with spawn_subagent: kind \"lookup\" to read and look \
+things up (Slack, Teams, tickets, MCP reads, a summary across projects; no \
+shell, no file edits), kind \"full\" for shell, file or git work that belongs \
+to no single project (a check across repositories, a one-off script). Start \
+it, answer the user in one line and end your turn: do not wait for it — its \
+result reaches you as a [Podium] message. At most 4 run at once and the rest \
+simply queue, so never hold one back; list_subagents shows yours, and \
+stop_process stops one. Writing or editing code in a project is not a \
+sub-agent's: start a project agent for it with spawn_agent. Routing stays \
+with you — to-dos, messages to existing agents, proposals and spawn_agent \
+itself. Never use the CLI's own Agent tool. When a sub-agent reports back, \
+tell the user its result in at most two lines, and when it says follow-up \
+work is needed, add a to-do for it in the relevant project with add_todo \
+(ask the user when no project fits). A sub-agent blocked on a decision asks \
+you through Podium and waits. Answering it is the default: whenever you can \
+judge from its task, the context, your memory or the to-dos, answer it \
+yourself with answer_subagent and mention it only in your usual short \
+report — the user should barely have to deal with sub-agents. Relay it to \
+the user only when the decision is genuinely theirs (a preference, a risk, \
+money, people, or anything you cannot infer): then file a needsYou \
+add_response with its process id that gives your recommended answer, so \
+they can wave it through in a word, end that reply with ACTION_REQUIRED, \
+and pass their answer on with answer_subagent. When a request plainly implies dev \
+work, do not ask whether to start: spawn the agent and say what you started. \
+To-dos are for work that runs long or is meant to be \
 picked up later; a small request that can be done now goes straight into a \
 spawned agent's prompt, with no to-do at all. When an agent will open an \
 MR/PR for a sub-issue, tell it to link the parent issue in the description. \
@@ -233,7 +258,7 @@ reason for the order you put things in. Where the priority cannot be worked \
 out from the to-dos and agents alone, ask me instead of guessing.";
 
 /// Tools that only read state. Never gated — in any mode.
-const READ_ONLY_TOOLS: &[&str] = &[
+pub(crate) const READ_ONLY_TOOLS: &[&str] = &[
     "list_projects",
     "list_processes",
     "get_process_status",
@@ -250,7 +275,11 @@ const READ_ONLY_TOOLS: &[&str] = &[
     // assistant can call it. A card asking whether it may tell the user
     // something would be the very noise the list exists to cut.
     "add_response",
+    "list_subagents",
 ];
+
+/// The tool whose gate depends on its arguments (see [`requires_proposal_for`]).
+const SPAWN_SUBAGENT_TOOL: &str = "spawn_subagent";
 
 /// Tools that stop, archive or remove something. These are what
 /// [`AutonomyMode::ConfirmDestructive`] holds back.
@@ -396,6 +425,24 @@ pub fn requires_proposal(mode: AutonomyMode, tool: &str) -> bool {
     }
 }
 
+/// [`requires_proposal`] for one concrete call. `spawn_subagent` is the one
+/// tool gated by its arguments: a `lookup` sub-agent only reads, so it never
+/// needs a card, while a `full` one — shell and files — is classified like
+/// `spawn_agent`, which is also what a missing or unknown kind gets (it would
+/// be refused anyway, but never by skipping the gate).
+pub fn requires_proposal_for(
+    mode: AutonomyMode,
+    tool: &str,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    let lookup = tool == SPAWN_SUBAGENT_TOOL
+        && arguments
+            .and_then(|args| args.get("kind"))
+            .and_then(|kind| kind.as_str())
+            == Some(crate::subagent::SubagentKind::Lookup.as_str());
+    !lookup && requires_proposal(mode, tool)
+}
+
 /// A gated tool call, parked until the user decides. Running it returns the
 /// tool's own result text, or its error message.
 pub type ProposalAction =
@@ -524,6 +571,11 @@ struct PendingInput {
     /// that failed re-queues the item, and the retry must not append it a
     /// second time.
     recorded: bool,
+    /// News that outlives the conversation: a kept sub-agent's result. A new
+    /// conversation that starts while it still waits hands it to the new one
+    /// instead of reporting it undelivered (see
+    /// [`AssistantManager::new_conversation`]).
+    lasting: bool,
 }
 
 /// UI-facing snapshot of one waiting item.
@@ -644,6 +696,13 @@ pub enum AssistantEvent {
     ResponsesChanged {
         #[serde(serialize_with = "crate::responses::serialize_labelled")]
         items: Vec<ResponseItem>,
+    },
+    /// The assistant's sub-agents changed (one was spawned, started, ended,
+    /// renamed or dropped off after lingering). The whole list, oldest first
+    /// — a snapshot like [`AssistantEvent::ResponsesChanged`], and likewise
+    /// never recorded.
+    SubagentsChanged {
+        subagents: Vec<crate::subagent::SubagentInfo>,
     },
 }
 
@@ -1130,6 +1189,7 @@ impl AssistantManager {
             attachments,
             reply_to,
             recorded: false,
+            lasting: false,
         };
         Ok(deliver_or_queue(&mut state, item, &self.store, &self.events).await)
     }
@@ -1139,8 +1199,12 @@ impl AssistantManager {
     /// to it. Whatever was still waiting is reported as undelivered in the
     /// fresh (otherwise empty) transcript. The next turn starts a session
     /// with no `--resume`.
-    pub async fn new_conversation(&self) {
-        let dropped = {
+    ///
+    /// With `keep_lasting`, a waiting [`nudge_lasting`](Self::nudge_lasting)
+    /// item (a kept sub-agent's result) is neither dropped nor reported:
+    /// its text is returned, for the caller to hand to the new conversation.
+    pub async fn new_conversation(&self, keep_lasting: bool) -> Vec<String> {
+        let waiting = {
             let mut state = self.state.lock().await;
             if let Some(mut session) = state.session.take() {
                 // A deliberate kill: the panel is being cleared, so the
@@ -1152,11 +1216,15 @@ impl AssistantManager {
             state.end_turn();
             std::mem::take(&mut state.pending)
         };
+        let (kept, dropped): (VecDeque<PendingInput>, VecDeque<PendingInput>) = waiting
+            .into_iter()
+            .partition(|item| keep_lasting && item.lasting);
         self.proposals.lock().expect(LOCK_POISONED).clear();
         self.store.clear();
         // After clearing, so the notice survives as the first line of the
         // fresh conversation rather than being wiped along with the old one.
         report_undelivered(&self.store, &self.events, dropped);
+        kept.into_iter().map(|item| item.text).collect()
     }
 
     /// Stop the turn in progress, if any, and immediately hand the next
@@ -1371,7 +1439,17 @@ impl AssistantManager {
     ///
     /// [`send`]: Self::send
     pub async fn nudge(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Nudge, text, mcp).await;
+        self.deliver_own(PendingKind::Nudge, text, mcp, false).await;
+    }
+
+    /// A [`nudge`](Self::nudge) that outlives the conversation: how one of
+    /// the assistant's own sub-agents ended. The user may reset the
+    /// conversation and keep its sub-agents running; their results are then
+    /// still owed to the new one, so a result waiting in the queue at that
+    /// moment is carried over rather than dropped (see
+    /// [`new_conversation`](Self::new_conversation)).
+    pub async fn nudge_lasting(&self, text: String, mcp: Option<McpConnectInfo>) {
+        self.deliver_own(PendingKind::Nudge, text, mcp, true).await;
     }
 
     /// Ask the assistant to sweep the user's external sources (the slow lane
@@ -1382,12 +1460,18 @@ impl AssistantManager {
     /// *answer*, and only when there is one: a sweep that found nothing
     /// replies [`NOTHING_TO_REPORT`], which is swallowed.
     pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
-        self.deliver_own(PendingKind::Poll, text, mcp).await;
+        self.deliver_own(PendingKind::Poll, text, mcp, false).await;
     }
 
     /// The shared body of [`nudge`](Self::nudge) and [`poll`](Self::poll):
     /// Podium's own input, into a session it starts if there is none.
-    async fn deliver_own(&self, kind: PendingKind, text: String, mcp: Option<McpConnectInfo>) {
+    async fn deliver_own(
+        &self,
+        kind: PendingKind,
+        text: String,
+        mcp: Option<McpConnectInfo>,
+        lasting: bool,
+    ) {
         let mut state = self.state.lock().await;
         if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
             tracing::warn!("could not start the assistant for a nudge: {e}");
@@ -1399,6 +1483,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -1422,6 +1507,7 @@ impl AssistantManager {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
         let _ = deliver_or_queue(&mut state, item, &self.store, &self.events).await;
     }
@@ -2223,6 +2309,15 @@ fn json_quote(text: &str) -> String {
     serde_json::Value::from(text).to_string()
 }
 
+/// `text` as one JSON-quoted line, for agent-controlled text (a name, a
+/// task, a report) inside a `[Podium]` message: every run of whitespace —
+/// line breaks of any kind included — becomes one space, and the quoting
+/// escapes the rest. So nothing an agent writes can start a line of its own
+/// that reads like Podium speaking, or close the quotes around it.
+pub(crate) fn quote_line(text: &str) -> String {
+    json_quote(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// Build one turn's `content` array: the text block first (a `Path` or
 /// `Text` attachment is folded into it, since the assistant only needs to
 /// *read* those, not see them as separate blocks), then one `image` block
@@ -2491,6 +2586,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
 
         record_before_write(&store, &EventBus::new(), &mut item);
@@ -2516,6 +2612,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
 
         let mut notice = item(PendingKind::Notice);
@@ -2669,6 +2766,13 @@ mod tests {
         assert!(IDENTITY_PROMPT.contains("do not ask whether to start"));
         assert!(IDENTITY_PROMPT.contains("with no to-do at all"));
         assert!(IDENTITY_PROMPT.contains("Act rather than check in"));
+        // Sub-agent questions: answered by the assistant unless the user's.
+        assert!(IDENTITY_PROMPT.contains("Answering it is the default"));
+        assert!(IDENTITY_PROMPT.contains("answer it yourself with answer_subagent"));
+        assert!(IDENTITY_PROMPT.contains("barely have to deal with sub-agents"));
+        assert!(IDENTITY_PROMPT.contains("only when the decision is genuinely theirs"));
+        assert!(IDENTITY_PROMPT.contains("your recommended answer"));
+        assert!(IDENTITY_PROMPT.contains("end that reply with ACTION_REQUIRED"));
         assert!(IDENTITY_PROMPT.contains("stop relaying it"));
     }
 
@@ -2678,7 +2782,6 @@ mod tests {
     fn the_identity_carries_the_orchestrator_rules() {
         for rule in [
             "You orchestrate; you do not do the work",
-            "they have no shell here",
             "never recap what an agent did",
             "stop only that project's agents",
             "get_process_output for follow-up work",
@@ -2713,6 +2816,106 @@ mod tests {
         // With the user's own --settings, --allowedTools would grant a push
         // with no deny list behind it, so the fallback must not pass one.
         assert!(!IDENTITY_PROMPT.contains("Bash(git push:*)"));
+    }
+
+    /// Delegation is what keeps the assistant free to answer, and nothing but
+    /// this wording makes it delegate — pin each rule.
+    #[test]
+    fn the_identity_hands_almost_everything_to_sub_agents() {
+        for rule in [
+            "so that you stay free to answer the user at once",
+            "goes to a sub-agent you start with spawn_subagent",
+            "kind \"lookup\" to read and look things up",
+            "no shell, no file edits",
+            "kind \"full\" for shell, file or git work that belongs to no single project",
+            "answer the user in one line and end your turn",
+            "do not wait for it",
+            "At most 4 run at once and the rest simply queue",
+            "list_subagents shows yours",
+            "Writing or editing code in a project is not a sub-agent's",
+            "start a project agent for it with spawn_agent",
+            "Routing stays with you",
+            "Never use the CLI's own Agent tool",
+            "tell the user its result in at most two lines",
+            "add a to-do for it in the relevant project with add_todo",
+        ] {
+            assert!(IDENTITY_PROMPT.contains(rule), "missing: {rule}");
+        }
+        // The old rule sent lookups to spawn_agent; that is a sub-agent's now.
+        assert!(!IDENTITY_PROMPT.contains("lookups the user asks for all go to an agent"));
+    }
+
+    /// The CLI's own subagents would do the work inside the assistant's turn,
+    /// out of every panel's sight — under both of its names.
+    #[test]
+    fn the_cli_s_own_agent_tool_is_refused() {
+        let refused: Vec<&str> = DISALLOWED_TOOLS.split(',').collect();
+        for tool in ["Edit", "Write", "NotebookEdit", "Bash", "Agent", "Task"] {
+            assert!(refused.contains(&tool), "{tool} must be refused");
+        }
+    }
+
+    /// A lookup sub-agent only reads, so starting one never needs a card; a
+    /// full one is gated like spawn_agent, and so is one whose kind is
+    /// missing or unknown.
+    #[test]
+    fn spawn_subagent_is_gated_by_its_kind() {
+        let args = |kind: &str| {
+            serde_json::json!({ "kind": kind, "task": "Find the release thread" })
+                .as_object()
+                .cloned()
+                .expect("object")
+        };
+        let lookup = args("lookup");
+        let full = args("full");
+        let odd = args("everything");
+        for mode in [
+            AutonomyMode::Full,
+            AutonomyMode::ConfirmDestructive,
+            AutonomyMode::ProposeAll,
+        ] {
+            assert!(!requires_proposal_for(
+                mode,
+                "spawn_subagent",
+                Some(&lookup)
+            ));
+            for gated in [Some(&full), Some(&odd), None] {
+                assert_eq!(
+                    requires_proposal_for(mode, "spawn_subagent", gated),
+                    requires_proposal(mode, "spawn_agent"),
+                    "{mode:?}"
+                );
+            }
+        }
+        // The kind only matters for spawn_subagent.
+        assert!(requires_proposal_for(
+            AutonomyMode::ConfirmDestructive,
+            "stop_process",
+            Some(&lookup)
+        ));
+        // Listing them is a read.
+        assert!(!requires_proposal(
+            AutonomyMode::ProposeAll,
+            "list_subagents"
+        ));
+    }
+
+    #[test]
+    fn a_sub_agents_snapshot_is_tagged_and_camel_case() {
+        let json = serde_json::to_value(AssistantEvent::SubagentsChanged {
+            subagents: Vec::new(),
+        })
+        .expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "subagentsChanged", "subagents": [] })
+        );
+        // Not conversation: never a transcript row.
+        let store = AssistantStore::new();
+        store.record(&AssistantEvent::SubagentsChanged {
+            subagents: Vec::new(),
+        });
+        assert!(store.transcript().is_empty());
     }
 
     /// The marker is the whole notification gate for unprompted turns, and it
@@ -3261,6 +3464,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         };
         deliver_or_queue(&mut state, item, &manager.store, &manager.events).await;
     }
@@ -3286,7 +3490,7 @@ mod tests {
         ));
 
         // …and it is dropped along with the conversation it was meant for.
-        manager.new_conversation().await;
+        manager.new_conversation(false).await;
         assert!(manager.state.lock().await.pending.is_empty());
     }
 
@@ -3309,6 +3513,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
+            lasting: false,
         });
         id
     }
@@ -3338,6 +3543,7 @@ mod tests {
             attachments: Vec::new(),
             reply_to: Some(answered("Merge the PR now or wait for review?")),
             recorded: false,
+            lasting: false,
         }
     }
 
@@ -3533,6 +3739,56 @@ mod tests {
         manager.shutdown().await;
         assert_eq!(manager.store.responses().list(), vec![answered]);
         assert!(manager.state.lock().await.pending.is_empty());
+    }
+
+    /// A kept sub-agent's result still waiting when the conversation resets
+    /// is owed to the new conversation, not lost; anything else waiting is
+    /// reported undelivered as before.
+    #[tokio::test]
+    async fn a_lasting_nudge_waiting_at_a_reset_is_handed_on_not_dropped() {
+        let manager = AssistantManager::new(EventBus::new());
+        let seed = |text: &str, kind: PendingKind, lasting: bool| PendingInput {
+            id: PendingId::new(),
+            kind,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+            lasting,
+        };
+        {
+            let mut state = manager.state.lock().await;
+            state.pending.push_back(seed(
+                "[Podium] Your sub-agent finished.",
+                PendingKind::Nudge,
+                true,
+            ));
+            state
+                .pending
+                .push_back(seed("what is open?", PendingKind::User, false));
+        }
+        let owed = manager.new_conversation(true).await;
+        assert_eq!(owed, vec!["[Podium] Your sub-agent finished.".to_string()]);
+        let notices: Vec<String> = manager
+            .store
+            .transcript()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("what is open?"), "{notices:?}");
+        assert!(!notices[0].contains("sub-agent"), "{notices:?}");
+
+        // Told not to keep them (the sub-agents were stopped), it goes the
+        // way of everything else.
+        manager.state.lock().await.pending.push_back(seed(
+            "[Podium] Your sub-agent failed.",
+            PendingKind::Nudge,
+            true,
+        ));
+        assert!(manager.new_conversation(false).await.is_empty());
+        let notices = manager.store.transcript();
+        assert!(notices[0].text.contains("sub-agent failed"), "{notices:?}");
     }
 
     #[tokio::test]
