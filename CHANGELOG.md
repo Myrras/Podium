@@ -43,6 +43,26 @@ when it merges.
 - New MCP tools: `spawn_subagent`, `list_subagents` and `answer_subagent` for
   the assistant, and `ask_assistant` for its sub-agents.
 
+### Changed
+
+- **Only Responses items reach your desktop.** The assistant no longer
+  notifies you for a chat reply, a confirmation card or an unprompted
+  `[Podium]` turn; a new item on the Responses list does, once per batch and
+  never while you are looking at the assistant panel. Every action the
+  assistant proposes now files a "Confirm or reject" item, which is what
+  notifies you for it. The assistant files items only for what you need — a
+  question only you can answer, a message that asks you something, finished
+  work you asked for, a crashed agent — and no longer for "no change"
+  reminders or agents that finished with nothing left for you.
+- **A stuck agent is raised twice at most.** An agent blocked on the same
+  question is nudged once and escalated once, then left alone, instead of
+  every ten minutes for as long as it stays blocked. Typing into the agent's
+  terminal starts a new question cycle.
+- **The assistant stays quiet about the agent you are looking at.** Podium
+  tells it which agent you have open (window in front, terminal showing); it
+  skips nudges and Responses items about that agent, and leaving the agent
+  does not trigger an immediate nudge.
+
 ## [3.1.1] - 2026-10-09
 
 ### Changed

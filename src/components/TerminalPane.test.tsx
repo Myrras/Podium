@@ -46,6 +46,7 @@ function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
     command: "echo hi",
     worktree: null,
     color: null,
+    viewing: false,
   };
 }
 

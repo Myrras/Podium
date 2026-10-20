@@ -200,6 +200,21 @@ impl ResponseStore {
         Ok(item)
     }
 
+    /// Take every item matching `pred` off the list in one write (and one
+    /// announcement). Nothing matching is a no-op that announces nothing.
+    pub fn remove_where(
+        &self,
+        pred: impl Fn(&ResponseItem) -> bool,
+        changed: impl FnOnce(&[ResponseItem]),
+    ) -> CoreResult<()> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        if !inner.items.iter().any(&pred) {
+            return Ok(());
+        }
+        let items: Vec<ResponseItem> = inner.items.iter().filter(|i| !pred(i)).cloned().collect();
+        commit(&mut inner, items, changed)
+    }
+
     /// Put back an item [`remove`](Self::remove) took, in its place by age —
     /// unless a newer item about the same agent or to-do arrived meanwhile,
     /// which is the one the user should see.
@@ -301,6 +316,37 @@ mod tests {
 
     fn texts(items: &[ResponseItem]) -> Vec<&str> {
         items.iter().map(|i| i.text.as_str()).collect()
+    }
+
+    #[test]
+    fn remove_where_drops_every_match_in_one_announcement() {
+        let store = ResponseStore::new();
+        add(&store, item(None, None, "keep"));
+        add(&store, item(None, None, "drop one"));
+        add(&store, item(None, None, "drop two"));
+        let mut announcements = 0;
+        let mut last = Vec::new();
+        store
+            .remove_where(
+                |i| i.text.starts_with("drop"),
+                |l| {
+                    announcements += 1;
+                    last = l.to_vec();
+                },
+            )
+            .unwrap();
+        assert_eq!(announcements, 1);
+        assert_eq!(texts(&last), vec!["keep"]);
+        assert_eq!(texts(&store.list()), vec!["keep"]);
+    }
+
+    #[test]
+    fn remove_where_with_no_match_announces_nothing() {
+        let store = ResponseStore::new();
+        add(&store, item(None, None, "keep"));
+        let mut announced = false;
+        store.remove_where(|_| false, |_| announced = true).unwrap();
+        assert!(!announced);
     }
 
     #[test]

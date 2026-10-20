@@ -70,6 +70,7 @@ function proc(
     command: name,
     worktree: null,
     color: null,
+    viewing: false,
   };
 }
 

@@ -180,6 +180,14 @@ pub fn process_report_waiting(state: State<'_, AppState>, process_id: ProcessId)
     state.orchestrator.report_agent_waiting(process_id);
 }
 
+/// Which agent the user has open on screen (`null`: none). Fire-and-forget:
+/// the core keeps it in memory so the assistant is not told about, and files
+/// nothing on, the agent the user is already looking at.
+#[tauri::command]
+pub fn process_report_viewing(state: State<'_, AppState>, process_id: Option<ProcessId>) {
+    state.orchestrator.set_viewing(process_id);
+}
+
 /// The git branch checked out in the process's working directory, or `null`
 /// when it is not a git repo / detached HEAD. Shells out to git via the login
 /// shell (seconds of shell-profile startup), so it runs on a blocking thread —

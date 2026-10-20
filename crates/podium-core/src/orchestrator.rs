@@ -162,6 +162,15 @@ struct ManagedProcess {
     /// When the UI last saw an input prompt on this agent's screen — see
     /// [`Orchestrator::report_agent_waiting`]. `None` until it reports one.
     waiting_since: Option<Instant>,
+    /// When the user last typed into this process's terminal
+    /// ([`Orchestrator::write_stdin`]): what tells [`crate::proactivity`]
+    /// that a blocked agent's question was answered, so its next stall is a
+    /// new question. `None` until something is typed.
+    last_input: Option<Instant>,
+    /// Whether the user has this agent open on screen right now
+    /// ([`Orchestrator::set_viewing`]). In memory only, and at most one
+    /// process has it.
+    viewing: bool,
     /// The per-spawn args it was started with (`args_override`), remembered
     /// with its session so a restore runs on the same model.
     spawn_args: Option<Vec<String>>,
@@ -220,6 +229,7 @@ impl ManagedProcess {
             command: self.spec.command.clone(),
             worktree: crate::process::worktree_name_from_cwd(&self.spec.cwd),
             color: self.spec.color.clone(),
+            viewing: self.viewing,
             // Filled in by `process_info_in`, which can see the sub-agents.
             subagent: None,
         }
@@ -1130,6 +1140,42 @@ impl Orchestrator {
             .collect()
     }
 
+    /// When the user last typed into this process, if they ever did — see
+    /// [`ManagedProcess::last_input`].
+    pub fn last_user_input(&self, id: ProcessId) -> Option<Instant> {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .processes
+            .get(&id)?
+            .last_input
+    }
+
+    /// The frontend reports which agent the user has open on screen (`None`:
+    /// none — another view, or the window is not in front). In memory only.
+    /// Anything that is not an agent counts as `None`, and the previous value
+    /// is always cleared, so at most one process is ever viewed. Shown as
+    /// [`ProcessInfo::viewing`], and read by [`crate::proactivity`] and
+    /// `add_response` so the assistant stays quiet about that agent.
+    pub fn set_viewing(&self, id: Option<ProcessId>) {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        for (pid, p) in inner.processes.iter_mut() {
+            p.viewing = id == Some(*pid) && matches!(p.spec.kind, ProcessKind::Agent { .. });
+        }
+    }
+
+    /// The agent the user is viewing, if any. A removed process drops out by
+    /// itself: the flag lives on the process.
+    pub fn viewing(&self) -> Option<ProcessId> {
+        self.inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .processes
+            .iter()
+            .find(|(_, p)| p.viewing)
+            .map(|(id, _)| *id)
+    }
+
     /// Park a tool call the autonomy gate held back, for the user to decide
     /// on. Called from the MCP layer, which owns the deferred action.
     /// `project` is the project the call acts on, if any, so closing that
@@ -1200,6 +1246,10 @@ impl Orchestrator {
     /// An agent that is already gone keeps its id as the supersede key but
     /// loses its name: it may well have exited between the nudge and this
     /// call, which is no reason to drop the item.
+    ///
+    /// An item about the agent the user is viewing is not stored (`Ok(None)`):
+    /// they are looking at it, so it needs no second telling — and no
+    /// desktop notification.
     pub fn add_assistant_response(
         &self,
         kind: ResponseKind,
@@ -1208,7 +1258,7 @@ impl Orchestrator {
         project_id: Option<ProjectId>,
         todo_id: Option<TodoId>,
         source: Option<&str>,
-    ) -> CoreResult<ResponseItem> {
+    ) -> CoreResult<Option<ResponseItem>> {
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -1233,6 +1283,9 @@ impl Orchestrator {
             return Err(CoreError::InvalidInput(
                 "process_id must be an agent's".to_string(),
             ));
+        }
+        if process.as_ref().is_some_and(|p| p.viewing) {
+            return Ok(None);
         }
         // A live agent's own project wins over `project_id`: the agent is
         // what the item is about, so a mismatched id would mislabel it.
@@ -1270,7 +1323,7 @@ impl Orchestrator {
         };
         self.responses()
             .add(item.clone(), |items| self.publish_responses(items))?;
-        Ok(item)
+        Ok(Some(item))
     }
 
     /// Mark one Responses item as read: it is simply removed.
@@ -3617,6 +3670,17 @@ impl Orchestrator {
 
     pub async fn write_stdin(&self, id: ProcessId, bytes: &[u8]) -> CoreResult<()> {
         self.running_pty(id)?.write(bytes)?;
+        if is_user_input(bytes) {
+            if let Some(p) = self
+                .inner
+                .lock()
+                .expect(LOCK_POISONED)
+                .processes
+                .get_mut(&id)
+            {
+                p.last_input = Some(Instant::now());
+            }
+        }
         // The user answering a waiting sub-agent in its own terminal: an
         // Enter sends what they typed, so it is running again.
         if bytes.contains(&b'\r') {
@@ -4727,6 +4791,23 @@ fn project_backend(inner: &Inner, project_id: ProjectId) -> Option<&'static WslB
     }
 }
 
+/// Whether a stdin write is the user answering, rather than the terminal
+/// talking for them. xterm.js writes short escape sequences by itself (focus
+/// reports, cursor-position and device-attribute replies), and counting those
+/// would end a blocked agent's question every time the window changed focus.
+fn is_user_input(bytes: &[u8]) -> bool {
+    // ponytail: a lone arrow key is skipped too; anything typed or pasted
+    // counts, and a paste starts with a bracketed-paste sequence but is longer.
+    match bytes.first() {
+        None => false,
+        Some(&first) => first != 0x1b || bytes.len() > MAX_TERMINAL_REPLY_BYTES,
+    }
+}
+
+/// Longest escape sequence the terminal itself sends back (a cursor-position
+/// report is about a dozen bytes).
+const MAX_TERMINAL_REPLY_BYTES: usize = 16;
+
 fn insert_process(
     inner: &mut Inner,
     id: ProcessId,
@@ -4752,6 +4833,8 @@ fn insert_process(
             started_at: None,
             started_wall: None,
             waiting_since: None,
+            last_input: None,
+            viewing: false,
             spawn_args: None,
             spawn_worktree: false,
             spawn_worktree_name: None,
@@ -5755,6 +5838,118 @@ mod tests {
             orch.rename_process(ProcessId::new(), "x"),
             Err(CoreError::ProcessNotFound)
         ));
+    }
+
+    fn spec_of(kind: ProcessKind, dir: &std::path::Path) -> ProcessSpec {
+        ProcessSpec {
+            name: "p".to_string(),
+            command: "true".to_string(),
+            cwd: dir.to_path_buf(),
+            env: Vec::new(),
+            kind,
+            restart_policy: RestartPolicy::Never,
+            color: None,
+        }
+    }
+
+    fn agent_kind() -> ProcessKind {
+        ProcessKind::Agent {
+            adapter: "claude-code".to_string(),
+        }
+    }
+
+    fn is_viewing(orch: &Orchestrator, id: ProcessId) -> bool {
+        orch.list_processes(None)
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap()
+            .viewing
+    }
+
+    #[tokio::test]
+    async fn at_most_one_agent_is_viewed_and_it_shows_in_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let a = orch
+            .add_process(project, spec_of(agent_kind(), dir.path()))
+            .await
+            .unwrap();
+        let b = orch
+            .add_process(project, spec_of(agent_kind(), dir.path()))
+            .await
+            .unwrap();
+        assert_eq!(orch.viewing(), None);
+
+        orch.set_viewing(Some(a));
+        assert_eq!(orch.viewing(), Some(a));
+        assert!(is_viewing(&orch, a) && !is_viewing(&orch, b));
+
+        // Moving to the other agent clears the first.
+        orch.set_viewing(Some(b));
+        assert_eq!(orch.viewing(), Some(b));
+        assert!(!is_viewing(&orch, a) && is_viewing(&orch, b));
+
+        orch.set_viewing(None);
+        assert_eq!(orch.viewing(), None);
+        assert!(!is_viewing(&orch, a) && !is_viewing(&orch, b));
+    }
+
+    #[tokio::test]
+    async fn a_terminal_or_unknown_process_is_never_viewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let agent = orch
+            .add_process(project, spec_of(agent_kind(), dir.path()))
+            .await
+            .unwrap();
+        let terminal = orch
+            .add_process(project, spec_of(ProcessKind::Terminal, dir.path()))
+            .await
+            .unwrap();
+
+        orch.set_viewing(Some(agent));
+        // Looking at a terminal means looking at no agent: stored as None.
+        orch.set_viewing(Some(terminal));
+        assert_eq!(orch.viewing(), None);
+        assert!(!is_viewing(&orch, agent) && !is_viewing(&orch, terminal));
+
+        orch.set_viewing(Some(ProcessId::new()));
+        assert_eq!(orch.viewing(), None);
+    }
+
+    #[tokio::test]
+    async fn removing_the_viewed_agent_clears_the_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let agent = orch
+            .add_process(project, spec_of(agent_kind(), dir.path()))
+            .await
+            .unwrap();
+        orch.set_viewing(Some(agent));
+
+        orch.remove_process(agent).await.unwrap();
+
+        assert_eq!(orch.viewing(), None);
+    }
+
+    #[test]
+    fn a_terminals_own_replies_do_not_count_as_the_user_typing() {
+        assert!(is_user_input(b"y"));
+        assert!(is_user_input(b"yes\r"));
+        assert!(is_user_input("é".as_bytes()));
+        // A paste starts with the bracketed-paste sequence but is long.
+        assert!(is_user_input(
+            b"\x1b[200~please use the second option\x1b[201~"
+        ));
+        // Focus reports, cursor-position and device-attribute replies.
+        assert!(!is_user_input(b"\x1b[I"));
+        assert!(!is_user_input(b"\x1b[O"));
+        assert!(!is_user_input(b"\x1b[12;40R"));
+        assert!(!is_user_input(b"\x1b[?62;c"));
+        assert!(!is_user_input(b""));
     }
 
     #[tokio::test]
@@ -7016,12 +7211,6 @@ mod tests {
         id
     }
 
-    fn agent_kind() -> ProcessKind {
-        ProcessKind::Agent {
-            adapter: "claude-code".to_string(),
-        }
-    }
-
     fn exited_ago(ago: Duration, stopped: bool) -> ProcessStatus {
         ProcessStatus::Exited {
             code: Some(0),
@@ -7032,6 +7221,37 @@ mod tests {
     }
 
     const WINDOW: Duration = Duration::from_secs(5 * 60);
+
+    /// An agent removed by the cleanup sweep takes its viewing flag and its
+    /// last-input stamp with it, exactly like a manual remove.
+    #[tokio::test]
+    async fn an_auto_removed_agent_is_no_longer_viewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(10 * 60), false),
+        )
+        .await;
+        orch.set_viewing(Some(id));
+        orch.inner
+            .lock()
+            .unwrap()
+            .processes
+            .get_mut(&id)
+            .unwrap()
+            .last_input = Some(Instant::now());
+        assert_eq!(orch.viewing(), Some(id));
+
+        assert_eq!(orch.remove_exited_agents(WINDOW), vec![id]);
+
+        assert_eq!(orch.viewing(), None);
+        assert!(orch.last_user_input(id).is_none());
+    }
 
     #[tokio::test]
     async fn only_agents_exited_for_the_whole_window_are_removed() {
@@ -7904,22 +8124,26 @@ mod tests {
 
         // From here on nothing calls into the orchestrator: only the
         // driver's own tick can drop the rows, and its snapshot says so.
-        let mut ended_seen = false;
+        // The rows end at different moments (the crash only once its login
+        // shell has started, which can take longer than the linger), so one
+        // may already be gone before another ends: each is checked on its
+        // own, never all three in one snapshot.
+        let mut ended_seen = std::collections::HashSet::new();
         let gone = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 match events.recv().await {
                     Ok(PodiumEvent::AssistantEvent {
                         event: AssistantEvent::SubagentsChanged { subagents },
                     }) => {
-                        if subagents.len() == 3 && subagents.iter().all(|s| s.phase.is_ended()) {
-                            ended_seen = true;
-                            // Each snapshot says when its row goes.
-                            for s in &subagents {
-                                let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
-                                assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
-                            }
+                        // Each snapshot says when an ended row goes.
+                        for s in subagents.iter().filter(|s| s.phase.is_ended()) {
+                            let (ended, expires) = (s.ended_at.unwrap(), s.expires_at.unwrap());
+                            assert_eq!(expires - ended, chrono::Duration::milliseconds(300));
+                            ended_seen.insert(s.id);
                         }
-                        if ended_seen && subagents.iter().all(|s| !ids.contains(&s.id)) {
+                        if ids.iter().all(|id| ended_seen.contains(id))
+                            && subagents.iter().all(|s| !ids.contains(&s.id))
+                        {
                             return;
                         }
                     }

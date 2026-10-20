@@ -86,6 +86,10 @@ pub struct ProcessInfo {
     /// row can be tinted to match the to-dos this session owns. `None` for
     /// services/terminals.
     pub color: Option<String>,
+    /// Whether the user has this agent open on screen right now (see
+    /// `Orchestrator::set_viewing`). True for at most one agent. The assistant
+    /// reads it in `list_processes`: it must not mention that agent.
+    pub viewing: bool,
     /// Set only on one of the personal assistant's sub-agents (which never
     /// appear in a project's listing), and left off the wire otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]

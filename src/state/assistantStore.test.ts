@@ -60,8 +60,15 @@ vi.mock("../lib/notify", () => ({
     notifyAssistant(title, body),
 }));
 
+// Which agent the user is looking at is the activity store's business; the
+// assistant store only asks.
+const viewed = vi.fn<() => string | null>(() => null);
+vi.mock("./agentActivityStore", () => ({
+  viewedAgentId: () => viewed(),
+}));
+
 import { useLayoutStore } from "./layoutStore";
-import { useAssistantStore } from "./assistantStore";
+import { resetSeenResponses, useAssistantStore } from "./assistantStore";
 
 function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
   return {
@@ -116,7 +123,6 @@ describe("assistantStore", () => {
       proactive: true,
       polling: { intervalMinutes: 10, slack: true, teams: true },
       pending: [],
-      turnReplyText: null,
       responses: [],
     });
   });
@@ -258,9 +264,7 @@ describe("assistantStore", () => {
     expect(assistantSend).toHaveBeenCalledWith("hello", []);
     expect(useAssistantStore.getState().busy).toBe(true);
 
-    useAssistantStore
-      .getState()
-      .apply({ type: "turnEnd", error: null, notify: true });
+    useAssistantStore.getState().apply({ type: "turnEnd", error: null });
     expect(useAssistantStore.getState().busy).toBe(false);
     expect(
       useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
@@ -309,7 +313,7 @@ describe("assistantStore", () => {
       "mcp__podium__list_todos",
     );
 
-    apply({ type: "turnEnd", error: null, notify: true });
+    apply({ type: "turnEnd", error: null });
     expect(useAssistantStore.getState().activity).toBeNull();
   });
 
@@ -632,101 +636,36 @@ describe("assistantStore", () => {
 
   describe("notifying the user", () => {
     const { apply } = useAssistantStore.getState();
+    const snapshot = (...items: ResponseItem[]) =>
+      apply({ type: "responsesChanged", items });
 
-    it("notifies once at turn end, using the last streamed block as the body", () => {
-      apply({ type: "message", text: "partial…" });
+    // The first load is the baseline: what it holds is not news.
+    beforeEach(async () => {
+      resetSeenResponses();
+      viewed.mockReturnValue(null);
+      vi.mocked(assistantResponsesList).mockReset();
+      vi.mocked(assistantResponsesList).mockResolvedValue([]);
+      await useAssistantStore.getState().loadResponses();
+      notifyAssistant.mockClear();
+    });
+
+    it("does not ping for a reply, however a turn ends", () => {
       apply({ type: "message", text: "Two to-dos are open." });
-      apply({ type: "turnEnd", error: null, notify: true });
-
-      expect(notifyAssistant).toHaveBeenCalledOnce();
-      expect(notifyAssistant).toHaveBeenCalledWith(
-        "Assistant replied",
-        "Two to-dos are open.",
-      );
-    });
-
-    it("stays silent when the window is focused and the pane is open", () => {
-      vi.spyOn(document, "hasFocus").mockReturnValue(true);
-      useLayoutStore.setState({ assistantOpen: true });
-
-      apply({ type: "message", text: "Two to-dos are open." });
-      apply({ type: "turnEnd", error: null, notify: true });
-
-      expect(notifyAssistant).not.toHaveBeenCalled();
-    });
-
-    it("notifies when the pane is open but the window is unfocused", () => {
-      vi.spyOn(document, "hasFocus").mockReturnValue(false);
-      useLayoutStore.setState({ assistantOpen: true });
-
+      apply({ type: "turnEnd", error: null });
       apply({ type: "message", text: "reply" });
-      apply({ type: "turnEnd", error: null, notify: true });
-
-      expect(notifyAssistant).toHaveBeenCalledOnce();
-    });
-
-    it("notifies when the window is focused but the pane is closed", () => {
-      vi.spyOn(document, "hasFocus").mockReturnValue(true);
-      useLayoutStore.setState({ assistantOpen: false });
-
-      apply({ type: "message", text: "reply" });
-      apply({ type: "turnEnd", error: null, notify: true });
-
-      expect(notifyAssistant).toHaveBeenCalledOnce();
-    });
-
-    it("does not notify when the turn produced nothing", () => {
-      apply({ type: "turnEnd", error: null, notify: true });
+      apply({ type: "turnEnd", error: "error_max_turns" });
 
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
 
-    it("stays silent for an unprompted turn the backend did not flag", () => {
-      // A nudge the assistant answered with plain news — the panel shows it,
-      // the desktop does not hear about it.
-      apply({ type: "message", text: "The agent finished its to-do." });
-      apply({ type: "turnEnd", error: null, notify: false });
-
-      expect(notifyAssistant).not.toHaveBeenCalled();
-    });
-
-    it("does not notify when the turn failed", () => {
-      apply({ type: "message", text: "reply" });
-      apply({ type: "turnEnd", error: "error_max_turns", notify: true });
-
-      expect(notifyAssistant).not.toHaveBeenCalled();
-    });
-
-    it("does not notify for a proactive nudge itself", () => {
-      apply({ type: "notice", text: "[Podium] an agent finished" });
-
-      expect(notifyAssistant).not.toHaveBeenCalled();
-    });
-
-    it("notifies when a proposal appears, needing confirm/reject", () => {
+    it("does not ping for a proposal card or a nudge itself", () => {
       apply({
         type: "proposal",
         id: "p-1",
         tool: "set_todo_archived",
         summary: '{"todoId":"t-1"}',
       });
-
-      expect(notifyAssistant).toHaveBeenCalledOnce();
-      expect(notifyAssistant).toHaveBeenCalledWith(
-        "Assistant has a question",
-        '{"todoId":"t-1"}',
-      );
-    });
-
-    it("does not re-notify for a resolved proposal", () => {
-      apply({
-        type: "proposal",
-        id: "p-1",
-        tool: "set_todo_archived",
-        summary: "",
-      });
-      notifyAssistant.mockClear();
-
+      apply({ type: "notice", text: "[Podium] an agent finished" });
       apply({
         type: "proposalResolved",
         id: "p-1",
@@ -737,18 +676,155 @@ describe("assistantStore", () => {
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
 
-    it("resets the reply tracked per turn when a queued message is delivered", () => {
-      apply({ type: "message", text: "first turn's reply" });
-      apply({
-        type: "queueItemDelivered",
-        text: "next queued message",
-        replyTo: null,
-      });
-      apply({ type: "turnEnd", error: null, notify: true });
+    it("pings for a new needs-you item with its text", () => {
+      snapshot(responseItem());
 
-      // The stale reply from before the queued turn started must not leak
-      // into a notification for a turn that produced nothing new.
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+      expect(notifyAssistant).toHaveBeenCalledWith(
+        "Needs you",
+        "CSV or XLSX for the export?",
+      );
+    });
+
+    it("titles an fyi-only snapshot FYI", () => {
+      snapshot(responseItem({ kind: "fyi", text: "PR is up" }));
+
+      expect(notifyAssistant).toHaveBeenCalledWith("FYI", "PR is up");
+    });
+
+    it("pings for a proposal's item like any other needs-you", () => {
+      snapshot(
+        responseItem({
+          id: "r-p",
+          text: "Confirm or reject: stop_process {}",
+          processId: null,
+          todoId: null,
+          source: "proposal",
+        }),
+      );
+
+      expect(notifyAssistant).toHaveBeenCalledWith(
+        "Needs you",
+        "Confirm or reject: stop_process {}",
+      );
+    });
+
+    it("never pings for what the first load already held", async () => {
+      resetSeenResponses();
+      vi.mocked(assistantResponsesList).mockResolvedValueOnce([responseItem()]);
+      await useAssistantStore.getState().loadResponses();
+
+      snapshot(responseItem());
+      // A later snapshot that still carries it is no news either.
+      snapshot(responseItem(), responseItem({ id: "r-2", text: "new" }));
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+      expect(notifyAssistant).toHaveBeenCalledWith("Needs you", "new");
+    });
+
+    it("pings nothing before the list was loaded once", () => {
+      resetSeenResponses();
+
+      snapshot(responseItem());
+
       expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("does not ping again for a restored item (same id)", () => {
+      snapshot(responseItem());
+      snapshot(); // the user replied: it left the list
+      snapshot(responseItem()); // the reply never went out: it is back
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("pings for an item that replaced an open one (new id)", () => {
+      snapshot(responseItem());
+      snapshot(responseItem({ id: "r-2", text: "XLSX or PDF?" }));
+
+      expect(notifyAssistant).toHaveBeenCalledTimes(2);
+      expect(notifyAssistant).toHaveBeenLastCalledWith(
+        "Needs you",
+        "XLSX or PDF?",
+      );
+    });
+
+    it("makes one notification of several new items", () => {
+      // Newest first, like the backend's list.
+      snapshot(
+        responseItem({ id: "r-3", kind: "fyi", text: "Review posted" }),
+        responseItem({ id: "r-2", kind: "needsYou", text: "Pick a variant" }),
+        responseItem({ id: "r-1", kind: "fyi", text: "PR is up" }),
+      );
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+      expect(notifyAssistant).toHaveBeenCalledWith(
+        "Needs you",
+        "Review posted (+2 more)",
+      );
+    });
+
+    it("counts only the new items, not the ones already on the list", () => {
+      snapshot(responseItem({ id: "r-1", kind: "fyi", text: "PR is up" }));
+      notifyAssistant.mockClear();
+
+      snapshot(
+        responseItem({ id: "r-2", kind: "fyi", text: "Review posted" }),
+        responseItem({ id: "r-1", kind: "fyi", text: "PR is up" }),
+      );
+
+      expect(notifyAssistant).toHaveBeenCalledWith("FYI", "Review posted");
+    });
+
+    it("stays silent when the window is focused and the pane is open", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      useLayoutStore.setState({ assistantOpen: true });
+
+      snapshot(responseItem());
+      expect(notifyAssistant).not.toHaveBeenCalled();
+
+      // Seen is seen: leaving the pane later does not ping for it.
+      useLayoutStore.setState({ assistantOpen: false });
+      snapshot(responseItem());
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("pings when the pane is open but the window is unfocused", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      useLayoutStore.setState({ assistantOpen: true });
+
+      snapshot(responseItem());
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("pings when the window is focused but the pane is closed", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      useLayoutStore.setState({ assistantOpen: false });
+
+      snapshot(responseItem());
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("skips an item about the agent the user is viewing", () => {
+      viewed.mockReturnValue("proc-1");
+
+      snapshot(responseItem({ processId: "proc-1" }));
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("pings for the other items when one is about the viewed agent", () => {
+      viewed.mockReturnValue("proc-1");
+
+      snapshot(
+        responseItem({ id: "r-2", kind: "fyi", text: "Other", processId: "x" }),
+        responseItem({ id: "r-1", processId: "proc-1" }),
+      );
+
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+      expect(notifyAssistant).toHaveBeenCalledWith("FYI", "Other");
     });
   });
 });

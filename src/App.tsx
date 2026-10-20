@@ -181,6 +181,13 @@ export default function App() {
   // so the alert fires once no matter how many views show the agent.
   useEffect(() => startAgentActivityMonitor(), []);
 
+  // Load the Responses list once at launch, even with the assistant pane
+  // closed: it is the baseline for "new item" desktop notifications, so what
+  // the persisted list already holds never pings.
+  useEffect(() => {
+    void useAssistantStore.getState().loadResponses();
+  }, []);
+
   // Terminals are not React-rendered, so push theme/font changes into the
   // registry. `mode` flips after the `data-theme` attribute is applied, so
   // reading the tokens here always sees the new palette.

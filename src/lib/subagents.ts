@@ -31,6 +31,8 @@ export function subagentProcess(s: SubagentInfo): ProcessInfo {
     command: "",
     worktree: null,
     color: null,
+    // Never reported as viewed: sub-agents are not in the process store.
+    viewing: false,
     subagent: {
       kind: s.kind,
       task: s.task,

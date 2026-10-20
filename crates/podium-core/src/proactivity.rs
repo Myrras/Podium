@@ -6,10 +6,16 @@
 //!
 //! - an agent exited — finished or crashed;
 //! - a running agent has been silent long enough to look stuck on a question;
-//! - that same agent *still* blocked a while later — raised again, but with
+//! - that same agent *still* blocked a while later — raised once more, with
 //!   wording that asks the assistant to propose an answer instead of relaying
-//!   the question a second time;
+//!   the question a second time. That is the last word on that question: two
+//!   raises at most, then silence, until the user types into the agent's
+//!   terminal (which is a new question cycle);
 //! - to-dos that have been open for a long time (a periodic sweep).
+//!
+//! The agent the user has open on screen ([`Orchestrator::viewing`]) is never
+//! announced: they are looking at it. Its blocked question is recorded as
+//! already raised, so leaving the agent does not fire a nudge at once.
 //!
 //! Each of those becomes one `[Podium] …` turn handed to the assistant, which
 //! answers in the chat panel like it would to the user. A nudge **starts the
@@ -44,6 +50,11 @@ use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessInfo, ProcessKind, ProcessStatus};
 
+/// How often one blocked question is raised with the assistant: the first
+/// nudge plus one escalation. Raising it every `escalate_after` for as long as
+/// the agent lived produced a "no change" reply every ten minutes for hours.
+const MAX_RAISES: u32 = 2;
+
 /// How many lingering to-dos are named in a nudge before it just counts them.
 const MAX_LINGERING_NAMED: usize = 5;
 
@@ -56,8 +67,9 @@ pub struct ProactivityConfig {
     /// Silence after which a running agent is assumed to be waiting on input.
     pub idle_after: Duration,
     /// How long a flagged agent may stay blocked before Podium raises it
-    /// again — and then asks the assistant to propose an answer rather than
-    /// repeat the question.
+    /// once more — and then asks the assistant to propose an answer rather
+    /// than repeat the question. There is no third raise: see
+    /// [`MAX_RAISES`].
     pub escalate_after: Duration,
     /// How old an open to-do must be to count as lingering.
     pub lingering_after: Duration,
@@ -130,7 +142,9 @@ struct Watcher {
     /// only while it looks stuck — because an agent that prints one line and
     /// falls silent again is still waiting on the same unanswered question,
     /// and re-reporting it from scratch is exactly the repetition the
-    /// escalation exists to replace.
+    /// escalation exists to replace. The one thing that ends a record early
+    /// is the user typing into the agent after the last raise: they answered,
+    /// so whatever blocks it next is a new question.
     waiting: HashMap<ProcessId, Waiting>,
     last_sweep: Instant,
     last_poll: Instant,
@@ -138,7 +152,8 @@ struct Watcher {
 
 /// What Podium has already said about one blocked agent.
 struct Waiting {
-    /// How many times this agent has been raised with the assistant.
+    /// How many times this question has been raised with the assistant (at
+    /// most [`MAX_RAISES`]; the agent being viewed counts as one).
     nudges: u32,
     /// When it was last raised, so the next one waits out `escalate_after`.
     last: Instant,
@@ -194,6 +209,10 @@ impl Watcher {
         let Some(process) = find_agent(orchestrator, process_id) else {
             return;
         };
+        // They watched it end.
+        if process.viewing {
+            return;
+        }
         let where_ = describe(orchestrator, &process);
         let text = if crashed {
             format!(
@@ -250,8 +269,9 @@ impl Watcher {
     /// to read — one that has simply gone quiet for long enough.
     ///
     /// An agent that is *still* blocked `escalate_after` later is raised
-    /// again, with wording that asks for a decision instead of a repeat of
-    /// the question.
+    /// once more, with wording that asks for a decision instead of a repeat of
+    /// the question — and then not again ([`MAX_RAISES`]). The agent the user
+    /// is viewing is never raised: its question is recorded as seen instead.
     async fn check_idle_agents(&mut self, orchestrator: &Orchestrator) {
         // A prompt actually on screen beats the silence timer for the same
         // agent: one nudge, and the wording that says what is really going on.
@@ -273,7 +293,18 @@ impl Watcher {
         // has to survive the odd line of output.
         let alive = live_agents(orchestrator);
         self.waiting.retain(|id, _| alive.contains(id));
+        // Typing into the agent answers its question: the next time it is
+        // blocked, that is a new question and is raised from scratch.
+        self.waiting.retain(|id, waiting| {
+            orchestrator
+                .last_user_input(*id)
+                .is_none_or(|typed| typed <= waiting.last)
+        });
         for (process, prompting) in agents {
+            if process.viewing {
+                self.mark_seen(process.id);
+                continue;
+            }
             // A sub-agent waiting on its own question (ask_assistant) is quiet
             // on purpose, and the assistant already has the question.
             if process
@@ -358,8 +389,9 @@ impl Watcher {
         }
     }
 
-    /// How many times this agent will have been raised if we speak now, or
-    /// `None` when it is too soon to say anything about it again.
+    /// How many times this question will have been raised if we speak now, or
+    /// `None` when it is too soon to say anything about it, or it has been
+    /// raised [`MAX_RAISES`] times already.
     fn next_nudge(&mut self, agent: ProcessId) -> Option<u32> {
         let now = Instant::now();
         match self.waiting.get_mut(&agent) {
@@ -373,13 +405,30 @@ impl Watcher {
                 );
                 Some(1)
             }
-            Some(waiting) if waiting.last.elapsed() >= self.config.escalate_after => {
+            Some(waiting)
+                if waiting.nudges < MAX_RAISES
+                    && waiting.last.elapsed() >= self.config.escalate_after =>
+            {
                 waiting.nudges += 1;
                 waiting.last = now;
                 Some(waiting.nudges)
             }
             Some(_) => None,
         }
+    }
+
+    /// The user is looking at this blocked agent, so it needs no telling: the
+    /// question counts as raised (once), and a record already there has its
+    /// escalation clock restarted — leaving the agent must not nudge at once.
+    fn mark_seen(&mut self, agent: ProcessId) {
+        let now = Instant::now();
+        self.waiting
+            .entry(agent)
+            .and_modify(|waiting| waiting.last = now)
+            .or_insert(Waiting {
+                nudges: 1,
+                last: now,
+            });
     }
 
     /// Nudge about to-dos nobody has touched in a long time.

@@ -62,6 +62,7 @@ function terminal(
     command: "zsh",
     worktree,
     color: null,
+    viewing: false,
   };
 }
 

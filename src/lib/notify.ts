@@ -102,10 +102,10 @@ export function notifyAgentWaiting(name: string, isAgent = true): void {
 const MAX_ASSISTANT_NOTIFICATION_BODY = 200;
 
 /**
- * Alert the user that the personal assistant has something for them — a
- * finished reply, or a proposed action awaiting confirm/reject. Callers are
+ * Alert the user that the personal assistant filed something on the
+ * Responses list — the only thing that reaches the desktop. Callers are
  * responsible for only firing this while the user isn't already looking at
- * the assistant pane (see `isAssistantVisible` in `assistantStore`).
+ * the assistant pane (see `notifyNewResponses` in `assistantStore`).
  */
 export function notifyAssistant(title: string, body: string): void {
   const truncated =
