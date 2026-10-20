@@ -165,7 +165,7 @@ describe("AssistantPane", () => {
       apply({ type: "message", text: "**Two** agents are running" });
       apply({ type: "tool", name: "mcp__podium__list_processes" });
       apply({ type: "toolFailed", message: "to-do not found" });
-      apply({ type: "turnEnd", error: "error_max_turns", notify: true });
+      apply({ type: "turnEnd", error: "error_max_turns" });
     });
 
     expect(screen.getByText("Two")).toBeInTheDocument();

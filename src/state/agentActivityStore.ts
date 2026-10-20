@@ -29,7 +29,11 @@ import { create } from "zustand";
 
 import type { OutputActivity, ProcessId } from "../ipc/types";
 import { detectBackgroundShells, detectInputPrompt } from "../lib/agentPrompt";
-import { processActivity, processReportWaiting } from "../ipc/commands";
+import {
+  processActivity,
+  processReportViewing,
+  processReportWaiting,
+} from "../ipc/commands";
 import { notifyAgentWaiting } from "../lib/notify";
 import { readViewportText } from "../lib/terminalRegistry";
 import { useLayoutStore } from "./layoutStore";
@@ -77,16 +81,44 @@ function computeActivity(
 }
 
 /**
- * Is the user currently looking at this agent's terminal? True only when the
- * app window is focused, the agent is the active process, and no to-do pane is
- * covering the work area. Used to suppress the "needs input" ping — you don't
- * want a notification for the window you're already watching.
+ * The process whose terminal the user is looking at right now: the app window
+ * is focused, it is the active process, and nothing covers the work area (a
+ * to-do, scratchpad or Git board pane replaces the terminal there).
+ */
+function viewedProcessId(): ProcessId | null {
+  if (!document.hasFocus()) return null;
+  const layout = useLayoutStore.getState();
+  if (
+    layout.openTodo !== null ||
+    layout.openScratchpad !== null ||
+    layout.openBoard !== null
+  ) {
+    return null;
+  }
+  return useProcessStore.getState().activeProcessId;
+}
+
+/**
+ * The agent the user is looking at right now, or `null` (another view, a
+ * non-agent process, or the window is not in front). The one definition of
+ * "viewing": the activity monitor reports it to the backend so the assistant
+ * stays quiet about that agent, and the assistant store skips its desktop
+ * ping for it.
+ */
+export function viewedAgentId(): ProcessId | null {
+  const id = viewedProcessId();
+  if (id === null) return null;
+  const process = useProcessStore.getState().processes.find((p) => p.id === id);
+  return process?.kind.kind === "agent" ? id : null;
+}
+
+/**
+ * Is the user currently looking at this process's terminal? Used to suppress
+ * the "needs input" ping — you don't want a notification for the window
+ * you're already watching. Covers terminals too (a `sudo` prompt).
  */
 function isViewingAgent(processId: ProcessId): boolean {
-  if (!document.hasFocus()) return false;
-  const layout = useLayoutStore.getState();
-  if (layout.openTodo !== null || layout.openBoard !== null) return false;
-  return useProcessStore.getState().activeProcessId === processId;
+  return viewedProcessId() === processId;
 }
 
 interface AgentActivityState {
@@ -176,24 +208,57 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 }));
 
 /**
+ * The value last sent to the backend (`null`: no agent in view), so a change
+ * is reported once and not every second.
+ */
+let reportedViewing: ProcessId | null = null;
+
+/** Tell the backend which agent is in view, when that changed. */
+function reportViewing(): void {
+  const viewing = viewedAgentId();
+  if (viewing === reportedViewing) return;
+  const previous = reportedViewing;
+  reportedViewing = viewing;
+  // A failed report is retried: forget it so the next tick sends it again.
+  processReportViewing(viewing).catch(() => {
+    if (reportedViewing === viewing) reportedViewing = previous;
+  });
+}
+
+/**
  * Start the activity monitor. Call once (App mount); returns a stop function.
  * Each tick asks the backend for output timing first and schedules the next
  * tick only after applying it, so a slow answer can never let two ticks
- * overlap and race each other's writes.
+ * overlap and race each other's writes. The same tick reports which agent
+ * is in view; window focus changes report it at once instead of waiting for
+ * the next tick.
  */
 export function startAgentActivityMonitor(): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout>;
+  // A fresh monitor starts from "nothing reported", matching a fresh backend.
+  reportedViewing = null;
   const poll = async () => {
     // A failed poll is one idle tick, not worth a log line every second.
     const output = await processActivity().catch(() => ({}));
     if (stopped) return;
     useAgentActivityStore.getState().tick(output);
+    reportViewing();
     timer = setTimeout(poll, POLL_INTERVAL_MS);
   };
   timer = setTimeout(poll, POLL_INTERVAL_MS);
+  window.addEventListener("focus", reportViewing);
+  window.addEventListener("blur", reportViewing);
   return () => {
     stopped = true;
     clearTimeout(timer);
+    window.removeEventListener("focus", reportViewing);
+    window.removeEventListener("blur", reportViewing);
+    // Nothing in view once the monitor is gone (a stopped monitor must not
+    // leave the backend believing the last agent is still watched).
+    if (reportedViewing !== null) {
+      reportedViewing = null;
+      processReportViewing(null).catch(() => undefined);
+    }
   };
 }

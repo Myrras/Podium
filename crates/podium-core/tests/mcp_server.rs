@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use podium_core::mcp::tools::{
-    AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams, CreateScratchpadParams,
-    CreateWorktreeParams, GetBoardParams, GetProcessOutputParams, ListScratchpadsParams,
-    ListTodosParams, ListWorktreesParams, MoveBoardItemParams, PodiumTools, ProcessParams,
-    RemoveWorktreeParams, RenameSessionParams, RespawnAgentParams, ScratchpadTagParams,
-    SetScratchpadArchivedParams, SpawnAgentParams, UpdateAssistantMemoryParams,
-    UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
+    AddResponseParams, AddTodoLinkParams, AddTodoParams, AssignTodoParams, CommentTodoParams,
+    CreateScratchpadParams, CreateWorktreeParams, GetBoardParams, GetProcessOutputParams,
+    ListProcessesParams, ListScratchpadsParams, ListTodosParams, ListWorktreesParams,
+    MoveBoardItemParams, PodiumTools, ProcessParams, RemoveWorktreeParams, RenameSessionParams,
+    RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
+    UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH};
 use podium_core::{
@@ -1209,6 +1209,8 @@ async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
         "{}",
         report.text
     );
+    // Nobody is viewing the agent, so there is no "do not mention it" line.
+    assert!(!report.text.contains("viewing"), "{}", report.text);
 
     // An unknown process cannot claim to be another agent.
     assert!(tools
@@ -1278,6 +1280,152 @@ async fn report_to_assistant_starts_the_session_when_nobody_is_chatting() {
         !orch.assistant_transcript().is_empty(),
         "the report was delivered, so it shows in the chat"
     );
+
+    orch.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_from_the_viewed_agent_still_arrives_but_says_not_to_mention_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    orch.configure_assistant(podium_core::AssistantConfig {
+        command: write_fake_cli(dir.path(), ARGV_RECORDING_CLAUDE),
+        cwd: Some(dir.path().to_path_buf()),
+        data_dir: Some(dir.path().to_path_buf()),
+    });
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("Login bug agent".to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn agent");
+    orch.set_viewing(Some(agent));
+
+    tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: agent.to_string(),
+            summary: "Fixed the redirect; tests green.".to_string(),
+        }))
+        .await
+        .expect("report_to_assistant");
+
+    // Delivered, not swallowed: the assistant must know what happened.
+    let report = orch
+        .assistant_transcript()
+        .into_iter()
+        .find(|e| e.role == TranscriptRole::Nudge)
+        .expect("the report is delivered");
+    assert!(
+        report.text.contains("Fixed the redirect; tests green."),
+        "{}",
+        report.text
+    );
+    assert!(
+        report
+            .text
+            .contains("The user is viewing this agent right now"),
+        "{}",
+        report.text
+    );
+    assert!(
+        report.text.contains("do not file a Responses item"),
+        "{}",
+        report.text
+    );
+
+    orch.shutdown().await;
+}
+
+#[cfg_attr(
+    windows,
+    ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn list_processes_marks_the_viewed_agent_and_add_response_skips_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let spawn = |name: &str| {
+        orch.spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some(name.to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+    };
+    let watched = spawn("Watched").await.expect("spawn agent");
+    let other = spawn("Other").await.expect("spawn agent");
+    orch.set_viewing(Some(watched));
+
+    let listed = tools
+        .list_processes(Parameters(ListProcessesParams { project_id: None }))
+        .await
+        .expect("list_processes");
+    let listed: serde_json::Value = serde_json::from_str(&first_text(&listed)).expect("json");
+    let viewing_of = |id: ProcessId| {
+        listed
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|p| p["id"] == id.to_string())
+            .map(|p| p["viewing"].clone())
+    };
+    assert_eq!(viewing_of(watched), Some(serde_json::json!(true)));
+    assert_eq!(viewing_of(other), Some(serde_json::json!(false)));
+
+    let add = |process: ProcessId| {
+        tools.add_response(Parameters(AddResponseParams {
+            kind: podium_core::ResponseKind::Fyi,
+            text: "Finished.".to_string(),
+            process_id: Some(process.to_string()),
+            project_id: None,
+            todo_id: None,
+            source: None,
+        }))
+    };
+    // Not an error, and nothing stored: the user is looking at that agent.
+    let skipped = add(watched).await.expect("a skip is not an error");
+    assert!(
+        first_text(&skipped).contains("viewing that agent"),
+        "{}",
+        first_text(&skipped)
+    );
+    assert!(orch.assistant_responses().is_empty());
+
+    // Another agent's item is filed as usual — and so is the watched agent's
+    // once the user looks elsewhere.
+    add(other).await.expect("filed");
+    assert_eq!(orch.assistant_responses().len(), 1);
+    orch.set_viewing(None);
+    add(watched).await.expect("filed");
+    assert_eq!(orch.assistant_responses().len(), 2);
 
     orch.shutdown().await;
 }

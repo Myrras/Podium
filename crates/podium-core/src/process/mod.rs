@@ -86,6 +86,10 @@ pub struct ProcessInfo {
     /// row can be tinted to match the to-dos this session owns. `None` for
     /// services/terminals.
     pub color: Option<String>,
+    /// Whether the user has this agent open on screen right now (see
+    /// `Orchestrator::set_viewing`). True for at most one agent. The assistant
+    /// reads it in `list_processes`: it must not mention that agent.
+    pub viewing: bool,
 }
 
 /// The worktree name a cwd implies: the directory name when its parent is

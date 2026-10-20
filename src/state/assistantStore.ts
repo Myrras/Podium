@@ -44,12 +44,14 @@ import type {
   ResponseItem,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
+import { viewedAgentId } from "./agentActivityStore";
 import { useLayoutStore } from "./layoutStore";
 
 /**
- * Is the user already looking at the assistant's reply? True only when the
- * app window is focused and the chat pane is open — the same "don't ping
- * the window you're watching" rule `agentActivityStore` applies to agents.
+ * Is the user already looking at the assistant's Responses list? True only
+ * when the app window is focused and the chat pane is open — the same "don't
+ * ping the window you're watching" rule `agentActivityStore` applies to
+ * agents.
  */
 function isAssistantVisible(): boolean {
   return document.hasFocus() && useLayoutStore.getState().assistantOpen;
@@ -83,6 +85,47 @@ export type ChatRole =
  * that started before one can tell its answer is stale.
  */
 let responsesSnapshotGen = 0;
+
+/**
+ * Ids of every Responses item this app run has seen — in a snapshot or in
+ * the first load. Only an id not in here is news: a reply that gets restored
+ * keeps its id and never pings twice, and what the persisted list already
+ * held at launch never pings at all.
+ */
+const seenResponseIds = new Set<string>();
+
+/**
+ * Whether the persisted list has been loaded once. Until then nothing can be
+ * told apart from what was already there, so nothing pings.
+ */
+let responsesBaselined = false;
+
+/** Forget what was seen — for tests, which share this module's state. */
+export function resetSeenResponses(): void {
+  seenResponseIds.clear();
+  responsesBaselined = false;
+}
+
+/**
+ * Ping the desktop for Responses items this run has not seen before: the
+ * Responses list is the only thing that reaches it. Several new items in one
+ * snapshot make one notification — "Needs you" when any of them is, else
+ * "FYI" — carrying the newest item's text and a count of the rest. Silent
+ * while the user is in the assistant pane, and for an item about the agent
+ * they have open (the backend does not file those; this covers the race).
+ */
+function notifyNewResponses(items: ResponseItem[]): void {
+  const fresh = items.filter((i) => !seenResponseIds.has(i.id));
+  for (const i of items) seenResponseIds.add(i.id);
+  if (!responsesBaselined || fresh.length === 0 || isAssistantVisible()) return;
+  const viewing = viewedAgentId();
+  // The list is newest first, so is `fresh`.
+  const news = fresh.filter((i) => viewing === null || i.processId !== viewing);
+  if (news.length === 0) return;
+  const title = news.some((i) => i.kind === "needsYou") ? "Needs you" : "FYI";
+  const more = news.length > 1 ? ` (+${news.length - 1} more)` : "";
+  notifyAssistant(title, `${news[0].text}${more}`);
+}
 
 /** A gated action awaiting (or carrying) the user's decision. */
 export interface ChatProposal {
@@ -137,13 +180,6 @@ interface AssistantState {
    * every launch.
    */
   pending: QueuedMessage[];
-  /**
-   * Text of the latest assistant reply streamed this turn, or `null` before
-   * one arrives. Used to notify once at `turnEnd` — using the *last*
-   * streamed block, not one ping per block — and reset whenever a new turn
-   * starts.
-   */
-  turnReplyText: string | null;
   /**
    * The Responses list, newest first — mirrors the backend's persisted list
    * via `responsesChanged` snapshots.
@@ -227,16 +263,19 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   memory: null,
   hydrated: false,
   pending: [],
-  turnReplyText: null,
   responses: [],
   loadResponses: async () => {
     const gen = responsesSnapshotGen;
     try {
       const responses = await assistantResponsesList();
+      // Whatever the list holds now is not news, snapshot raced or not.
+      for (const r of responses) seenResponseIds.add(r.id);
       // A snapshot that landed while this was in flight is newer.
       if (gen === responsesSnapshotGen) set({ responses });
     } catch {
       // An empty list is a fine fallback; the next snapshot corrects it.
+    } finally {
+      responsesBaselined = true;
     }
   },
   dismissResponse: async (id) => {
@@ -265,7 +304,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         set((s) => ({
           messages: [...s.messages, message("reply", `${label}\n${trimmed}`)],
           busy: true,
-          turnReplyText: null,
         }));
       }
       return true;
@@ -308,7 +346,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         busy: false,
         activity: null,
         pending: [],
-        turnReplyText: null,
       });
     } catch (e) {
       set((s) => ({
@@ -352,7 +389,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         set((s) => ({
           messages: [...s.messages, message("user", trimmed)],
           busy: true,
-          turnReplyText: null,
         }));
       }
       return true;
@@ -377,7 +413,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         set((s) => ({
           messages: [...s.messages, message("user", "Start my day")],
           busy: true,
-          turnReplyText: null,
         }));
       }
     } catch (e) {
@@ -459,7 +494,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         status: approved ? "approved" : "rejected",
       }),
       busy: true,
-      turnReplyText: null,
     }));
     try {
       await assistantResolveProposal(id, approved);
@@ -527,12 +561,14 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     }
   },
   apply: (event) => {
-    if (event.type === "responsesChanged") responsesSnapshotGen++;
+    if (event.type === "responsesChanged") {
+      responsesSnapshotGen++;
+      notifyNewResponses(event.items);
+    }
     set((s) => {
       switch (event.type) {
         case "message":
           return {
-            turnReplyText: event.text,
             messages: [...s.messages, message("assistant", event.text)],
           };
         case "tool":
@@ -554,14 +590,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             ],
           };
         case "proposal":
-          // The assistant is waiting on the user, exactly like a stalled
-          // agent — ping unless they're already watching the pane.
-          if (!isAssistantVisible()) {
-            notifyAssistant(
-              "Assistant has a question",
-              event.summary || event.tool,
-            );
-          }
+          // No ping of its own: the backend files a "needs you" Responses
+          // item for every proposal, and that is what reaches the desktop.
           return {
             messages: [
               ...s.messages,
@@ -585,24 +615,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             }),
           };
         case "turnEnd":
-          // One ping per turn, using the last reply streamed during it — not
-          // one per streamed block — and only when nothing came back is
-          // there nothing to tell the user about. `notify` is the backend's
-          // call: an unprompted turn only reaches the desktop when the
-          // assistant said the user has to act, so a run of "agent finished"
-          // reports stays in the panel.
-          if (
-            !event.error &&
-            s.turnReplyText &&
-            event.notify &&
-            !isAssistantVisible()
-          ) {
-            notifyAssistant("Assistant replied", s.turnReplyText);
-          }
           return {
             busy: false,
             activity: null,
-            turnReplyText: null,
             messages: event.error
               ? [
                   ...s.messages,
@@ -639,7 +654,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         case "queueItemDelivered":
           return {
             busy: true,
-            turnReplyText: null,
             messages: [
               ...s.messages,
               event.replyTo

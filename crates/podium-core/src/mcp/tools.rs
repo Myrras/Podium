@@ -388,7 +388,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "List managed processes (dev servers, terminals, agents), optionally filtered to one project."
+        description = "List managed processes (dev servers, terminals, agents), optionally filtered to one project. `viewing: true` marks the agent the user has open on screen right now."
     )]
     pub async fn list_processes(
         &self,
@@ -834,10 +834,18 @@ impl PodiumTools {
             .find(|proj| proj.id == process.project_id)
             .map(|proj| proj.name)
             .unwrap_or_else(|| "a closed project".to_string());
+        // Still delivered — the assistant should know what happened — but it
+        // must not tell the user about an agent they are looking at.
+        let viewing = if process.viewing {
+            " The user is viewing this agent right now: do not mention it to them and do \
+             not file a Responses item about it."
+        } else {
+            ""
+        };
         self.orchestrator
             .assistant_nudge(format!(
                 "[Podium] The agent \"{}\" (process {}) in project \"{project}\" reports: \
-                 {summary} Tell the user in a line or two.",
+                 {summary} Tell the user in a line or two.{viewing}",
                 process.name, process.id
             ))
             .await;
@@ -1015,7 +1023,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "File one item on the user's Responses list, pinned above the chat: the essential point of an agent or to-do update, kind `needsYou` (the user has to decide or act) or `fyi` (only worth knowing). Keep the detail in your chat reply. A newer item about the same agent (process_id) or to-do (todo_id) replaces the open one. The user ticks an item off or replies to it; a reply reaches you as a message prefixed `[Reply to your Responses item — …]`. Only the assistant may call this."
+        description = "File one item on the user's Responses list (the only thing that reaches their desktop), pinned above the chat: the essential point of an agent or to-do update, kind `needsYou` (the user has to decide or act) or `fyi` (only worth knowing). Keep the detail in your chat reply. A newer item about the same agent (process_id) or to-do (todo_id) replaces the open one. An item about the agent the user is viewing is skipped. The user ticks an item off or replies to it; a reply reaches you as a message prefixed `[Reply to your Responses item — …]`. Only the assistant may call this."
     )]
     pub async fn add_response(
         &self,
@@ -1024,20 +1032,25 @@ impl PodiumTools {
         let process_id = p.process_id.as_deref().map(parse_process_id).transpose()?;
         let project_id = p.project_id.as_deref().map(parse_project_id).transpose()?;
         let todo_id = p.todo_id.as_deref().map(parse_todo_id).transpose()?;
-        json_result(
-            &self
-                .orchestrator
-                .add_assistant_response(
-                    p.kind,
-                    &p.text,
-                    process_id,
-                    project_id,
-                    todo_id,
-                    p.source.as_deref(),
-                )
-                .map(crate::responses::LabelledResponse::from)
-                .map_err(core_error)?,
-        )
+        let filed = self
+            .orchestrator
+            .add_assistant_response(
+                p.kind,
+                &p.text,
+                process_id,
+                project_id,
+                todo_id,
+                p.source.as_deref(),
+            )
+            .map_err(core_error)?;
+        match filed {
+            Some(item) => json_result(&crate::responses::LabelledResponse::from(item)),
+            // Not an error: nothing for the assistant to fix or retry.
+            None => Ok(text_result(
+                "Skipped: the user is viewing that agent right now, so nothing was filed."
+                    .to_string(),
+            )),
+        }
     }
 
     fn find_process(&self, id: ProcessId) -> Result<crate::process::ProcessInfo, McpError> {

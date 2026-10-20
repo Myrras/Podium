@@ -63,6 +63,7 @@ function seedSpawn() {
       command: "claude",
       worktree: null,
       color: null,
+      viewing: false,
     }),
   );
   useProcessStore.setState({ ...initialProcess, spawnAgent }, true);

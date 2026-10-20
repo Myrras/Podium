@@ -141,22 +141,6 @@ read -r _line
 exit 1
 "#;
 
-/// A fake CLI that crashes on its *first* turn only (a marker file next to it
-/// remembers it already did), then behaves normally — for asserting that a
-/// user turn lost to a crash does not leave "the user is waiting" set behind.
-const CRASHES_ONCE_THEN_OK_CLAUDE: &str = r#"#!/bin/sh
-echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
-if [ ! -f "$(dirname "$0")/crashed" ]; then
-  : > "$(dirname "$0")/crashed"
-  read -r _line
-  exit 1
-fi
-while IFS= read -r _line; do
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"an agent finished"}]}}'
-  echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
-done
-"#;
-
 /// A fake CLI that appends every turn's raw stdin line to `stdin.jsonl` next
 /// to it, so a test can inspect exactly what content blocks a turn carried —
 /// for asserting an attachment reaches the child's stdin intact. Each append
@@ -334,10 +318,7 @@ async fn a_chat_turn_streams_prose_tool_calls_and_a_turn_end() {
             AssistantEvent::Tool {
                 name: "list_todos".to_string()
             },
-            AssistantEvent::TurnEnd {
-                error: None,
-                notify: true,
-            },
+            AssistantEvent::TurnEnd { error: None },
         ]
     );
     orch.shutdown().await;
@@ -363,10 +344,7 @@ async fn a_second_turn_reuses_the_same_session() {
             AssistantEvent::Tool {
                 name: "list_todos".to_string()
             },
-            AssistantEvent::TurnEnd {
-                error: None,
-                notify: true,
-            },
+            AssistantEvent::TurnEnd { error: None },
         ]
     );
     orch.shutdown().await;
@@ -991,6 +969,201 @@ async fn an_agent_still_stuck_later_is_raised_again_asking_for_a_decision() {
     orch.shutdown().await;
 }
 
+/// Every notice Podium raised within `window`.
+async fn notices_within(rx: &mut Receiver<PodiumEvent>, window: Duration) -> Vec<String> {
+    let mut notices = Vec::new();
+    let _ = timeout(window, async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Notice { text },
+            }) = rx.recv().await
+            {
+                notices.push(text);
+            }
+        }
+    })
+    .await;
+    notices
+}
+
+/// How many times the notices raise an agent (a merged turn carries several).
+fn raises(notices: &[String]) -> usize {
+    notices
+        .iter()
+        .map(|n| n.matches("[Podium] The agent").count())
+        .sum()
+}
+
+#[tokio::test]
+async fn a_blocked_question_is_raised_twice_then_left_alone_until_the_user_types() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    // `cat` prints nothing until it is typed at: a silent, blocked agent.
+    let agent = orch
+        .add_process(project, agent_spec("cat", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            escalate_after: Duration::from_millis(60),
+            ..fast_proactivity()
+        },
+    );
+
+    // The first nudge plus one escalation — and then nothing, however long
+    // the question stays unanswered (it used to repeat every escalate_after).
+    let first = next_notice(&mut rx).await;
+    assert!(first.contains("waiting on input"), "{first}");
+    let mut notices = vec![first];
+    notices.extend(notices_within(&mut rx, Duration::from_millis(800)).await);
+    assert_eq!(raises(&notices), 2, "{notices:?}");
+    assert!(
+        notices.iter().any(|n| n.contains("still blocked")),
+        "{notices:?}"
+    );
+
+    // The user answers: whatever blocks it next is a new question, raised
+    // from the start again rather than staying silent for good.
+    orch.write_stdin(agent, b"use the second option\n")
+        .await
+        .expect("type into the agent");
+    let again = timeout(TEST_TIMEOUT, async {
+        loop {
+            let notice = next_notice(&mut rx).await;
+            if notice.contains("waiting on input") {
+                return notice;
+            }
+        }
+    })
+    .await
+    .expect("a new question is raised from scratch");
+    assert!(!again.contains("still blocked"), "{again}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_terminals_own_replies_do_not_count_as_the_user_typing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), FAKE_CLAUDE);
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("cat", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    assert!(orch.last_user_input(agent).is_none());
+
+    // A focus report, as xterm.js sends on its own.
+    orch.write_stdin(agent, b"\x1b[I").await.expect("write");
+    assert!(orch.last_user_input(agent).is_none());
+
+    orch.write_stdin(agent, b"y\n").await.expect("write");
+    assert!(orch.last_user_input(agent).is_some());
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_agent_the_user_is_viewing_is_not_reported_when_it_finishes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            idle_after: Duration::from_secs(60),
+            ..fast_proactivity()
+        },
+    );
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let watched = orch
+        .add_process(project, agent_spec("sleep 0.3", dir.path()))
+        .await
+        .expect("add agent");
+    orch.set_viewing(Some(watched));
+    orch.start_process(watched).await.expect("start agent");
+
+    // They watched it end: no word about it.
+    let quiet = notices_within(&mut rx, Duration::from_millis(900)).await;
+    assert!(quiet.is_empty(), "reported a viewed agent: {quiet:?}");
+
+    // The same agent unwatched is reported, so the silence was the viewing.
+    let other = orch
+        .add_process(project, agent_spec("exit 0", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(other).await.expect("start agent");
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("finished"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_blocked_agent_in_view_is_not_nudged_and_leaving_it_does_not_nudge_at_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+    orch.set_viewing(Some(agent));
+    podium_core::proactivity::spawn(
+        &orch,
+        ProactivityConfig {
+            escalate_after: Duration::from_millis(400),
+            ..fast_proactivity()
+        },
+    );
+
+    // Silent for as long as it is in view, well past the idle threshold.
+    let quiet = notices_within(&mut rx, Duration::from_millis(600)).await;
+    assert!(quiet.is_empty(), "nudged about a viewed agent: {quiet:?}");
+
+    // Leaving it must not fire the first-raise nudge: the question counts as
+    // already raised once, so the next word about it is the escalation —
+    // and only after the escalation delay, not at once.
+    orch.set_viewing(None);
+    let at_once = notices_within(&mut rx, Duration::from_millis(200)).await;
+    assert!(
+        at_once.is_empty(),
+        "nudged the moment it left view: {at_once:?}"
+    );
+    let next = next_notice(&mut rx).await;
+    assert!(next.contains("still blocked"), "{next}");
+    assert!(!next.contains("waiting on input"), "{next}");
+    orch.shutdown().await;
+}
+
 #[tokio::test]
 async fn proactivity_off_keeps_podium_quiet() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1285,8 +1458,7 @@ async fn a_turn_that_ends_in_error_still_advances_the_queue() {
     assert_eq!(
         turn1.last(),
         Some(&AssistantEvent::TurnEnd {
-            error: Some("error_max_turns".to_string()),
-            notify: true,
+            error: Some("error_max_turns".to_string())
         })
     );
 
@@ -1360,34 +1532,6 @@ async fn a_session_that_crashes_mid_turn_reports_the_queued_message_as_undeliver
         rows.iter()
             .any(|r| r.text.contains("second") && r.text.contains("delivered")),
         "the queued message must be reported, not silently dropped: {rows:?}"
-    );
-    orch.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_user_turn_lost_to_a_crash_does_not_make_later_nudges_notify() {
-    let (orch, _dir) = setup(CRASHES_ONCE_THEN_OK_CLAUDE);
-    let mut rx = orch.subscribe_events();
-
-    // The user's turn goes out and the session dies under it — no `TurnEnd`
-    // ever arrives for it.
-    orch.assistant_send("what is going on?")
-        .await
-        .expect("send");
-    collect_until(&mut rx, |e| matches!(e, AssistantEvent::Exited)).await;
-
-    // Podium's own next turn is nobody's question: it must stay in the panel.
-    orch.assistant_nudge("[Podium] The agent \"fix-login\" finished.".to_string())
-        .await;
-    let events = collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-
-    assert_eq!(
-        events.last(),
-        Some(&AssistantEvent::TurnEnd {
-            error: None,
-            notify: false,
-        }),
-        "a nudge after a crashed user turn must not inherit its notification: {events:?}"
     );
     orch.shutdown().await;
 }
@@ -1704,10 +1848,7 @@ async fn a_reply_that_is_only_the_sentinel_never_reaches_the_user() {
             AssistantEvent::Started {
                 session_id: "fake-session".to_string()
             },
-            AssistantEvent::TurnEnd {
-                error: None,
-                notify: true,
-            },
+            AssistantEvent::TurnEnd { error: None },
         ]
     );
     // And it is not in the transcript either — only the user's own row.
@@ -1840,7 +1981,8 @@ async fn a_reply_to_a_responses_item_reaches_the_session_and_clears_the_item() {
             None,
             Some("GitHub"),
         )
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
 
     // Refused before anything is sent: the item stays.
     let blank = orch.reply_assistant_response(item.id, "   ").await;
@@ -1891,7 +2033,8 @@ async fn a_reply_sent_behind_a_running_turn_queues_and_is_announced_as_a_reply()
             None,
             Some("GitHub"),
         )
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
 
     orch.assistant_send("first").await.expect("send first");
     let delivered = orch
@@ -1940,7 +2083,8 @@ async fn every_change_to_the_responses_list_publishes_a_snapshot() {
             None,
             Some("GitHub"),
         )
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
     let added = collect_until(&mut rx, is_snapshot).await;
     assert!(
         matches!(added.last(), Some(AssistantEvent::ResponsesChanged { items }) if items.len() == 1)
@@ -1963,13 +2107,15 @@ async fn an_item_about_an_agent_that_is_gone_keeps_its_key_but_not_a_name() {
     let gone = ProcessId::new();
     let item = orch
         .add_assistant_response(ResponseKind::Fyi, "Finished.", Some(gone), None, None, None)
-        .expect("an exited agent is no reason to drop the item");
+        .expect("an exited agent is no reason to drop the item")
+        .expect("filed");
     assert_eq!(item.agent, None);
     assert_eq!(item.process_id, Some(gone));
 
     // Still the supersede key: the next update about it replaces this one.
     orch.add_assistant_response(ResponseKind::Fyi, "Merged.", Some(gone), None, None, None)
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
     let texts: Vec<String> = orch
         .assistant_responses()
         .into_iter()
@@ -2003,7 +2149,8 @@ async fn an_item_whose_project_or_to_do_is_gone_is_kept_without_that_name() {
             Some(todo.id),
             None,
         )
-        .expect("a removed to-do is no reason to drop the item");
+        .expect("a removed to-do is no reason to drop the item")
+        .expect("filed");
     assert_eq!(item.todo, None);
     assert_eq!(item.todo_id, Some(todo.id));
     assert!(item.project.is_some());
@@ -2017,7 +2164,8 @@ async fn an_item_whose_project_or_to_do_is_gone_is_kept_without_that_name() {
             None,
             None,
         )
-        .expect("a closed project is no reason to drop the item");
+        .expect("a closed project is no reason to drop the item")
+        .expect("filed");
     assert_eq!(item.project, None);
 
     orch.shutdown().await;
@@ -2051,7 +2199,8 @@ async fn a_live_agents_own_project_wins_over_a_mismatched_project_id() {
             None,
             None,
         )
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
     assert_eq!(item.agent.as_deref(), Some("fix-login"));
     assert_eq!(item.project.as_deref(), Some("agents-project"));
 
@@ -2098,7 +2247,8 @@ async fn a_withdrawn_waiting_reply_puts_its_item_back() {
             None,
             Some("GitHub"),
         )
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
 
     orch.assistant_send("hang").await.expect("send first");
     assert!(!orch
@@ -2137,7 +2287,8 @@ async fn a_waiting_reply_lost_with_the_conversation_puts_its_item_back() {
             None,
             Some("GitHub"),
         )
-        .expect("add response");
+        .expect("add response")
+        .expect("filed");
 
     orch.assistant_send("hang").await.expect("send first");
     assert!(!orch

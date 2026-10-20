@@ -208,6 +208,17 @@ export function processReportWaiting(processId: ProcessId): Promise<void> {
   return invoke("process_report_waiting", { processId });
 }
 
+/**
+ * Tell the backend which agent the user has open on screen (`null`: none).
+ * The assistant stays quiet about that agent. Called by the activity monitor
+ * only when the value changes.
+ */
+export function processReportViewing(
+  processId: ProcessId | null,
+): Promise<void> {
+  return invoke("process_report_viewing", { processId });
+}
+
 /** Rename a process's display label; blank names are rejected. */
 export function processRename(
   processId: ProcessId,
