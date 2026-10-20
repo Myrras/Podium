@@ -1352,6 +1352,13 @@ impl Orchestrator {
         Ok(settings)
     }
 
+    /// Set how many minutes an exited agent stays in the list before it is
+    /// removed automatically (`0` = never, at most a day). Read by every
+    /// sweep of [`crate::agent::cleanup`], so it applies without a restart.
+    pub fn set_agent_remove_exited_after(&self, minutes: u32) -> CoreResult<AgentSettings> {
+        self.agent_settings.set_remove_exited_agents_after(minutes)
+    }
+
     /// Set (or clear) the global default adapter used by bare spawns. A blank
     /// id clears it (back to the built-in default).
     pub fn set_agent_default_adapter(
@@ -2918,39 +2925,67 @@ impl Orchestrator {
     /// [`Self::remove_process`] without the sub-agent check, dropping a
     /// sub-agent's record along with its row.
     fn remove_process_row(&self, id: ProcessId) -> CoreResult<()> {
-        let (project_id, cleared) = {
+        let removed = {
             let mut guard = self.inner.lock().expect(LOCK_POISONED);
             let inner = &mut *guard;
             if inner.subagents.remove(&id).is_some() {
                 publish_subagents(inner, &self.events);
             }
-            // Drop the process's to-do/scratchpad assignments while it is
-            // still in the map (clearing needs its project id), then remove
-            // the process.
-            let cleared = clear_agent_assignments(inner, id);
-            let mut p = inner
-                .processes
-                .remove(&id)
-                .ok_or(CoreError::ProcessNotFound)?;
-            p.restart.cancel();
-            if let Some(pty) = &p.pty {
-                pty.stop();
-            }
-            (p.project_id, cleared)
+            take_process(inner, id).ok_or(CoreError::ProcessNotFound)?
         };
+        self.publish_removed(id, removed);
+        Ok(())
+    }
+
+    /// Remove every agent that has been exited for at least `after`, counted
+    /// from its latest exit, exactly as [`Self::remove_process`] would — the
+    /// automatic cleanup [`crate::agent::cleanup`] runs on a timer. Never a
+    /// terminal or service, never an agent that is starting, running or
+    /// stopping again, never one with a supervised restart pending, and
+    /// never one of the assistant's sub-agents: those have their own expiry
+    /// (the sub-agent hub keeps an ended one's result for the assistant and
+    /// removes it with its record). Candidates are picked and removed under
+    /// one lock, so a start cannot slip in between. Returns the ids it
+    /// removed.
+    pub fn remove_exited_agents(&self, after: Duration) -> Vec<ProcessId> {
+        let now = Utc::now();
+        let removed: Vec<(ProcessId, Removed)> = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let due: Vec<ProcessId> = inner
+                .processes
+                .iter()
+                .filter(|(id, _)| !inner.subagents.contains(id))
+                .filter(|(_, p)| exited_long_enough(p, now, after))
+                .map(|(id, _)| *id)
+                .collect();
+            due.into_iter()
+                .filter_map(|id| take_process(&mut inner, id).map(|r| (id, r)))
+                .collect()
+        };
+        removed
+            .into_iter()
+            .map(|(id, r)| {
+                self.publish_removed(id, r);
+                id
+            })
+            .collect()
+    }
+
+    /// The events of one removal: the process itself, then each project
+    /// whose to-dos/scratchpads lost their link to it.
+    fn publish_removed(&self, id: ProcessId, removed: Removed) {
         self.events.publish(PodiumEvent::ProcessRemoved {
-            project_id,
+            project_id: removed.project_id,
             process_id: id,
         });
-        for pid in cleared.todos {
+        for pid in removed.cleared.todos {
             self.events
                 .publish(PodiumEvent::TodosChanged { project_id: pid });
         }
-        for pid in cleared.scratchpads {
+        for pid in removed.cleared.scratchpads {
             self.events
                 .publish(PodiumEvent::ScratchpadsChanged { project_id: pid });
         }
-        Ok(())
     }
 
     /// The processes of one project, or of all of them. The assistant's
@@ -4406,6 +4441,46 @@ fn scratchpad_assigned_agent_of(
         color: p.spec.color.clone(),
         active: p.is_active(),
     })
+}
+
+/// What [`take_process`] took out, for [`Orchestrator::publish_removed`].
+struct Removed {
+    project_id: ProjectId,
+    cleared: ClearedAssignments,
+}
+
+/// Take process `id` out of the registry: its to-do/scratchpad links go
+/// (cleared while it is still in the map — clearing needs its project id),
+/// a pending supervised restart is cancelled and a live PTY stopped. Its
+/// colour (or the `last_color` an exited agent kept) goes with it. `None`
+/// when there is no such process (clearing then found nothing either).
+fn take_process(inner: &mut Inner, id: ProcessId) -> Option<Removed> {
+    let cleared = clear_agent_assignments(inner, id);
+    let mut p = inner.processes.remove(&id)?;
+    p.restart.cancel();
+    if let Some(pty) = &p.pty {
+        pty.stop();
+    }
+    Some(Removed {
+        project_id: p.project_id,
+        cleared,
+    })
+}
+
+/// Whether `p` is an agent that exited at least `after` before `now` and is
+/// not about to come back (a supervised restart pending). The exit time is
+/// the wall clock's (`Exited.at`, reset by every exit), so a laptop's sleep
+/// counts towards it; a clock that moved backwards reads as not yet due.
+fn exited_long_enough(p: &ManagedProcess, now: DateTime<Utc>, after: Duration) -> bool {
+    if !matches!(p.spec.kind, ProcessKind::Agent { .. }) || p.restart.is_pending() {
+        return false;
+    }
+    let ProcessStatus::Exited { at, .. } = p.status else {
+        return false;
+    };
+    (now - at)
+        .to_std()
+        .is_ok_and(|exited_for| exited_for >= after)
 }
 
 /// The projects whose to-do and/or scratchpad assignments changed, returned
@@ -6910,6 +6985,282 @@ mod tests {
         .unwrap();
         orch.shutdown().await;
         assert!(orch.session_memory.list(&root).is_empty());
+    }
+
+    /// A process of `kind` in project `project`, put straight into `status`
+    /// (no PTY), for the exited-agent cleanup tests.
+    async fn process_in(
+        orch: &Orchestrator,
+        project: ProjectId,
+        dir: &Path,
+        kind: ProcessKind,
+        status: ProcessStatus,
+    ) -> ProcessId {
+        let spec = ProcessSpec {
+            name: "fix-login".to_string(),
+            command: "true".to_string(),
+            cwd: dir.to_path_buf(),
+            env: Vec::new(),
+            kind,
+            restart_policy: RestartPolicy::Never,
+            color: None,
+        };
+        let id = orch.add_process(project, spec).await.unwrap();
+        orch.inner
+            .lock()
+            .unwrap()
+            .processes
+            .get_mut(&id)
+            .unwrap()
+            .status = status;
+        id
+    }
+
+    fn agent_kind() -> ProcessKind {
+        ProcessKind::Agent {
+            adapter: "claude-code".to_string(),
+        }
+    }
+
+    fn exited_ago(ago: Duration, stopped: bool) -> ProcessStatus {
+        ProcessStatus::Exited {
+            code: Some(0),
+            crashed: false,
+            stopped,
+            at: Utc::now() - chrono::Duration::from_std(ago).unwrap(),
+        }
+    }
+
+    const WINDOW: Duration = Duration::from_secs(5 * 60);
+
+    #[tokio::test]
+    async fn only_agents_exited_for_the_whole_window_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let long_ago = Duration::from_secs(10 * 60);
+        let due = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(long_ago, false),
+        )
+        .await;
+        let stopped = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(long_ago, true),
+        )
+        .await;
+        let crashed = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Exited {
+                code: Some(1),
+                crashed: true,
+                stopped: false,
+                at: Utc::now() - chrono::Duration::minutes(6),
+            },
+        )
+        .await;
+        let recent = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(60), false),
+        )
+        .await;
+        let running = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Running {
+                pid: 1,
+                since: Utc::now() - chrono::Duration::hours(1),
+            },
+        )
+        .await;
+        let stopping = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Stopping,
+        )
+        .await;
+        let never_started = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::NotStarted,
+        )
+        .await;
+        let terminal = process_in(
+            &orch,
+            project,
+            dir.path(),
+            ProcessKind::Terminal,
+            exited_ago(long_ago, false),
+        )
+        .await;
+        let service = process_in(
+            &orch,
+            project,
+            dir.path(),
+            ProcessKind::Service,
+            exited_ago(long_ago, false),
+        )
+        .await;
+
+        let mut removed = orch.remove_exited_agents(WINDOW);
+        removed.sort_by_key(|id| id.to_string());
+        let mut expected = vec![due, stopped, crashed];
+        expected.sort_by_key(|id| id.to_string());
+        assert_eq!(
+            removed, expected,
+            "finished, stopped and crashed agents past the window"
+        );
+
+        let left: HashSet<ProcessId> = orch
+            .list_processes(None)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(
+            left,
+            HashSet::from([recent, running, stopping, never_started, terminal, service])
+        );
+        // Nothing else is due, so a second sweep removes nothing.
+        assert!(orch.remove_exited_agents(WINDOW).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_a_restart_pending_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(600), false),
+        )
+        .await;
+        let pending = tokio::spawn(std::future::pending::<()>()).abort_handle();
+        orch.inner
+            .lock()
+            .unwrap()
+            .processes
+            .get_mut(&id)
+            .unwrap()
+            .restart
+            .set_pending(pending);
+
+        assert!(orch.remove_exited_agents(WINDOW).is_empty());
+        assert_eq!(orch.list_processes(None).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn removing_an_exited_agent_drops_its_links_like_remove_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(600), false),
+        )
+        .await;
+        let todo = orch.add_todo(project, "Fix the login form", None).unwrap();
+        let pad = orch.add_scratchpad(project, "agent").unwrap();
+        {
+            let mut inner = orch.inner.lock().unwrap();
+            inner.todo_assignments.insert(todo.id, id);
+            inner.scratchpad_assignments.insert(pad.id, id);
+        }
+        let mut rx = orch.subscribe_events();
+
+        assert_eq!(orch.remove_exited_agents(WINDOW), vec![id]);
+
+        let mut events = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+        assert!(matches!(
+            events.first(),
+            Some(PodiumEvent::ProcessRemoved { project_id, process_id })
+                if *project_id == project && *process_id == id
+        ));
+        assert!(events.iter().any(
+            |e| matches!(e, PodiumEvent::TodosChanged { project_id } if *project_id == project)
+        ));
+        assert!(events.iter().any(
+            |e| matches!(e, PodiumEvent::ScratchpadsChanged { project_id } if *project_id == project)
+        ));
+        let inner = orch.inner.lock().unwrap();
+        assert!(inner.todo_assignments.is_empty() && inner.scratchpad_assignments.is_empty());
+        assert!(inner.processes.is_empty());
+        drop(inner);
+        assert!(orch.list_todos(project).unwrap()[0]
+            .assigned_agent
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_clock_that_moved_back_does_not_remove_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let future = ProcessStatus::Exited {
+            code: Some(0),
+            crashed: false,
+            stopped: false,
+            at: Utc::now() + chrono::Duration::hours(1),
+        };
+        process_in(&orch, project, dir.path(), agent_kind(), future).await;
+        assert!(orch.remove_exited_agents(Duration::ZERO).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn an_ended_sub_agent_is_left_to_its_own_expiry() {
+        let data = tempfile::tempdir().unwrap();
+        let (orch, _) = sub_orch(data.path(), sub_config(4));
+        let id = orch
+            .spawn_subagent(SubagentKind::Lookup, "crash on purpose", None, None)
+            .await
+            .unwrap()
+            .process_id;
+        wait_until("the sub-agent to exit", || {
+            matches!(
+                orch.inner
+                    .lock()
+                    .unwrap()
+                    .processes
+                    .get(&id)
+                    .map(|p| &p.status),
+                Some(ProcessStatus::Exited { .. })
+            )
+        })
+        .await;
+
+        // The sweep never takes it: the hub keeps it (and its result) for
+        // the assistant until its own linger is up.
+        assert!(orch.remove_exited_agents(Duration::ZERO).is_empty());
+        assert!(orch.is_subagent(id));
+        assert!(orch.inner.lock().unwrap().processes.contains_key(&id));
+        orch.shutdown().await;
     }
 
     // ---------------------------------------------------------------------

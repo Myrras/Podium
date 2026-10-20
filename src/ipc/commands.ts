@@ -374,6 +374,20 @@ export function agentSettingsSetRememberSessions(
   return invoke("agent_settings_set_remember_sessions", { enabled });
 }
 
+/** Longest delay the core accepts for removing exited agents (a day). */
+export const MAX_REMOVE_EXITED_AFTER_MINUTES = 24 * 60;
+
+/**
+ * Set how many minutes an exited agent stays in the list before it is
+ * removed automatically (0 = never, at most a day). Returns the refreshed
+ * settings.
+ */
+export function agentSettingsSetRemoveExitedAfter(
+  minutes: number,
+): Promise<AgentSettingsDto> {
+  return invoke("agent_settings_set_remove_exited_after", { minutes });
+}
+
 // ---------------------------------------------------------------------------
 // Worktrees
 // ---------------------------------------------------------------------------

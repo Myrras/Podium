@@ -98,6 +98,14 @@ the terminal), **idle**, or **needs input** — the last one is read off the
 terminal screen for *every* process, so a terminal stalled on a `sudo`
 prompt surfaces the same way.
 
+An agent that finished, crashed or was stopped **leaves the list by itself**
+5 minutes after it exited — its row, its terminal (an open one closes) and
+its to-do links go, the same as removing it by hand. Restarting it before
+then keeps it, and the 5 minutes count again from its next exit. Terminals,
+services and the assistant's sub-agents (which tidy themselves up) are never
+removed this way. Change the delay, or turn it off
+with `0`, in Settings → Agents.
+
 ![Spawning an agent from a to-do — both rows pick up the same session colour](docs/media/agent.gif)
 
 ### To-dos
@@ -350,7 +358,7 @@ you added by hand alone.
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **General**   | Theme (**dark**, **light**, **retro**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
-| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation (after a `/clear`, the one from after it, with the same limits as a restart) the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off |
+| **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation (after a `/clear`, the one from after it, with the same limits as a restart) the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off; "remove exited agents after" — minutes after its last exit that a finished, crashed or stopped agent is removed from the list, with its terminal and to-do links (default 5, `0` = never, at most 1440; terminals and services stay) |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation (asks keep or stop when sub-agents are running)                                 |
 | **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |

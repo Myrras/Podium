@@ -55,6 +55,7 @@ const sampleDto: AgentSettingsDto = {
   defaultAdapter: "",
   suggestWorktree: true,
   rememberSessions: false,
+  removeExitedAfterMinutes: 5,
   adapters: [
     {
       id: "claude-code",
@@ -109,6 +110,11 @@ const invoke = vi.fn((cmd: string, args?: unknown) => {
     case "agent_settings_set_suggest_worktree":
     case "agent_settings_set_remember_sessions":
       return Promise.resolve(sampleDto);
+    case "agent_settings_set_remove_exited_after":
+      return Promise.resolve({
+        ...sampleDto,
+        removeExitedAfterMinutes: (args as { minutes: number }).minutes,
+      });
     case "issues_settings_get":
     case "issues_setup_save":
     case "issues_setup_remove":
@@ -275,6 +281,82 @@ describe("SettingsModal — Agents tab", () => {
         "agent_settings_set_remember_sessions",
         { enabled: true },
       ),
+    );
+  });
+
+  it("shows the exited-agent removal delay and saves it on blur, not per keystroke", async () => {
+    await openAgentsTab();
+    const field = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+    expect(field).toHaveValue(5); // default
+
+    fireEvent.change(field, { target: { value: "1" } });
+    fireEvent.change(field, { target: { value: "15" } });
+    expect(invoke).not.toHaveBeenCalledWith(
+      "agent_settings_set_remove_exited_after",
+      expect.anything(),
+    );
+
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remove_exited_after",
+        { minutes: 15 },
+      ),
+    );
+    expect(
+      invoke.mock.calls.filter(
+        ([cmd]) => cmd === "agent_settings_set_remove_exited_after",
+      ),
+    ).toHaveLength(1);
+    // The saved value comes back from the backend and stays in the field.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(
+          "Remove exited agents after, in minutes (0 = never)",
+        ),
+      ).toHaveValue(15),
+    );
+  });
+
+  it("saves 0 (never) on Enter and clamps to the bounds", async () => {
+    await openAgentsTab();
+    const field = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+
+    fireEvent.change(field, { target: { value: "0" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remove_exited_after",
+        { minutes: 0 },
+      ),
+    );
+
+    const again = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+    fireEvent.change(again, { target: { value: "99999" } });
+    fireEvent.blur(again);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "agent_settings_set_remove_exited_after",
+        { minutes: 1440 },
+      ),
+    );
+  });
+
+  it("leaves an unchanged value unsaved", async () => {
+    await openAgentsTab();
+    const field = screen.getByLabelText(
+      "Remove exited agents after, in minutes (0 = never)",
+    );
+    fireEvent.blur(field);
+    expect(invoke).not.toHaveBeenCalledWith(
+      "agent_settings_set_remove_exited_after",
+      expect.anything(),
     );
   });
 });

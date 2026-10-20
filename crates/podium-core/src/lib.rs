@@ -29,6 +29,7 @@ pub mod subagent;
 pub mod todo;
 pub mod worktree;
 
+pub use agent::cleanup::AgentCleanupConfig;
 pub use agent::settings::{AdapterOverride, AgentSettings, MergeMode};
 pub use agent::{
     AdapterInfo, AdapterRegistry, AgentAdapter, AgentLaunchCtx, LaunchPlan, LiveProcess,
