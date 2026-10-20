@@ -114,7 +114,10 @@ A shared to-do list per project, visible to you in the sidebar and to every
 agent over MCP. A to-do carries a description, a **comment thread** agents
 append progress notes to, and pinned **issue/PR links**. Done to-dos left
 over from an earlier day are archived automatically; anything can be archived
-by hand and found again in the Archive modal.
+by hand and found again in the Archive modal. Over MCP, `list_todos` leaves
+the archive out unless it's called with `include_archived: true` — handy for a
+script that syncs to-dos from an issue tracker and must not recreate one you
+archived.
 
 An agent **claims** a to-do when it starts working on it, so the list doubles
 as a who-is-doing-what board.

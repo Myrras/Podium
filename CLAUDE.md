@@ -282,7 +282,8 @@ atomically, before the async `podium.yml` load.
   `spawn_agent` (its `args` param sets the model/reasoning effort for that
   agent, e.g. `["--model", "opus"]`), `start_process`, `stop_process`,
   `restart_process`, `remove_process`,
-  `list_todos`, `add_todo`, `complete_todo`, `update_todo`, `comment_todo`
+  `list_todos` (active only; `include_archived: true` appends the archive,
+  read after the listing's auto-archive so nothing drops out of both), `add_todo`, `complete_todo`, `update_todo`, `comment_todo`
   (its `author` is rejected server-side if it impersonates the user —
   "you"/"user"/"gebruiker", case/whitespace-insensitive — falling back to
   `agent`, so no MCP caller can make a comment read as if the user wrote it),

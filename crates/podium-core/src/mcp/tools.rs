@@ -78,6 +78,10 @@ pub struct ListTodosParams {
     /// One to-do's UUID to read in full, comment history included. Omit to
     /// list the project's to-dos, where comments are reported as a count.
     pub todo_id: Option<String>,
+    /// `true` to also include archived to-dos (after the active ones, most
+    /// recently archived first; each carries `archived: true`). Default
+    /// `false`: only the active list.
+    pub include_archived: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -868,17 +872,28 @@ impl PodiumTools {
                        out — pass todo_id to read one to-do in full, comments included. \
                        assignedAgent.active is false when the agent it is linked to has \
                        stopped: it no longer owns the to-do, so another agent may be \
-                       put on it."
+                       put on it. Archived to-dos are left out unless include_archived \
+                       is true."
     )]
     pub async fn list_todos(
         &self,
         Parameters(p): Parameters<ListTodosParams>,
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
-        let todos = self
+        let mut todos = self
             .orchestrator
             .list_todos(project_id)
             .map_err(core_error)?;
+        // Read the archive only after list_todos: listing auto-archives done
+        // to-dos from an earlier day, and those must show up here, not vanish
+        // from both lists.
+        if p.include_archived.unwrap_or(false) {
+            todos.extend(
+                self.orchestrator
+                    .list_archived_todos(project_id)
+                    .map_err(core_error)?,
+            );
+        }
         match p.todo_id {
             Some(id) => {
                 let id = parse_todo_id(&id)?;
