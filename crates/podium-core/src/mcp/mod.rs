@@ -38,6 +38,18 @@ use tools::PodiumTools;
 /// identity on this server.
 pub const ASSISTANT_PATH: &str = "/mcp-assistant";
 
+/// Endpoint a *lookup* sub-agent connects to: same bearer token, but it only
+/// serves the read-only tools and `report_to_assistant`, and refuses every
+/// other call outright (see [`tools::PodiumTools::new_lookup`]). A lookup runs
+/// without permission prompts, so what it may do is decided here, on the
+/// server, not by the tool names the CLI hides from it.
+pub const LOOKUP_PATH: &str = "/mcp-lookup";
+
+/// Request header carrying a sub-agent's caller key: a secret only that
+/// session's MCP config holds, by which the server tells which sub-agent a
+/// call comes from (the bearer token is shared by every session).
+pub const CALLER_HEADER: &str = "x-podium-caller";
+
 /// Handle to the running MCP server. Dropping it (or calling [`stop`])
 /// shuts the server down, terminating all active sessions.
 ///
@@ -103,12 +115,22 @@ pub async fn start(orchestrator: Arc<Orchestrator>, config_dir: PathBuf) -> Core
         StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
     );
 
+    let lookup_service = StreamableHttpService::new(
+        {
+            let orchestrator = Arc::clone(&orchestrator);
+            move || Ok(PodiumTools::new_lookup(Arc::clone(&orchestrator)))
+        },
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
+    );
+
     let auth = AuthState {
         token: Arc::from(token.as_str()),
     };
     let router = Router::new()
         .nest_service("/mcp", service)
         .nest_service(ASSISTANT_PATH, assistant_service)
+        .nest_service(LOOKUP_PATH, lookup_service)
         .layer(middleware::from_fn_with_state(auth, require_bearer));
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -178,6 +200,6 @@ fn generate_token() -> String {
     )
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

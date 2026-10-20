@@ -289,3 +289,17 @@
   gap: var(--sp-2);
   margin-top: var(--sp-2);
 }
+
+/* The keep-or-stop question a reset asks while sub-agents are live. */
+.confirmBox {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+}
+
+.confirmText {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
