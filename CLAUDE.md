@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 38 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **100 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **101 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -80,7 +80,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 100 commands.
+  IPC wrappers over all 101 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -1023,9 +1023,10 @@ atomically, before the async `podium.yml` load.
   them. It is idempotent, since a failed write re-queues the same item.
 
   **Responses** (`responses.rs`) are the short "needs you" / "FYI" points the
-  assistant files, one per agent or to-do update, via the `add_response` MCP
-  tool — the identity prompt asks for it (pinned by a unit test); the detail
-  stays in its chat reply. One workspace-wide list, newest first, persisted in
+  assistant files via the `add_response` MCP tool, only for what the user
+  actually needs (the identity prompt's rules, pinned by unit tests — see
+  _Desktop notifications come from the Responses list only_ above); Podium itself files one per
+  parked proposal; the detail stays in its chat reply. One workspace-wide list, newest first, persisted in
   `assistant-responses.json` (atomic writes, like `todos.json`) so items
   survive a restart *and* the blank conversation every launch starts with —
   they are the user's to clear. Agent, project and to-do names (and the
@@ -1219,9 +1220,9 @@ atomically, before the async `podium.yml` load.
     task, context, memory or to-dos settle it, and mention it only in the
     usual short report; relay only a decision that is genuinely the user's
     (preference, risk, money, people, anything it cannot infer) as a needsYou
-    `add_response` keyed by the process id with a recommended answer, and only
-    then end with `ACTION_REQUIRED` — so a question does not ping the
-    desktop by default. The identity prompt says the same (pinned by tests).
+    `add_response` keyed by the process id with a recommended answer — that
+    item is what pings the desktop, so a question does not by default. The
+    identity prompt says the same (pinned by tests).
     `answer_subagent` is refused unless the sub-agent is `waiting`; it types
     the answer in through the PTY: control characters dropped (no escape can
     steer the terminal), `\r\n`/`\r` → `\n`, a multi-line answer wrapped in
@@ -1315,18 +1316,46 @@ atomically, before the async `podium.yml` load.
   as the backstop for agents whose terminal has never been opened, where
   there is no screen to read.
 
-  That record then **escalates rather than repeats**: an agent still blocked
-  `escalate_after` later (default 10 minutes) is raised again, but with
+  That record then **escalates once, and stops**: an agent still blocked
+  `escalate_after` later (default 10 minutes) is raised a second time, with
   wording that asks the assistant to say which answer it would pick and why —
   something the user can wave through in a word — and, once that answer is
   agreed, to call `respawn_agent` (nothing can type into an agent's
-  terminal). It is kept **for as
-  long as the agent lives**, not only while it looks stuck: an agent that
-  prints one line and falls silent again is waiting on the same unanswered
-  question, and re-reporting it from scratch was exactly the "it just keeps
-  asking me the same thing" repetition the escalation replaces. Only the
-  agent exiting (or vanishing) clears it. Each becomes one `[Podium] …`
-  turn plus a `notice` event, so the chat says why the assistant is speaking
+  terminal). That is the cap, `MAX_RAISES = 2` per question: raising it every
+  `escalate_after` for as long as the agent lived once produced a "no change"
+  reply every ten minutes for hours. The record is kept **for as long as the
+  agent lives**, not only while it looks stuck: an agent that prints one line
+  and falls silent again is waiting on the same unanswered question, and
+  re-reporting it from scratch is exactly the repetition this prevents. A
+  **new question cycle** starts when the user types into the agent's terminal
+  after the last raise: `Orchestrator::write_stdin` stamps
+  `ManagedProcess.last_input` (`last_user_input`), and a tick that finds it
+  newer than `Waiting.last` drops the record, so the next stall is raised
+  from scratch. A write counts as the user typing unless it is a short
+  escape sequence (at most 16 bytes starting with ESC — xterm.js's own focus
+  reports and cursor/device-attribute replies, which would otherwise end the
+  question on every window focus change); a lone arrow key is skipped too.
+  Otherwise only the agent exiting (or vanishing) clears the record.
+
+  **Viewing** is what keeps the assistant quiet about the agent the user is
+  looking at. The frontend's activity monitor reports it (`process_report_viewing`
+  → `Orchestrator::set_viewing`, in memory only, at most one process, never a
+  non-agent; the flag lives on `ManagedProcess.viewing`, so a removed process
+  drops it by itself) and `ProcessInfo.viewing` carries it to
+  `list_processes`/`get_process_status`. Proactivity skips the viewed agent:
+  no finished/crashed nudge, and no idle/waiting nudge — its question is
+  recorded as already raised instead (`Watcher::mark_seen`: one raise toward
+  the cap, escalation clock restarted every tick it stays in view), so
+  leaving the agent never fires a nudge at once. `add_response` for a
+  `process_id` that is the viewed agent stores nothing and answers with a
+  short "skipped, the user is viewing that agent" text (not an error;
+  `Orchestrator::add_assistant_response` returns `Option`). A
+  `report_to_assistant` from the viewed agent is still delivered, with one
+  line appended telling the assistant not to mention it or file an item. The
+  identity prompt says the same of `viewing: true`; reading the agent's
+  output stays fine.
+
+  Each raise becomes one `[Podium] …` turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
   milliseconds. A nudge **starts the session when there is none**
   (`ensure_session`, the same path `send` uses) — otherwise the user only
@@ -1379,26 +1408,40 @@ atomically, before the async `podium.yml` load.
   let all of that through as a notification — the noise this contract exists
   to prevent. A reply that quotes the sentinel *mid-sentence* while reporting
   something real is still a real reply.
-  That is also what makes notifications right with no frontend code: the
-  panel already pings once per `turnEnd` that produced a reply, so a
-  swallowed reply is a turn that produced none.
 
-  **The desktop-notification gate** is its mirror image. A reply the user
-  asked for pings when the panel is not in front of them, as it always did;
-  a turn *Podium* started (an agent report, a nudge, the sweep) only pings
-  when the assistant ends it with `ACTION_REQUIRED` on a line of its own —
-  the marker the identity prompt asks for when the user has to decide,
-  unblock or look at something now. Without it a steady trickle of "agent
-  finished" would reach the desktop, which is the spam the user asked not to
-  get; with it, an agent stuck on a question still gets through. The marker
-  is **stripped from the prose** (`take_action_required`) before anything is
-  recorded or published — it is a signal to Podium, not something to show —
-  and a reply that is *only* the marker is dropped like a swallowed one.
-  Both halves are folded into `TurnEnd { notify }` in the stdout task, the
-  only place that knows both who started the turn (`SessionState`'s
-  `turn_from_user`, set at write time so a **send now** makes a Podium turn
-  the user's too) and whether the marker appeared; the panel just obeys the
-  flag alongside its existing "is the pane in front of you" check.
+  **Desktop notifications come from the Responses list only.** A chat
+  reply, a proposal card and a `[Podium]` nudge never ping; a **new
+  Responses item** does (see _Terminal & activity_ for the frontend half).
+  So what the assistant may file *is* the notification policy, and the
+  identity prompt spells it out. `needsYou` only for an agent blocked on a
+  question only the user can answer (one item per question, replaced when
+  the question changes) and an external message (Slack/Teams/mail) that
+  directly asks the user something — never a manual step the user already
+  knows about (merging a PR, `just install-signed`, testing a build).
+  `fyi` only for finished work the user asked for that has something to look
+  at (a result, a PR/MR URL, a posted review, the answer), an agent that
+  crashed or failed, an external heads-up that asks nothing, and an agent
+  the assistant stopped or respawned on its own. Never: "no change"/"still
+  waiting" reminders or a repeat of an open item, a routine check that found
+  nothing, lookup or sub-agent results it used itself, an agent that
+  finished with nothing left for the user, or anything about the viewed
+  agent. A nudge that brings nothing new about an agent already reported
+  gets no new chat reply either. Unit tests pin the key phrases.
+  The old `ACTION_REQUIRED` marker and `TurnEnd.notify` (with the
+  `turn_from_user` bookkeeping that fed it) are gone. `take_action_required`
+  stays, only to strip a stray marker an assistant writes out of habit
+  before anything is recorded or published; a reply that is *only* the
+  marker is dropped like a swallowed one.
+
+  **Proposals file their own item.** When the autonomy gate parks a proposal,
+  `AssistantManager::propose` adds a `needsYou` Responses item — "Confirm or
+  reject: `<tool> <summary>`", `source` `"proposal"`, no process/to-do — and
+  keeps its id on the `PendingProposal`. Resolving (`resolve_proposal`),
+  invalidating (`invalidate_proposals_for_project`) or dropping it
+  (`new_conversation`) takes the item off again. Proposals are memory-only
+  but the list is on disk, so `new_conversation` (every launch runs one)
+  also sweeps every item whose source is `proposal`, which is how one a
+  restart orphaned goes away. The assistant must not file one itself.
 
   The **day-start summary** used to be a fourth trigger here and is now the
   panel's **"Start my day" button** (`assistant_day_start`, shown in the
@@ -1558,6 +1601,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_list`          | `{ projectId? }`                            | `ProcessInfo[]`   |
 | `process_git_branch`    | `{ processId }`                             | `string \| null`  |
 | `process_report_waiting` | `{ processId }` (agent showing a prompt)   | –                 |
+| `process_report_viewing` | `{ processId? }` (the agent open on screen; omitted = none; in memory only) | – |
 | `process_activity`      | –                                           | `Record<ProcessId, OutputActivity>` (`{ quietMs, burstMs }` per running process that printed) |
 | `process_rename`        | `{ processId, name }`                       | `ProcessInfo`     |
 | `process_start`         | `{ processId }`                             | –                 |
@@ -1777,17 +1821,30 @@ live count drops to 0 while it is open, and the next Reset just resets.
 
 `notifyAgentWaiting` (`src/lib/notify.ts`) has a sibling, `notifyAssistant`,
 for the same toast+OS-notification+sound treatment on the personal assistant.
-`assistantStore.apply` (`src/state/assistantStore.ts`) fires it in exactly
-two places, both gated on `isAssistantVisible()` (focused window **and**
-`useLayoutStore.getState().assistantOpen`) so a user already watching the
-pane is never pinged: once at `turnEnd` when the turn produced a reply (the
-*last* `message` event streamed that turn — tracked in `turnReplyText`,
-reset whenever a new turn starts, so three streamed blocks make one
-notification, not three, and a turn with no reply or an error makes none),
-and once when a `proposal` event arrives (the assistant waiting on
-confirm/reject, same shape as an agent waiting on a permission prompt). A
-proactive nudge (`notice`/`nudge` row) never itself notifies — only the
-reply it may provoke does, through the same `turnEnd` path.
+It fires from one place only: `assistantStore`'s handling of a
+`responsesChanged` snapshot (`notifyNewResponses`). A chat reply, a turn end,
+a `proposal` card and a nudge never pings — the Responses list is the only
+thing that reaches the desktop (a proposal gets there through the
+`needsYou` item the backend files for it). A module-level `Set` holds the id
+of every item this app run has seen, filled from every snapshot and from
+`loadResponses` (also called once from `App` at launch, so a closed pane
+still has a baseline; nothing pings before that first load completes). Only
+an id not in the set is news, so what the list held at launch never pings
+and a reply that gets restored (same id) never pings twice. The ping is
+skipped when `isAssistantVisible()` (focused window **and**
+`useLayoutStore.getState().assistantOpen`), and per item when its `processId`
+is `viewedAgentId()`. Several new items in one snapshot make one
+notification: title "Needs you" when any is `needsYou`, else "FYI"; body the
+newest item's text plus "(+N more)".
+
+**Viewing** (`agentActivityStore.ts`): `viewedAgentId()` is the one
+definition — window focused, the active process is an agent, and no to-do,
+scratchpad or Git board pane covers the work area (`isViewingAgent`, the
+"needs input" gate, shares its base and so also treats an open scratchpad as
+covering the terminal). The once-a-second monitor calls
+`processReportViewing` (→ `process_report_viewing`) only when the value
+changed, retries a failed report on the next tick, and also reports on window
+`focus`/`blur`; stopping the monitor reports "none".
 
 The composer (`AssistantPane.tsx`) supports shell-style history recall:
 arrow-up/down walk the sent `user` rows already in `messages` (no separate

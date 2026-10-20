@@ -25,6 +25,7 @@ function agent(id: string): ProcessInfo {
     command: "claude",
     worktree: null,
     color: null,
+    viewing: false,
   };
 }
 

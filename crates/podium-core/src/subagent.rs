@@ -725,8 +725,8 @@ pub fn finished_nudge(
 /// The nudge for a sub-agent that asked the assistant a question
 /// (`ask_assistant`). Answer-first: the assistant answers it itself whenever
 /// it can judge, so the user barely deals with sub-agents; only a decision
-/// that is genuinely theirs is relayed, with a recommended answer, and only
-/// then does the turn end `ACTION_REQUIRED` (the desktop ping).
+/// that is genuinely theirs is relayed, with a recommended answer, as a
+/// needsYou Responses item — the only thing that reaches the desktop.
 pub fn question_nudge(
     name: &str,
     id: ProcessId,
@@ -742,14 +742,13 @@ pub fn question_nudge(
          when the decision is genuinely the user's — a preference, a risk, money, people, or \
          anything you cannot infer: then file a needsYou add_response with process_id {id} \
          holding the question and your recommended answer, so they can wave it through in a \
-         word, end your reply with {} on a line of its own, and once they answer pass it on \
+         word (that item is what reaches their desktop), and once they answer pass it on \
          with answer_subagent.",
         who(name, id, kind, task),
         crate::assistant::quote_line(&crate::assistant::truncate(
             question.trim(),
             MAX_QUESTION_CHARS
         )),
-        crate::assistant::ACTION_REQUIRED,
     )
 }
 
@@ -1380,16 +1379,17 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("your recommended answer"), "{text}");
-        // The desktop ping only on a relay, never by default.
-        assert!(text.contains(&format!(
-            "end your reply with {}",
-            crate::assistant::ACTION_REQUIRED
-        )));
+        // The desktop ping only on a relay (its Responses item), never by
+        // default — and no longer through the old marker.
         assert!(
-            text.find("Relay it only").unwrap()
-                < text.find(crate::assistant::ACTION_REQUIRED).unwrap(),
+            text.contains("(that item is what reaches their desktop)"),
             "{text}"
         );
+        assert!(
+            text.find("Relay it only").unwrap() < text.find("what reaches their desktop").unwrap(),
+            "{text}"
+        );
+        assert!(!text.contains(crate::assistant::ACTION_REQUIRED), "{text}");
     }
 
     #[test]

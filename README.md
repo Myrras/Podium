@@ -254,19 +254,34 @@ they did.
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
 - **Proactivity** — Podium speaks first when an agent exits, when an agent
-  looks stuck (silent for 5 minutes, escalating after 10 with a suggested
-  answer), and on a 6-hourly sweep for to-dos open longer than a week.
+  looks stuck (silent for 5 minutes, escalating once after 10 with a
+  suggested answer, then silent until you type into that agent), and on a
+  6-hourly sweep for to-dos open longer than a week.
 - **External sweep** — every 10 minutes by default, it checks the sources you
   enabled (Slack, Teams — through your *own* MCP servers) and stays silent
   when there is nothing to report. Its actions show as one faint "Podium
   check" line in the log.
-- **Responses** — when an agent reports back, the assistant also files the
-  essential point as a *Needs you* or *FYI* item in a collapsible list pinned
-  above the chat (agent, project, to-do, age); the details stay in its chat
-  reply. Tick an item off, or reply inline — the reply goes to the assistant
-  as your message and shows in the chat as a one-line "Re: …". A newer item
-  about the same agent or to-do replaces the old one, and open items survive
-  restarts and new conversations.
+- **Responses** — the assistant files a short *Needs you* or *FYI* item in a
+  collapsible list pinned above the chat (agent, project, to-do, age), and
+  only for things you actually need: an agent blocked on a question only you
+  can answer, a message from Slack/Teams/mail that asks you something, a
+  confirmation card for an action it proposes, finished work you asked for
+  (a result, a PR/MR link), or an agent that crashed. No "no change"
+  reminders, no agent that simply finished with nothing left for you. The
+  details stay in its chat reply. Tick an item off, or reply inline — the
+  reply goes to the assistant as your message and shows in the chat as a
+  one-line "Re: …". A newer item about the same agent or to-do replaces the
+  old one, and open items survive restarts and new conversations.
+- **Desktop notifications** — a new Responses item is the only thing that
+  notifies you (toast, system notification and sound), and only while Podium
+  is not in front with the assistant panel open. Several new items arrive as
+  one notification. Chat replies, confirmation cards and Podium's own
+  `[Podium]` nudges do not notify on their own.
+- **The agent you are looking at stays quiet** — the assistant knows which
+  agent you have open (the window is in front and its terminal is showing —
+  not covered by a to-do, scratchpad or the Git board). It does not nudge,
+  report or file items about that agent, so it never tells you what you are
+  already reading. Switch away and it speaks again for anything new.
 - **Start my day** — one button for a prioritised summary of open work across
   all projects.
 - **Queue** — one turn runs at a time; anything you send mid-turn waits, and

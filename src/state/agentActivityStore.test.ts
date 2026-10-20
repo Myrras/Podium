@@ -21,9 +21,11 @@ vi.mock("../lib/notify", () => ({
 }));
 
 const processReportWaiting = vi.fn<(id: string) => Promise<void>>();
+const processReportViewing = vi.fn<(id: string | null) => Promise<void>>();
 const processActivity = vi.fn<() => Promise<Record<string, OutputActivity>>>();
 vi.mock("../ipc/commands", () => ({
   processReportWaiting: (id: string) => processReportWaiting(id),
+  processReportViewing: (id: string | null) => processReportViewing(id),
   processActivity: () => processActivity(),
 }));
 
@@ -39,6 +41,7 @@ import { useProcessStore } from "./processStore";
 import {
   startAgentActivityMonitor,
   useAgentActivityStore,
+  viewedAgentId,
 } from "./agentActivityStore";
 
 function proc(
@@ -57,6 +60,7 @@ function proc(
     command: "run",
     worktree: null,
     color: null,
+    viewing: false,
   };
 }
 
@@ -82,7 +86,13 @@ describe("agentActivityStore", () => {
     useAgentActivityStore.setState({ activity: {}, shells: {}, notified: {} });
     useProcessStore.setState({ activeProcessId: null });
     useAssistantStore.setState({ subagents: [] });
-    useLayoutStore.setState({ openSubagent: null });
+    useLayoutStore.setState({
+      openTodo: null,
+      openScratchpad: null,
+      openBoard: null,
+      openSubagent: null,
+    });
+    processReportViewing.mockResolvedValue(undefined);
     viewport.mockReturnValue(null);
     // Default: the user is not looking at any agent, so waiting agents ping.
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
@@ -369,5 +379,139 @@ describe("agentActivityStore", () => {
     viewport.mockReturnValue("⏵⏵ auto mode on (shift+tab to cycle)");
     tick();
     expect(useAgentActivityStore.getState().shells.a1).toBeUndefined();
+  });
+  describe("viewing", () => {
+    beforeEach(() => {
+      seed([
+        proc("a1", AGENT, RUNNING),
+        proc("t1", { kind: "terminal" }, RUNNING),
+      ]);
+    });
+
+    it("is the active agent while the window is focused", () => {
+      vi.mocked(document.hasFocus).mockReturnValue(true);
+      useProcessStore.setState({ activeProcessId: "a1" });
+      expect(viewedAgentId()).toBe("a1");
+    });
+
+    it("is nothing while the window is not in front", () => {
+      useProcessStore.setState({ activeProcessId: "a1" });
+      expect(viewedAgentId()).toBeNull();
+    });
+
+    it("is nothing for a terminal, or with no active process", () => {
+      vi.mocked(document.hasFocus).mockReturnValue(true);
+      useProcessStore.setState({ activeProcessId: "t1" });
+      expect(viewedAgentId()).toBeNull();
+      useProcessStore.setState({ activeProcessId: null });
+      expect(viewedAgentId()).toBeNull();
+    });
+
+    it.each([
+      ["a to-do", { openTodo: { projectId: "p", todoId: "t" } }],
+      [
+        "a scratchpad",
+        { openScratchpad: { projectId: "p", scratchpadId: "s" } },
+      ],
+      ["the Git board", { openBoard: { projectId: "p" } }],
+    ])("is nothing while %s covers the work area", (_, layout) => {
+      vi.mocked(document.hasFocus).mockReturnValue(true);
+      useProcessStore.setState({ activeProcessId: "a1" });
+      useLayoutStore.setState(layout);
+      expect(viewedAgentId()).toBeNull();
+    });
+
+    it("is nothing while one of the assistant's sub-agents fills the work area", () => {
+      // Sub-agents are never in the process store: not reported as viewed.
+      vi.mocked(document.hasFocus).mockReturnValue(true);
+      useLayoutStore.setState({ openSubagent: "s1" });
+      expect(viewedAgentId()).toBeNull();
+    });
+
+    it("reports a change to the backend once, not every tick", async () => {
+      vi.useFakeTimers();
+      try {
+        processActivity.mockResolvedValue({});
+        const stop = startAgentActivityMonitor();
+
+        // Nothing in view at the start: nothing to report.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(processReportViewing).not.toHaveBeenCalled();
+
+        vi.mocked(document.hasFocus).mockReturnValue(true);
+        useProcessStore.setState({ activeProcessId: "a1" });
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(processReportViewing).toHaveBeenCalledOnce();
+        expect(processReportViewing).toHaveBeenCalledWith("a1");
+
+        // Opening a to-do covers the terminal: no agent in view any more.
+        useLayoutStore.setState({
+          openTodo: { projectId: "p", todoId: "t" },
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(processReportViewing).toHaveBeenCalledTimes(2);
+        expect(processReportViewing).toHaveBeenLastCalledWith(null);
+        stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports a window focus change at once", async () => {
+      vi.useFakeTimers();
+      try {
+        processActivity.mockResolvedValue({});
+        const stop = startAgentActivityMonitor();
+        vi.mocked(document.hasFocus).mockReturnValue(true);
+        useProcessStore.setState({ activeProcessId: "a1" });
+
+        window.dispatchEvent(new Event("focus"));
+        expect(processReportViewing).toHaveBeenCalledWith("a1");
+
+        vi.mocked(document.hasFocus).mockReturnValue(false);
+        window.dispatchEvent(new Event("blur"));
+        expect(processReportViewing).toHaveBeenLastCalledWith(null);
+        stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("retries a report that failed", async () => {
+      vi.useFakeTimers();
+      try {
+        processActivity.mockResolvedValue({});
+        vi.mocked(document.hasFocus).mockReturnValue(true);
+        useProcessStore.setState({ activeProcessId: "a1" });
+        processReportViewing.mockRejectedValueOnce(new Error("bridge down"));
+        const stop = startAgentActivityMonitor();
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(processReportViewing).toHaveBeenCalledTimes(2);
+        expect(processReportViewing).toHaveBeenLastCalledWith("a1");
+        stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("tells the backend nothing is in view when the monitor stops", async () => {
+      vi.useFakeTimers();
+      try {
+        processActivity.mockResolvedValue({});
+        vi.mocked(document.hasFocus).mockReturnValue(true);
+        useProcessStore.setState({ activeProcessId: "a1" });
+        const stop = startAgentActivityMonitor();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(processReportViewing).toHaveBeenLastCalledWith("a1");
+
+        stop();
+        expect(processReportViewing).toHaveBeenLastCalledWith(null);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
