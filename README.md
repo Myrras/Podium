@@ -18,7 +18,8 @@ One window, three columns:
 - **Middle — the work area.** A real terminal for whatever you have focused,
   or the detail pane of a to-do or scratchpad.
 - **Right — the personal assistant.** A chat panel that can see and drive
-  everything Podium manages, across all open projects.
+  everything Podium manages, across all open projects. Next to it, the
+  **changes panel** shows what changed in a checkout, file by file.
 
 ## Feature tour
 
@@ -142,6 +143,27 @@ Each worktree row in the sidebar can open a terminal rooted in it, open it in
 Warp, run the Commands modal against it, or be removed. Removal is refused
 while a process is running in it or while it has uncommitted changes (unless
 forced); the branch is always kept.
+
+### Changes panel
+
+The **Changes** button in the title bar (the compare icon, left of the
+assistant's) opens a resizable panel on the right listing every changed file
+with its `+`/`−` line counts; click a file to see its diff inline, or
+**Expand all** for a quick read-through. It follows what you have focused — an
+agent or terminal running in a worktree shows that worktree's changes,
+anything else in a project shows the project root — until you pick a
+checkout (any project root or worktree) from its dropdown, which pins it;
+choose **Follow focus** to go back. Two modes:
+
+- **Uncommitted** — the working tree against `HEAD`: staged, unstaged and
+  untracked files together, i.e. what a commit would pick up.
+- **Branch** — everything since the branch left the default branch
+  (`origin/HEAD`, else `origin/main`/`master`, else `main`/`master`),
+  committed or not — what a PR would show.
+
+It re-reads git every 10 seconds while open, when the window regains focus,
+and on the refresh button, so an agent's edits show up as it makes them.
+Very large diffs are cut short, and at most 1000 files are listed.
 
 ### Git board
 

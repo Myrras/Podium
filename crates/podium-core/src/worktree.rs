@@ -49,7 +49,7 @@ const MAX_SLUG_LEN: usize = 40;
 /// contain repo paths), but is logged via `tracing` so the real cause of a
 /// failure (e.g. "dubious ownership", git missing, wrong cwd) is visible in
 /// the app logs instead of collapsing into a generic error.
-fn git(wsl: Option<&WslBackend>, root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(wsl: Option<&WslBackend>, root: &Path, args: &[&str]) -> Option<String> {
     let root_arg = match crate::platform::backend_path_in(wsl, root) {
         Ok(path) => path,
         Err(e) => {

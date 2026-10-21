@@ -12,6 +12,12 @@ when it merges.
 
 ### Added
 
+- **Changes panel.** A new title-bar button opens a panel beside the
+  assistant listing the files changed in a checkout, each expandable into
+  its diff. It follows the focused agent's or terminal's worktree (or the
+  project root), or any root/worktree you pick, and compares either the
+  uncommitted changes or the whole branch against the default branch.
+
 - **Archived to-dos over MCP.** `list_todos` takes `include_archived: true`
   to return the archive after the active list (each marked `archived`), and
   to read an archived to-do in full by its id. Without it nothing changes. A

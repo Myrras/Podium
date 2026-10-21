@@ -18,6 +18,10 @@ interface LayoutPersisted {
   assistantOpen: boolean;
   /** Width of the assistant chat panel in px. */
   assistantWidth: number;
+  /** Whether the changes (diff) panel is expanded on the right. */
+  changesOpen: boolean;
+  /** Width of the changes panel in px. */
+  changesWidth: number;
 }
 
 const STORAGE_KEY = "podium.layout";
@@ -28,6 +32,8 @@ const DEFAULTS: LayoutPersisted = {
   collapsedSections: {},
   assistantOpen: false,
   assistantWidth: 340,
+  changesOpen: false,
+  changesWidth: 520,
 };
 
 function load(): LayoutPersisted {
@@ -54,6 +60,11 @@ function load(): LayoutPersisted {
         typeof saved.assistantWidth === "number"
           ? saved.assistantWidth
           : DEFAULTS.assistantWidth,
+      changesOpen: saved.changesOpen === true,
+      changesWidth:
+        typeof saved.changesWidth === "number"
+          ? saved.changesWidth
+          : DEFAULTS.changesWidth,
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -76,6 +87,8 @@ function persistable(state: LayoutPersisted): LayoutPersisted {
     collapsedSections: state.collapsedSections,
     assistantOpen: state.assistantOpen,
     assistantWidth: state.assistantWidth,
+    changesOpen: state.changesOpen,
+    changesWidth: state.changesWidth,
   };
 }
 
@@ -177,6 +190,10 @@ export interface LayoutState extends LayoutPersisted {
   setAssistantOpen: (open: boolean) => void;
   /** Resize the assistant chat panel (persisted, clamped). */
   setAssistantWidth: (w: number) => void;
+  /** Show or hide the changes panel (persisted). */
+  setChangesOpen: (open: boolean) => void;
+  /** Resize the changes panel (persisted, clamped). */
+  setChangesWidth: (w: number) => void;
   /** Fill the work area with a to-do (clears the focused process/scratchpad). */
   openTodoInWorkArea: (projectId: ProjectId, todoId: TodoId) => void;
   /** Clear the open to-do (e.g. when a process takes the work area). */
@@ -264,6 +281,15 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       const assistantWidth = Math.min(640, Math.max(280, w));
       persist({ ...persistable(get()), assistantWidth });
       set({ assistantWidth });
+    },
+    setChangesOpen: (changesOpen) => {
+      persist({ ...persistable(get()), changesOpen });
+      set({ changesOpen });
+    },
+    setChangesWidth: (w) => {
+      const changesWidth = Math.min(1200, Math.max(320, w));
+      persist({ ...persistable(get()), changesWidth });
+      set({ changesWidth });
     },
     openTodoInWorkArea: (projectId, todoId) => {
       // A to-do, a scratchpad, and a process are mutually exclusive in the

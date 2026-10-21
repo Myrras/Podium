@@ -49,6 +49,7 @@ import { useThemeStore } from "./state/themeStore";
 import { useTodoStore } from "./state/todoStore";
 import { useWorktreeStore } from "./state/worktreeStore";
 import { AssistantPane } from "./components/AssistantPane";
+import { ChangesPane } from "./components/ChangesPane";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
 import { GitBoard } from "./components/GitBoard";
@@ -61,7 +62,7 @@ import { TodoDetailPane } from "./components/TodoDetailPane";
 import { Toasts } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { WindowControls } from "./components/WindowControls";
-import { AssistantIcon, SettingsIcon } from "./components/icons";
+import { AssistantIcon, ChangesIcon, SettingsIcon } from "./components/icons";
 import styles from "./App.module.css";
 
 export default function App() {
@@ -81,6 +82,10 @@ export default function App() {
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const assistantWidth = useLayoutStore((s) => s.assistantWidth);
   const setAssistantWidth = useLayoutStore((s) => s.setAssistantWidth);
+  const changesOpen = useLayoutStore((s) => s.changesOpen);
+  const setChangesOpen = useLayoutStore((s) => s.setChangesOpen);
+  const changesWidth = useLayoutStore((s) => s.changesWidth);
+  const setChangesWidth = useLayoutStore((s) => s.setChangesWidth);
 
   const activeProcess = useProcessStore(
     (s) => s.processes.find((p) => p.id === s.activeProcessId) ?? null,
@@ -265,6 +270,27 @@ export default function App() {
     [assistantWidth, setAssistantWidth],
   );
 
+  // The changes panel sits on the right too (left of the assistant).
+  const onChangesResizerDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = changesWidth;
+      function onMove(ev: MouseEvent) {
+        setChangesWidth(startW - (ev.clientX - startX));
+      }
+      function onUp() {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+      }
+      document.body.style.cursor = "col-resize";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [changesWidth, setChangesWidth],
+  );
+
   // Suppress the webview's default right-click menu (the browser-y "Save as /
   // Print / Share" items, most glaring on Windows' WebView2). Kept inside
   // editable surfaces so native copy/paste still works there.
@@ -333,6 +359,16 @@ export default function App() {
           <button
             type="button"
             className={styles.settingsBtn}
+            aria-label="Changes"
+            title="Changes"
+            aria-pressed={changesOpen}
+            onClick={() => setChangesOpen(!changesOpen)}
+          >
+            <ChangesIcon size={16} />
+          </button>
+          <button
+            type="button"
+            className={styles.settingsBtn}
             aria-label="Assistant"
             title="Assistant"
             aria-pressed={assistantOpen}
@@ -395,6 +431,18 @@ export default function App() {
             <WelcomeScreen />
           )}
         </main>
+        {changesOpen && (
+          <>
+            <div
+              className={styles.sidebarResizer}
+              onMouseDown={onChangesResizerDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize changes"
+            />
+            <ChangesPane />
+          </>
+        )}
         {assistantOpen && (
           <>
             <div

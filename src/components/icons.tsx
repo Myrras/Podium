@@ -69,6 +69,7 @@ import {
   Trash2,
   ExternalLink,
   GitBranch,
+  GitCompare,
   GitPullRequest,
   SquareKanban,
   GripVertical,
@@ -136,6 +137,7 @@ export const IssueIcon = icon(CircleDot);
 export const PrIcon = icon(GitPullRequest);
 export const BoardIcon = icon(SquareKanban);
 export const BranchIcon = icon(GitBranch, { size: 13 });
+export const ChangesIcon = icon(GitCompare);
 export const ExternalLinkIcon = icon(ExternalLink, { size: 13 });
 export const GripIcon = icon(GripVertical, { size: 14 });
 export const UnassignIcon = icon(UserMinus, { size: 13 });

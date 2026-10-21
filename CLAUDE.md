@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 38 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **101 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **103 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -79,8 +79,10 @@ them in sync when you add a command or MCP tool.
   list (`SubagentsSection`) pinned above it, action + proposal cards,
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
-  conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 101 commands.
+  conversation reset lives in Settings → Assistant), a changes panel beside
+  it (changed files + inline diffs of a project root or worktree; see
+  _Changes panel_), Zustand stores, typed
+  IPC wrappers over all 103 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -142,6 +144,7 @@ podium/
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
+│  ├─ changes.rs               # the changes panel: changed files + per-file diff of a root/worktree (vs HEAD or the default branch)
 │  ├─ platform.rs              # the OS gap: login shell, quoting, probe, git command, WSL-backend switch
 │  ├─ platform/wsl_path.rs     # pure Windows <-> WSL path translation
 │  ├─ backend_settings.rs      # backend.json (WSL distro + native-drive opt-in), read once at startup
@@ -605,6 +608,34 @@ atomically, before the async `podium.yml` load.
   can go stale between backend refreshes while the sidebar stays live; the
   backend's `WorktreeInUse` guard remains the authority and surfaces as a
   toast if it fires anyway.
+
+- **Changes panel** (`changes.rs`, `ChangesPane.tsx`, `changesStore.ts`): a
+  right-side island next to the assistant (title-bar button, `layoutStore`
+  `changesOpen`/`changesWidth`, persisted) listing the changed files of one
+  checkout — a project root or one of its Podium worktrees — with inline
+  diffs. `changes_list { projectId, worktree?, base }` → `ChangeSet`;
+  `changes_file_diff { …, path, oldPath? }` → `FileDiff`. The worktree is
+  resolved by **name** through `worktree::list` (`Orchestrator::changes_dir`),
+  never a path from the webview, and a file path must be relative with no
+  `..` (`validate_rel_path`). Bases: `uncommitted` = `git diff HEAD` (empty
+  tree before the first commit) plus `ls-files --others --exclude-standard`;
+  `branch` = `git diff <merge-base HEAD default>`, the default being
+  `origin/HEAD`, else `origin/main`/`origin/master`/`main`/`master`, falling
+  back to `HEAD` (`baseRef: null`) when none resolves. Both read the working
+  tree, so uncommitted edits count in either. An untracked file has no git
+  diff, so `file_diff` reads it from disk (binary = NUL in the first 8000
+  bytes, as git does; over 1 MiB not shown) and synthesizes one all-added
+  hunk. Caps: 1000 files (`truncated`), 512 KiB per diff (cut on a line).
+  Git runs through `worktree::git` (now `pub(crate)`), so the project's
+  backend and the WSL gate apply. No events: the frontend pulls on open,
+  target/base switch, window focus, a 10 s poll and the refresh button, and
+  the store drops any answer that is not the latest request (`listRequest` /
+  per-path `diffRequests`). The target follows focus (`useFocusedTarget`:
+  active process's `worktree`, else the open to-do/scratchpad/board's
+  project root, else the first project) until a pick in the dropdown pins
+  it; a pin on a closed project or vanished worktree falls back to focus.
+  Note an agent that made its own worktree keeps the root as cwd, so focus
+  shows the root — pick the worktree to see its work.
 
 - **Git board** (`issues.rs`): the project row's **Git** header button
   (`GitButton.tsx`, a pill at the header's far end — the one action visible
@@ -1661,6 +1692,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `worktree_list`         | `{ projectId }`                             | `WorktreeInfo[]`  |
 | `worktree_remove`       | `{ projectId, name, force }`                | `WorktreeInfo[]` (refreshed list) |
 | `worktree_open_in_warp` | `{ projectId, name }`                       | –                 |
+| `changes_list`          | `{ projectId, worktree?, base: "uncommitted"\|"branch" }` | `ChangeSet` (refusals: `notAGitRepo`, `worktreeNotFound`) |
+| `changes_file_diff`     | `{ projectId, worktree?, base, path, oldPath? }` | `FileDiff` (`invalidInput` for a path leaving the checkout) |
 | `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | `bool` — delivered, not queued (reply streams as `assistant:event`) |
 | `assistant_day_start`   | –                                           | `bool` — as `assistant_send` |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |

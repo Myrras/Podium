@@ -17,6 +17,9 @@ import type {
   AutonomyMode,
   CommentId,
   Board,
+  ChangeSet,
+  ChangesBase,
+  FileDiff,
   CachedBoard,
   IssueProvider,
   IssuesOverview,
@@ -427,6 +430,40 @@ export function worktreeOpenInWarp(
   name: string,
 ): Promise<void> {
   return invoke("worktree_open_in_warp", { projectId, name });
+}
+
+// ---------------------------------------------------------------------------
+// Changes panel
+// ---------------------------------------------------------------------------
+
+/**
+ * The files changed in a project root (`worktree` null) or one of its
+ * worktrees, against `HEAD` (`"uncommitted"`) or the default branch's
+ * merge-base (`"branch"`). Rejects with kind `"notAGitRepo"` outside a repo.
+ */
+export function changesList(
+  projectId: ProjectId,
+  worktree: string | null,
+  base: ChangesBase,
+): Promise<ChangeSet> {
+  return invoke("changes_list", { projectId, worktree, base });
+}
+
+/** One changed file's unified diff, compared as `changesList` does. */
+export function changesFileDiff(
+  projectId: ProjectId,
+  worktree: string | null,
+  base: ChangesBase,
+  path: string,
+  oldPath: string | null,
+): Promise<FileDiff> {
+  return invoke("changes_file_diff", {
+    projectId,
+    worktree,
+    base,
+    path,
+    oldPath,
+  });
 }
 
 // ---------------------------------------------------------------------------

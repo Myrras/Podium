@@ -11,6 +11,7 @@ pub mod assignment;
 pub mod assistant;
 pub mod backend_settings;
 pub mod boards;
+pub mod changes;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -41,6 +42,7 @@ pub use assistant::{
     PendingKind, ProposalInfo, QueuedMessage, TranscriptEntry, TranscriptRole,
 };
 pub use boards::CachedBoard;
+pub use changes::{ChangeSet, ChangedFile, ChangesBase, FileDiff};
 pub use error::{CoreError, CoreResult};
 pub use events::{EventBus, PodiumEvent};
 pub use ids::{

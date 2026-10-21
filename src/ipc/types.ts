@@ -744,3 +744,57 @@ export interface ProcessStatusEvent extends ProcessRefEvent {
 export interface ProjectRefEvent {
   projectId: ProjectId;
 }
+
+// ---------------------------------------------------------------------------
+// Changes panel (`podium_core::changes`)
+// ---------------------------------------------------------------------------
+
+/** What a checkout is compared with. */
+export type ChangesBase = "uncommitted" | "branch";
+
+/** How one file changed. */
+export type ChangeStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "typeChanged"
+  | "untracked";
+
+/** One changed file (`podium_core::ChangedFile`). */
+export interface ChangedFile {
+  /** Repository-relative, `/`-separated (the new path for a rename). */
+  path: string;
+  /** The path before a rename or copy. */
+  oldPath: string | null;
+  status: ChangeStatus;
+  /** Lines added/removed; `null` for a binary or oversized file. */
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+/** The changed files of one checkout against one base. */
+export interface ChangeSet {
+  /** The branch checked out, `null` when detached. */
+  branch: string | null;
+  base: ChangesBase;
+  /** The ref compared with (`origin/main`, …); only for `branch`. */
+  baseRef: string | null;
+  /** Short hash of the commit compared with; `null` before the first commit. */
+  baseCommit: string | null;
+  files: ChangedFile[];
+  /** More files changed than were listed. */
+  truncated: boolean;
+}
+
+/** One file's unified diff (`podium_core::FileDiff`). */
+export interface FileDiff {
+  path: string;
+  /** Git's unified diff; empty for a binary file or a pure rename. */
+  diff: string;
+  binary: boolean;
+  /** The diff was cut short. */
+  truncated: boolean;
+}

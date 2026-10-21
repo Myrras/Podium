@@ -21,6 +21,7 @@ use crate::assistant::{
     ProposalAction, ProposalInfo, TranscriptEntry,
 };
 use crate::boards::{BoardStore, CachedBoard};
+use crate::changes::{ChangeSet, ChangesBase, FileDiff};
 use crate::config::AgentsConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::events::{EventBus, PodiumEvent};
@@ -3355,6 +3356,53 @@ impl Orchestrator {
             )
         };
         Ok(crate::worktree::current_branch(wsl, &cwd))
+    }
+
+    /// The checkout the changes panel looks at: the project root, or the
+    /// Podium worktree named `worktree` (looked up in git's own list, so a
+    /// name can never point outside the project).
+    fn changes_dir(
+        &self,
+        project_id: ProjectId,
+        worktree: Option<&str>,
+    ) -> CoreResult<(PathBuf, Option<&'static WslBackend>)> {
+        let (root, wsl) = self.project_root_and_backend(project_id)?;
+        let Some(name) = worktree else {
+            return Ok((root, wsl));
+        };
+        let entry = crate::worktree::list(wsl, &root)?
+            .into_iter()
+            .find(|w| w.name == name)
+            .ok_or(CoreError::WorktreeNotFound)?;
+        Ok((entry.path, wsl))
+    }
+
+    /// The files changed in the project root or one of its worktrees, against
+    /// `HEAD` or the default branch (see [`crate::changes`]). Shells out to
+    /// git — call from a blocking-friendly context.
+    pub fn list_changes(
+        &self,
+        project_id: ProjectId,
+        worktree: Option<&str>,
+        base: ChangesBase,
+    ) -> CoreResult<ChangeSet> {
+        let (dir, wsl) = self.changes_dir(project_id, worktree)?;
+        crate::changes::list(wsl, &dir, base)
+    }
+
+    /// One changed file's unified diff, as [`Orchestrator::list_changes`]
+    /// compares it. Shells out to git — call from a blocking-friendly
+    /// context.
+    pub fn change_diff(
+        &self,
+        project_id: ProjectId,
+        worktree: Option<&str>,
+        base: ChangesBase,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> CoreResult<FileDiff> {
+        let (dir, wsl) = self.changes_dir(project_id, worktree)?;
+        crate::changes::file_diff(wsl, &dir, base, path, old_path)
     }
 
     /// Create a Podium-managed git worktree in the project (name slugified
