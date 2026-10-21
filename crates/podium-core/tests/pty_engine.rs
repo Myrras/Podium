@@ -339,3 +339,30 @@ async fn output_activity_lists_running_processes_that_printed() {
     wait_for_exit(&orch, id).await;
     assert!(!orch.output_activity().contains_key(&id));
 }
+
+// A terminal on screen is fitted once, when it mounts — often before its
+// process starts, or while it is between runs. That size must stick: the next
+// start opens its PTY at it rather than at the 80x24 default, which left a
+// visible terminal 80 columns wide until the window happened to resize.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_opens_the_pty_at_the_last_fitted_size() {
+    let command = if cfg!(windows) {
+        "mode con"
+    } else {
+        "stty size"
+    };
+    let (orch, id, _dir) = setup(command).await;
+
+    let err = orch.resize(id, 123, 37).await.expect_err("not running yet");
+    assert!(matches!(err, podium_core::CoreError::ProcessNotRunning));
+    assert_eq!(orch.term_size(id), Some((123, 37)));
+
+    orch.start_process(id).await.expect("start");
+    wait_for_exit(&orch, id).await;
+    let needle = if cfg!(windows) { "123" } else { "37 123" };
+    let text = wait_for_output(&orch, id, needle).await;
+    assert!(
+        text.contains(needle),
+        "PTY not opened at the fitted size: {text:?}"
+    );
+}

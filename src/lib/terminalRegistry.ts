@@ -15,7 +15,7 @@
  * counter makes messages from the abandoned channel no-ops.
  */
 
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal, type ITheme, type IWindowsPty } from "@xterm/xterm";
 
 import {
   processAttach,
@@ -25,6 +25,7 @@ import {
 } from "../ipc/commands";
 import type { ProcessId, TermEvent } from "../ipc/types";
 import { logWarning } from "./log";
+import { isWindows } from "./platform";
 import { setSelectedText } from "./selection";
 import { base64ToBytes, encodeInput } from "./termProtocol";
 
@@ -42,6 +43,51 @@ interface Entry {
 }
 
 const entries = new Map<ProcessId, Entry>();
+
+/**
+ * xterm's `windowsPty` hint for a PTY behind Windows ConPTY, or `undefined`
+ * off Windows. ConPTY renders its own screen and repaints it on every resize,
+ * so xterm must not also reflow wrapped lines itself or treat the scrollback
+ * the way a Unix PTY expects — without the hint the two disagree, and output
+ * such as `git pull`'s progress lines ends up scrambled after it finishes.
+ * Only builds >= 21376 (all of Windows 11) wrap lines correctly enough for
+ * xterm's reflow; the build number is unknown until `platformMajor` (the
+ * WebView's `platformVersion` major: >= 13 is Windows 11) is, and without it
+ * xterm takes the safe path and disables reflow. Exported for unit testing.
+ */
+export function windowsPtyOption(
+  windows: boolean,
+  platformMajor: number | null,
+): IWindowsPty | undefined {
+  if (!windows) return undefined;
+  return platformMajor !== null && platformMajor >= 13
+    ? { backend: "conpty", buildNumber: 22000 }
+    : { backend: "conpty" };
+}
+
+let windowsPty = windowsPtyOption(isWindows, null);
+
+interface UADataLike {
+  getHighEntropyValues(hints: string[]): Promise<{ platformVersion?: string }>;
+}
+
+// WebView2 reports the Windows release only through the async UA client
+// hints; terminals made before it resolves are updated in place.
+if (isWindows) {
+  const uaData = (navigator as { userAgentData?: UADataLike }).userAgentData;
+  uaData
+    ?.getHighEntropyValues(["platformVersion"])
+    .then(({ platformVersion }) => {
+      const major = parseInt(platformVersion ?? "", 10);
+      windowsPty = windowsPtyOption(true, Number.isNaN(major) ? null : major);
+      for (const entry of entries.values()) {
+        entry.terminal.options.windowsPty = windowsPty;
+      }
+    })
+    .catch(() => {
+      // Keep the conservative hint (reflow off).
+    });
+}
 
 /** Keystroke-write failures are expected when the process just exited. */
 function writeInput(processId: ProcessId, data: string): void {
@@ -107,6 +153,7 @@ export function acquireTerminal(
     fontSize: options.fontSize,
     scrollback: 10_000,
     theme: options.theme,
+    ...(windowsPty ? { windowsPty } : {}),
   });
   terminal.onData((data) => writeInput(processId, data));
   // A terminal renders to a canvas, so its selection never reaches the

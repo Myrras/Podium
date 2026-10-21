@@ -69,6 +69,15 @@ when it merges.
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
 
+### Fixed
+
+- **Terminals fill their pane again.** A process that started or restarted
+  while its terminal was already open used to run 80 columns wide until the
+  window was resized; it now starts at the size of its pane.
+- **No more scrambled output on Windows.** Terminals now tell xterm.js they
+  run behind ConPTY, so output such as a finished `git pull` no longer ends up
+  jumbled.
+
 ## [3.1.1] - 2026-10-09
 
 ### Changed

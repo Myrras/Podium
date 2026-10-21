@@ -188,6 +188,12 @@ struct ManagedProcess {
     /// The colour an exited agent gave up, which its next start takes back
     /// unless another live agent holds it by then.
     last_color: Option<String>,
+    /// The terminal grid (cols, rows) the UI last fitted this process to,
+    /// kept across runs so a (re)start opens its PTY at that size. Without
+    /// it every start opened at 80x24, and a terminal already on screen —
+    /// whose host never changes size, so it never refits — stayed 80 columns
+    /// wide until the window was resized.
+    term_size: Option<(u16, u16)>,
 }
 
 /// An agent's CLI session: the commands a restart picks from
@@ -3689,8 +3695,28 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Resize a process's terminal. The size is remembered even when the
+    /// process is not running (the UI fits a terminal as soon as it opens,
+    /// often before or between runs), so the next start opens its PTY at
+    /// that size; the `ProcessNotRunning` error is still returned then.
     pub async fn resize(&self, id: ProcessId, cols: u16, rows: u16) -> CoreResult<()> {
-        self.running_pty(id)?.resize(cols, rows)
+        let pty = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner
+                .processes
+                .get_mut(&id)
+                .ok_or(CoreError::ProcessNotFound)?;
+            proc.term_size = Some((cols, rows));
+            proc.pty.clone().ok_or(CoreError::ProcessNotRunning)?
+        };
+        pty.resize(cols, rows)
+    }
+
+    /// The terminal grid a process's next start opens at (see
+    /// [`Orchestrator::resize`]); `None` until the UI has fitted it.
+    pub fn term_size(&self, id: ProcessId) -> Option<(u16, u16)> {
+        let inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.processes.get(&id).and_then(|p| p.term_size)
     }
 
     fn running_pty(&self, id: ProcessId) -> CoreResult<Arc<PtyProcess>> {
@@ -4841,6 +4867,7 @@ fn insert_process(
             seq,
             session: None,
             last_color: None,
+            term_size: None,
         },
     );
 }
@@ -4919,7 +4946,7 @@ fn do_start(
         restart_spec.as_ref().unwrap_or(&proc.spec),
         wsl,
         launch_gate.as_ref(),
-        None,
+        proc.term_size,
         Arc::clone(&proc.scrollback),
         proc.chunk_tx.clone(),
         make_exit_handler(
