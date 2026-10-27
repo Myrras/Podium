@@ -348,7 +348,9 @@ export default function App() {
             aria-label={
               assistantEnabled ? "Turn assistant off" : "Turn assistant on"
             }
-            title={assistantEnabled ? "Turn assistant off" : "Turn assistant on"}
+            title={
+              assistantEnabled ? "Turn assistant off" : "Turn assistant on"
+            }
             aria-pressed={assistantEnabled}
             onClick={() =>
               void useAssistantStore.getState().setEnabled(!assistantEnabled)
