@@ -15,7 +15,10 @@ vi.mock("./lib/platform", () => ({
 // What `backend_wsl_networking_mode` answers (`null` = native backend).
 const backend = vi.hoisted(() => ({ networkingMode: null as string | null }));
 // What `assistant_subagents_list` answers.
-const assistant = vi.hoisted(() => ({ subagents: [] as unknown[] }));
+const assistant = vi.hoisted(() => ({
+  subagents: [] as unknown[],
+  setResult: true,
+}));
 
 // App wires up IPC on mount; jsdom has no Tauri bridge, so stub it out.
 // `invoke` resolves per-command fixtures (all list commands — including
@@ -29,7 +32,11 @@ const invoke = vi.hoisted(() =>
           ? backend.networkingMode
           : cmd === "assistant_subagents_list"
             ? assistant.subagents
-            : [],
+            : cmd === "assistant_enabled_get"
+              ? true
+              : cmd === "assistant_enabled_set"
+                ? assistant.setResult
+                : [],
     ),
   ),
 );
@@ -73,7 +80,8 @@ beforeEach(() => {
   platform.windows = false;
   backend.networkingMode = null;
   assistant.subagents = [];
-  useAssistantStore.setState({ subagents: [] });
+  assistant.setResult = true;
+  useAssistantStore.setState({ subagents: [], enabled: true });
   useLayoutStore.setState({ openSubagent: null });
   invoke.mockClear();
   useToastStore.setState({ toasts: [] });
@@ -148,6 +156,29 @@ describe("App", () => {
 
     await user.click(screen.getByLabelText("Hide assistant"));
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+  });
+
+  it("turns the assistant off and on from the title bar", async () => {
+    useLayoutStore.setState({ assistantOpen: true });
+    const user = userEvent.setup();
+    render(<App />);
+
+    assistant.setResult = false;
+    await user.click(screen.getByLabelText("Turn assistant off"));
+    expect(invoke).toHaveBeenCalledWith("assistant_enabled_set", {
+      enabled: false,
+    });
+    expect(await screen.findByText("The assistant is off")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
+
+    assistant.setResult = true;
+    await user.click(screen.getByLabelText("Turn assistant on"));
+    expect(invoke).toHaveBeenCalledWith("assistant_enabled_set", {
+      enabled: true,
+    });
+    expect(
+      await screen.findByPlaceholderText("Message the assistant…"),
+    ).toBeInTheDocument();
   });
 
   it("closes the open Git board when its project closes", async () => {

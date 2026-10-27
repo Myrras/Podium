@@ -246,6 +246,8 @@ export function AssistantPane() {
   const autonomy = useAssistantStore((s) => s.autonomy);
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
+  const enabled = useAssistantStore((s) => s.enabled);
+  const setEnabled = useAssistantStore((s) => s.setEnabled);
   const hydrate = useAssistantStore((s) => s.hydrate);
   const dayStart = useAssistantStore((s) => s.dayStart);
   const loadResponses = useAssistantStore((s) => s.loadResponses);
@@ -500,6 +502,22 @@ export function AssistantPane() {
         </button>
       </header>
 
+      {!enabled ? (
+        <div className={styles.offState}>
+          <p className={styles.offTitle}>The assistant is off</p>
+          <p className={styles.empty}>
+            It will not run, nudge you or send notifications.
+          </p>
+          <button
+            type="button"
+            className={styles.confirmBtn}
+            onClick={() => void setEnabled(true)}
+          >
+            Turn on
+          </button>
+        </div>
+      ) : (
+        <>
       {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
 
       <ResponsesSection />
@@ -707,6 +725,8 @@ export function AssistantPane() {
           </button>
         </div>
       </form>
+        </>
+      )}
     </aside>
   );
 }

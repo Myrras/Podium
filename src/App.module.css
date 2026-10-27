@@ -187,3 +187,12 @@
     transform: translateY(6px) scale(0.99);
   }
 }
+
+/* Power toggle: accent while the assistant is on, muted when off. No spin. */
+.powerBtn[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+.powerBtn:hover svg {
+  transform: none;
+}
