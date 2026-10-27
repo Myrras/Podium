@@ -25,13 +25,15 @@
 //! happen to type.
 //!
 //! There is a second, slower lane: every `poll_interval_minutes` (default 10,
-//! 0 = off) the assistant is asked to look at the user's enabled external
-//! sources — Slack, Microsoft Teams — and speak only if something needs them.
-//! It reaches those through the user's *own* MCP servers, which the assistant
-//! inherits; Podium contributes the timer and the wording, no integration. A
-//! sweep that found nothing answers with the
-//! [`NOTHING_TO_REPORT`](crate::assistant::NOTHING_TO_REPORT) sentinel, which
-//! is swallowed before it can become a chat row or a notification.
+//! 0 = off) the user's enabled external sources — Slack, Microsoft Teams —
+//! are checked for anything that needs them. The check runs on Haiku in a
+//! session of its own ([`crate::sweep`]), not in the assistant's: it reaches
+//! those sources through the user's *own* MCP servers; Podium contributes the
+//! timer and the wording, no integration. A sweep that found nothing answers
+//! with the [`NOTHING_TO_REPORT`](crate::assistant::NOTHING_TO_REPORT)
+//! sentinel and the assistant never hears of it; only a real finding becomes
+//! an assistant turn. One sweep runs at a time: a tick while one still runs
+//! is skipped.
 //!
 //! The whole thing is silent while the `proactive` setting is off — the switch
 //! is checked per nudge, so flipping it takes effect immediately. Likewise the
@@ -39,12 +41,12 @@
 //! a restart.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::assistant::poll_prompt;
+use crate::assistant::{poll_prompt, AssistantPolling};
 use crate::events::PodiumEvent;
 use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
@@ -105,6 +107,7 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     let weak = Arc::downgrade(orchestrator);
     let mut events = orchestrator.subscribe_events();
     let mut watcher = Watcher {
+        weak: weak.clone(),
         config,
         waiting: HashMap::new(),
         // The first sweep comes a whole interval after startup, not the
@@ -136,6 +139,8 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
 }
 
 struct Watcher {
+    /// For the external sweep's own task, which outlives a tick.
+    weak: Weak<Orchestrator>,
     config: ProactivityConfig,
     /// Agents already flagged as possibly waiting, so one stuck agent is not
     /// mentioned on every tick. Kept for as long as the agent lives — *not*
@@ -168,13 +173,33 @@ impl Watcher {
         orchestrator.assistant_nudge(text).await;
     }
 
-    /// Hand the assistant an external-sweep errand, unless the user switched
-    /// proactivity off. Same gate as a nudge, but it stays out of the chat.
-    async fn poll(&self, orchestrator: &Orchestrator, text: String) {
+    /// Run the external sweep in its own session, unless the user switched
+    /// proactivity off, and hand the assistant what it found — if anything.
+    /// It runs on its own task (a sweep may take minutes), one at a time: a
+    /// tick while one still runs is skipped.
+    fn poll(&self, orchestrator: &Orchestrator, polling: AssistantPolling) {
         if !orchestrator.assistant_proactivity() {
             return;
         }
-        orchestrator.assistant_poll(text).await;
+        let Some(sweep) = orchestrator.begin_external_sweep() else {
+            return;
+        };
+        let weak = self.weak.clone();
+        tokio::spawn(async move {
+            let found = sweep.run(&poll_prompt(polling)).await;
+            // The settings may have changed while the sweep ran.
+            if let (Some(found), Some(orchestrator)) = (found, weak.upgrade()) {
+                let polling_now = orchestrator.assistant_polling();
+                if orchestrator.assistant_proactivity() && polling_now.is_active() {
+                    orchestrator
+                        .assistant_poll(crate::sweep::finding_text(polling, &found))
+                        .await;
+                }
+            }
+            // Freed only now, so the next sweep never overlaps this one's
+            // hand-off.
+            drop(sweep);
+        });
     }
 
     async fn on_event(&mut self, orchestrator: &Orchestrator, event: PodiumEvent) {
@@ -239,8 +264,8 @@ impl Watcher {
         self.poll_external(orchestrator).await;
     }
 
-    /// The slow lane: every `poll_interval_minutes`, ask the assistant to
-    /// check the enabled external sources. Settings are read here rather than
+    /// The slow lane: every `poll_interval_minutes`, check the enabled
+    /// external sources in the sweep's own session. Settings are read here rather than
     /// captured at startup, so turning the poll off (or changing its
     /// interval) takes effect on the next tick.
     async fn poll_external(&mut self, orchestrator: &Orchestrator) {
@@ -260,7 +285,7 @@ impl Watcher {
             return;
         }
         self.last_poll = Instant::now();
-        self.poll(orchestrator, poll_prompt(polling)).await;
+        self.poll(orchestrator, polling);
     }
 
     /// Flag running agents that need the user: one the UI saw a prompt on

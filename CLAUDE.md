@@ -139,6 +139,7 @@ podium/
 │  ├─ subagent.rs              # the assistant's sub-agents: kinds, phases, cap + queue (SubagentBook), launch restrictions, nudge texts
 │  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
+│  ├─ sweep.rs                 # the external sweep's own headless Haiku session (Slack/Teams routine check); only findings reach the assistant
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
@@ -1385,22 +1386,55 @@ atomically, before the async `podium.yml` load.
   agent for free — **a quiet day costs no turns at all**.
 
   Alongside that runs a slow lane: the **external sweep**, every
-  `poll_interval_minutes` (default 10; `0` is off), asking the assistant to
-  check the enabled sources for anything needing the user. Slack and Teams
-  need no integration — the assistant already inherits the user's own
-  user-scope MCP servers — so this is `poll_prompt` wording plus a timer, and
-  it is skipped entirely with both sources off or proactivity off. It is
+  `poll_interval_minutes` (default 10; `0` is off), checking the enabled
+  sources for anything needing the user. It runs **on Haiku in a session of
+  its own** (`sweep.rs`, `SweepManager`), never in the assistant's: a second
+  long-lived headless child, `exec claude -p --input-format stream-json
+  --output-format stream-json --verbose --model haiku` (`SWEEP_MODEL`)
+  `--permission-mode bypassPermissions --disallowedTools
+  Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,AskUserQuestion` plus
+  its own short read-only identity (`--append-system-prompt`), spawned the
+  way the assistant is (login shell, `--cd` in WSL mode, `spawn_gated`,
+  `hide_console_window`, stderr dropped). It gets **no Podium MCP config**:
+  Slack and Teams need no integration, the session inherits the user's own
+  user-scope MCP servers (`--strict-mcp-config` deliberately not passed), so
+  this is `poll_prompt` wording plus a timer. As with a lookup sub-agent,
+  "never send/react/change anything" is wording only for servers that are not
+  Podium's. Binary and cwd follow `configure_assistant`; `configure_sweep`
+  (`SweepConfig`) also sets the turn timeout. It is spawned lazily on the
+  first sweep and **kept alive between sweeps**, so "since you last looked"
+  holds within a run; a session that died is respawned with `--resume <its
+  session id>` (in memory only; dropped when a resumed spawn never comes up)
+  and killed on shutdown. Each sweep is one turn read straight off its stdout
+  (no output task, no events, no transcript): the turn's last prose block is
+  the result. **One sweep at a time** (`SweepManager::begin`, a busy flag
+  held by `SweepRun` until the hand-off is done): the watcher runs it on its
+  own task (weak orchestrator ref) and a tick that finds one still running is
+  skipped. A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the
+  child; the next sweep respawns it. Shutdown wakes a running turn at once
+  (`Notify`). Failures are logged at debug/warn without content.
+
+  A reply carrying `NOTHING_TO_REPORT` on a line of its own
+  (`assistant::says_nothing_to_report`, the same matcher as below), an empty
+  one, an error or a timeout reaches **nobody**: the assistant gets no turn,
+  the panel no row or event. A real finding is handed to the assistant as
+  `[Podium] The routine check of <sources> found: <findings via quote_line,
+  capped at 4000 chars>. Tell the user what needs them, following your
+  Responses rules.` (`sweep::finding_text`), via `Orchestrator::assistant_poll`
+  → `AssistantManager::poll` — re-checking the proactivity switch and the
+  poll settings first, since they may have changed during the sweep. With
+  both sources off or proactivity off no sweep runs at all. That turn is
   delivered as `PendingKind::Poll`: unlike a proposal-outcome `Notice` it
   leaves the same `Notice` row a nudge does (`record_before_write`, stored as a
-  `nudge` row), so the panel folds the sweep and its actions into one faint
-  "Podium check" line rather than mixing them with the user's own. The old
-  concern, a row every 10 minutes piling up, is gone because the panel folds
-  consecutive Podium rows into a single line. Unlike nudges, polls are not
-  merged or deduped in the queue.
+  `nudge` row), so the panel folds the turn and its actions into one faint
+  "Podium check" line rather than mixing them with the user's own. Unlike
+  nudges, polls are not merged or deduped in the queue.
 
   **The silence contract**: a sweep that found nothing must say nothing. The
-  prompt instructs the assistant to answer with exactly `NOTHING_TO_REPORT`,
-  and a `Message` carrying that sentinel **on a line of its own** — anywhere
+  prompt instructs the sweep session to answer with exactly
+  `NOTHING_TO_REPORT`, and the sweep drops such a reply before the assistant
+  sees anything. The assistant's own stream applies the same rule to any
+  nudge's answer: a `Message` carrying that sentinel **on a line of its own** — anywhere
   in the reply — is dropped before it is recorded or published: no chat row,
   no transcript row. It is deliberately not an exact-whole-message match:
   models keep prefixing the word with the very summary the prompt forbids
@@ -1527,7 +1561,7 @@ native launch never waits behind a slow distro start.
   *start* (spawn plus a 150 ms settle), never while a command runs:
   `platform::run_gated` for short commands (`run_shell_*`, git — the wait for
   output happens outside the gate), `wsl_launch_guard`/`spawn_gated` for
-  long-lived ones (PTY, assistant; held until the PTY reader runs). Waiting
+  long-lived ones (PTY, assistant, external sweep; held until the PTY reader runs). Waiting
   for the gate gives up after 10 s with a warning and launches anyway, so one
   hung `wsl.exe` cannot stall everything behind it. **Never take the gate
   under the orchestrator's `inner` lock**: `do_start` reads the project's
@@ -1542,7 +1576,7 @@ native launch never waits behind a slow distro start.
   call's lifetime. `platform::hide_console_window` sets `CREATE_NO_WINDOW`;
   every non-ConPTY Windows spawn in this crate uses it (`run_shell_ok`,
   `run_shell_stdout`, `git_command`, the WSL networking check and distro
-  listing, the assistant's CLI child — a tokio `Command`, via `as_std_mut()`
+  listing, the assistant's and the external sweep's CLI children — tokio `Command`s, via `as_std_mut()`
   — Warp's `cmd /C start`, and the Git board's `gh` calls via
   `gh_command`, several per project on every board refresh). ConPTY-attached spawns (`process::pty`) are already windowless
   and need nothing. New code that spawns a plain `Command` on Windows must

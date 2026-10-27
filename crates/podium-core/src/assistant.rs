@@ -391,24 +391,30 @@ impl AssistantPolling {
     }
 }
 
-/// The turn the external sweep sends. It names only the enabled sources, and
-/// spells out the silence contract: nothing to act on means exactly
-/// [`NOTHING_TO_REPORT`], which Podium swallows. Nothing else is needed to
-/// reach Slack/Teams — the assistant inherits the user's own MCP servers
-/// (`--strict-mcp-config` is deliberately not passed), so this is wording,
-/// not an integration.
-pub fn poll_prompt(polling: AssistantPolling) -> String {
-    let sources = match (polling.slack, polling.teams) {
+/// The enabled sources, as the sweep's wording names them.
+pub(crate) fn poll_sources(polling: AssistantPolling) -> &'static str {
+    match (polling.slack, polling.teams) {
         (true, true) => "Slack and Microsoft Teams",
         (false, true) => "Microsoft Teams",
         _ => "Slack",
-    };
+    }
+}
+
+/// The turn the external sweep sends — to its own Haiku session
+/// ([`crate::sweep`]), never to the assistant. It names only the enabled
+/// sources, and spells out the silence contract: nothing to act on means
+/// exactly [`NOTHING_TO_REPORT`], which Podium swallows. Nothing else is
+/// needed to reach Slack/Teams — the sweep session inherits the user's own
+/// MCP servers (`--strict-mcp-config` is deliberately not passed), so this is
+/// wording, not an integration.
+pub fn poll_prompt(polling: AssistantPolling) -> String {
+    let sources = poll_sources(polling);
     format!(
         "[Podium] Routine check: look at {sources} for messages to the user since you last \
          looked, and judge whether any of them actually need the user to act or answer. If \
          something does, say what it is and what it needs, in a line or two. If nothing does, \
          reply with exactly {NOTHING_TO_REPORT} and nothing else — no greeting, no \
-         explanation, no summary of what you checked. Do not tell the user you ran this check."
+         explanation, no summary of what you checked."
     )
 }
 
@@ -1520,13 +1526,13 @@ impl AssistantManager {
         self.deliver_own(PendingKind::Nudge, text, mcp, true).await;
     }
 
-    /// Ask the assistant to sweep the user's external sources (the slow lane
-    /// in [`crate::proactivity`]). Spawns the session like a nudge, but goes
-    /// in as a `Poll`, which leaves the same row a nudge does so the panel
-    /// folds the sweep's actions into one faint "Podium check" line instead
-    /// of mixing them with the user's own. The user only ever sees the
-    /// *answer*, and only when there is one: a sweep that found nothing
-    /// replies [`NOTHING_TO_REPORT`], which is swallowed.
+    /// Hand the assistant what the external sweep found (the slow lane in
+    /// [`crate::proactivity`]). The sweep itself runs in its own Haiku
+    /// session ([`crate::sweep`]); only a sweep that found something reaches
+    /// this. Spawns the session like a nudge, but goes in as a `Poll`, which
+    /// leaves the same row a nudge does so the panel folds the turn's actions
+    /// into one faint "Podium check" line instead of mixing them with the
+    /// user's own.
     pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
         self.deliver_own(PendingKind::Poll, text, mcp, false).await;
     }
@@ -1869,8 +1875,13 @@ fn spawn_session(ctx: SpawnCtx) -> CoreResult<Session> {
 /// the sentinel mid-sentence while reporting something real still reaches the
 /// user.
 fn is_nothing_to_report(event: &AssistantEvent) -> bool {
-    matches!(event, AssistantEvent::Message { text }
-        if text.lines().any(|line| line.trim() == NOTHING_TO_REPORT))
+    matches!(event, AssistantEvent::Message { text } if says_nothing_to_report(text))
+}
+
+/// Whether `text` carries [`NOTHING_TO_REPORT`] on a line of its own — the
+/// matcher behind [`is_nothing_to_report`], shared with [`crate::sweep`].
+pub(crate) fn says_nothing_to_report(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == NOTHING_TO_REPORT)
 }
 
 /// Strip an [`ACTION_REQUIRED`] line out of a message. Returns `None` when
