@@ -78,6 +78,7 @@ impl From<CoreError> for IpcError {
             CoreError::ProcessAlreadyRunning => "processAlreadyRunning",
             CoreError::ProcessNotRunning => "processNotRunning",
             CoreError::AgentLimitReached => "agentLimitReached",
+            CoreError::AssistantDisabled => "assistantDisabled",
             CoreError::ShuttingDown => "shuttingDown",
             CoreError::IssuesNotConfigured => "issuesNotConfigured",
             CoreError::IssuesNoRemote => "issuesNoRemote",

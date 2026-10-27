@@ -69,6 +69,9 @@ pub enum CoreError {
     #[error("agent limit reached: a project can run at most 8 agents at once")]
     AgentLimitReached,
 
+    #[error("The assistant is turned off.")]
+    AssistantDisabled,
+
     #[error("Podium is shutting down")]
     ShuttingDown,
 

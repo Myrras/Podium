@@ -461,6 +461,9 @@ impl Orchestrator {
         text: &str,
         attachments: Vec<Attachment>,
     ) -> CoreResult<bool> {
+        if !self.assistant_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.send(text, attachments, mcp).await
     }
@@ -578,6 +581,33 @@ impl Orchestrator {
         Ok(stored)
     }
 
+    /// Whether the personal assistant is turned on (Settings → Assistant).
+    pub fn assistant_enabled(&self) -> bool {
+        self.agent_settings.get().assistant.enabled
+    }
+
+    /// Turn the assistant on or off; returns what was stored. Off: the
+    /// session is killed quietly, proposals and the queue are dropped (the
+    /// undelivered messages reported), the sub-agents are stopped quietly,
+    /// and nothing starts a session again until it is turned back on and the
+    /// next send or nudge comes. Transcript, memory and Responses stay.
+    pub async fn set_assistant_enabled(&self, enabled: bool) -> CoreResult<bool> {
+        let stored = self
+            .agent_settings
+            .set_assistant_enabled(enabled)?
+            .assistant
+            .enabled;
+        if stored {
+            self.assistant.preset_enabled(true);
+        } else {
+            self.stop_all_subagents();
+            self.assistant.disable().await;
+            // Again once the session is gone, for a spawn that raced it.
+            self.stop_all_subagents();
+        }
+        Ok(stored)
+    }
+
     /// Whether Podium may nudge the assistant unprompted (Settings →
     /// Assistant). Off silences [`crate::proactivity`] entirely.
     pub fn assistant_proactivity(&self) -> bool {
@@ -598,6 +628,9 @@ impl Orchestrator {
     /// about a finished agent when it finishes rather than whenever they next
     /// happen to type.
     pub async fn assistant_nudge(&self, text: String) {
+        if !self.assistant_enabled() {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.nudge(text, mcp).await;
     }
@@ -607,6 +640,9 @@ impl Orchestrator {
     /// only an answer worth having is ever shown (see
     /// [`crate::assistant::poll_prompt`]).
     pub async fn assistant_poll(&self, text: String) {
+        if !self.assistant_enabled() {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.poll(text, mcp).await;
     }
@@ -1340,6 +1376,9 @@ impl Orchestrator {
     /// puts it back to try again. Returns delivered-or-queued, as
     /// [`assistant_send`](Self::assistant_send).
     pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
+        if !self.assistant_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         if text.trim().is_empty() {
             return Err(CoreError::InvalidInput(
                 "reply must not be blank".to_string(),
@@ -1370,6 +1409,7 @@ impl Orchestrator {
         // The assistant's first session must already match the stored mode.
         self.assistant
             .preset_send_message_blocked(self.assistant_autonomy() == AutonomyMode::ProposeAll);
+        self.assistant.preset_enabled(self.assistant_enabled());
     }
 
     /// Point the remembered-sessions store at its backing file (app data

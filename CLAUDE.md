@@ -61,7 +61,7 @@ them in sync when you add a command or MCP tool.
   streamable-HTTP, bearer auth, 38 tools). Zero Tauri
   dependency; unit tests plus real-PTY/MCP integration tests on plain
   `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **101 commands**, per-attach terminal
+- ✅ **Tauri IPC layer** (`src-tauri`): **103 commands**, per-attach terminal
   `Channel` streaming (16ms/64KiB batching), a global-event forwarder for
   lifecycle events, persistent recents + workspace list, window-state
   persistence, an app-quit close guard while agents/terminals run
@@ -80,7 +80,7 @@ them in sync when you add a command or MCP tool.
   waiting-message rows with send-now/edit/remove and an interrupt control
   while a turn runs, autonomy picker, memory view, proactive `[Podium]` notices;
   conversation reset lives in Settings → Assistant), Zustand stores, typed
-  IPC wrappers over all 101 commands.
+  IPC wrappers over all 103 commands.
 - ✅ **Window chrome**: `App.tsx`'s `<header>` is the title bar on Windows
   and macOS (`data-tauri-drag-region` makes the strip draggable). Windows
   turns the native decorations off (`"decorations": false`) and draws its own
@@ -1454,6 +1454,22 @@ atomically, before the async `podium.yml` load.
   *prioritised with a reason*, and to ask the user rather than guess when the
   to-dos and agents do not settle the order. There is deliberately no
   once-a-day lock — pressing it is explicit, so refusing would only annoy.
+  **Turning the assistant off** (`enabled` in the same `assistant` block,
+  default on; `Orchestrator::set_assistant_enabled`, IPC
+  `assistant_enabled_get/set`): the session is killed deliberately (no
+  `exited`), proposals and their Responses items are dropped, the queue is
+  dropped with its undelivered messages reported via `queueNotice`, and all
+  sub-agents are stopped quietly. From then on `assistant_send`,
+  `assistant_day_start` and `assistant_response_reply` fail with
+  `CoreError::AssistantDisabled` (`assistantDisabled`), nudges and the
+  external sweep are dropped per call (`assistant_nudge` / `assistant_poll`
+  and the manager's `deliver_own`), and `report_to_assistant` /
+  `spawn_subagent` over MCP answer plain text ("the assistant is turned
+  off; nothing was delivered"), so no session is ever spawned. Transcript,
+  memory and the Responses list stay on disk. Turning it on spawns nothing
+  until the next send or nudge. The manager mirrors the setting in an
+  atomic, preset when the settings path is set, so startup honours it too.
+
   The watcher holds
   only a weak reference, so it ends with the orchestrator. **Settings →
   Assistant** holds this toggle plus the autonomy mode (the chat header keeps
@@ -1671,6 +1687,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_memory_set`  | `{ content }` (blank clears)                | –                 |
 | `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
 | `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
+| `assistant_enabled_get` | –                                           | `boolean`         |
+| `assistant_enabled_set` | `{ enabled }` (off: session killed quietly, sub-agents stopped, input refused with `assistantDisabled`) | `boolean` |
 | `assistant_proactivity_get` | –                                       | `boolean`         |
 | `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
 | `assistant_polling_get` | –                                           | `AssistantPolling` |

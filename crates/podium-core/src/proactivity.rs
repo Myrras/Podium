@@ -162,7 +162,7 @@ struct Waiting {
 impl Watcher {
     /// Hand `text` to the assistant, unless the user switched proactivity off.
     async fn nudge(&self, orchestrator: &Orchestrator, text: String) {
-        if !orchestrator.assistant_proactivity() {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
         orchestrator.assistant_nudge(text).await;
@@ -171,7 +171,7 @@ impl Watcher {
     /// Hand the assistant an external-sweep errand, unless the user switched
     /// proactivity off. Same gate as a nudge, but it stays out of the chat.
     async fn poll(&self, orchestrator: &Orchestrator, text: String) {
-        if !orchestrator.assistant_proactivity() {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
         orchestrator.assistant_poll(text).await;

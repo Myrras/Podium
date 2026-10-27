@@ -128,6 +128,22 @@ pub async fn assistant_autonomy_set(
     Ok(state.orchestrator.set_assistant_autonomy(mode).await?)
 }
 
+/// Whether the personal assistant is turned on.
+#[tauri::command]
+pub async fn assistant_enabled_get(state: State<'_, AppState>) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.assistant_enabled())
+}
+
+/// Turn the assistant off or on; returns what was stored. Off kills its
+/// session and stops its sub-agents; transcript, memory and Responses stay.
+#[tauri::command]
+pub async fn assistant_enabled_set(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, IpcError> {
+    Ok(state.orchestrator.set_assistant_enabled(enabled).await?)
+}
+
 /// Whether Podium may nudge the assistant unprompted (agent finished, agent
 /// stuck, lingering to-dos, day-start summary).
 #[tauri::command]
