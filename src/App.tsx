@@ -61,7 +61,7 @@ import { TodoDetailPane } from "./components/TodoDetailPane";
 import { Toasts } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { WindowControls } from "./components/WindowControls";
-import { AssistantIcon, SettingsIcon } from "./components/icons";
+import { AssistantIcon, PowerIcon, SettingsIcon } from "./components/icons";
 import styles from "./App.module.css";
 
 export default function App() {
@@ -79,6 +79,7 @@ export default function App() {
   const openBoard = useLayoutStore((s) => s.openBoard);
   const assistantOpen = useLayoutStore((s) => s.assistantOpen);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
+  const assistantEnabled = useAssistantStore((s) => s.enabled);
   const assistantWidth = useLayoutStore((s) => s.assistantWidth);
   const setAssistantWidth = useLayoutStore((s) => s.setAssistantWidth);
 
@@ -186,6 +187,7 @@ export default function App() {
   // the persisted list already holds never pings.
   useEffect(() => {
     void useAssistantStore.getState().loadResponses();
+    void useAssistantStore.getState().loadEnabled();
   }, []);
 
   // Terminals are not React-rendered, so push theme/font changes into the
@@ -339,6 +341,22 @@ export default function App() {
             onClick={() => setAssistantOpen(!assistantOpen)}
           >
             <AssistantIcon size={16} />
+          </button>
+          <button
+            type="button"
+            className={`${styles.settingsBtn} ${styles.powerBtn}`}
+            aria-label={
+              assistantEnabled ? "Turn assistant off" : "Turn assistant on"
+            }
+            title={
+              assistantEnabled ? "Turn assistant off" : "Turn assistant on"
+            }
+            aria-pressed={assistantEnabled}
+            onClick={() =>
+              void useAssistantStore.getState().setEnabled(!assistantEnabled)
+            }
+          >
+            <PowerIcon size={16} />
           </button>
           {/* macOS reaches Settings via the native menu bar (⌘,); the gear
               lives in the custom title bar on the other platforms. */}

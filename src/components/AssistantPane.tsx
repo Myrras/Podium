@@ -246,6 +246,8 @@ export function AssistantPane() {
   const autonomy = useAssistantStore((s) => s.autonomy);
   const setAutonomy = useAssistantStore((s) => s.setAutonomy);
   const loadAutonomy = useAssistantStore((s) => s.loadAutonomy);
+  const enabled = useAssistantStore((s) => s.enabled);
+  const setEnabled = useAssistantStore((s) => s.setEnabled);
   const hydrate = useAssistantStore((s) => s.hydrate);
   const dayStart = useAssistantStore((s) => s.dayStart);
   const loadResponses = useAssistantStore((s) => s.loadResponses);
@@ -500,213 +502,234 @@ export function AssistantPane() {
         </button>
       </header>
 
-      {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
+      {!enabled ? (
+        <div className={styles.offState}>
+          <p className={styles.offTitle}>The assistant is off</p>
+          <p className={styles.empty}>
+            It will not run, nudge you or send notifications.
+          </p>
+          <button
+            type="button"
+            className={styles.confirmBtn}
+            onClick={() => void setEnabled(true)}
+          >
+            Turn on
+          </button>
+        </div>
+      ) : (
+        <>
+          {memoryOpen && <MemoryEditor onClose={() => setMemoryOpen(false)} />}
 
-      <ResponsesSection />
+          <ResponsesSection />
 
-      <SubagentsSection />
+          <SubagentsSection />
 
-      <div className={styles.log} ref={logRef} onScroll={syncAtBottom}>
-        {!messages.some((m) => !isActivity(m)) && pending.length === 0 && (
-          <div className={styles.emptyState}>
-            <p className={styles.empty}>
-              Ask for anything across your projects — to-dos, agents, an
-              overview.
-            </p>
-            <button
-              type="button"
-              className={styles.confirmBtn}
-              aria-label="Start my day"
-              title="Get a summary of what's open across your projects"
-              onClick={() => {
-                scrollToBottom();
-                void dayStart();
-              }}
-            >
-              Start my day
-            </button>
-          </div>
-        )}
-        {groups.map((g, i) =>
-          Array.isArray(g) ? (
-            <ActivityRun
-              key={g[0].id}
-              rows={g}
-              onToggle={() => onRunToggle(i === groups.length - 1)}
-            />
-          ) : (
-            <div key={g.id} className={styles.message} data-role={g.role}>
-              {g.role === "assistant" ? (
-                <Markdown>{g.text}</Markdown>
-              ) : g.proposal ? (
-                <ProposalCard proposal={g.proposal} />
-              ) : g.role === "reply" ? (
-                <ReplyLine text={g.text} />
-              ) : (
-                g.text
-              )}
-            </div>
-          ),
-        )}
-        {/* Pinned to the bottom of the log: what the turn is doing, and what
-            is queued behind it. A message the turn has picked up is gone from
-            `pending` by then (the backend's queue snapshot), so nothing
-            already in flight lingers here. */}
-        {(busy || pending.length > 0) && (
-          <div className={styles.tail}>
-            {busy && (
-              <div className={styles.working} role="status">
-                <span>
-                  {activity ? `${actionLabel(activity)}…` : "thinking…"}
-                </span>
-                <span className={styles.workingDots} aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                </span>
+          <div className={styles.log} ref={logRef} onScroll={syncAtBottom}>
+            {!messages.some((m) => !isActivity(m)) && pending.length === 0 && (
+              <div className={styles.emptyState}>
+                <p className={styles.empty}>
+                  Ask for anything across your projects — to-dos, agents, an
+                  overview.
+                </p>
                 <button
                   type="button"
-                  className={styles.interruptBtn}
-                  aria-label="Interrupt"
-                  title="Stop this turn and send what's waiting"
-                  onClick={() => void interrupt()}
+                  className={styles.confirmBtn}
+                  aria-label="Start my day"
+                  title="Get a summary of what's open across your projects"
+                  onClick={() => {
+                    scrollToBottom();
+                    void dayStart();
+                  }}
                 >
-                  <StopIcon />
+                  Start my day
                 </button>
               </div>
             )}
-            {pending.map((p) => (
-              <PendingRow key={p.id} item={p} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {newActivity && (
-        <button
-          type="button"
-          className={styles.newActivity}
-          onClick={scrollToBottom}
-        >
-          New activity ↓
-        </button>
-      )}
-
-      <form
-        className={styles.composer}
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-      >
-        {activeContext.length > 0 && (
-          <ul className={styles.tray} aria-label="Context">
-            {activeContext.map((c) => (
-              <li key={c.key} className={styles.contextChip}>
-                <span className={styles.chipName} title={c.text}>
-                  {c.label}
-                </span>
-                <button
-                  type="button"
-                  className={styles.iconBtn}
-                  aria-label={`Remove ${c.label} from context`}
-                  title="Don't send this as context"
-                  onClick={() => setDismissed((d) => [...d, c.key])}
-                >
-                  <CloseIcon />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {attachments.length > 0 && (
-          <ul className={styles.tray} aria-label="Attachments">
-            {attachments.map((a) => (
-              <li key={a.id} className={styles.chip}>
-                {a.kind === "image" || (a.path && isImagePath(a.path)) ? (
-                  <ImageAttachmentIcon />
-                ) : (
-                  <FileAttachmentIcon />
+            {groups.map((g, i) =>
+              Array.isArray(g) ? (
+                <ActivityRun
+                  key={g[0].id}
+                  rows={g}
+                  onToggle={() => onRunToggle(i === groups.length - 1)}
+                />
+              ) : (
+                <div key={g.id} className={styles.message} data-role={g.role}>
+                  {g.role === "assistant" ? (
+                    <Markdown>{g.text}</Markdown>
+                  ) : g.proposal ? (
+                    <ProposalCard proposal={g.proposal} />
+                  ) : g.role === "reply" ? (
+                    <ReplyLine text={g.text} />
+                  ) : (
+                    g.text
+                  )}
+                </div>
+              ),
+            )}
+            {/* Pinned to the bottom of the log: what the turn is doing, and what
+            is queued behind it. A message the turn has picked up is gone from
+            `pending` by then (the backend's queue snapshot), so nothing
+            already in flight lingers here. */}
+            {(busy || pending.length > 0) && (
+              <div className={styles.tail}>
+                {busy && (
+                  <div className={styles.working} role="status">
+                    <span>
+                      {activity ? `${actionLabel(activity)}…` : "thinking…"}
+                    </span>
+                    <span className={styles.workingDots} aria-hidden="true">
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.interruptBtn}
+                      aria-label="Interrupt"
+                      title="Stop this turn and send what's waiting"
+                      onClick={() => void interrupt()}
+                    >
+                      <StopIcon />
+                    </button>
+                  </div>
                 )}
-                <span className={styles.chipName} title={a.path ?? a.name}>
-                  {a.name}
-                </span>
-                <button
-                  type="button"
-                  className={styles.iconBtn}
-                  aria-label={`Remove ${a.name}`}
-                  title="Remove before sending"
-                  onClick={() => removeAttachment(a.id)}
-                >
-                  <CloseIcon />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+                {pending.map((p) => (
+                  <PendingRow key={p.id} item={p} />
+                ))}
+              </div>
+            )}
+          </div>
 
-        <div className={styles.composerRow}>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            aria-label="Attach files"
-            title="Attach images or files"
-            onClick={() => void pickFiles()}
-          >
-            <AttachIcon />
-          </button>
-          <textarea
-            ref={inputRef}
-            className={styles.input}
-            value={draft}
-            rows={2}
-            placeholder="Message the assistant…"
-            aria-label="Message the assistant"
-            onChange={(e) => setDraft(e.target.value)}
-            onPaste={(e) => {
-              // Only intercept a paste that carries files (a screenshot, a
-              // copied file); plain text keeps the browser's own behaviour.
-              const files = Array.from(e.clipboardData.files);
-              if (files.length === 0) return;
+          {newActivity && (
+            <button
+              type="button"
+              className={styles.newActivity}
+              onClick={scrollToBottom}
+            >
+              New activity ↓
+            </button>
+          )}
+
+          <form
+            className={styles.composer}
+            onSubmit={(e) => {
               e.preventDefault();
-              void addFiles(files);
+              void submit();
             }}
-            onKeyDown={(e) => {
-              // Enter sends, Shift+Enter is a newline (chat convention).
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void submit();
-                return;
-              }
-              // Recall only from the edge line the arrow would otherwise
-              // leave the composer through — anywhere else the arrow just
-              // moves the cursor, as it must in a multi-line draft.
-              if (e.key === "ArrowUp" && isCaretOnFirstLine(e.currentTarget)) {
-                if (history.length === 0) return;
-                e.preventDefault();
-                recall(-1);
-              } else if (
-                e.key === "ArrowDown" &&
-                isCaretOnLastLine(e.currentTarget) &&
-                historyIndex !== null
-              ) {
-                e.preventDefault();
-                recall(1);
-              }
-            }}
-          />
-          <button
-            type="submit"
-            className={styles.sendBtn}
-            aria-label="Send"
-            title="Send"
-            disabled={!draft.trim() && attachments.length === 0}
           >
-            <SendIcon />
-          </button>
-        </div>
-      </form>
+            {activeContext.length > 0 && (
+              <ul className={styles.tray} aria-label="Context">
+                {activeContext.map((c) => (
+                  <li key={c.key} className={styles.contextChip}>
+                    <span className={styles.chipName} title={c.text}>
+                      {c.label}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.iconBtn}
+                      aria-label={`Remove ${c.label} from context`}
+                      title="Don't send this as context"
+                      onClick={() => setDismissed((d) => [...d, c.key])}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {attachments.length > 0 && (
+              <ul className={styles.tray} aria-label="Attachments">
+                {attachments.map((a) => (
+                  <li key={a.id} className={styles.chip}>
+                    {a.kind === "image" || (a.path && isImagePath(a.path)) ? (
+                      <ImageAttachmentIcon />
+                    ) : (
+                      <FileAttachmentIcon />
+                    )}
+                    <span className={styles.chipName} title={a.path ?? a.name}>
+                      {a.name}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.iconBtn}
+                      aria-label={`Remove ${a.name}`}
+                      title="Remove before sending"
+                      onClick={() => removeAttachment(a.id)}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className={styles.composerRow}>
+              <button
+                type="button"
+                className={styles.iconBtn}
+                aria-label="Attach files"
+                title="Attach images or files"
+                onClick={() => void pickFiles()}
+              >
+                <AttachIcon />
+              </button>
+              <textarea
+                ref={inputRef}
+                className={styles.input}
+                value={draft}
+                rows={2}
+                placeholder="Message the assistant…"
+                aria-label="Message the assistant"
+                onChange={(e) => setDraft(e.target.value)}
+                onPaste={(e) => {
+                  // Only intercept a paste that carries files (a screenshot, a
+                  // copied file); plain text keeps the browser's own behaviour.
+                  const files = Array.from(e.clipboardData.files);
+                  if (files.length === 0) return;
+                  e.preventDefault();
+                  void addFiles(files);
+                }}
+                onKeyDown={(e) => {
+                  // Enter sends, Shift+Enter is a newline (chat convention).
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void submit();
+                    return;
+                  }
+                  // Recall only from the edge line the arrow would otherwise
+                  // leave the composer through — anywhere else the arrow just
+                  // moves the cursor, as it must in a multi-line draft.
+                  if (
+                    e.key === "ArrowUp" &&
+                    isCaretOnFirstLine(e.currentTarget)
+                  ) {
+                    if (history.length === 0) return;
+                    e.preventDefault();
+                    recall(-1);
+                  } else if (
+                    e.key === "ArrowDown" &&
+                    isCaretOnLastLine(e.currentTarget) &&
+                    historyIndex !== null
+                  ) {
+                    e.preventDefault();
+                    recall(1);
+                  }
+                }}
+              />
+              <button
+                type="submit"
+                className={styles.sendBtn}
+                aria-label="Send"
+                title="Send"
+                disabled={!draft.trim() && attachments.length === 0}
+              >
+                <SendIcon />
+              </button>
+            </div>
+          </form>
+        </>
+      )}
     </aside>
   );
 }

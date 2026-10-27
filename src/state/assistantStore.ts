@@ -22,6 +22,8 @@ import {
   assistantNewConversation,
   assistantPollingGet,
   assistantPollingSet,
+  assistantEnabledGet,
+  assistantEnabledSet,
   assistantProactivityGet,
   assistantProactivitySet,
   assistantQueueEdit,
@@ -148,6 +150,7 @@ export function resetSeenResponses(): void {
  * they have open (the backend does not file those; this covers the race).
  */
 function notifyNewResponses(items: ResponseItem[]): void {
+  if (!useAssistantStore.getState().enabled) return;
   const fresh = items.filter((i) => !seenResponseIds.has(i.id));
   for (const i of items) seenResponseIds.add(i.id);
   if (!responsesBaselined || fresh.length === 0 || isAssistantVisible()) return;
@@ -258,6 +261,12 @@ interface AssistantState {
   loadAutonomy: () => Promise<void>;
   /** Change the autonomy mode. */
   setAutonomy: (mode: AutonomyMode) => Promise<void>;
+  /** Whether the assistant is switched on; off = no session, nudges or pings. */
+  enabled: boolean;
+  /** Load the on/off switch (on app start). */
+  loadEnabled: () => Promise<void>;
+  /** Turn the assistant on or off; the backend stops its sub-agents on off. */
+  setEnabled: (enabled: boolean) => Promise<void>;
   /** Load the stored proactivity setting (Settings → Assistant). */
   loadProactivity: () => Promise<void>;
   /** Turn proactive nudges on or off. */
@@ -308,6 +317,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   activity: null,
   autonomy: "confirm-destructive",
   proactive: true,
+  enabled: true,
   polling: { intervalMinutes: 10, slack: true, teams: true },
   memory: null,
   hydrated: false,
@@ -526,6 +536,25 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     } catch (e) {
       set((s) => ({
         autonomy: previous,
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+    }
+  },
+  loadEnabled: async () => {
+    try {
+      set({ enabled: await assistantEnabledGet() });
+    } catch {
+      // Stay on the default; the backend stays the truth.
+    }
+  },
+  setEnabled: async (enabled) => {
+    const previous = get().enabled;
+    set({ enabled });
+    try {
+      set({ enabled: await assistantEnabledSet(enabled) });
+    } catch (e) {
+      set((s) => ({
+        enabled: previous,
         messages: [...s.messages, message("notice", toIpcError(e).message)],
       }));
     }

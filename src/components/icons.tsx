@@ -54,6 +54,7 @@ import {
   Check,
   X,
   Minus,
+  Power,
   Sparkles,
   Sun,
   Moon,
@@ -99,6 +100,7 @@ function icon(Glyph: LucideIcon, defaults?: Partial<LucideProps>) {
 
 // The personal assistant: panel toggle + its send button.
 export const AssistantIcon = icon(Sparkles);
+export const PowerIcon = icon(Power);
 export const MemoryIcon = icon(Brain);
 export const SendIcon = icon(ArrowUp, { size: 15 });
 export const AttachIcon = icon(Paperclip, { size: 15 });
