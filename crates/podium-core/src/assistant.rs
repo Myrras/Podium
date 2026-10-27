@@ -330,6 +330,11 @@ pub enum AutonomyMode {
 pub struct AssistantSettings {
     #[serde(default)]
     pub autonomy: AutonomyMode,
+    /// Whether the assistant exists at all. Off: no session is ever started,
+    /// no nudge or poll is sent and the chat refuses messages. Defaults to
+    /// on — also for an `agents.json` written before this field existed.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Whether Podium may nudge the assistant unprompted (an agent finished,
     /// one looks stuck, to-dos are lingering, a new day started). Defaults to
     /// on — also for an `agents.json` written before this field existed.
@@ -363,6 +368,7 @@ impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
             autonomy: AutonomyMode::default(),
+            enabled: true,
             proactive: true,
             poll_interval_minutes: DEFAULT_POLL_INTERVAL_MINUTES,
             poll_slack: true,
@@ -1053,6 +1059,9 @@ pub struct AssistantManager {
     /// `propose-all`). Shared with each session's output task, which swaps a
     /// session that no longer matches at its next `TurnEnd`.
     block_send_message: Arc<AtomicBool>,
+    /// Mirror of the `enabled` setting. While off, nothing here starts a
+    /// session or accepts input.
+    enabled: AtomicBool,
 }
 
 impl AssistantManager {
@@ -1065,7 +1074,43 @@ impl AssistantManager {
             peer_tag: crate::agent::peer_tag(&uuid::Uuid::new_v4().to_string()),
             events,
             block_send_message: Arc::new(AtomicBool::new(false)),
+            enabled: AtomicBool::new(true),
         }
+    }
+
+    /// Whether the assistant is turned on.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Set the flag without touching a session (startup, before any exists).
+    pub fn preset_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Turn the assistant off: the session is killed (deliberately, so it is
+    /// not reported as `exited`), proposals and their Responses items are
+    /// dropped, and whatever was waiting in the queue is reported as
+    /// undelivered. Transcript, memory and the other Responses items stay.
+    pub async fn disable(&self) {
+        self.enabled.store(false, Ordering::Relaxed);
+        let waiting = {
+            let mut state = self.state.lock().await;
+            if let Some(mut session) = state.session.take() {
+                session.quiet_exit.store(true, Ordering::Relaxed);
+                let _ = session.child.kill().await;
+            }
+            state.end_turn();
+            std::mem::take(&mut state.pending)
+        };
+        self.proposals.lock().expect(LOCK_POISONED).clear();
+        if let Err(e) = self.store.responses().remove_where(
+            |i| i.source.as_deref() == Some(PROPOSAL_SOURCE),
+            |items| publish_responses(&self.events, items),
+        ) {
+            tracing::warn!("could not clear the proposal items: {e}");
+        }
+        report_undelivered(&self.store, &self.events, waiting);
     }
 
     /// Set what the next session spawns with, without touching a live one —
@@ -1170,6 +1215,9 @@ impl AssistantManager {
         reply_to: Option<ResponseItem>,
         mcp: Option<McpConnectInfo>,
     ) -> CoreResult<bool> {
+        if !self.is_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -1181,6 +1229,10 @@ impl AssistantManager {
             self.publish(AssistantEvent::QueueNotice { text: notice });
         }
         let mut state = self.state.lock().await;
+        // Again under the lock: `disable` flips the flag before it takes it.
+        if !self.is_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         self.ensure_session(&mut state, mcp.as_ref())?;
         let item = PendingInput {
             id: PendingId::new(),
@@ -1541,6 +1593,9 @@ impl AssistantManager {
         lasting: bool,
     ) {
         let mut state = self.state.lock().await;
+        if !self.is_enabled() {
+            return;
+        }
         if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
             tracing::warn!("could not start the assistant for a nudge: {e}");
         }
@@ -3568,6 +3623,17 @@ mod tests {
                 .contains("confirmed")
         );
         assert!(outcome_notice("add_todo", Some(Err("nope".to_string()))).contains("failed"));
+    }
+
+    #[test]
+    fn enabled_defaults_to_on_including_for_older_settings_files() {
+        assert!(AssistantSettings::default().enabled);
+        let legacy: AssistantSettings =
+            serde_json::from_str(r#"{"autonomy":"full"}"#).expect("legacy settings");
+        assert!(legacy.enabled);
+        let off: AssistantSettings =
+            serde_json::from_str(r#"{"enabled":false}"#).expect("settings");
+        assert!(!off.enabled);
     }
 
     #[test]

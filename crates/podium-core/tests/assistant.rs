@@ -2608,3 +2608,133 @@ async fn an_agents_own_name_cannot_forge_a_podium_line_in_a_nudge() {
     );
     orch.shutdown().await;
 }
+
+/// Records its own pid so a test can check the session process is gone.
+const PID_CLAUDE: &str = r#"#!/bin/sh
+echo $$ > "$(dirname "$0")/pid.txt"
+echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
+while IFS= read -r _line; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"hi there"}'
+done
+"#;
+
+fn pid_alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[tokio::test]
+async fn turning_the_assistant_off_kills_the_session_and_refuses_input() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), PID_CLAUDE));
+    let mut rx = orch.subscribe_events();
+    assert!(orch.assistant_enabled());
+
+    orch.assistant_send("hello").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    let pid = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(dir.path().join("pid.txt")) {
+                if !pid.trim().is_empty() {
+                    return pid.trim().to_string();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("pid");
+    assert!(pid_alive(&pid));
+
+    assert!(!orch.set_assistant_enabled(false).await.expect("off"));
+    assert!(!orch.assistant_enabled());
+    timeout(TEST_TIMEOUT, async {
+        while pid_alive(&pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("session process gone");
+
+    // The kill was deliberate: no `exited`, and the conversation stays.
+    let quiet = timeout(Duration::from_millis(300), async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Exited,
+            }) = rx.recv().await
+            {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "reported an exit for a deliberate kill");
+    assert!(!orch.assistant_transcript().is_empty());
+
+    // Input is refused, a nudge and a poll are dropped, no session starts.
+    let _ = std::fs::remove_file(dir.path().join("pid.txt"));
+    assert!(matches!(
+        orch.assistant_send("again").await,
+        Err(podium_core::CoreError::AssistantDisabled)
+    ));
+    assert!(matches!(
+        orch.assistant_day_start().await,
+        Err(podium_core::CoreError::AssistantDisabled)
+    ));
+    orch.assistant_nudge("[Podium] something happened".to_string())
+        .await;
+    orch.assistant_poll("[Podium] sweep".to_string()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !dir.path().join("pid.txt").exists(),
+        "a session was spawned while off"
+    );
+
+    // Back on: nothing spawns by itself, the next send works.
+    assert!(orch.set_assistant_enabled(true).await.expect("on"));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!dir.path().join("pid.txt").exists());
+    orch.assistant_send("welcome back").await.expect("send");
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    assert!(dir.path().join("pid.txt").exists());
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_watcher_stays_quiet_while_the_assistant_is_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), PID_CLAUDE));
+    let mut rx = orch.subscribe_events();
+    orch.set_assistant_enabled(false).await.expect("off");
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("exit 0", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+
+    let quiet = timeout(Duration::from_millis(400), async {
+        loop {
+            if let Ok(PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Notice { text },
+            }) = rx.recv().await
+            {
+                return text;
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "nudged while the assistant is off");
+    assert!(!dir.path().join("pid.txt").exists());
+    orch.shutdown().await;
+}
