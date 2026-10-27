@@ -122,3 +122,7 @@ about to ask about. `selection.ts` is store-only, importing nothing from
 `src/state`, so the terminal registry can feed it without closing a cycle.
 User-picked attachments are sent before context items, so the explicit one
 wins when both would overflow the backend's five-per-message cap.
+
+## Window chrome
+
+`App.tsx`'s `<header>` is the title bar on Windows and macOS (`data-tauri-drag-region` makes the strip draggable). Windows turns the native decorations off (`"decorations": false`) and draws its own minimize/maximize/close in `WindowControls.tsx` at the top-right (`@tauri-apps/api/window`, polling `isMaximized()` on `onResized` to track Aero Snap). macOS keeps its decorations with `"titleBarStyle": "Overlay"` and `"hiddenTitle": true`, so the native traffic lights (and native fullscreen) are drawn over the strip's top-left corner; `.titlebarMac` leaves 78px of room for them and the brand is centered. macOS also keeps its native *menu bar* (⌘, opens Settings — see the `setup` hook's `#[cfg(target_os = "macos")]` block). Linux keeps its native title bar for now. `src-tauri/tauri.windows.conf.json` / `tauri.macos.conf.json` are platform overrides merged over `tauri.conf.json` as RFC 7396 JSON Merge Patch — a JSON *array* replaces wholesale, so each file repeats the whole `windows[0]` object. The window-state plugin is registered without `StateFlags::DECORATIONS`, otherwise its restore (which runs after `setup`) overrides the platform config's decorations.

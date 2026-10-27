@@ -43,3 +43,7 @@ podium/
    ├─ lib/                     # terminalRegistry, termProtocol, useAgentActivity, motion, …
    └─ ipc/                     # typed command wrappers + event listeners + hand-written types
 ```
+
+## Lineage
+
+Podium is architecturally patterned after an earlier desktop app by the same author: the same Cargo workspace shape (a `*-core` crate with zero Tauri dependency, a thin `src-tauri` IPC layer, a presentation-only React frontend), the same `justfile`/version-sync conventions and a mirrored `CLAUDE.md` structure. That sibling app is a private repo; this is background only, nothing depends on access to it.

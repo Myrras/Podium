@@ -80,3 +80,5 @@
   setting off clears every root. The MCP server is started synchronously in
   `setup` so a restored agent never spawns before the MCP connect info (its
   `--mcp-config`, `-n` and identity) is set.
+
+**Windows ConPTY.** Process-group stop is Unix-only; Windows terminates the ConPTY child directly. The PTY reader answers ConPTY's startup `ESC[6n` cursor query itself and strips it from the output, since ConPTY holds the child until it is answered and xterm.js only exists once a terminal is opened — see `CursorHandshake` in `process/pty.rs`.
