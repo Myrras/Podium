@@ -47,6 +47,9 @@ when it merges.
 
 - The Slack/Teams routine check runs on Haiku in its own session; the
   assistant only speaks up when it found something.
+- Podium's own notes about agents and old to-dos are gathered for a minute
+  and checked on Haiku first; a routine finish or a repeat no longer costs
+  an assistant turn, and the rest arrive together as one turn.
 - **Only Responses items reach your desktop.** The assistant no longer
   notifies you for a chat reply, a confirmation card or an unprompted
   `[Podium]` turn; a new item on the Responses list does, once per batch and

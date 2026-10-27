@@ -17,7 +17,9 @@
 //! announced: they are looking at it. Its blocked question is recorded as
 //! already raised, so leaving the agent does not fire a nudge at once.
 //!
-//! Each of those becomes one `[Podium] …` turn handed to the assistant, which
+//! Each of those becomes a `[Podium] …` nudge. Nudges are gathered for a
+//! debounce window and triaged on Haiku first ([`crate::triage`]): only the
+//! ones worth a turn reach the assistant, together as one turn, which it
 //! answers in the chat panel like it would to the user. A nudge **starts the
 //! session** when there is none ([`crate::assistant::AssistantManager::nudge`]):
 //! the fast lane is event-driven, so a quiet day costs nothing, but when
@@ -51,6 +53,7 @@ use crate::events::PodiumEvent;
 use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessInfo, ProcessKind, ProcessStatus};
+use crate::triage::TriageItem;
 
 /// How often one blocked question is raised with the assistant: the first
 /// nudge plus one escalation. Raising it every `escalate_after` for as long as
@@ -81,6 +84,10 @@ pub struct ProactivityConfig {
     /// the app; milliseconds in tests, so the slow lane can be exercised
     /// without waiting for it.
     pub poll_unit: Duration,
+    /// How long nudges are held and gathered before the batch is triaged
+    /// ([`crate::triage`]) — the debounce window, counted from the first
+    /// nudge of a batch.
+    pub triage_window: Duration,
 }
 
 impl Default for ProactivityConfig {
@@ -97,6 +104,7 @@ impl Default for ProactivityConfig {
             lingering_after: Duration::from_secs(7 * 24 * 60 * 60),
             sweep_every: Duration::from_secs(6 * 60 * 60),
             poll_unit: Duration::from_secs(60),
+            triage_window: Duration::from_secs(60),
         }
     }
 }
@@ -165,12 +173,23 @@ struct Waiting {
 }
 
 impl Watcher {
-    /// Hand `text` to the assistant, unless the user switched proactivity off.
-    async fn nudge(&self, orchestrator: &Orchestrator, text: String) {
+    /// Queue `text` for the assistant, unless the user switched proactivity
+    /// off. It is not delivered at once: it waits out the debounce window
+    /// with whatever else comes up, and the batch is triaged on Haiku
+    /// ([`crate::triage`]) so only what is worth a turn reaches the
+    /// assistant — as one turn. `context` is what the triage may judge it by
+    /// beyond the text; the assistant never sees it.
+    fn nudge(&self, orchestrator: &Orchestrator, text: String) {
+        self.nudge_with(orchestrator, text, None);
+    }
+
+    fn nudge_with(&self, orchestrator: &Orchestrator, text: String, context: Option<String>) {
         if !orchestrator.assistant_proactivity() {
             return;
         }
-        orchestrator.assistant_nudge(text).await;
+        if orchestrator.push_triage(TriageItem { text, context }) {
+            crate::triage::start_worker(self.weak.clone(), self.config.triage_window);
+        }
     }
 
     /// Run the external sweep in its own session, unless the user switched
@@ -239,20 +258,24 @@ impl Watcher {
             return;
         }
         let where_ = describe(orchestrator, &process);
-        let text = if crashed {
-            format!(
+        if crashed {
+            let text = format!(
                 "[Podium] The agent {where_} crashed ({}). Look at its last output and tell \
                  the user what went wrong and what it leaves unfinished.",
                 exit_code(code)
-            )
-        } else {
-            format!(
-                "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
-                 last output — and tell the user in a line or two.",
-                exit_code(code)
-            )
-        };
-        self.nudge(orchestrator, text).await;
+            );
+            self.nudge(orchestrator, text);
+            return;
+        }
+        let text = format!(
+            "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
+             last output — and tell the user in a line or two.",
+            exit_code(code)
+        );
+        // Whether a finished agent left anything for the user is in its last
+        // output; the triage has no tools to read it, so it rides along.
+        let context = last_output(orchestrator, process_id).await;
+        self.nudge_with(orchestrator, text, context);
     }
 
     async fn on_tick(&mut self, orchestrator: &Orchestrator) {
@@ -344,7 +367,7 @@ impl Watcher {
             };
             if process.subagent.is_some() {
                 let text = self.stuck_subagent_text(&process, nudges, prompting);
-                self.nudge(orchestrator, text).await;
+                self.nudge(orchestrator, text);
                 continue;
             }
             let where_ = describe(orchestrator, &process);
@@ -371,7 +394,7 @@ impl Watcher {
                     minutes(self.config.idle_after),
                 )
             };
-            self.nudge(orchestrator, text).await;
+            self.nudge(orchestrator, text);
         }
     }
 
@@ -509,8 +532,7 @@ impl Watcher {
                 lingering.len(),
                 days(self.config.lingering_after),
             ),
-        )
-        .await;
+        );
     }
 }
 
@@ -524,6 +546,26 @@ fn live_agents(orchestrator: &Orchestrator) -> HashSet<ProcessId> {
         .filter(|p| matches!(p.status, ProcessStatus::Running { .. }))
         .map(|p| p.id)
         .collect()
+}
+
+/// How much of an agent's output is read for the triage, and how many of its
+/// last lines are kept.
+const LAST_OUTPUT_BYTES: usize = 8 * 1024;
+const LAST_OUTPUT_LINES: usize = 30;
+
+/// The ANSI-stripped last lines an agent printed, for the triage to judge a
+/// "finished" nudge by. `None` when it printed nothing (or is gone).
+async fn last_output(orchestrator: &Orchestrator, id: ProcessId) -> Option<String> {
+    let raw = orchestrator.tail_text(id, LAST_OUTPUT_BYTES).await.ok()?;
+    let plain = String::from_utf8_lossy(&strip_ansi_escapes::strip(raw.as_bytes())).into_owned();
+    let lines: Vec<&str> = plain
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(LAST_OUTPUT_LINES);
+    let tail = lines[start..].join("\n");
+    (!tail.is_empty()).then_some(tail)
 }
 
 /// The agent process with this id, or `None` when it is gone or not an agent.

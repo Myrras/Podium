@@ -140,6 +140,7 @@ podium/
 │  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ sweep.rs                 # the external sweep's own headless Haiku session (Slack/Teams routine check); only findings reach the assistant
+│  ├─ triage.rs                # proactivity nudges: 60 s debounce + one-shot tool-less Haiku FORWARD/DROP triage before an assistant turn
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)
@@ -1356,7 +1357,53 @@ atomically, before the async `podium.yml` load.
   identity prompt says the same of `viewing: true`; reading the agent's
   output stays fine.
 
-  Each raise becomes one `[Podium] …` turn plus a `notice` event, so the chat says why the assistant is speaking
+  **Triage** (`triage.rs`, `TriageManager`): the watcher no longer hands a
+  nudge straight to the assistant. `Watcher::nudge` pushes it
+  (`Orchestrator::push_triage`, a `TriageItem { text, context }`) into a
+  debounce buffer; the push into an empty buffer starts the one worker
+  (`triage::run_worker`, weak orchestrator ref), which waits out
+  `ProactivityConfig::triage_window` (60 s, injectable), takes the whole
+  batch and classifies it in **one** Haiku call. Nudges arriving meanwhile
+  wait for the next window, so one triage runs at a time; the worker retires
+  under the buffer's lock when it finds it empty, so no push is stranded. The
+  call is a **one-shot** headless child per batch, spawned like the sweep
+  (login shell, `--cd` in WSL mode, `spawn_gated`, `hide_console_window`,
+  stderr dropped): `exec claude -p --input-format stream-json --output-format
+  stream-json --verbose --model haiku --tools '' --strict-mcp-config
+  --disable-slash-commands --safe-mode --no-session-persistence
+  --system-prompt <TRIAGE_IDENTITY>` — no built-in tools, no MCP server at
+  all (strict with no `--mcp-config`), no skills/commands, no CLAUDE.md,
+  hooks or plugins (`--safe-mode`; auth works as normal, unlike `--bare`,
+  which needs an API key), and its own short system prompt instead of Claude
+  Code's default. Measured on CLI 2.1.311: ~0.6k input tokens to start,
+  against ~5.3k without `--safe-mode`. One turn is written, stdin closed,
+  and the last prose block read until the `result`; the child is killed
+  after. The prompt (`triage_prompt`) lists the last 10 forwarded nudges as
+  context (memory only, so a repeat can be told from news) and the batch
+  numbered from 1, all through `quote_line`; a "finished" nudge also carries
+  the agent's ANSI-stripped last 30 output lines (`context`, never sent to
+  the assistant), since the triage has no tool to read them. The identity is
+  the Responses rules cut down to two answers: FORWARD a crash/failure, a
+  blocked or still-blocked agent, finished work with something for the user,
+  lingering to-dos not already forwarded identically, anything unsure; DROP a
+  routine finish with nothing left for the user, a "no change"/"still
+  waiting" repeat, an identical lingering sweep. The reply must be one
+  `<n>: FORWARD|DROP` line per nudge (`parse_verdicts`: case and whitespace
+  aside, a bare code fence ignored; every number exactly once) — **anything
+  else, a turn error, a timeout (`TRIAGE_TIMEOUT`, 90 s, `TriageConfig`) or a
+  failed spawn forwards the whole batch**, so a nudge is never lost to
+  triage. The forwarded texts, joined, go to the assistant as one turn
+  through `Orchestrator::assistant_nudge` (the existing `deliver_or_queue`
+  path); dropped ones are logged at debug as a count, never their text. The
+  proactivity switch is checked at push, before the call and before
+  delivery, so off means nothing runs. Shutdown (`TriageManager::shutdown`)
+  wakes the worker mid-window or mid-call, which kills the child and drops
+  the buffer. Binary and cwd follow `configure_assistant`; `configure_triage`
+  sets the timeout. Only the watcher's own nudges are triaged: an agent's
+  `report_to_assistant`, sub-agent results and questions (`nudge_lasting`),
+  proposal outcomes and user turns go straight to the assistant.
+
+  Each forwarded batch becomes one `[Podium] …` turn plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
   milliseconds. A nudge **starts the session when there is none**
   (`ensure_session`, the same path `send` uses) — otherwise the user only
@@ -1383,7 +1430,8 @@ atomically, before the async `podium.yml` load.
   the user a card first.
 
   Because these are event-driven — Podium already sees an exit or a silent
-  agent for free — **a quiet day costs no turns at all**.
+  agent for free — **a quiet day costs no turns at all**, and with triage a
+  day of routine finishes costs Haiku calls, not assistant turns.
 
   Alongside that runs a slow lane: the **external sweep**, every
   `poll_interval_minutes` (default 10; `0` is off), checking the enabled
@@ -1561,7 +1609,7 @@ native launch never waits behind a slow distro start.
   *start* (spawn plus a 150 ms settle), never while a command runs:
   `platform::run_gated` for short commands (`run_shell_*`, git — the wait for
   output happens outside the gate), `wsl_launch_guard`/`spawn_gated` for
-  long-lived ones (PTY, assistant, external sweep; held until the PTY reader runs). Waiting
+  long-lived ones (PTY, assistant, external sweep, nudge triage; held until the PTY reader runs). Waiting
   for the gate gives up after 10 s with a warning and launches anyway, so one
   hung `wsl.exe` cannot stall everything behind it. **Never take the gate
   under the orchestrator's `inner` lock**: `do_start` reads the project's
@@ -1576,7 +1624,7 @@ native launch never waits behind a slow distro start.
   call's lifetime. `platform::hide_console_window` sets `CREATE_NO_WINDOW`;
   every non-ConPTY Windows spawn in this crate uses it (`run_shell_ok`,
   `run_shell_stdout`, `git_command`, the WSL networking check and distro
-  listing, the assistant's and the external sweep's CLI children — tokio `Command`s, via `as_std_mut()`
+  listing, the assistant's, the external sweep's and the nudge triage's CLI children — tokio `Command`s, via `as_std_mut()`
   — Warp's `cmd /C start`, and the Git board's `gh` calls via
   `gh_command`, several per project on every board refresh). ConPTY-attached spawns (`process::pty`) are already windowless
   and need nothing. New code that spawns a plain `Command` on Windows must

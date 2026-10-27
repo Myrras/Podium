@@ -256,7 +256,13 @@ they did.
 - **Proactivity** — Podium speaks first when an agent exits, when an agent
   looks stuck (silent for 5 minutes, escalating once after 10 with a
   suggested answer, then silent until you type into that agent), and on a
-  6-hourly sweep for to-dos open longer than a week.
+  6-hourly sweep for to-dos open longer than a week. These notes are
+  gathered for a minute and checked first by a small Haiku session with no
+  tools: only the ones worth your attention (a crash, a blocked agent,
+  finished work with something to look at) reach the assistant, together as
+  one turn. A routine finish or a repeat costs no assistant turn. If that
+  check fails, everything goes through as before. Reports agents send
+  themselves and sub-agent results always go straight to the assistant.
 - **External sweep** — every 10 minutes by default, the sources you enabled
   (Slack, Teams — through your *own* MCP servers) are checked by a separate,
   read-only Haiku session, not by the assistant itself. The assistant only
