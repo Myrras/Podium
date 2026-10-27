@@ -65,6 +65,10 @@ pub struct AgentLaunchCtx<'a> {
     /// of a project agent's, and session settings without the push go-ahead
     /// rules. `None` for every project agent.
     pub subagent: Option<SubagentKind>,
+    /// A sub-agent started lean (see [`crate::subagent::launch_args`]): its
+    /// session settings also turn off hooks, `CLAUDE.md` files and
+    /// auto-memory. Ignored unless `subagent` is set.
+    pub subagent_lean: bool,
     /// A secret only this session's MCP config carries (an `X-Podium-Caller`
     /// header), by which Podium's MCP server tells which sub-agent is
     /// calling — set for sub-agents, `None` for everything else.
@@ -351,7 +355,7 @@ impl AgentAdapter for CliAdapter {
                     // A sub-agent has no branch to push and no PR to open,
                     // so it gets none of the go-ahead rules.
                     let settings = match ctx.subagent {
-                        Some(kind) => subagent_session_settings(kind, mcp, wsl)?,
+                        Some(kind) => subagent_session_settings(kind, ctx.subagent_lean, mcp, wsl)?,
                         None => agent_session_settings(),
                     };
                     args.push(quote(&settings)?);
@@ -729,6 +733,13 @@ fn agent_session_settings() -> String {
     .to_string()
 }
 
+/// `claudeMdExcludes` globs keeping every instruction file out of a lean
+/// sub-agent: `CLAUDE.md`/`CLAUDE.local.md` anywhere (an excluded file's
+/// `@` imports go with it) and `.claude/rules` files. Managed-policy files
+/// cannot be excluded, which is the CLI's rule, not Podium's.
+const LEAN_CLAUDE_MD_EXCLUDES: &[&str] =
+    &["**/CLAUDE.md", "**/CLAUDE.local.md", "**/.claude/rules/**"];
+
 /// The Podium tools a sub-agent may call without a permission prompt
 /// ([`crate::subagent::unprompted_podium_tools`]: its report, which comes at
 /// the very end with nobody watching its terminal, and the read-only ones),
@@ -751,14 +762,27 @@ fn subagent_allow_rules() -> Vec<String> {
 /// assistant never messages its sub-agents, and they cannot message anyone
 /// (`SendMessage` is denied them). All of it for this session alone; the
 /// user's own settings file is never touched.
+///
+/// A `lean` sub-agent also runs without hooks (a plugin's `SessionStart`
+/// hook injecting text, a `PreToolUse` hook meant for the user's own
+/// sessions), without `CLAUDE.md` files (the user's own and their imports,
+/// matched by path) and without auto-memory, which together are most of what
+/// the user's settings add to a first request. Their permission rules still
+/// apply.
 fn subagent_session_settings(
     kind: SubagentKind,
+    lean: bool,
     mcp: &McpConnectInfo,
     wsl: Option<&WslBackend>,
 ) -> CoreResult<String> {
     let mut settings = serde_json::json!({
         "permissions": { "allow": subagent_allow_rules() },
     });
+    if lean {
+        settings["disableAllHooks"] = serde_json::Value::Bool(true);
+        settings["autoMemoryEnabled"] = serde_json::Value::Bool(false);
+        settings["claudeMdExcludes"] = serde_json::json!(LEAN_CLAUDE_MD_EXCLUDES);
+    }
     if kind == SubagentKind::Lookup {
         settings["skipDangerousModePermissionPrompt"] = serde_json::Value::Bool(true);
         // Read rules also cover the CLI's other file readers (Grep, Glob);
@@ -1235,6 +1259,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -1326,6 +1351,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
@@ -1611,6 +1637,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         assert_eq!(
@@ -1650,6 +1677,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -1677,6 +1705,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: true,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -1704,6 +1733,7 @@ mod tests {
             worktree_name: Some("auth-refactor"),
             suggest_worktree: true,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -1733,6 +1763,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -1765,6 +1796,15 @@ mod tests {
         mcp: &McpConnectInfo,
         caller_key: Option<&str>,
     ) -> (Vec<String>, ProcessId, ProjectId) {
+        subagent_launch(kind, mcp, caller_key, false)
+    }
+
+    fn subagent_launch(
+        kind: SubagentKind,
+        mcp: &McpConnectInfo,
+        caller_key: Option<&str>,
+        lean: bool,
+    ) -> (Vec<String>, ProcessId, ProjectId) {
         let ctx = AgentLaunchCtx {
             project_id: ProjectId::new(),
             process_id: ProcessId::new(),
@@ -1779,6 +1819,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: Some(kind),
+            subagent_lean: lean,
             caller_key,
         };
         let plan = CLAUDE_CODE.build_launch(&ctx).expect("build_launch");
@@ -1884,6 +1925,43 @@ mod tests {
         assert_eq!(full["permissions"]["allow"], lookup["permissions"]["allow"]);
     }
 
+    /// A lean sub-agent's session runs without hooks, `CLAUDE.md` files and
+    /// auto-memory, on top of the same permission rules; one that is not
+    /// lean gets none of those three settings.
+    #[test]
+    fn a_lean_subagent_session_skips_hooks_instructions_and_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = test_mcp(&dir);
+        for kind in [SubagentKind::Lookup, SubagentKind::Full] {
+            let settings = |lean| {
+                let (tokens, ..) = subagent_launch(kind, &mcp, None, lean);
+                serde_json::from_str::<serde_json::Value>(&value_after(&tokens, "--settings"))
+                    .expect("valid json")
+            };
+            let (lean, plain) = (settings(true), settings(false));
+            assert_eq!(lean["disableAllHooks"], true, "{lean}");
+            assert_eq!(lean["autoMemoryEnabled"], false, "{lean}");
+            let excluded: Vec<&str> = lean["claudeMdExcludes"]
+                .as_array()
+                .expect("excludes")
+                .iter()
+                .filter_map(|p| p.as_str())
+                .collect();
+            for pattern in ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/.claude/rules/**"] {
+                assert!(excluded.contains(&pattern), "{pattern}: {lean}");
+            }
+            // The restrictions are the same either way.
+            assert_eq!(lean["permissions"], plain["permissions"], "{kind:?}");
+            assert_eq!(
+                lean.get("skipDangerousModePermissionPrompt"),
+                plain.get("skipDangerousModePermissionPrompt")
+            );
+            for key in ["disableAllHooks", "autoMemoryEnabled", "claudeMdExcludes"] {
+                assert!(plain.get(key).is_none(), "{key}: {plain}");
+            }
+        }
+    }
+
     /// A lookup talks to the lookup route, a full one to the agents', and
     /// both say who they are with their caller key.
     #[test]
@@ -1950,6 +2028,7 @@ mod tests {
             worktree_name: Some("auth-refactor"),
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");
@@ -2354,6 +2433,7 @@ mod tests {
             worktree_name: None,
             suggest_worktree: false,
             subagent: None,
+            subagent_lean: false,
             caller_key: None,
         };
         let plan = AUGGIE.build_launch(&ctx).expect("build_launch");

@@ -309,7 +309,7 @@ atomically, before the async `podium.yml` load.
   sub-agents — see _Sub-agents_; assistant route only, like `add_response`),
   and `ask_assistant` (a sub-agent's question to the assistant; every route
   but the assistant's, run only for a valid sub-agent caller key): 37 tools
-  on the assistant route, 34 on the agents' route, 11 on the lookup route. `spawn_subagent { kind, task, name?, args? }` is
+  on the assistant route, 34 on the agents' route, 11 on the lookup route. `spawn_subagent { kind, task, name?, args?, lean? }` is
   gated by its `kind` (`assistant::requires_proposal_for`): `lookup` never,
   `full` like `spawn_agent` (a missing/unknown kind too), and `args` may only
   be `--model`/`--effort` with a plain value (`subagent::validate_args`).
@@ -1124,9 +1124,10 @@ atomically, before the async `podium.yml` load.
     added later is refused until classified read-only. Its `--settings` also
     deny `Read(//{app_data_dir}/mcp/**)` (the CLI's absolute-path rule
     spelling, `agent::absolute_path_rule`; Read rules cover Grep/Glob, and the
-    shell is denied): the token files and every caller key. A lookup **can
-    still call the user's own other MCP servers** (Slack, Teams, a ticket
-    system) **without a prompt**, as the assistant itself can — it is told to
+    shell is denied): the token files and every caller key. A lookup started
+    with `lean: false` **can still call the user's own other MCP servers**
+    (Slack, Teams, a ticket system) **without a prompt**, as the assistant
+    itself can (a lean one has only Podium's, below) — it is told to
     change nothing, but Podium cannot enforce that for servers that are not
     its own. *full*: the normal permission prompts, `--disallowedTools
     SendMessage,Agent,Task,AskUserQuestion`, the agents' route (the CLI's own
@@ -1146,6 +1147,33 @@ atomically, before the async `podium.yml` load.
     (no `skipDangerousModePermissionPrompt`) and has no deny rule on the MCP
     dir, and a full one asks before its report (no allow rules). The flags in
     `launch_args` still apply.
+  - **Model and lean start** (`launch_args(kind, lean, args, user_default_args)`).
+    Without a `--model` in the line so far (the spawn's `args`, or the user's
+    default args when it has none) the user's default-args `--model` is
+    carried over (a spawn's `args` replace them), else the kind's
+    `SubagentKind::default_model`: `haiku` for a lookup, `sonnet` for a full
+    one — never the user's settings-file model. `spawn_subagent`'s `lean`
+    (default true; `Orchestrator::spawn_subagent_with`, `spawn_subagent` =
+    lean) adds `--strict-mcp-config` (only Podium's server: none of the
+    user's own MCP servers or their tool names), `--disable-slash-commands`
+    (no skill/command listing) and `--tools` `SubagentKind::lean_tools`
+    (lookup Read, Grep, Glob, WebFetch, WebSearch; full also Bash, Edit,
+    Write; both keep `ToolSearch`, without which the CLI sends every Podium
+    tool schema up front), and `AgentLaunchCtx.subagent_lean` makes
+    `subagent_session_settings` add `disableAllHooks` (plugin `SessionStart`
+    injections, the user's `PreToolUse` hooks), `autoMemoryEnabled: false`
+    and `claudeMdExcludes` (`**/CLAUDE.md`, `**/CLAUDE.local.md`,
+    `**/.claude/rules/**`; imports go with an excluded file). The user's
+    settings still load (`--setting-sources user`), so their permission rules
+    apply; the restrictions above are the same either way. Not used:
+    `--bare` (no OAuth/keychain: API-key auth only), `--safe-mode` (also
+    drops the `--mcp-config` server) and `--setting-sources ""` (same size,
+    but loses the user's permission rules). A user `--settings` in the
+    default args drops the three lean settings with Podium's. Measured on
+    Claude Code 2.1.311, Haiku, headless, first request of a trivial task:
+    lookup 28.5k → 7.5k tokens, full 29.4k → 10.0k. A lookup that needs the
+    user's own MCP servers (Slack, Teams, a ticket system), a skill or a
+    plugin is spawned with `lean: false`; the tool description says so.
   - **Shared workspace.** All sub-agents run in the one
     `{app_data_dir}/assistant-workspace`, and before every start
     (`Hub::scrub_workspace` → `subagent::scrub_workspace`) Podium removes what
