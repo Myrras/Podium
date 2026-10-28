@@ -40,6 +40,7 @@ use crate::subagent::{
 };
 use crate::sweep::{SweepConfig, SweepManager, SweepRun};
 use crate::todo::{TodoInfo, TodoStore};
+use crate::triage::{TriageConfig, TriageItem, TriageManager};
 use crate::worktree::WorktreeInfo;
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
@@ -348,6 +349,9 @@ pub struct Orchestrator {
     assistant_toggle: tokio::sync::Mutex<()>,
     /// The external sweep's own Haiku session ([`crate::sweep`]).
     sweep: Arc<SweepManager>,
+    /// The proactivity nudges' debounce buffer and Haiku triage
+    /// ([`crate::triage`]).
+    triage: Arc<TriageManager>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -373,6 +377,7 @@ impl Orchestrator {
             assistant: Arc::new(AssistantManager::new(events.clone())),
             assistant_toggle: tokio::sync::Mutex::new(()),
             sweep: Arc::new(SweepManager::new()),
+            triage: Arc::new(TriageManager::new()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -450,6 +455,8 @@ impl Orchestrator {
     pub fn configure_assistant(&self, config: AssistantConfig) {
         self.sweep
             .set_launch(config.command.clone(), config.cwd.clone());
+        self.triage
+            .set_launch(config.command.clone(), config.cwd.clone());
         self.assistant.configure(config);
     }
 
@@ -458,6 +465,25 @@ impl Orchestrator {
     /// the binary and cwd, so call this after it.
     pub fn configure_sweep(&self, config: SweepConfig) {
         self.sweep.configure(config);
+    }
+
+    /// Point the nudge triage's session at a binary / cwd and set its
+    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
+    /// the binary and cwd, so call this after it.
+    pub fn configure_triage(&self, config: TriageConfig) {
+        self.triage.configure(config);
+    }
+
+    /// The nudge triage ([`crate::triage`]), for its worker.
+    pub(crate) fn triage(&self) -> Arc<TriageManager> {
+        Arc::clone(&self.triage)
+    }
+
+    /// Buffer a proactivity nudge for triage instead of handing it to the
+    /// assistant at once; `true` when the caller must start the triage
+    /// worker ([`crate::triage::start_worker`]).
+    pub(crate) fn push_triage(&self, item: TriageItem) -> bool {
+        self.triage.push(item)
     }
 
     /// Claim the one external-sweep slot; `None` while a sweep still runs
@@ -660,6 +686,16 @@ impl Orchestrator {
         }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.nudge(text, mcp).await;
+    }
+
+    /// [`assistant_nudge`](Self::assistant_nudge) for several texts at once:
+    /// one turn when the assistant is idle, texts already waiting skipped.
+    pub async fn assistant_nudge_all(&self, texts: Vec<String>) {
+        if !self.assistant_enabled() {
+            return;
+        }
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.nudge_all(texts, mcp).await;
     }
 
     /// Hand the assistant what the external sweep found (the sweep itself
@@ -3815,7 +3851,9 @@ impl Orchestrator {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
         // The sweep first: one that finishes while the assistant is already
         // gone would hand it a finding and start a new assistant child that
-        // nothing kills.
+        // nothing kills. A triage worker likewise must not deliver to an
+        // assistant session after it has been killed.
+        self.triage.shutdown();
         self.sweep.shutdown().await;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {

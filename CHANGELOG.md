@@ -10,6 +10,12 @@ when it merges.
 
 ## [Unreleased]
 
+### Changed
+
+- Podium's own notes about agents and old to-dos are gathered for a minute
+  and checked on Haiku first; a routine finish or a repeat no longer costs
+  an assistant turn, and the rest arrive together as one turn.
+
 ## [3.2.0] - 2026-10-28
 
 ### Added
