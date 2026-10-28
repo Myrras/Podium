@@ -773,7 +773,7 @@ fn subagent_session_settings(
 /// An absolute path in the CLI's permission-rule spelling: `//` then the
 /// path from the filesystem root (`/Users/a/x` → `//Users/a/x`), Windows
 /// paths in their POSIX form (`C:\Users\a` → `//c/Users/a`).
-fn absolute_path_rule(path: &str) -> String {
+pub(crate) fn absolute_path_rule(path: &str) -> String {
     let posix = path.replace('\\', "/");
     let bytes = posix.as_bytes();
     if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
@@ -1872,7 +1872,10 @@ mod tests {
         // caller key), in the CLI's absolute-path rule spelling.
         assert_eq!(
             lookup["permissions"]["deny"],
-            serde_json::json!([format!("Read(/{}/**)", dir.path().display())])
+            serde_json::json!([format!(
+                "Read({}/**)",
+                absolute_path_rule(&dir.path().display().to_string())
+            )])
         );
         // A lookup runs without prompts, so the one-time warning is skipped.
         assert_eq!(lookup["skipDangerousModePermissionPrompt"], true);

@@ -15,6 +15,7 @@ vi.mock("../ipc/commands", () => ({
     (intervalMinutes: number, slack: boolean, teams: boolean) =>
       Promise.resolve({ intervalMinutes, slack, teams }),
   ),
+  assistantEnabledSet: vi.fn((enabled: boolean) => Promise.resolve(enabled)),
   assistantQueueEdit: vi.fn(() => Promise.resolve()),
   assistantQueueSendNow: vi.fn(() => Promise.resolve()),
   assistantQueueRemove: vi.fn(() => Promise.resolve()),
@@ -36,6 +37,7 @@ vi.mock("../ipc/commands", () => ({
 
 import {
   assistantDayStart,
+  assistantEnabledSet,
   assistantInterrupt,
   assistantPollingGet,
   assistantPollingSet,
@@ -981,5 +983,77 @@ describe("assistantStore — sub-agents", () => {
     expect(assistantNewConversation).toHaveBeenLastCalledWith(false);
     await useAssistantStore.getState().newConversation(true);
     expect(assistantNewConversation).toHaveBeenLastCalledWith(true);
+  });
+  describe("turning the assistant off", () => {
+    beforeEach(() => {
+      vi.mocked(assistantEnabledSet).mockReset();
+      vi.mocked(assistantEnabledSet).mockImplementation((e) =>
+        Promise.resolve(e),
+      );
+      resetSeenResponses();
+      useAssistantStore.setState({
+        enabled: true,
+        busy: true,
+        activity: "list_todos",
+        messages: [],
+        pending: [],
+      });
+    });
+
+    it("resets busy, activity, the queue and pending proposal cards", async () => {
+      const { apply } = useAssistantStore.getState();
+      apply({
+        type: "proposal",
+        id: "p-1",
+        tool: "set_todo_archived",
+        summary: "{}",
+      });
+      useAssistantStore.setState({
+        pending: [
+          { id: "q-1", kind: "user", text: "later", attachments: [] },
+        ] as never,
+      });
+
+      await useAssistantStore.getState().setEnabled(false);
+
+      const s = useAssistantStore.getState();
+      expect(s.enabled).toBe(false);
+      expect(s.busy).toBe(false);
+      expect(s.activity).toBeNull();
+      expect(s.pending).toEqual([]);
+      expect(
+        s.messages.find((m) => m.proposal?.id === "p-1")?.proposal?.status,
+      ).toBe("rejected");
+    });
+
+    it("rolls back and adds a notice when the call fails", async () => {
+      vi.mocked(assistantEnabledSet).mockRejectedValue({
+        kind: "io",
+        message: "could not save",
+      });
+
+      await useAssistantStore.getState().setEnabled(false);
+
+      const s = useAssistantStore.getState();
+      expect(s.enabled).toBe(true);
+      expect(s.busy).toBe(true);
+      expect(s.messages[s.messages.length - 1]?.text).toBe("could not save");
+    });
+
+    it("does not ping for items it saw while off once it is back on", async () => {
+      useAssistantStore.setState({ enabled: false });
+      await useAssistantStore.getState().loadResponses();
+      useAssistantStore
+        .getState()
+        .apply({ type: "responsesChanged", items: [responseItem()] });
+      useAssistantStore.setState({ enabled: true });
+      notifyAssistant.mockClear();
+
+      useAssistantStore
+        .getState()
+        .apply({ type: "responsesChanged", items: [responseItem()] });
+
+      expect(notifyAssistant).not.toHaveBeenCalled();
+    });
   });
 });

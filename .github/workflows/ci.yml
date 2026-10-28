@@ -25,7 +25,7 @@
 # user-owned repo, so a GITHUB_TOKEN push is rejected with GH013. Unlike a
 # GITHUB_TOKEN push, a deploy-key push does trigger workflows; `[skip ci]` in
 # the release commit stops that from re-running CI and build.yml on main.
-name: CI
+name: "Test, Lint & Release"
 
 on:
   push:

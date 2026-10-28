@@ -114,7 +114,10 @@ A shared to-do list per project, visible to you in the sidebar and to every
 agent over MCP. A to-do carries a description, a **comment thread** agents
 append progress notes to, and pinned **issue/PR links**. Done to-dos left
 over from an earlier day are archived automatically; anything can be archived
-by hand and found again in the Archive modal.
+by hand and found again in the Archive modal. Over MCP, `list_todos` leaves
+the archive out unless it's called with `include_archived: true` — handy for a
+script that syncs to-dos from an issue tracker and must not recreate one you
+archived.
 
 An agent **claims** a to-do when it starts working on it, so the list doubles
 as a who-is-doing-what board.
@@ -250,6 +253,10 @@ they did.
   sub-agents never stop on Claude Code's folder-trust question. Only if it
   cannot (a WSL backend, no Claude Code config yet) does the first one ask:
   open it from the list and answer "Yes, I trust this folder" once.
+- **Power switch** — the power button in the title bar (next to the assistant
+  button) turns the assistant off: no session, no nudges, no desktop
+  notifications, and its running sub-agents are stopped. The panel then shows
+  "The assistant is off" with a *Turn on* button; the choice is remembered.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
@@ -264,8 +271,9 @@ they did.
   check fails, everything goes through as before. Reports agents send
   themselves and sub-agent results always go straight to the assistant.
 - **External sweep** — every 10 minutes by default, the sources you enabled
-  (Slack, Teams — through your *own* MCP servers) are checked by a separate,
-  read-only Haiku session, not by the assistant itself. The assistant only
+  (Slack, Teams — through your *own* MCP servers) are checked by a separate
+  Haiku session told to only read, not by the assistant itself (Podium
+  cannot enforce that on your own MCP servers). The assistant only
   gets a turn when that check found something that needs you; a quiet check
   costs no assistant turn and leaves nothing in the chat. A found item shows
   as one faint "Podium check" line in the log.
@@ -531,12 +539,12 @@ stdio bridge only through 0600 files that are wiped on every start.
 
 `podium-core` (zero Tauri dependency) holds the orchestration/PTY/MCP domain;
 `src-tauri` is a thin IPC adapter; `src/` is the React frontend. See
-[`CLAUDE.md`](./CLAUDE.md) for the full architecture, IPC contract, and
-conventions.
+[`docs/architecture/`](./docs/architecture/) for the full architecture and IPC
+contract, and [`CLAUDE.md`](./CLAUDE.md) for conventions.
 
 ## Keeping this file current
 
-This README is the user-facing half of the documentation; `CLAUDE.md` is the
+This README is the user-facing half of the documentation; `CLAUDE.md` and `docs/architecture/` are the
 contributor-facing half. A change that alters what a user can *see or do* —
 a new feature, a shortcut, a setting, a `podium.yml` key, an MCP tool — belongs
 in both, in the same PR as the change itself.

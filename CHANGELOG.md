@@ -12,6 +12,30 @@ when it merges.
 
 ### Added
 
+- **Assistant on/off.** The assistant can be turned off and on from the window.
+
+### Changed
+
+- Podium's own notes about agents and old to-dos are gathered for a minute
+  and checked on Haiku first; a routine finish or a repeat no longer costs
+  an assistant turn, and the rest arrive together as one turn.
+
+## [3.1.3] - 2026-10-28
+
+### Changed
+
+- The CI workflow is now named "Test, Lint & Release".
+
+## [3.1.2] - 2026-10-28
+
+### Added
+
+- **Archived to-dos over MCP.** `list_todos` takes `include_archived: true`
+  to return the archive after the active list (each marked `archived`), and
+  to read an archived to-do in full by its id. Without it nothing changes. A
+  script that syncs to-dos from an issue tracker can now see a to-do that was
+  archived, by hand or automatically the day after it was done, instead of
+  creating it again.
 - **Exited agents clean themselves up.** An agent that finished, crashed or
   was stopped is now removed from the list 5 minutes after it exited, in
   every project, together with its terminal and its to-do links. Restarting
@@ -47,9 +71,6 @@ when it merges.
 
 - The Slack/Teams routine check runs on Haiku in its own session; the
   assistant only speaks up when it found something.
-- Podium's own notes about agents and old to-dos are gathered for a minute
-  and checked on Haiku first; a routine finish or a repeat no longer costs
-  an assistant turn, and the rest arrive together as one turn.
 - **Only Responses items reach your desktop.** The assistant no longer
   notifies you for a chat reply, a confirmation card or an unprompted
   `[Podium]` turn; a new item on the Responses list does, once per batch and
@@ -67,6 +88,17 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+- **Contributor docs are easier to navigate.** The architecture notes moved out
+  of `CLAUDE.md` into `docs/architecture/`, split into headed sections, tables
+  and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
+  file.
+- **Every pull request needs a release label.** A PR must carry exactly one of
+  `patch`, `minor` or `major`, or the `Release label` check fails; the label
+  sets the version bump when the PR merges.
+
+### Fixed
+
+- Fixed tests that failed on Windows (no change to the app).
 
 ## [3.1.1] - 2026-10-09
 

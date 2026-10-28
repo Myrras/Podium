@@ -12,6 +12,7 @@ use podium_core::mcp::tools::{
     RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
     UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
+use podium_core::mcp::tools::{ReportToAssistantParams, SpawnSubagentParams};
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH, LOOKUP_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
@@ -19,9 +20,7 @@ use podium_core::{
     ProcessStatus, ProjectId, RestartCommands, RestartPolicy, SubagentConfig, SubagentKind,
     SubagentPhase, TodoId,
 };
-// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
-#[cfg(unix)]
-use podium_core::mcp::tools::ReportToAssistantParams;
+// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use this.
 #[cfg(unix)]
 use podium_core::TranscriptRole;
 use rmcp::handler::server::wrapper::Parameters;
@@ -509,6 +508,7 @@ async fn todo_tools_update_and_comment_round_trip() {
         .list_todos(Parameters(ListTodosParams {
             project_id: project_id.to_string(),
             todo_id: None,
+            include_archived: None,
         }))
         .await
         .expect("list_todos");
@@ -526,6 +526,7 @@ async fn todo_tools_update_and_comment_round_trip() {
         .list_todos(Parameters(ListTodosParams {
             project_id: project_id.to_string(),
             todo_id: Some(todo_id.clone()),
+            include_archived: None,
         }))
         .await
         .expect("list_todos detail");
@@ -539,11 +540,64 @@ async fn todo_tools_update_and_comment_round_trip() {
             .list_todos(Parameters(ListTodosParams {
                 project_id: project_id.to_string(),
                 todo_id: Some(uuid::Uuid::new_v4().to_string()),
+                include_archived: None,
             }))
             .await
             .is_err(),
         "an unknown to-do id must be refused"
     );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_todos_includes_archived_todos_only_when_asked() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(Orchestrator::new());
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+
+    orch.add_todo(project_id, "still on the board", None)
+        .expect("add active");
+    let shelved = orch
+        .add_todo(project_id, "shelved for now", None)
+        .expect("add archived");
+    orch.set_todo_archived(project_id, shelved.id, true)
+        .expect("archive");
+
+    let list = |include_archived, todo_id: Option<String>| {
+        tools.list_todos(Parameters(ListTodosParams {
+            project_id: project_id.to_string(),
+            todo_id,
+            include_archived,
+        }))
+    };
+
+    // Default (and explicit false): the active list only, as before.
+    for flag in [None, Some(false)] {
+        let listed = first_text(&list(flag, None).await.expect("list_todos"));
+        assert!(listed.contains("still on the board"), "{listed:?}");
+        assert!(!listed.contains("shelved for now"), "{listed:?}");
+    }
+
+    // Asked for: the archived one comes after the active one, marked as such.
+    let listed = first_text(&list(Some(true), None).await.expect("list_todos"));
+    let active_at = listed.find("still on the board").expect("{listed:?}");
+    let archived_at = listed.find("shelved for now").expect("{listed:?}");
+    assert!(active_at < archived_at, "{listed:?}");
+    assert!(listed.contains("\"archived\": true"), "{listed:?}");
+
+    // Reading one archived to-do in full works only with the flag.
+    let id = Some(shelved.id.to_string());
+    assert!(
+        list(None, id.clone()).await.is_err(),
+        "an archived to-do stays out of the default lookup"
+    );
+    let detail = first_text(&list(Some(true), id).await.expect("archived detail"));
+    assert!(detail.contains("shelved for now"), "{detail:?}");
 
     orch.shutdown().await;
 }
@@ -1266,6 +1320,61 @@ async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
         }))
         .await
         .is_err());
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn report_and_spawn_subagent_say_the_assistant_is_off_and_do_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("Login bug agent".to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn agent");
+    orch.set_assistant_enabled(false).await.expect("off");
+
+    let report = tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: agent.to_string(),
+            summary: "Done.".to_string(),
+        }))
+        .await
+        .expect("report_to_assistant");
+    assert!(first_text(&report).contains("turned off"));
+    assert!(
+        orch.assistant_transcript().is_empty(),
+        "nothing may be delivered while off"
+    );
+
+    let spawned = tools
+        .spawn_subagent(Parameters(SpawnSubagentParams {
+            kind: SubagentKind::Lookup,
+            task: "look something up".to_string(),
+            name: None,
+            args: None,
+        }))
+        .await
+        .expect("spawn_subagent");
+    assert!(first_text(&spawned).contains("turned off"));
+    assert!(orch.list_subagents().is_empty(), "no sub-agent may start");
 
     orch.shutdown().await;
 }
@@ -3408,6 +3517,7 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
         .list_todos(Parameters(ListTodosParams {
             project_id: project_id.to_string(),
             todo_id: None,
+            include_archived: None,
         }))
         .await
         .expect("list_todos");
