@@ -73,6 +73,10 @@ when it merges.
   and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
   file.
 
+### Fixed
+
+- Fixed tests that failed on Windows (no change to the app).
+
 ## [3.1.1] - 2026-10-09
 
 ### Changed

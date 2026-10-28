@@ -73,6 +73,7 @@ fn exited(status: Option<ProcessStatus>) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(windows, ignore = "POSIX `exit 0` shell command")]
 async fn an_exited_agent_goes_after_the_window_and_terminals_and_services_stay() {
     let dir = tempfile::tempdir().unwrap();
     let orch = Arc::new(Orchestrator::new());
@@ -168,6 +169,7 @@ async fn a_restart_within_the_window_restarts_the_clock() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(windows, ignore = "POSIX `exit 0` shell command")]
 async fn zero_never_removes_and_a_changed_setting_applies_to_the_next_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let orch = Arc::new(Orchestrator::new());
