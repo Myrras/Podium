@@ -180,14 +180,22 @@ impl Watcher {
     /// assistant — as one turn. `context` is what the triage may judge it by
     /// beyond the text; the assistant never sees it.
     fn nudge(&self, orchestrator: &Orchestrator, text: String) {
-        self.nudge_with(orchestrator, text, None);
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                ..TriageItem::default()
+            },
+        );
     }
 
-    fn nudge_with(&self, orchestrator: &Orchestrator, text: String, context: Option<String>) {
+    /// `item` carries the agent it is about, so the triage's worker can
+    /// re-check at delivery that it is still worth saying.
+    fn nudge_with(&self, orchestrator: &Orchestrator, item: TriageItem) {
         if !orchestrator.assistant_proactivity() {
             return;
         }
-        if orchestrator.push_triage(TriageItem { text, context }) {
+        if orchestrator.push_triage(item) {
             crate::triage::start_worker(self.weak.clone(), self.config.triage_window);
         }
     }
@@ -257,6 +265,11 @@ impl Watcher {
         if process.viewing {
             return;
         }
+        // Nothing below is worth building (it reads and strips the agent's
+        // output) when no nudge will be sent.
+        if !orchestrator.assistant_proactivity() {
+            return;
+        }
         let where_ = describe(orchestrator, &process);
         if crashed {
             let text = format!(
@@ -264,7 +277,14 @@ impl Watcher {
                  the user what went wrong and what it leaves unfinished.",
                 exit_code(code)
             );
-            self.nudge(orchestrator, text);
+            self.nudge_with(
+                orchestrator,
+                TriageItem {
+                    text,
+                    process_id: Some(process_id),
+                    ..TriageItem::default()
+                },
+            );
             return;
         }
         let text = format!(
@@ -275,7 +295,15 @@ impl Watcher {
         // Whether a finished agent left anything for the user is in its last
         // output; the triage has no tools to read it, so it rides along.
         let context = last_output(orchestrator, process_id).await;
-        self.nudge_with(orchestrator, text, context);
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                context,
+                process_id: Some(process_id),
+                needs_running: false,
+            },
+        );
     }
 
     async fn on_tick(&mut self, orchestrator: &Orchestrator) {
@@ -367,7 +395,7 @@ impl Watcher {
             };
             if process.subagent.is_some() {
                 let text = self.stuck_subagent_text(&process, nudges, prompting);
-                self.nudge(orchestrator, text);
+                self.nudge_stuck(orchestrator, text, process.id);
                 continue;
             }
             let where_ = describe(orchestrator, &process);
@@ -394,8 +422,22 @@ impl Watcher {
                     minutes(self.config.idle_after),
                 )
             };
-            self.nudge(orchestrator, text);
+            self.nudge_stuck(orchestrator, text, process.id);
         }
+    }
+
+    /// A stuck-agent nudge: only worth saying while the agent still runs and
+    /// the user is not looking at it, which the triage re-checks at delivery.
+    fn nudge_stuck(&self, orchestrator: &Orchestrator, text: String, id: ProcessId) {
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                context: None,
+                process_id: Some(id),
+                needs_running: true,
+            },
+        );
     }
 
     /// What to say about one of the assistant's own sub-agents that looks
@@ -565,7 +607,10 @@ async fn last_output(orchestrator: &Orchestrator, id: ProcessId) -> Option<Strin
         .collect();
     let start = lines.len().saturating_sub(LAST_OUTPUT_LINES);
     let tail = lines[start..].join("\n");
-    (!tail.is_empty()).then_some(tail)
+    // Bounded by characters too: a few very long lines (a TUI repaint) would
+    // otherwise ride along whole, and it is the end that matters.
+    (!tail.is_empty())
+        .then(|| crate::triage::truncate_tail(&tail, crate::triage::MAX_CONTEXT_CHARS))
 }
 
 /// The agent process with this id, or `None` when it is gone or not an agent.

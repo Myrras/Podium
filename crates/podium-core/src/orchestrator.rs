@@ -3790,9 +3790,11 @@ impl Orchestrator {
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
+        // First: a triage worker must not start (or deliver to) an assistant
+        // session after the assistant has been killed.
+        self.triage.shutdown();
         self.assistant.shutdown().await;
         self.sweep.shutdown().await;
-        self.triage.shutdown();
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions().await;
         }

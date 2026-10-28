@@ -1359,13 +1359,18 @@ atomically, before the async `podium.yml` load.
 
   **Triage** (`triage.rs`, `TriageManager`): the watcher no longer hands a
   nudge straight to the assistant. `Watcher::nudge` pushes it
-  (`Orchestrator::push_triage`, a `TriageItem { text, context }`) into a
+  (`Orchestrator::push_triage`, a `TriageItem { text, context, process_id, needs_running }`) into a
   debounce buffer; the push into an empty buffer starts the one worker
   (`triage::run_worker`, weak orchestrator ref), which waits out
   `ProactivityConfig::triage_window` (60 s, injectable), takes the whole
   batch and classifies it in **one** Haiku call. Nudges arriving meanwhile
   wait for the next window, so one triage runs at a time; the worker retires
-  under the buffer's lock when it finds it empty, so no push is stranded. The
+  under the buffer's lock (`take_batch`) when it finds it empty, after
+  shutdown, or with proactivity off (that batch is dropped, and the next push
+  starts a fresh worker at once), so no push is stranded. A drop guard
+  releases the `worker` flag if the task dies mid-batch (panic, abort), and
+  the buffer keeps the newest 50 nudges, so a dead worker can neither
+  silence proactivity nor grow the buffer. The
   call is a **one-shot** headless child per batch, spawned like the sweep
   (login shell, `--cd` in WSL mode, `spawn_gated`, `hide_console_window`,
   stderr dropped): `exec claude -p --input-format stream-json --output-format
@@ -1381,29 +1386,39 @@ atomically, before the async `podium.yml` load.
   after. The prompt (`triage_prompt`) lists the last 10 forwarded nudges as
   context (memory only, so a repeat can be told from news) and the batch
   numbered from 1, all through `quote_line`; a "finished" nudge also carries
-  the agent's ANSI-stripped last 30 output lines (`context`, never sent to
-  the assistant), since the triage has no tool to read them. The identity is
+  the agent's ANSI-stripped last 30 output lines (`context`, cut to the last
+  1500 characters with `truncate_tail` — the PR URL or question is at the
+  end — never sent to the assistant), since the triage has no tool to read them. The identity is
   the Responses rules cut down to two answers: FORWARD a crash/failure, a
   blocked or still-blocked agent, finished work with something for the user,
   lingering to-dos not already forwarded identically, anything unsure; DROP a
   routine finish with nothing left for the user, a "no change"/"still
-  waiting" repeat, an identical lingering sweep. The reply must be one
+  waiting" repeat, an identical lingering sweep; the escalation of a
+  still-blocked agent (it asks for a pick and `respawn_agent`) is always
+  forwarded, even when it resembles an earlier note. The reply must be one
   `<n>: FORWARD|DROP` line per nudge (`parse_verdicts`: case and whitespace
   aside, a bare code fence ignored; every number exactly once) — **anything
   else, a turn error, a timeout (`TRIAGE_TIMEOUT`, 90 s, `TriageConfig`) or a
   failed spawn forwards the whole batch**, so a nudge is never lost to
-  triage. The forwarded texts, joined, go to the assistant as one turn
-  through `Orchestrator::assistant_nudge` (the existing `deliver_or_queue`
-  path); dropped ones are logged at debug as a count, never their text. The
+  triage. Each forwarded nudge goes to the assistant on its own through
+  `Orchestrator::assistant_nudge` (the existing `deliver_or_queue` path, which
+  merges consecutive waiting nudges into one turn and skips one whose text is
+  already waiting); dropped ones are logged at debug as a count, never their
+  text. At delivery each is checked again (`is_stale`), since the batch waited
+  at least a window: a nudge about an agent the user is now viewing is dropped,
+  and so is a stuck-agent one (`needs_running`) whose agent is gone or no
+  longer running; a to-do sweep nudge has no `process_id` and is unaffected.
+  A finished agent's output is only read when proactivity is on. The
   proactivity switch is checked at push, before the call and before
   delivery, so off means nothing runs. Shutdown (`TriageManager::shutdown`)
   wakes the worker mid-window or mid-call, which kills the child and drops
-  the buffer. Binary and cwd follow `configure_assistant`; `configure_triage`
+  the buffer; `Orchestrator::shutdown` calls it before killing the assistant,
+  so a worker cannot start a session afterwards. Binary and cwd follow `configure_assistant`; `configure_triage`
   sets the timeout. Only the watcher's own nudges are triaged: an agent's
   `report_to_assistant`, sub-agent results and questions (`nudge_lasting`),
   proposal outcomes and user turns go straight to the assistant.
 
-  Each forwarded batch becomes one `[Podium] …` turn plus a `notice` event, so the chat says why the assistant is speaking
+  Each forwarded nudge becomes a `[Podium] …` turn (consecutive waiting ones merged) plus a `notice` event, so the chat says why the assistant is speaking
   unprompted. Timings are injectable (`ProactivityConfig`) so tests run in
   milliseconds. A nudge **starts the session when there is none**
   (`ensure_session`, the same path `send` uses) — otherwise the user only

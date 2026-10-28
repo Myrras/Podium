@@ -3019,12 +3019,78 @@ async fn a_failed_triage_forwards_every_nudge() {
     run_agent_to_exit(&orch, &mut rx, project, "api-tests", "exit 3", dir.path()).await;
 
     recorded_lines(dir.path(), "triage-stdin.jsonl", 1).await;
+    // Each forwarded nudge goes to the assistant on its own, in order (the
+    // queue merges consecutive waiting ones into a turn and dedupes by text).
+    let turns = recorded_lines(dir.path(), "stdin.jsonl", 2).await;
+    let first = turn_text(&turns[0]);
+    assert!(first.contains("fix-login"), "{first}");
+    assert!(first.contains("finished"), "{first}");
+    let second = turn_text(&turns[1]);
+    assert!(second.contains("api-tests"), "{second}");
+    assert!(second.contains("crashed"), "{second}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_forwarded_nudge_about_an_agent_now_being_viewed_is_not_delivered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &triage_fake(&triage_says("1: FORWARD")),
+    ));
+    let mut rx = orch.subscribe_events();
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(800)));
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    run_agent_to_exit(&orch, &mut rx, project, "fix-login", "exit 3", dir.path()).await;
+    // Not viewed when the nudge was pushed; the user opens it within the window.
+    // (The pause lets the watcher push the nudge first.)
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let agent = orch.list_processes(None)[0].id;
+    orch.set_viewing(Some(agent));
+
+    // The triage still runs and forwards it...
+    recorded_lines(dir.path(), "triage-stdin.jsonl", 1).await;
+    // ...but the delivery re-check finds the agent in front of the user.
+    let quiet = notices_within(&mut rx, Duration::from_millis(800)).await;
+    assert!(quiet.is_empty(), "a viewed agent was announced: {quiet:?}");
+    assert!(
+        !dir.path().join("stdin.jsonl").exists(),
+        "the assistant ran a turn for a viewed agent"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn switching_proactivity_back_on_after_a_dropped_batch_triages_the_next_nudge() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &triage_fake(&triage_says("1: FORWARD")),
+    ));
+    let mut rx = orch.subscribe_events();
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(400)));
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    // Pushed while on, switched off before its window ends: dropped, worker retires.
+    run_agent_to_exit(&orch, &mut rx, project, "fix-login", "exit 3", dir.path()).await;
+    orch.set_assistant_proactivity(false).expect("switch off");
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert!(!dir.path().join("triage-argv.txt").exists(), "a triage ran");
+
+    // On again: the next nudge starts a new worker at once.
+    orch.set_assistant_proactivity(true).expect("switch on");
+    run_agent_to_exit(&orch, &mut rx, project, "api-tests", "exit 3", dir.path()).await;
     let turns = recorded_lines(dir.path(), "stdin.jsonl", 1).await;
     let text = turn_text(&turns[0]);
-    assert!(text.contains("fix-login"), "{text}");
-    assert!(text.contains("finished"), "{text}");
     assert!(text.contains("api-tests"), "{text}");
-    assert!(text.contains("crashed"), "{text}");
+    assert!(!text.contains("fix-login"), "{text}");
     orch.shutdown().await;
 }
 
