@@ -604,10 +604,15 @@ mod tests {
             assert!(line.contains(&format!(",mcp__podium__{tool}")), "{tool}");
         }
         // The token files are unreadable to it.
+        // Quoted the way the platform's shell wants it (single quotes under
+        // POSIX, double quotes with escapes for cmd.exe), so the expectation
+        // goes through the same quoting.
+        let settings = r#"{"permissions":{"deny":["Read(//data/podium/mcp/**)"]}}"#;
         assert!(
-            line.contains(
-                r#"--settings '{"permissions":{"deny":["Read(//data/podium/mcp/**)"]}}'"#
-            ),
+            line.contains(&format!(
+                "--settings {}",
+                crate::platform::quote_arg(settings).expect("quote")
+            )),
             "{line}"
         );
         // Podium's endpoint is not wired in, and nothing hides the user's
