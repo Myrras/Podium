@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-10-28
+
 ### Changed
 
 - Podium's own notes about agents and old to-dos are gathered for a minute
