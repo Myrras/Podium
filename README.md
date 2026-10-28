@@ -526,12 +526,12 @@ stdio bridge only through 0600 files that are wiped on every start.
 
 `podium-core` (zero Tauri dependency) holds the orchestration/PTY/MCP domain;
 `src-tauri` is a thin IPC adapter; `src/` is the React frontend. See
-[`CLAUDE.md`](./CLAUDE.md) for the full architecture, IPC contract, and
-conventions.
+[`docs/architecture/`](./docs/architecture/) for the full architecture and IPC
+contract, and [`CLAUDE.md`](./CLAUDE.md) for conventions.
 
 ## Keeping this file current
 
-This README is the user-facing half of the documentation; `CLAUDE.md` is the
+This README is the user-facing half of the documentation; `CLAUDE.md` and `docs/architecture/` are the
 contributor-facing half. A change that alters what a user can *see or do* —
 a new feature, a shortcut, a setting, a `podium.yml` key, an MCP tool — belongs
 in both, in the same PR as the change itself.
