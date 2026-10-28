@@ -68,6 +68,10 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+- **Contributor docs are easier to navigate.** The architecture notes moved out
+  of `CLAUDE.md` into `docs/architecture/`, split into headed sections, tables
+  and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
+  file.
 
 ## [3.1.1] - 2026-10-09
 
