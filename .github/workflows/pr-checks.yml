@@ -1,5 +1,5 @@
 # Every PR needs a CHANGELOG entry under `## [Unreleased]` and exactly one of
-# the labels `patch`, `minor` or `major` (the version bump on merge). Separate
+# the labels `release:patch`, `release:minor`, `release:major` (the version bump on merge). Separate
 # from ci.yml so that (un)labelling a PR doesn't re-run the full build.
 name: PR checks
 

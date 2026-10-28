@@ -4,7 +4,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    labels: ["patch", "dependencies"]
+    labels: ["release:patch", "dependencies"]
     groups:
       github-actions:
         patterns: ["*"]
@@ -12,7 +12,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    labels: ["patch", "dependencies"]
+    labels: ["release:patch", "dependencies"]
     groups:
       cargo:
         patterns: ["*"]
@@ -20,7 +20,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    labels: ["patch", "dependencies"]
+    labels: ["release:patch", "dependencies"]
     # typescript-eslint doesn't support TypeScript 7 yet; remove when it does.
     ignore:
       - dependency-name: "typescript"
