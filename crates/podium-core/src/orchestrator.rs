@@ -626,6 +626,11 @@ impl Orchestrator {
     /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
     /// session if there is none, and goes in as a `Poll` turn.
     pub async fn assistant_poll(&self, text: String) {
+        // A sweep that finished as the app quits must not start a session
+        // after the assistant was stopped.
+        if self.inner.lock().expect(LOCK_POISONED).shutting_down {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.poll(text, mcp).await;
     }
@@ -3764,8 +3769,11 @@ impl Orchestrator {
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
-        self.assistant.shutdown().await;
+        // The sweep first: one that finishes while the assistant is already
+        // gone would hand it a finding and start a new assistant child that
+        // nothing kills.
         self.sweep.shutdown().await;
+        self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions().await;
         }

@@ -132,12 +132,12 @@ its own** (`sweep.rs`, `SweepManager`), never in the assistant's: a second
 long-lived headless child, `exec claude -p --input-format stream-json
 --output-format stream-json --verbose --model haiku` (`SWEEP_MODEL`)
 `--setting-sources user --permission-mode bypassPermissions
---disallowedTools Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,
-AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,
+--disallowedTools Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task,
+SendMessage,AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,
 mcp__podium__<tool>…
 --settings '{"permissions":{"deny":["Read(//{app_data_dir}/mcp/**)"]}}'`
 plus its own short read-only identity (`--append-system-prompt`; the whole
-answer goes in the final message, since only the turn's last prose block is
+answer goes in the final message, since only the turn's closing `result` text is
 read), spawned the way the assistant is (login shell, `--cd` in WSL mode,
 `spawn_gated`, `hide_console_window`, stderr dropped). It is passed **no
 Podium `--mcp-config`** and runs in an empty directory of its own,
@@ -173,7 +173,10 @@ last looked" holds within a run; a session that died is respawned with
 never comes up, whether the turn's write or read failed, or it hung before
 saying anything and timed out) and killed on
 shutdown. Each sweep is one turn read straight off its stdout (no output
-task, no events, no transcript): the turn's last prose block is the result.
+task, no events, no transcript): the `result` event's text is the answer (an empty one, or a turn cut off at
+the turn limit, is quiet; the last prose block is only the fallback for a
+normal end without `result` text). The hand-off words the notice from the
+sources enabled *then*, and `shutdown()` stops the sweep before the assistant.
 **One sweep at a time** (`SweepManager::begin`, a busy flag held by
 `SweepRun` until the hand-off is done): the watcher runs it on its own task
 (weak orchestrator ref) and a tick that finds one still running is skipped.

@@ -212,7 +212,7 @@ esac
 fn sweep_says(text: &str) -> String {
     format!(
         r#"printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}'
-      echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'"#
+      printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"{text}"}}'"#
     )
 }
 
@@ -2260,6 +2260,45 @@ async fn shutting_down_during_a_sweep_kills_it_and_forwards_nothing() {
         );
     }
     assert!(orch.assistant_transcript().is_empty());
+}
+
+#[tokio::test]
+async fn a_finding_handed_over_after_shutdown_starts_no_assistant_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &sweep_fake(&sweep_says("NOTHING_TO_REPORT")),
+    ));
+    orch.shutdown().await;
+
+    // A sweep that finished in the window around shutdown.
+    orch.assistant_poll("[Podium] The routine check of Slack found: \"x\".".to_string())
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!dir.path().join("stdin.jsonl").exists());
+    assert!(orch.assistant_transcript().is_empty());
+}
+
+#[tokio::test]
+async fn a_sweep_turn_ending_on_narration_reaches_nobody() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The last prose block is narration before a tool call; the turn closes
+    // with an empty result.
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &sweep_fake(
+            r#"printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check Slack"},{"type":"tool_use","name":"slack"}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"result":""}'"#,
+        ),
+    ));
+    slack_every_tick(&orch);
+    podium_core::proactivity::spawn(&orch, fast_polling());
+
+    recorded_lines(dir.path(), "sweep-stdin.jsonl", 2).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!dir.path().join("stdin.jsonl").exists());
+    assert!(orch.assistant_transcript().is_empty());
+    orch.shutdown().await;
 }
 
 #[tokio::test]

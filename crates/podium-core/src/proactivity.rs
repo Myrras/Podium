@@ -139,6 +139,18 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     });
 }
 
+/// What the assistant is told of a finished sweep, worded for `polling` (the
+/// sources enabled when it is handed over); `None` for a quiet one.
+fn sweep_notice(polling: AssistantPolling, outcome: SweepOutcome) -> Option<String> {
+    match outcome {
+        SweepOutcome::Quiet => None,
+        SweepOutcome::Finding(found) => Some(crate::sweep::finding_text(polling, &found)),
+        // A check that keeps failing looks exactly like a quiet one, so it is
+        // raised once (the sweep session counts the streak).
+        SweepOutcome::NotWorking(reason) => Some(crate::sweep::not_working_text(polling, reason)),
+    }
+}
+
 struct Watcher {
     /// For the external sweep's own task, which outlives a tick.
     weak: Weak<Orchestrator>,
@@ -189,22 +201,19 @@ impl Watcher {
         tokio::spawn(async move {
             let outcome = sweep.run(&poll_prompt(polling)).await;
             let not_working = matches!(outcome, SweepOutcome::NotWorking(_));
-            let text = match outcome {
-                SweepOutcome::Quiet => None,
-                SweepOutcome::Finding(found) => Some(crate::sweep::finding_text(polling, &found)),
-                // A check that keeps failing looks exactly like a quiet one,
-                // so it is raised once (the sweep session counts the streak).
-                SweepOutcome::NotWorking(reason) => {
-                    Some(crate::sweep::not_working_text(polling, reason))
-                }
-            };
             let mut delivered = false;
-            if let (Some(text), Some(orchestrator)) = (text, weak.upgrade()) {
-                // The settings may have changed while the sweep ran.
+            if let Some(orchestrator) = weak.upgrade() {
+                // The settings may have changed while the sweep ran: the
+                // notice is worded from what is on *now*, so it never names
+                // a source the user has since switched off (a finding that
+                // came from that source cannot be told apart, and is worded
+                // the same).
                 let polling_now = orchestrator.assistant_polling();
                 if orchestrator.assistant_proactivity() && polling_now.is_active() {
-                    orchestrator.assistant_poll(text).await;
-                    delivered = true;
+                    if let Some(text) = sweep_notice(polling_now, outcome) {
+                        orchestrator.assistant_poll(text).await;
+                        delivered = true;
+                    }
                 }
             }
             // The streak counts its notice as told when it is returned: a
@@ -600,6 +609,35 @@ fn days(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sweep_notice_names_only_the_sources_enabled_when_it_is_handed_over() {
+        let both = AssistantPolling {
+            interval_minutes: 10,
+            slack: true,
+            teams: true,
+        };
+        let slack_only = AssistantPolling {
+            teams: false,
+            ..both
+        };
+        let finding = || SweepOutcome::Finding("Ada asks for the Q3 numbers".to_string());
+        let text = sweep_notice(slack_only, finding()).expect("a finding");
+        assert!(text.contains("routine check of Slack found"), "{text}");
+        assert!(!text.contains("Teams"), "{text}");
+        assert_eq!(
+            sweep_notice(both, finding()).as_deref(),
+            Some(crate::sweep::finding_text(both, "Ada asks for the Q3 numbers").as_str())
+        );
+        let down = sweep_notice(slack_only, SweepOutcome::NotWorking("it took too long"))
+            .expect("a notice");
+        assert!(
+            down.contains("routine check of Slack is not working"),
+            "{down}"
+        );
+        assert!(!down.contains("Slack and Microsoft Teams"), "{down}");
+        assert_eq!(sweep_notice(both, SweepOutcome::Quiet), None);
+    }
 
     #[test]
     fn durations_read_as_prose() {

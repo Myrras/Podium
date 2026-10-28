@@ -57,8 +57,8 @@ pub const SWEEP_MODEL: &str = "haiku";
 /// too — nobody is there to answer it — the web tools, which an injected
 /// message could use to carry data out, and every local file reader, which
 /// it has no use for.
-const SWEEP_DISALLOWED_CLI_TOOLS: &str = "Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,\
-     AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS";
+const SWEEP_DISALLOWED_CLI_TOOLS: &str = "Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task,\
+     SendMessage,AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS";
 
 /// The user's own `podium mcp-bridge` MCP server is user-scope, so the sweep
 /// loads it (no `--strict-mcp-config`, or Slack/Teams would be hidden too) and
@@ -269,6 +269,44 @@ fn sweep_command(config: &SweepConfig, resume: Option<&str>) -> CoreResult<Strin
     ))
 }
 
+/// What a stream-json `result` line says about the turn's end.
+struct ResultEvent {
+    /// Its `result` text: the closing message, when the CLI sent one.
+    text: Option<String>,
+    /// The turn ended normally (`subtype` `success`) rather than at the turn
+    /// limit or in an error.
+    success: bool,
+}
+
+/// `line` as a `result` event, if it is one.
+fn result_event(line: &str) -> Option<ResultEvent> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("type").and_then(|t| t.as_str()) != Some("result") {
+        return None;
+    }
+    Some(ResultEvent {
+        text: value
+            .get("result")
+            .and_then(|r| r.as_str())
+            .map(str::to_string),
+        success: value.get("subtype").and_then(|s| s.as_str()) == Some("success"),
+    })
+}
+
+/// The turn's closing text: the `result` event's, even when empty (a turn
+/// that ended after tool use with nothing to say is quiet). Only a normal end
+/// that carried no `result` text falls back to the last prose block; a turn
+/// cut off (turn limit) never yields its last narration as a finding.
+fn closing_text(closing: Option<ResultEvent>, last_text: Option<String>) -> Option<String> {
+    match closing {
+        Some(ResultEvent {
+            text: Some(text), ..
+        }) => Some(text),
+        Some(ResultEvent { success: false, .. }) => None,
+        _ => last_text,
+    }
+}
+
 /// The finding in one turn's reply, if any: the last prose block, unless the
 /// turn failed, said nothing, or said [`NOTHING_TO_REPORT`] on a line of its
 /// own.
@@ -475,10 +513,16 @@ impl SweepManager {
             tracing::debug!("could not write the routine check: {e}");
             return Err(());
         }
-        // Only the turn's last prose block counts (the identity asks for the
-        // whole answer there).
+        // The answer is the `result` event's text — the turn's closing
+        // message — not the last prose block seen: a turn that ends on a tool
+        // call or at the turn limit has narration ("Let me check Slack") as
+        // its last block, which is no finding.
         let mut last_text = None;
+        let mut closing = None;
         while let Ok(Some(line)) = session.lines.next_line().await {
+            if let Some(result) = result_event(&line) {
+                closing = Some(result);
+            }
             for event in parse_stream_line(&line) {
                 match event {
                     AssistantEvent::Started { session_id } => {
@@ -491,7 +535,7 @@ impl SweepManager {
                             tracing::debug!("the routine check's turn ended in an error");
                             return Ok(Turn::Errored);
                         }
-                        return Ok(Turn::Done(finding(last_text, None)));
+                        return Ok(Turn::Done(finding(closing_text(closing, last_text), None)));
                     }
                     _ => {}
                 }
@@ -595,8 +639,8 @@ mod tests {
         );
         assert!(
             line.contains(
-                "--disallowedTools Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,\
-                 AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,mcp__podium__"
+                "--disallowedTools Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task,\
+                 SendMessage,AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,mcp__podium__"
             ),
             "{line}"
         );
@@ -803,6 +847,66 @@ exec sleep 30"#,
         assert_eq!(
             manager.session_id.lock().unwrap().as_deref(),
             Some("new-session")
+        );
+        manager.shutdown().await;
+    }
+
+    /// The sweep is refused at least what a lookup sub-agent is (file edits,
+    /// shell, messaging, the CLI's own subagents), plus its own extras.
+    #[test]
+    fn the_sweep_denies_every_cli_tool_a_lookup_does() {
+        let denied: Vec<&str> = SWEEP_DISALLOWED_CLI_TOOLS.split(',').collect();
+        for tool in crate::subagent::LOOKUP_DISALLOWED_CLI_TOOLS {
+            assert!(denied.contains(tool), "{tool} is not denied to the sweep");
+        }
+    }
+
+    #[test]
+    fn the_closing_text_is_the_result_not_the_last_narration() {
+        let narration = Some("Let me check Slack".to_string());
+        let result = |line: &str| result_event(line);
+        // The result text wins over the last prose block.
+        let done = result(
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Ada asks for the Q3 numbers"}"#,
+        );
+        assert_eq!(
+            closing_text(done, narration.clone()).as_deref(),
+            Some("Ada asks for the Q3 numbers")
+        );
+        // A turn that ended after tool use with an empty result is quiet.
+        let empty = result(r#"{"type":"result","subtype":"success","is_error":false,"result":""}"#);
+        assert_eq!(finding(closing_text(empty, narration.clone()), None), None);
+        // Cut off at the turn limit: the narration is not a finding.
+        let cut = result(r#"{"type":"result","subtype":"error_max_turns","is_error":false}"#);
+        assert_eq!(finding(closing_text(cut, narration.clone()), None), None);
+        // A normal end without result text falls back to the last block.
+        let bare = result(r#"{"type":"result","subtype":"success","is_error":false}"#);
+        assert_eq!(closing_text(bare, narration.clone()), narration);
+        // Other lines are not result events.
+        assert!(result(r#"{"type":"assistant","message":{"content":[]}}"#).is_none());
+        assert!(result("not json").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_that_ends_on_narration_is_quiet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = manager_running(
+            dir.path(),
+            r#"echo '{"type":"system","subtype":"init","session_id":"s"}'
+read -r _line
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check Slack"},{"type":"tool_use","name":"slack"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
+read -r _line
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check Slack"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Ada needs the Q3 numbers"}'"#,
+            Duration::from_secs(5),
+        );
+        let run = manager.begin().expect("free slot");
+        assert_eq!(run.run("check").await, SweepOutcome::Quiet);
+        assert_eq!(
+            run.run("check").await,
+            SweepOutcome::Finding("Ada needs the Q3 numbers".to_string())
         );
         manager.shutdown().await;
     }
