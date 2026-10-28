@@ -1,0 +1,22 @@
+# Opt-in Windows + WSL tests (`just test-integration`): they need a real WSL
+# distro. Off the per-PR path: nightly and on demand.
+name: Integration tests
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    uses: RobbieMinderhoud/ci-workflows/.github/workflows/integration.yml@v1
+    with:
+      runner: windows-latest
+      setup-wsl: true
+      wsl-distro: Ubuntu-24.04
+      wsl-packages: git procps
+      env: |
+        PODIUM_TEST_WSL_DISTRO=Ubuntu-24.04

@@ -9,9 +9,8 @@ IPC adapter. `src/` is the React app (presentation only).
 ```
 podium/
 ├─ Cargo.toml                  # [workspace]; [workspace.package] version is the source of truth
-├─ justfile                    # dev/build/check/test/lint/format/version recipes
-├─ scripts/sync-version.sh     # propagates the version to tauri.conf.json + package.json
-├─ scripts/{next-version,changelog}.sh  # CI release helpers (+ *.test.sh)
+├─ justfile                    # dev/build/check/test-core/test-integration/format/version recipes; imports shared common.just
+├─ .github/workflows/          # thin callers of RobbieMinderhoud/ci-workflows@v1 (ci, pr-checks, build, integration)
 ├─ crates/podium-core/src/
 │  ├─ orchestrator.rs          # Orchestrator — THE public entry point (all mutation goes through it)
 │  ├─ project.rs               # project open/reload, cwd resolution (traversal-guarded)
