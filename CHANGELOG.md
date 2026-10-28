@@ -10,6 +10,13 @@ when it merges.
 
 ## [Unreleased]
 
+### Changed
+
+- **CI now uses the shared workflows from ci-workflows.** Checks, release and
+  installer builds are unchanged for contributors; Rust checks run on Linux,
+  Windows runs on `main` and on PRs labelled `windows`, and a nightly WSL
+  integration run is added.
+
 ## [3.2.2] - 2026-10-28
 
 ### Changed

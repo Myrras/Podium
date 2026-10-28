@@ -1,0 +1,21 @@
+# Every PR needs a CHANGELOG entry under `## [Unreleased]` and exactly one of
+# the labels `patch`, `minor` or `major` (the version bump on merge). Separate
+# from ci.yml so that (un)labelling a PR doesn't re-run the full build.
+name: PR checks
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-checks:
+    uses: RobbieMinderhoud/ci-workflows/.github/workflows/pr-checks.yml@v1
+    # with:
+    #   ci-ref: v1
