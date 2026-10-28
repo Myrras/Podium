@@ -1872,7 +1872,10 @@ mod tests {
         // caller key), in the CLI's absolute-path rule spelling.
         assert_eq!(
             lookup["permissions"]["deny"],
-            serde_json::json!([format!("Read(/{}/**)", dir.path().display())])
+            serde_json::json!([format!(
+                "Read({}/**)",
+                absolute_path_rule(&dir.path().display().to_string())
+            )])
         );
         // A lookup runs without prompts, so the one-time warning is skipped.
         assert_eq!(lookup["skipDangerousModePermissionPrompt"], true);
