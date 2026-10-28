@@ -126,25 +126,101 @@ question nobody asked it. It is classified **destructive**, so
 ## External sweep
 
 Alongside the event-driven lane runs a slow one: the **external sweep**, every
-`poll_interval_minutes` (default 10; `0` is off), asking the assistant to
-check the enabled sources for anything needing the user. Slack and Teams need
-no integration — the assistant already inherits the user's own user-scope MCP
-servers — so this is `poll_prompt` wording plus a timer. It is skipped
-entirely with both sources off or proactivity off.
+`poll_interval_minutes` (default 10; `0` is off), checking the enabled
+sources for anything needing the user. It runs **on Haiku in a session of
+its own** (`sweep.rs`, `SweepManager`), never in the assistant's: a second
+long-lived headless child, `exec claude -p --input-format stream-json
+--output-format stream-json --verbose --model haiku` (`SWEEP_MODEL`)
+`--setting-sources user --permission-mode bypassPermissions
+--disallowedTools Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task,
+SendMessage,AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,
+mcp__podium__<tool>…
+--settings '{"permissions":{"deny":["Read(//{app_data_dir}/mcp/**)"]}}'`
+plus its own short read-only identity (`--append-system-prompt`; the whole
+answer goes in the final message, since only the turn's closing `result` text is
+read), spawned the way the assistant is (login shell, `--cd` in WSL mode,
+`spawn_gated`, `hide_console_window`, stderr dropped). It is passed **no
+Podium `--mcp-config`** and runs in an empty directory of its own,
+`{app_data_dir}/sweep-workspace` (created when missing; `set_launch` derives
+it and the denied `mcp` dir from the assistant's cwd, the app data dir).
+The sweep runs in its own cwd (`sweep-workspace` under the app data dir), so
+Slack/Teams MCP servers must be user-scope; a local-scope server added from the
+app-data dir is invisible to it. Such a sweep has no Slack/Teams tools and still
+answers normally: it stays silent (`NOTHING_TO_REPORT`) or reports "no access"
+as a finding. It is not a failure, so the not-working notice never appears (the
+streak counts only spawn failures, a session ending mid-turn, timeouts and
+`is_error` results). The identity prompt asks it to name an unreachable source
+in one line instead of staying silent. Slack and Teams need no integration: the session inherits the user's own
+user-scope MCP servers (`--strict-mcp-config` deliberately not passed, or
+they would be hidden), so this is `poll_prompt` wording plus a timer. That
+also loads the user's own `podium mcp-bridge` server (the agents' route:
+spawn/stop/remove agents, ungated), whose input here is untrusted
+Slack/Teams text — so the whole `podium` server is denied: the
+server-level rule `mcp__podium` (the CLI's form for every tool of a server;
+not run against a real CLI here) and, as a second layer generated from the
+router like a lookup's, `mcp__podium__<tool>` for each tool. A bridge
+registered under another name is not covered. The sweep reads only through
+its Slack/Teams MCP servers, so every local file reader (`Read`, `Grep`,
+`Glob`, `LS`) is denied too, with `WebFetch`/`WebSearch` so an injected
+message cannot carry data out; the `--settings` deny of `Read` on the MCP
+config dir (token files, caller keys) stays as a second layer, and
+`--setting-sources user` keeps project and local settings and `CLAUDE.md`
+files out. The open surface is the user's own other MCP servers: **like a
+lookup sub-agent, the sweep can still call them (Slack send, Teams
+post, …) without a prompt, and Podium cannot enforce its read-only wording
+on those; Haiku reading untrusted messages is also more injectable than the
+main assistant was.** Binary and cwd follow `configure_assistant`;
+`configure_sweep` (`SweepConfig`) also sets the turn timeout. It is spawned
+lazily on the first sweep and **kept alive between sweeps**, so "since you
+last looked" holds within a run; a session that died is respawned with
+`--resume <its session id>` (in memory only; dropped when a resumed spawn
+never comes up, whether the turn's write or read failed, or it hung before
+saying anything and timed out) and killed on
+shutdown. Each sweep is one turn read straight off its stdout (no output
+task, no events, no transcript): the `result` event's text is the answer (an empty one, or a turn cut off at
+the turn limit, is quiet; the last prose block is only the fallback for a
+normal end without `result` text). The hand-off words the notice from the
+sources enabled *then*, and `shutdown()` stops the sweep before the assistant.
+**One sweep at a time** (`SweepManager::begin`, a busy flag held by
+`SweepRun` until the hand-off is done): the watcher runs it on its own task
+(weak orchestrator ref) and a tick that finds one still running is skipped.
+A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the child; the
+next sweep respawns it. Shutdown wakes a running turn at once (`Notify`),
+kills the child and counts as neither a finding nor a failure. Failures are
+logged at debug/warn without content.
 
-It is delivered as `PendingKind::Poll`: unlike a proposal-outcome `Notice` it
+**A broken check must not look like a quiet one.** A spawn failure, a
+session that ends under the turn, a timeout or a turn the CLI ended with an
+error counts as a failed sweep (`FailureStreak`). After
+`FAILURES_BEFORE_NOTICE` (3) in a row the sweep returns
+`SweepOutcome::NotWorking(reason)` once, and the watcher hands the assistant
+`sweep::not_working_text` through the same `assistant_poll` path as a
+finding (a Podium-owned reason string, never CLI output); further failures
+are quiet until a sweep works again and fails three more times.
+
+A reply carrying `NOTHING_TO_REPORT` on a line of its own
+(`assistant::says_nothing_to_report`, the same matcher as below), an empty
+one, an error or a timeout reaches **nobody**: the assistant gets no turn,
+the panel no row or event. A real finding is handed to the assistant as
+`[Podium] The routine check of <sources> found: <findings via quote_line,
+capped at 4000 chars>. Tell the user what needs them, following your
+Responses rules.` (`sweep::finding_text`), via `Orchestrator::assistant_poll`
+→ `AssistantManager::poll` — re-checking the proactivity switch and the
+poll settings first, since they may have changed during the sweep. With
+both sources off or proactivity off no sweep runs at all. That turn is
+delivered as `PendingKind::Poll`: unlike a proposal-outcome `Notice` it
 leaves the same `Notice` row a nudge does (`record_before_write`, stored as a
-`nudge` row), so the panel folds the sweep and its actions into one faint
-"Podium check" line rather than mixing them with the user's own. The old
-concern, a row every 10 minutes piling up, is gone because the panel folds
-consecutive Podium rows into a single line. Unlike nudges, polls are not
-merged or deduped in the queue.
+`nudge` row), so the panel folds the turn and its actions into one faint
+"Podium check" line rather than mixing them with the user's own. Unlike
+nudges, polls are not merged or deduped in the queue.
 
 ## The silence contract
 
 **The silence contract**: a sweep that found nothing must say nothing. The
-prompt instructs the assistant to answer with exactly `NOTHING_TO_REPORT`, and
-a `Message` carrying that sentinel **on a line of its own** — anywhere in the
+prompt instructs the sweep session to answer with exactly `NOTHING_TO_REPORT`,
+and the sweep drops such a reply before the assistant sees anything. The
+assistant's own stream applies the same rule to any nudge's answer: a `Message`
+carrying that sentinel **on a line of its own** — anywhere in the
 reply — is dropped before it is recorded or published: no chat row, no
 transcript row.
 
@@ -213,6 +289,23 @@ setting. It asks for open work across all projects *prioritised with a
 reason*, and to ask the user rather than guess when the to-dos and agents do
 not settle the order. There is deliberately no once-a-day lock — pressing it
 is explicit, so refusing would only annoy.
+
+## Turning the assistant off
+
+`enabled` in the same `assistant` block (default on;
+`Orchestrator::set_assistant_enabled`, IPC `assistant_enabled_get/set`). Off:
+the session is killed deliberately (no `exited`), proposals and their
+Responses items are dropped, the queue is dropped with its undelivered
+messages reported via `queueNotice`, and all sub-agents are stopped quietly.
+From then on `assistant_send`, `assistant_day_start` and
+`assistant_response_reply` fail with `CoreError::AssistantDisabled`
+(`assistantDisabled`), nudges and the external sweep are dropped per call
+(`assistant_nudge` / `assistant_poll` and the manager's `deliver_own`), and
+`report_to_assistant` / `spawn_subagent` over MCP answer plain text ("the
+assistant is turned off; nothing was delivered"), so no session is ever
+spawned. Transcript, memory and the Responses list stay on disk. Turning it on
+spawns nothing until the next send or nudge. The manager mirrors the setting
+in an atomic, preset when the settings path is set, so startup honours it too.
 
 ## Settings
 

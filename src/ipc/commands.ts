@@ -759,6 +759,16 @@ export function assistantAutonomySet(
   return invoke("assistant_autonomy_set", { mode });
 }
 
+/** Whether the assistant is switched on. */
+export function assistantEnabledGet(): Promise<boolean> {
+  return invoke("assistant_enabled_get");
+}
+
+/** Switch the assistant on or off; returns what was stored. */
+export function assistantEnabledSet(enabled: boolean): Promise<boolean> {
+  return invoke("assistant_enabled_set", { enabled });
+}
+
 /** Whether Podium may nudge the assistant unprompted. */
 export function assistantProactivityGet(): Promise<boolean> {
   return invoke("assistant_proactivity_get");

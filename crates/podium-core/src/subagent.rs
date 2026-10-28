@@ -39,7 +39,7 @@ pub const MAX_RUNNING_SUBAGENTS: usize = 4;
 /// The CLI tools a lookup sub-agent may never run: the assistant's own list
 /// (no shell, no file edits), plus `SendMessage` and the CLI's own subagents.
 /// Its Podium tools are denied separately, see [`lookup_disallowed_tools`].
-const LOOKUP_DISALLOWED_CLI_TOOLS: &[&str] = &[
+pub(crate) const LOOKUP_DISALLOWED_CLI_TOOLS: &[&str] = &[
     "Bash",
     "Edit",
     "MultiEdit",

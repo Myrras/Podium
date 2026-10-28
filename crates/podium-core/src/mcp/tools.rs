@@ -31,6 +31,10 @@ use crate::subagent::SubagentKind;
 /// Longest argument blob shown on a proposal card.
 const MAX_SUMMARY_CHARS: usize = 300;
 
+/// The plain answer to `report_to_assistant` / `spawn_subagent` while the
+/// assistant is turned off: not an error, there is just nobody to tell.
+const ASSISTANT_OFF: &str = "the assistant is turned off; nothing was delivered";
+
 /// Default number of trailing lines returned by `get_process_output`.
 const DEFAULT_OUTPUT_LINES: usize = 100;
 /// Hard cap on requested lines, to bound tool-result size.
@@ -622,6 +626,9 @@ impl PodiumTools {
         &self,
         Parameters(p): Parameters<SpawnSubagentParams>,
     ) -> Result<CallToolResult, McpError> {
+        if !self.orchestrator.assistant_enabled() {
+            return Ok(text_result(ASSISTANT_OFF.to_string()));
+        }
         let spawned = self
             .orchestrator
             .spawn_subagent_with(p.kind, &p.task, p.name, p.args, p.lean.unwrap_or(true))
@@ -1051,6 +1058,9 @@ impl PodiumTools {
                 "summary must not be blank".to_string(),
                 None,
             ));
+        }
+        if !self.orchestrator.assistant_enabled() {
+            return Ok(text_result(ASSISTANT_OFF.to_string()));
         }
         // One of the assistant's sub-agents handing back its result: that
         // ends it (see `Orchestrator::report_subagent_result`).

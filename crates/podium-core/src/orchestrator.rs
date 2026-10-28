@@ -38,6 +38,7 @@ use crate::subagent::{
     SubagentBook, SubagentConfig, SubagentInfo, SubagentKind, SubagentPhase, SubagentRecord,
     SubagentSpawned,
 };
+use crate::sweep::{SweepConfig, SweepManager, SweepRun};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
 
@@ -341,6 +342,12 @@ pub struct Orchestrator {
     /// holds the Responses list ([`Self::responses`]). Shared with the
     /// sub-agent machinery's own tasks, which nudge it (see [`Hub`]).
     assistant: Arc<AssistantManager>,
+    /// Serialises [`Self::set_assistant_enabled`]: the stored setting and the
+    /// manager's flag are two writes, and two toggles interleaving them could
+    /// leave the setting on while the flag is off (sends refused until restart).
+    assistant_toggle: tokio::sync::Mutex<()>,
+    /// The external sweep's own Haiku session ([`crate::sweep`]).
+    sweep: Arc<SweepManager>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -364,6 +371,8 @@ impl Orchestrator {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             assistant: Arc::new(AssistantManager::new(events.clone())),
+            assistant_toggle: tokio::sync::Mutex::new(()),
+            sweep: Arc::new(SweepManager::new()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -436,9 +445,25 @@ impl Orchestrator {
     /// Point the assistant at its CLI binary, working directory and the dir
     /// holding its transcript + memory. Until this is called it uses the
     /// `claude` on `PATH`, Podium's own cwd, and keeps the conversation in
-    /// memory only.
+    /// memory only. The external sweep's session ([`crate::sweep`]) runs the
+    /// same binary in the same directory.
     pub fn configure_assistant(&self, config: AssistantConfig) {
+        self.sweep
+            .set_launch(config.command.clone(), config.cwd.clone());
         self.assistant.configure(config);
+    }
+
+    /// Point the external sweep's session at a binary / cwd and set its turn
+    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
+    /// the binary and cwd, so call this after it.
+    pub fn configure_sweep(&self, config: SweepConfig) {
+        self.sweep.configure(config);
+    }
+
+    /// Claim the one external-sweep slot; `None` while a sweep still runs
+    /// (that tick is skipped) or after shutdown. See [`crate::sweep`].
+    pub fn begin_external_sweep(&self) -> Option<SweepRun> {
+        self.sweep.begin()
     }
 
     /// Send a chat turn to the personal assistant, spawning its session on
@@ -461,6 +486,9 @@ impl Orchestrator {
         text: &str,
         attachments: Vec<Attachment>,
     ) -> CoreResult<bool> {
+        if !self.assistant_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.send(text, attachments, mcp).await
     }
@@ -578,6 +606,35 @@ impl Orchestrator {
         Ok(stored)
     }
 
+    /// Whether the personal assistant is turned on (Settings → Assistant).
+    pub fn assistant_enabled(&self) -> bool {
+        self.agent_settings.get().assistant.enabled
+    }
+
+    /// Turn the assistant on or off; returns what was stored. Off: the
+    /// session is killed quietly, proposals and the queue are dropped (the
+    /// undelivered messages reported), the sub-agents are stopped quietly,
+    /// and nothing starts a session again until it is turned back on and the
+    /// next send or nudge comes. Transcript, memory and Responses stay.
+    pub async fn set_assistant_enabled(&self, enabled: bool) -> CoreResult<bool> {
+        // Held for the whole save + manager update: the last toggle wins in both.
+        let _toggle = self.assistant_toggle.lock().await;
+        let stored = self
+            .agent_settings
+            .set_assistant_enabled(enabled)?
+            .assistant
+            .enabled;
+        if stored {
+            self.assistant.preset_enabled(true);
+        } else {
+            self.stop_all_subagents();
+            self.assistant.disable().await;
+            // Again once the session is gone, for a spawn that raced it.
+            self.stop_all_subagents();
+        }
+        Ok(stored)
+    }
+
     /// Whether Podium may nudge the assistant unprompted (Settings →
     /// Assistant). Off silences [`crate::proactivity`] entirely.
     pub fn assistant_proactivity(&self) -> bool {
@@ -598,15 +655,22 @@ impl Orchestrator {
     /// about a finished agent when it finishes rather than whenever they next
     /// happen to type.
     pub async fn assistant_nudge(&self, text: String) {
+        if !self.assistant_enabled() {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.nudge(text, mcp).await;
     }
 
-    /// Ask the assistant to sweep the user's external sources. Like a nudge
-    /// it starts the session if there is none, but it stays out of the chat:
-    /// only an answer worth having is ever shown (see
-    /// [`crate::assistant::poll_prompt`]).
+    /// Hand the assistant what the external sweep found (the sweep itself
+    /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
+    /// session if there is none, and goes in as a `Poll` turn.
     pub async fn assistant_poll(&self, text: String) {
+        // A sweep that finished as the app quits must not start a session
+        // after the assistant was stopped; nor while the assistant is off.
+        if !self.assistant_enabled() || self.inner.lock().expect(LOCK_POISONED).shutting_down {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.poll(text, mcp).await;
     }
@@ -1359,6 +1423,9 @@ impl Orchestrator {
     /// puts it back to try again. Returns delivered-or-queued, as
     /// [`assistant_send`](Self::assistant_send).
     pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
+        if !self.assistant_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         if text.trim().is_empty() {
             return Err(CoreError::InvalidInput(
                 "reply must not be blank".to_string(),
@@ -1389,6 +1456,7 @@ impl Orchestrator {
         // The assistant's first session must already match the stored mode.
         self.assistant
             .preset_send_message_blocked(self.assistant_autonomy() == AutonomyMode::ProposeAll);
+        self.assistant.preset_enabled(self.assistant_enabled());
     }
 
     /// Point the remembered-sessions store at its backing file (app data
@@ -3774,6 +3842,10 @@ impl Orchestrator {
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
+        // The sweep first: one that finishes while the assistant is already
+        // gone would hand it a finding and start a new assistant child that
+        // nothing kills.
+        self.sweep.shutdown().await;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions().await;

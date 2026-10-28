@@ -261,6 +261,10 @@ they did.
   sub-agents never stop on Claude Code's folder-trust question. Only if it
   cannot (a WSL backend, no Claude Code config yet) does the first one ask:
   open it from the list and answer "Yes, I trust this folder" once.
+- **Power switch** — the power button in the title bar (next to the assistant
+  button) turns the assistant off: no session, no nudges, no desktop
+  notifications, and its running sub-agents are stopped. The panel then shows
+  "The assistant is off" with a *Turn on* button; the choice is remembered.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
@@ -268,10 +272,13 @@ they did.
   looks stuck (silent for 5 minutes, escalating once after 10 with a
   suggested answer, then silent until you type into that agent), and on a
   6-hourly sweep for to-dos open longer than a week.
-- **External sweep** — every 10 minutes by default, it checks the sources you
-  enabled (Slack, Teams — through your *own* MCP servers) and stays silent
-  when there is nothing to report. Its actions show as one faint "Podium
-  check" line in the log.
+- **External sweep** — every 10 minutes by default, the sources you enabled
+  (Slack, Teams — through your *own* MCP servers) are checked by a separate
+  Haiku session told to only read, not by the assistant itself (Podium
+  cannot enforce that on your own MCP servers). The assistant only
+  gets a turn when that check found something that needs you; a quiet check
+  costs no assistant turn and leaves nothing in the chat. A found item shows
+  as one faint "Podium check" line in the log.
 - **Responses** — the assistant files a short *Needs you* or *FYI* item in a
   collapsible list pinned above the chat (agent, project, to-do, age), and
   only for things you actually need: an agent blocked on a question only you

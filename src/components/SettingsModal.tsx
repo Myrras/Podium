@@ -370,8 +370,8 @@ function AssistantTab() {
         <h3 className={styles.sectionLabel}>External polling</h3>
         <small className={styles.rowHelp}>
           Periodically sweeps the sources below and only speaks up when
-          something needs your action. Each sweep is a real conversation turn,
-          so a shorter interval costs proportionally more.
+          something needs your action. Each sweep runs in a separate Haiku
+          session, so a shorter interval costs proportionally more.
         </small>
         <div className={styles.field}>
           <label htmlFor="polling-interval">
@@ -392,7 +392,7 @@ function AssistantTab() {
         </div>
         <SettingToggle
           label="Slack"
-          help="Lets a sweep read your Slack messages into the assistant's conversation to judge what needs action."
+          help="Lets a separate, cheaper routine check read your Slack messages and tell the assistant only when something needs you."
           value={polling.slack}
           onChange={(enabled) =>
             void setPolling({ ...polling, slack: enabled })
@@ -400,7 +400,7 @@ function AssistantTab() {
         />
         <SettingToggle
           label="Teams"
-          help="Lets a sweep read your Teams messages into the assistant's conversation to judge what needs action."
+          help="Lets a separate, cheaper routine check read your Teams messages and tell the assistant only when something needs you."
           value={polling.teams}
           onChange={(enabled) =>
             void setPolling({ ...polling, teams: enabled })
