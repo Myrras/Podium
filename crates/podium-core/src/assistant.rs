@@ -1568,6 +1568,48 @@ impl AssistantManager {
         self.deliver_own(PendingKind::Nudge, text, mcp, false).await;
     }
 
+    /// Several nudges at once (a triaged batch) as **one** turn. Texts a
+    /// nudge already waiting in the queue says, and repeats within `texts`,
+    /// are dropped first, like [`nudge`](Self::nudge)'s own dedupe. The rest
+    /// is joined with a blank line into a single nudge, delivered when the
+    /// session is idle and queued as that one item while a turn runs. A batch
+    /// already queued as a joined item is not matched by a later identical
+    /// single nudge.
+    pub async fn nudge_all(&self, texts: Vec<String>, mcp: Option<McpConnectInfo>) {
+        let mut state = self.state.lock().await;
+        let mut fresh: Vec<String> = Vec::new();
+        for text in texts {
+            let waiting = state
+                .pending
+                .iter()
+                .any(|p| p.kind == PendingKind::Nudge && p.text == text);
+            if !waiting && !fresh.contains(&text) {
+                fresh.push(text);
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
+            tracing::warn!("could not start the assistant for a nudge: {e}");
+        }
+        // One item for the whole batch, busy or idle: queued separately, a
+        // batch bigger than `MAX_PENDING` would push the user's own waiting
+        // messages off the front of the queue. (The check above is what
+        // dedupes against the queue: the joined text never matches a single
+        // waiting nudge.)
+        let joined = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Nudge,
+            text: fresh.join("\n\n"),
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+            lasting: false,
+        };
+        let _ = deliver_or_queue(&mut state, joined, &self.store, &self.events).await;
+    }
+
     /// A [`nudge`](Self::nudge) that outlives the conversation: how one of
     /// the assistant's own sub-agents ended. The user may reset the
     /// conversation and keep its sub-agents running; their results are then

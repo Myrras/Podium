@@ -24,6 +24,7 @@ podium/
 │  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
 │  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
 │  ├─ sweep.rs                 # the external sweep's own headless Haiku session (Slack/Teams routine check); only findings reach the assistant
+│  ├─ triage.rs                # proactivity nudges: 60 s debounce + one-shot tool-less Haiku FORWARD/DROP triage before an assistant turn
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)

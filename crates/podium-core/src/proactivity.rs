@@ -17,7 +17,9 @@
 //! announced: they are looking at it. Its blocked question is recorded as
 //! already raised, so leaving the agent does not fire a nudge at once.
 //!
-//! Each of those becomes one `[Podium] …` turn handed to the assistant, which
+//! Each of those becomes a `[Podium] …` nudge. Nudges are gathered for a
+//! debounce window and triaged on Haiku first ([`crate::triage`]): only the
+//! ones worth a turn reach the assistant, together as one turn, which it
 //! answers in the chat panel like it would to the user. A nudge **starts the
 //! session** when there is none ([`crate::assistant::AssistantManager::nudge`]):
 //! the fast lane is event-driven, so a quiet day costs nothing, but when
@@ -52,6 +54,7 @@ use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessInfo, ProcessKind, ProcessStatus};
 use crate::sweep::SweepOutcome;
+use crate::triage::TriageItem;
 
 /// How often one blocked question is raised with the assistant: the first
 /// nudge plus one escalation. Raising it every `escalate_after` for as long as
@@ -82,6 +85,10 @@ pub struct ProactivityConfig {
     /// the app; milliseconds in tests, so the slow lane can be exercised
     /// without waiting for it.
     pub poll_unit: Duration,
+    /// How long nudges are held and gathered before the batch is triaged
+    /// ([`crate::triage`]) — the debounce window, counted from the first
+    /// nudge of a batch.
+    pub triage_window: Duration,
 }
 
 impl Default for ProactivityConfig {
@@ -98,6 +105,7 @@ impl Default for ProactivityConfig {
             lingering_after: Duration::from_secs(7 * 24 * 60 * 60),
             sweep_every: Duration::from_secs(6 * 60 * 60),
             poll_unit: Duration::from_secs(60),
+            triage_window: Duration::from_secs(60),
         }
     }
 }
@@ -178,12 +186,32 @@ struct Waiting {
 }
 
 impl Watcher {
-    /// Hand `text` to the assistant, unless the user switched proactivity off.
-    async fn nudge(&self, orchestrator: &Orchestrator, text: String) {
+    /// Put `text` in the triage buffer, unless the user switched proactivity
+    /// off. It does not reach the assistant directly: it waits out the
+    /// debounce window with whatever else comes up, and the batch is triaged
+    /// on Haiku ([`crate::triage`]) so only what is worth a turn is
+    /// delivered — as one turn. Use [`nudge_with`](Self::nudge_with) when the
+    /// nudge is about a specific agent.
+    fn nudge(&self, orchestrator: &Orchestrator, text: String) {
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                ..TriageItem::default()
+            },
+        );
+    }
+
+    /// Like [`nudge`](Self::nudge), but takes the whole [`TriageItem`]; it
+    /// carries the agent it is about, so the triage's worker can
+    /// re-check at delivery that it is still worth saying.
+    fn nudge_with(&self, orchestrator: &Orchestrator, item: TriageItem) {
         if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
-        orchestrator.assistant_nudge(text).await;
+        if orchestrator.push_triage(item) {
+            crate::triage::start_worker(self.weak.clone(), self.config.triage_window);
+        }
     }
 
     /// Run the external sweep in its own session, unless the user switched
@@ -264,21 +292,46 @@ impl Watcher {
         if process.viewing {
             return;
         }
+        // Nothing below is worth building when no nudge will be sent.
+        if !orchestrator.assistant_proactivity() {
+            return;
+        }
         let where_ = describe(orchestrator, &process);
-        let text = if crashed {
-            format!(
+        if crashed {
+            let text = format!(
                 "[Podium] The agent {where_} crashed ({}). Look at its last output and tell \
                  the user what went wrong and what it leaves unfinished.",
                 exit_code(code)
-            )
-        } else {
-            format!(
-                "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
-                 last output — and tell the user in a line or two.",
-                exit_code(code)
-            )
-        };
-        self.nudge(orchestrator, text).await;
+            );
+            self.nudge_with(
+                orchestrator,
+                TriageItem {
+                    text,
+                    process_id: Some(process_id),
+                    ..TriageItem::default()
+                },
+            );
+            return;
+        }
+        let text = format!(
+            "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
+             last output — and tell the user in a line or two.",
+            exit_code(code)
+        );
+        // Whether a finished agent left anything for the user is in its last
+        // output; the triage has no tools to read it. It is read when the
+        // batch is taken (`wants_output`, see `triage::run_worker`), not here:
+        // the exit can arrive before the PTY reader has stored the final
+        // chunk, and waiting for it would stall this loop once per agent.
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                process_id: Some(process_id),
+                wants_output: true,
+                ..TriageItem::default()
+            },
+        );
     }
 
     async fn on_tick(&mut self, orchestrator: &Orchestrator) {
@@ -380,7 +433,7 @@ impl Watcher {
             };
             if process.subagent.is_some() {
                 let text = self.stuck_subagent_text(&process, nudges, prompting);
-                self.nudge(orchestrator, text).await;
+                self.nudge_stuck(orchestrator, text, process.id);
                 continue;
             }
             let where_ = describe(orchestrator, &process);
@@ -407,8 +460,22 @@ impl Watcher {
                     minutes(self.config.idle_after),
                 )
             };
-            self.nudge(orchestrator, text).await;
+            self.nudge_stuck(orchestrator, text, process.id);
         }
+    }
+
+    /// A stuck-agent nudge: only worth saying while the agent still runs and
+    /// the user is not looking at it, which the triage re-checks at delivery.
+    fn nudge_stuck(&self, orchestrator: &Orchestrator, text: String, id: ProcessId) {
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                process_id: Some(id),
+                needs_running: true,
+                ..TriageItem::default()
+            },
+        );
     }
 
     /// What to say about one of the assistant's own sub-agents that looks
@@ -545,8 +612,7 @@ impl Watcher {
                 lingering.len(),
                 days(self.config.lingering_after),
             ),
-        )
-        .await;
+        );
     }
 }
 
@@ -560,6 +626,29 @@ fn live_agents(orchestrator: &Orchestrator) -> HashSet<ProcessId> {
         .filter(|p| matches!(p.status, ProcessStatus::Running { .. }))
         .map(|p| p.id)
         .collect()
+}
+
+/// How much of an agent's output is read for the triage, and how many of its
+/// last lines are kept.
+const LAST_OUTPUT_BYTES: usize = 8 * 1024;
+const LAST_OUTPUT_LINES: usize = 30;
+
+/// The ANSI-stripped last lines an agent printed, for the triage to judge a
+/// "finished" nudge by. `None` when it printed nothing (or is gone).
+pub(crate) async fn last_output(orchestrator: &Orchestrator, id: ProcessId) -> Option<String> {
+    let raw = orchestrator.tail_text(id, LAST_OUTPUT_BYTES).await.ok()?;
+    let plain = String::from_utf8_lossy(&strip_ansi_escapes::strip(raw.as_bytes())).into_owned();
+    let lines: Vec<&str> = plain
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(LAST_OUTPUT_LINES);
+    let tail = lines[start..].join("\n");
+    // Bounded by characters too: a few very long lines (a TUI repaint) would
+    // otherwise ride along whole, and it is the end that matters.
+    (!tail.is_empty())
+        .then(|| crate::triage::truncate_tail(&tail, crate::triage::MAX_CONTEXT_CHARS))
 }
 
 /// The agent process with this id, or `None` when it is gone or not an agent.
