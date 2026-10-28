@@ -72,6 +72,9 @@ when it merges.
   of `CLAUDE.md` into `docs/architecture/`, split into headed sections, tables
   and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
   file.
+- **Every pull request needs a release label.** A PR must carry exactly one of
+  `patch`, `minor` or `major`, or the `Release label` check fails; the label
+  sets the version bump when the PR merges.
 
 ### Fixed
 
