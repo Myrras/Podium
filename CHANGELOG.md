@@ -12,6 +12,12 @@ when it merges.
 
 ### Added
 
+- **Archived to-dos over MCP.** `list_todos` takes `include_archived: true`
+  to return the archive after the active list (each marked `archived`), and
+  to read an archived to-do in full by its id. Without it nothing changes. A
+  script that syncs to-dos from an issue tracker can now see a to-do that was
+  archived, by hand or automatically the day after it was done, instead of
+  creating it again.
 - **Exited agents clean themselves up.** An agent that finished, crashed or
   was stopped is now removed from the list 5 minutes after it exited, in
   every project, together with its terminal and its to-do links. Restarting
@@ -64,6 +70,10 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+- **Contributor docs are easier to navigate.** The architecture notes moved out
+  of `CLAUDE.md` into `docs/architecture/`, split into headed sections, tables
+  and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
+  file.
 
 ## [3.1.1] - 2026-10-09
 
