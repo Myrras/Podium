@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Changed
+
+- The CI workflow is now named "Test, Lint & Release".
+
 ## [3.1.2] - 2026-10-28
 
 ### Added
@@ -77,7 +81,6 @@ when it merges.
 - **Every pull request needs a release label.** A PR must carry exactly one of
   `patch`, `minor` or `major`, or the `Release label` check fails; the label
   sets the version bump when the PR merges.
-- The CI workflow is now named "Test, Lint & Release".
 
 ### Fixed
 
