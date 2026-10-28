@@ -10,15 +10,17 @@ when it merges.
 
 ## [Unreleased]
 
-### Added
-
-- **Assistant on/off.** The assistant can be turned off and on from the window.
-
 ### Changed
 
 - Podium's own notes about agents and old to-dos are gathered for a minute
   and checked on Haiku first; a routine finish or a repeat no longer costs
   an assistant turn, and the rest arrive together as one turn.
+
+## [3.2.0] - 2026-10-28
+
+### Added
+
+- **Assistant on/off.** The assistant can be turned off and on from the window.
 
 ## [3.1.3] - 2026-10-28
 
