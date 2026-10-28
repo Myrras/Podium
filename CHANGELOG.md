@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-10-28
+
 ### Changed
 
 - The CI workflow is now named "Test, Lint & Release".
