@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.2.3] - 2026-10-28
+
 ### Changed
 
 - **CI now uses the shared workflows from ci-workflows.** Checks, release and
