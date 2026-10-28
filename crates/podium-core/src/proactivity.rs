@@ -88,10 +88,6 @@ pub struct ProactivityConfig {
     /// ([`crate::triage`]) — the debounce window, counted from the first
     /// nudge of a batch.
     pub triage_window: Duration,
-    /// Grace after an exit before the agent's last output is read: the PTY
-    /// reader and the wait thread are independent, so the final chunk may
-    /// not be in the scrollback yet.
-    pub output_settle: Duration,
 }
 
 impl Default for ProactivityConfig {
@@ -109,7 +105,6 @@ impl Default for ProactivityConfig {
             sweep_every: Duration::from_secs(6 * 60 * 60),
             poll_unit: Duration::from_secs(60),
             triage_window: Duration::from_secs(60),
-            output_settle: Duration::from_millis(200),
         }
     }
 }
@@ -271,8 +266,7 @@ impl Watcher {
         if process.viewing {
             return;
         }
-        // Nothing below is worth building (it reads and strips the agent's
-        // output) when no nudge will be sent.
+        // Nothing below is worth building when no nudge will be sent.
         if !orchestrator.assistant_proactivity() {
             return;
         }
@@ -299,19 +293,17 @@ impl Watcher {
             exit_code(code)
         );
         // Whether a finished agent left anything for the user is in its last
-        // output; the triage has no tools to read it, so it rides along.
-        // The exit can arrive before the reader thread has stored the final
-        // chunk (a PR URL, a question); wait briefly so triage sees it. No
-        // lock is held here.
-        tokio::time::sleep(self.config.output_settle).await;
-        let context = last_output(orchestrator, process_id).await;
+        // output; the triage has no tools to read it. It is read when the
+        // batch is taken (`wants_output`, see `triage::run_worker`), not here:
+        // the exit can arrive before the PTY reader has stored the final
+        // chunk, and waiting for it would stall this loop once per agent.
         self.nudge_with(
             orchestrator,
             TriageItem {
                 text,
-                context,
                 process_id: Some(process_id),
-                needs_running: false,
+                wants_output: true,
+                ..TriageItem::default()
             },
         );
     }
@@ -443,9 +435,9 @@ impl Watcher {
             orchestrator,
             TriageItem {
                 text,
-                context: None,
                 process_id: Some(id),
                 needs_running: true,
+                ..TriageItem::default()
             },
         );
     }
@@ -607,7 +599,7 @@ const LAST_OUTPUT_LINES: usize = 30;
 
 /// The ANSI-stripped last lines an agent printed, for the triage to judge a
 /// "finished" nudge by. `None` when it printed nothing (or is gone).
-async fn last_output(orchestrator: &Orchestrator, id: ProcessId) -> Option<String> {
+pub(crate) async fn last_output(orchestrator: &Orchestrator, id: ProcessId) -> Option<String> {
     let raw = orchestrator.tail_text(id, LAST_OUTPUT_BYTES).await.ok()?;
     let plain = String::from_utf8_lossy(&strip_ansi_escapes::strip(raw.as_bytes())).into_owned();
     let lines: Vec<&str> = plain

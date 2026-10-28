@@ -14,7 +14,9 @@
 //! ones are logged at debug, counted only, never their text. A
 //! forwarded nudge is checked once more at delivery: the batch waited at least
 //! a window, so an agent the user has since opened, or a stuck one that has
-//! since gone, is no longer news.
+//! since gone, is no longer news. A finished agent's last output, which the
+//! triage judges it by, is read when the batch is taken (`wants_output`), not
+//! when the agent exits.
 //!
 //! The triage session is a one-shot headless child per batch (`claude -p
 //! --input-format stream-json --output-format stream-json`), spawned through
@@ -28,7 +30,7 @@
 //! which would need an API key.
 //!
 //! **A nudge is never lost to triage.** A reply that does not parse
-//! ([`parse_verdicts`]), a turn error, a timeout or a failed spawn forwards the
+//! ([`try_parse_verdicts`], logged at warn), a turn error, a timeout or a failed spawn forwards the
 //! whole batch. Only the watcher's own nudges come here: an agent's
 //! `report_to_assistant`, sub-agent results and questions and proposal
 //! outcomes still go to the assistant directly. One triage runs at a time
@@ -130,6 +132,11 @@ pub struct TriageItem {
     /// What the triage may judge it by beyond the text — an agent's last
     /// output for a "finished" nudge. Never forwarded to the assistant.
     pub context: Option<String>,
+    /// Fill `context` with the agent's last output when the batch is taken
+    /// ([`run_worker`]), not at push time: by then the batch has waited a
+    /// window, so the PTY reader has long stored the final chunk, and nothing
+    /// is read for a batch that is dropped (proactivity off).
+    pub wants_output: bool,
     /// The agent the nudge is about, if any (a to-do sweep has none). Checked
     /// again at delivery.
     pub process_id: Option<ProcessId>,
@@ -204,35 +211,32 @@ pub fn triage_prompt(batch: &[TriageItem], recent: &[String]) -> String {
 /// once. Anything else forwards the whole batch, so a confused reply can
 /// never drop a nudge.
 pub fn parse_verdicts(reply: &str, count: usize) -> Vec<Verdict> {
-    let all_forward = vec![Verdict::Forward; count];
+    try_parse_verdicts(reply, count).unwrap_or_else(|| vec![Verdict::Forward; count])
+}
+
+/// [`parse_verdicts`] without the fallback: `None` when the reply does not
+/// parse, so the caller can tell a confused reply from a real all-forward one
+/// (and log it).
+pub fn try_parse_verdicts(reply: &str, count: usize) -> Option<Vec<Verdict>> {
     let mut verdicts: Vec<Option<Verdict>> = vec![None; count];
     for line in reply.lines() {
         let line = line.trim();
         if line.is_empty() || line.chars().all(|c| c == '`') {
             continue;
         }
-        let Some((number, verdict)) = line.split_once(':') else {
-            return all_forward;
-        };
-        let Ok(number) = number.trim().parse::<usize>() else {
-            return all_forward;
-        };
+        let (number, verdict) = line.split_once(':')?;
+        let number = number.trim().parse::<usize>().ok()?;
         let verdict = match verdict.trim() {
             v if v.eq_ignore_ascii_case("FORWARD") => Verdict::Forward,
             v if v.eq_ignore_ascii_case("DROP") => Verdict::Drop,
-            _ => return all_forward,
+            _ => return None,
         };
-        let Some(slot) = number.checked_sub(1).and_then(|i| verdicts.get_mut(i)) else {
-            return all_forward;
-        };
+        let slot = number.checked_sub(1).and_then(|i| verdicts.get_mut(i))?;
         if slot.replace(verdict).is_some() {
-            return all_forward;
+            return None;
         }
     }
-    verdicts
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .unwrap_or(all_forward)
+    verdicts.into_iter().collect()
 }
 
 /// The last `max` characters of `text` (never mid-`char`), with `…` marking
@@ -389,7 +393,14 @@ impl TriageManager {
         let outcome = tokio::select! {
             reply = tokio::time::timeout(config.timeout, converse(&mut child, &prompt)) => {
                 match reply {
-                    Ok(Ok(reply)) => Some(parse_verdicts(&reply, batch.len())),
+                    Ok(Ok(reply)) => Some(try_parse_verdicts(&reply, batch.len()).unwrap_or_else(|| {
+                        // Never the reply itself: it is model output.
+                        tracing::warn!(
+                            batch = batch.len(),
+                            "the nudge triage gave an unparseable reply; forwarding the whole batch"
+                        );
+                        all_forward
+                    })),
                     Ok(Err(reason)) => {
                         // Loud: a CLI that rejects a flag would otherwise make
                         // the triage a silent no-op.
@@ -547,10 +558,20 @@ pub(crate) async fn run_worker(weak: Weak<Orchestrator>, window: Duration) {
         // Switched off while the nudges waited: the batch is dropped and the
         // worker retires, so the next push starts a fresh one at once.
         let proactive = weak.upgrade().is_some_and(|o| o.assistant_proactivity());
-        let Some(batch) = triage.take_batch(proactive) else {
+        let Some(mut batch) = triage.take_batch(proactive) else {
             guard.disarm();
             return;
         };
+        // The finished agents' last output, read now rather than at exit: the
+        // batch waited a window, so the final chunk is stored. Off the
+        // watcher's loop, and only for a batch that will be classified.
+        if let Some(orchestrator) = weak.upgrade() {
+            for item in batch.iter_mut().filter(|i| i.wants_output) {
+                if let Some(id) = item.process_id {
+                    item.context = crate::proactivity::last_output(&orchestrator, id).await;
+                }
+            }
+        }
         let Some(verdicts) = triage.classify(&batch).await else {
             continue;
         };
@@ -675,6 +696,28 @@ mod tests {
         ] {
             assert_eq!(parse_verdicts(reply, 2), all, "{reply:?}");
         }
+    }
+
+    #[test]
+    fn an_unparseable_reply_is_detected_not_silently_forwarded() {
+        for reply in [
+            "",
+            "hi there",
+            "1: DROP",
+            "1: DROP\n1: DROP",
+            "1: MAYBE\n2: DROP",
+        ] {
+            assert_eq!(try_parse_verdicts(reply, 2), None, "{reply:?}");
+        }
+        assert_eq!(
+            try_parse_verdicts("1: FORWARD\n2: DROP", 2),
+            Some(vec![Verdict::Forward, Verdict::Drop])
+        );
+        // A real all-forward answer is not a parse failure.
+        assert_eq!(
+            try_parse_verdicts("1: FORWARD", 1),
+            Some(vec![Verdict::Forward])
+        );
     }
 
     #[test]

@@ -330,7 +330,6 @@ fn fast_proactivity() -> ProactivityConfig {
         // The triage child is the same fake CLI, whose canned reply does not
         // parse: everything is forwarded, as before triage existed.
         triage_window: Duration::from_millis(20),
-        output_settle: Duration::from_millis(20),
     }
 }
 
