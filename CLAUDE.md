@@ -1382,7 +1382,7 @@ atomically, before the async `podium.yml` load.
   which needs an API key), and its own short system prompt instead of Claude
   Code's default. Measured on CLI 2.1.311: ~0.6k input tokens to start,
   against ~5.3k without `--safe-mode`. One turn is written, stdin closed,
-  and the last prose block read until the `result`; the child is killed
+  and every prose block of the turn read (newline-joined) until the `result`; the child is killed
   after. The prompt (`triage_prompt`) lists the last 10 forwarded nudges as
   context (memory only, so a repeat can be told from news) and the batch
   numbered from 1, all through `quote_line`; a "finished" nudge also carries
@@ -1400,11 +1400,16 @@ atomically, before the async `podium.yml` load.
   aside, a bare code fence ignored; every number exactly once) — **anything
   else, a turn error, a timeout (`TRIAGE_TIMEOUT`, 90 s, `TriageConfig`) or a
   failed spawn forwards the whole batch**, so a nudge is never lost to
-  triage. Each forwarded nudge goes to the assistant on its own through
-  `Orchestrator::assistant_nudge` (the existing `deliver_or_queue` path, which
-  merges consecutive waiting nudges into one turn and skips one whose text is
-  already waiting); dropped ones are logged at debug as a count, never their
-  text. At delivery each is checked again (`is_stale`), since the batch waited
+  triage, and each such fallback is logged at `warn` (batch size and a
+  short reason, never output text) so a CLI that rejects a flag is not a
+  silent no-op; a full buffer evicting its oldest nudges is a `warn` too.
+  The forwarded nudges go to the assistant together through
+  `Orchestrator::assistant_nudge_all` (`AssistantManager::nudge_all`): texts
+  already waiting in the queue and repeats within the batch are dropped, the
+  rest is one nudge joined with a blank line when the assistant is idle (one
+  turn), or queued one by one while a turn runs (the queue then merges
+  consecutive nudges into one turn); dropped ones are logged at debug as a
+  count, never their text. At delivery each is checked again (`is_stale`), since the batch waited
   at least a window: a nudge about an agent the user is now viewing is dropped,
   and so is a stuck-agent one (`needs_running`) whose agent is gone or no
   longer running; a to-do sweep nudge has no `process_id` and is unaffected.

@@ -1516,6 +1516,50 @@ impl AssistantManager {
         self.deliver_own(PendingKind::Nudge, text, mcp, false).await;
     }
 
+    /// Several nudges at once (a triaged batch) as **one** turn. Texts a
+    /// nudge already waiting in the queue says, and repeats within `texts`,
+    /// are dropped first, like [`nudge`](Self::nudge)'s own dedupe. The rest
+    /// is joined with a blank line into a single nudge when the session is
+    /// idle; while a turn runs they are queued one by one, which the next
+    /// `TurnEnd` merges into one turn all the same.
+    pub async fn nudge_all(&self, texts: Vec<String>, mcp: Option<McpConnectInfo>) {
+        let mut state = self.state.lock().await;
+        let mut fresh: Vec<String> = Vec::new();
+        for text in texts {
+            let waiting = state
+                .pending
+                .iter()
+                .any(|p| p.kind == PendingKind::Nudge && p.text == text);
+            if !waiting && !fresh.contains(&text) {
+                fresh.push(text);
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
+            tracing::warn!("could not start the assistant for a nudge: {e}");
+        }
+        let item = |text: String| PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Nudge,
+            text,
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+            lasting: false,
+        };
+        if state.in_flight {
+            for text in fresh {
+                let _ = deliver_or_queue(&mut state, item(text), &self.store, &self.events).await;
+            }
+        } else {
+            // Idle: queuing them separately would send the first on its own.
+            let joined = item(fresh.join("\n\n"));
+            let _ = deliver_or_queue(&mut state, joined, &self.store, &self.events).await;
+        }
+    }
+
     /// A [`nudge`](Self::nudge) that outlives the conversation: how one of
     /// the assistant's own sub-agents ended. The user may reset the
     /// conversation and keep its sub-agents running; their results are then

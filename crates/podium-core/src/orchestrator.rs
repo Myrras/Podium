@@ -648,6 +648,13 @@ impl Orchestrator {
         self.assistant.nudge(text, mcp).await;
     }
 
+    /// [`assistant_nudge`](Self::assistant_nudge) for several texts at once:
+    /// one turn when the assistant is idle, texts already waiting skipped.
+    pub async fn assistant_nudge_all(&self, texts: Vec<String>) {
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.nudge_all(texts, mcp).await;
+    }
+
     /// Hand the assistant what the external sweep found (the sweep itself
     /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
     /// session if there is none, and goes in as a `Poll` turn.

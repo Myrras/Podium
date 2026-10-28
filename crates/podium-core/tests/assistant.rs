@@ -1819,6 +1819,58 @@ async fn nudges_that_piled_up_are_delivered_as_one_turn_ahead_of_the_user() {
     orch.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_batch_of_nudges_on_an_idle_assistant_is_one_turn_minus_repeats() {
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_nudge_all(vec![
+        "[Podium] an agent finished".to_string(),
+        "[Podium] another agent crashed".to_string(),
+        "[Podium] an agent finished".to_string(),
+    ])
+    .await;
+    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+
+    let lines = recorded_stdin(dir.path(), 1).await;
+    let text = lines[0]
+        .pointer("/message/content/0/text")
+        .and_then(|t| t.as_str())
+        .expect("text block");
+    assert_eq!(
+        text,
+        "[Podium] an agent finished\n\n[Podium] another agent crashed"
+    );
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_batch_skips_a_nudge_that_is_already_waiting() {
+    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    orch.assistant_send("first").await.expect("send first");
+    orch.assistant_nudge("[Podium] an agent finished".to_string())
+        .await;
+    orch.assistant_nudge_all(vec![
+        "[Podium] an agent finished".to_string(),
+        "[Podium] another agent crashed".to_string(),
+    ])
+    .await;
+    for _ in 0..2 {
+        collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
+    }
+
+    let lines = recorded_stdin(dir.path(), 2).await;
+    let merged = lines[1]
+        .pointer("/message/content/0/text")
+        .and_then(|t| t.as_str())
+        .expect("text block");
+    assert_eq!(merged.matches("an agent finished").count(), 1, "{merged}");
+    assert!(merged.contains("another agent crashed"), "{merged}");
+    orch.shutdown().await;
+}
+
 // -- attachments -------------------------------------------------------
 
 #[tokio::test]
@@ -3019,15 +3071,44 @@ async fn a_failed_triage_forwards_every_nudge() {
     run_agent_to_exit(&orch, &mut rx, project, "api-tests", "exit 3", dir.path()).await;
 
     recorded_lines(dir.path(), "triage-stdin.jsonl", 1).await;
-    // Each forwarded nudge goes to the assistant on its own, in order (the
-    // queue merges consecutive waiting ones into a turn and dedupes by text).
-    let turns = recorded_lines(dir.path(), "stdin.jsonl", 2).await;
-    let first = turn_text(&turns[0]);
-    assert!(first.contains("fix-login"), "{first}");
-    assert!(first.contains("finished"), "{first}");
-    let second = turn_text(&turns[1]);
-    assert!(second.contains("api-tests"), "{second}");
-    assert!(second.contains("crashed"), "{second}");
+    // Both forwarded nudges reach the idle assistant as ONE turn.
+    let turns = recorded_lines(dir.path(), "stdin.jsonl", 1).await;
+    let text = turn_text(&turns[0]);
+    assert!(text.contains("fix-login"), "{text}");
+    assert!(text.contains("finished"), "{text}");
+    assert!(text.contains("api-tests"), "{text}");
+    assert!(text.contains("crashed"), "{text}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let all = std::fs::read_to_string(dir.path().join("stdin.jsonl")).expect("turns");
+    assert_eq!(all.lines().count(), 1, "{all}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_triage_reply_split_over_two_message_blocks_still_parses() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The verdict lines arrive in two blocks; the last block alone would not
+    // parse and would forward the whole batch.
+    let split = r#"echo '{"type":"system","subtype":"init","session_id":"triage-session"}'
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"1: DROP"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"2: FORWARD"}]}}'
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'"#;
+    let orch = Arc::new(setup_in(dir.path(), &triage_fake(split)));
+    let mut rx = orch.subscribe_events();
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(1500)));
+
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    run_agent_to_exit(&orch, &mut rx, project, "fix-login", "exit 0", dir.path()).await;
+    run_agent_to_exit(&orch, &mut rx, project, "api-tests", "exit 3", dir.path()).await;
+
+    // Parsed (not all-forward): only the second nudge arrives.
+    let turns = recorded_lines(dir.path(), "stdin.jsonl", 1).await;
+    let text = turn_text(&turns[0]);
+    assert!(text.contains("api-tests"), "{text}");
+    assert!(!text.contains("fix-login"), "{text}");
     orch.shutdown().await;
 }
 

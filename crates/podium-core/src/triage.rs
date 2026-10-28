@@ -7,10 +7,11 @@
 //! ([`run_worker`]) that waits out the debounce window
 //! ([`crate::proactivity::ProactivityConfig::triage_window`], 60 s), takes the
 //! whole batch and asks Haiku, once, which nudges are worth the assistant's
-//! turn. The forwarded ones go to the assistant one nudge each through the
-//! usual nudge path ([`crate::Orchestrator::assistant_nudge`], whose queue
-//! merges consecutive nudges into one turn and skips one already waiting);
-//! the dropped ones are logged at debug, counted only, never their text. A
+//! turn. The forwarded ones go to the assistant together
+//! ([`crate::Orchestrator::assistant_nudge_all`]): one turn when it is idle,
+//! with a text already waiting in its queue skipped (a busy assistant queues
+//! them, and its queue merges consecutive nudges into one turn); the dropped
+//! ones are logged at debug, counted only, never their text. A
 //! forwarded nudge is checked once more at delivery: the batch waited at least
 //! a window, so an agent the user has since opened, or a stuck one that has
 //! since gone, is no longer news.
@@ -306,6 +307,10 @@ impl TriageManager {
         if state.pending.len() > MAX_PENDING {
             let excess = state.pending.len() - MAX_PENDING;
             state.pending.drain(..excess);
+            tracing::warn!(
+                evicted = excess,
+                "nudge triage buffer full; dropped the oldest"
+            );
         }
         !std::mem::replace(&mut state.worker, true)
     }
@@ -374,20 +379,32 @@ impl TriageManager {
         let mut child = match spawn(&config) {
             Ok(child) => child,
             Err(e) => {
-                tracing::warn!("could not start the nudge triage; forwarding: {e}");
+                tracing::warn!(
+                    batch = batch.len(),
+                    "could not start the nudge triage; forwarding the whole batch: {e}"
+                );
                 return Some(all_forward);
             }
         };
         let outcome = tokio::select! {
             reply = tokio::time::timeout(config.timeout, converse(&mut child, &prompt)) => {
                 match reply {
-                    Ok(Some(reply)) => Some(parse_verdicts(&reply, batch.len())),
-                    Ok(None) => {
-                        tracing::debug!("the nudge triage gave no answer; forwarding");
+                    Ok(Ok(reply)) => Some(parse_verdicts(&reply, batch.len())),
+                    Ok(Err(reason)) => {
+                        // Loud: a CLI that rejects a flag would otherwise make
+                        // the triage a silent no-op.
+                        tracing::warn!(
+                            batch = batch.len(),
+                            reason,
+                            "the nudge triage gave no answer; forwarding the whole batch"
+                        );
                         Some(all_forward)
                     }
                     Err(_) => {
-                        tracing::warn!("the nudge triage timed out; forwarding");
+                        tracing::warn!(
+                            batch = batch.len(),
+                            "the nudge triage timed out; forwarding the whole batch"
+                        );
                         Some(all_forward)
                     }
                 }
@@ -401,11 +418,12 @@ impl TriageManager {
 }
 
 /// Write the one turn and close stdin, then read until its result. The
-/// turn's last prose block, or `None` when the turn failed or the child ended
-/// without one.
-async fn converse(child: &mut tokio::process::Child, prompt: &str) -> Option<String> {
-    let mut stdin = child.stdin.take()?;
-    let stdout = child.stdout.take()?;
+/// turn's prose blocks, newline-joined (a reply split over several blocks
+/// still parses), or `None` when the turn failed or the child ended without
+/// any. The error says why, for the log.
+async fn converse(child: &mut tokio::process::Child, prompt: &str) -> Result<String, &'static str> {
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
     let line = serde_json::json!({
         "type": "user",
         "message": { "role": "user", "content": [{ "type": "text", "text": prompt }] },
@@ -416,24 +434,30 @@ async fn converse(child: &mut tokio::process::Child, prompt: &str) -> Option<Str
     };
     if let Err(e) = written.await {
         tracing::debug!("could not write the nudge triage: {e}");
-        return None;
+        return Err("could not write the turn");
     }
     // EOF after the one turn: the CLI ends once it has answered.
     drop(stdin);
     let mut lines = BufReader::new(stdout).lines();
-    let mut last_text = None;
+    let mut blocks: Vec<String> = Vec::new();
     while let Ok(Some(line)) = lines.next_line().await {
         for event in parse_stream_line(&line) {
             match event {
-                AssistantEvent::Message { text } => last_text = Some(text),
+                AssistantEvent::Message { text } => blocks.push(text),
                 AssistantEvent::TurnEnd { error } => {
-                    return if error.is_some() { None } else { last_text };
+                    return if error.is_some() {
+                        Err("the turn failed")
+                    } else if blocks.is_empty() {
+                        Err("the reply was empty")
+                    } else {
+                        Ok(blocks.join("\n"))
+                    };
                 }
                 _ => {}
             }
         }
     }
-    None
+    Err("the child ended without a result")
 }
 
 fn spawn(config: &TriageConfig) -> CoreResult<tokio::process::Child> {
@@ -539,21 +563,25 @@ pub(crate) async fn run_worker(weak: Weak<Orchestrator>, window: Duration) {
         let Some(orchestrator) = weak.upgrade() else {
             return;
         };
-        // One nudge at a time, so the queue's own dedupe sees each text and
-        // merges the consecutive ones into one turn.
+        // Shut down or switched off meanwhile: nothing is delivered.
+        if triage.closed.load(Ordering::Relaxed) || !orchestrator.assistant_proactivity() {
+            continue;
+        }
+        // The survivors go in together: one turn, minus texts already waiting.
+        let mut forwarded = Vec::new();
         for (item, verdict) in batch.iter().zip(&verdicts) {
             if *verdict != Verdict::Forward {
                 continue;
-            }
-            if triage.closed.load(Ordering::Relaxed) || !orchestrator.assistant_proactivity() {
-                break;
             }
             // The batch waited a window or more: look again.
             if is_stale(&orchestrator, item) {
                 continue;
             }
             triage.remember(&item.text);
-            orchestrator.assistant_nudge(item.text.clone()).await;
+            forwarded.push(item.text.clone());
+        }
+        if !forwarded.is_empty() {
+            orchestrator.assistant_nudge_all(forwarded).await;
         }
     }
 }
