@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-10-28
+
 ### Added
 
 - **Archived to-dos over MCP.** `list_todos` takes `include_archived: true`
@@ -75,6 +77,17 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+- **Contributor docs are easier to navigate.** The architecture notes moved out
+  of `CLAUDE.md` into `docs/architecture/`, split into headed sections, tables
+  and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
+  file.
+- **Every pull request needs a release label.** A PR must carry exactly one of
+  `patch`, `minor` or `major`, or the `Release label` check fails; the label
+  sets the version bump when the PR merges.
+
+### Fixed
+
+- Fixed tests that failed on Windows (no change to the app).
 
 ## [3.1.1] - 2026-10-09
 
