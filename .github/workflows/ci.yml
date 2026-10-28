@@ -1,213 +1,49 @@
-# Test + lint pipeline: macOS and Windows, no Linux job. The podium-core PTY
-# tests need a real OS PTY (Unix pty or Windows ConPTY), and a Linux runner
-# would additionally need the webkit system deps just to compile src-tauri —
-# not worth adding for a desktop app that only ships on macOS and Windows.
-#
-# The Windows job's rustfmt/clippy cover the whole workspace, same as macOS,
-# so the `cfg(windows)` code in both podium-core and src-tauri gets linted.
-# Only the test run is scoped to `-p podium-core` (not `--workspace`, and no
-# frontend checks): the macOS job already runs the full workspace, so this
-# job's purpose is just to prove podium-core's `cfg(windows)` half compiles,
-# lints and passes. About 30 podium-core integration tests spawn Unix-only
-# commands (`sleep`, `printf`, POSIX shell syntax) that ConPTY has no
-# equivalent for; those are `#[cfg_attr(windows, ignore)]` with a comment
-# explaining why, and the macOS job still runs them.
-#
-# Releases: every push to main (a merged PR) is a release. The `release` job
-# turns CHANGELOG.md's `## [Unreleased]` section into the next version (patch,
-# or minor/major via a PR label), bumps the manifests, commits `Release vX.Y.Z`
-# to main, tags it, creates the GitHub Release and dispatches build.yml, which
-# attaches the installers. The `changelog` job makes every PR add that entry.
-#
-# The release push goes over SSH with a write-enabled deploy key (secret
-# RELEASE_DEPLOY_KEY): main's ruleset only lets admins and deploy keys bypass
-# its PR rule, and GitHub refuses the Actions app as a bypass actor on a
-# user-owned repo, so a GITHUB_TOKEN push is rejected with GH013. Unlike a
-# GITHUB_TOKEN push, a deploy-key push does trigger workflows; `[skip ci]` in
-# the release commit stops that from re-running CI and build.yml on main.
-name: "Test, Lint & Release"
+# Every push to main (a merged PR) runs CI, including Windows, and then
+# releases. Pull requests run Windows only with the `windows` label; adding the
+# label re-runs CI for the PR. Any other label (e.g. patch/minor/major) starts
+# a run whose `ci` job is skipped: it doesn't cancel the running CI and adds
+# no `ci / ci-ok` check.
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # Never cancel on main: a cancelled run would leave a merge without a version.
+  # Labels other than `windows` get their own group, so they never cancel the
+  # running CI. Adding `windows` shares the group: it replaces the running CI
+  # with one that includes Windows, so only one `ci / ci-ok` is in flight.
+  group: ci-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'windows' && format('-label-{0}', github.event.label.name) || '' }}
+  # PRs: a new push cancels the running check. main: a running run is never
+  # cancelled, but GitHub keeps only the newest pending run per group and
+  # cancels older pending ones. Their merges ship in the next release, which
+  # takes the highest release label over all PRs merged since the last tag.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
-  changelog:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Release script tests
-        run: |
-          bash scripts/next-version.test.sh
-          bash scripts/changelog.test.sh
-
-      - name: PR adds a CHANGELOG entry
-        run: |
-          if ! git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qx CHANGELOG.md \
-            || ! bash scripts/changelog.sh unreleased >/dev/null; then
-            echo "::error file=CHANGELOG.md::Add an entry for this change under '## [Unreleased]' in CHANGELOG.md (Keep a Changelog headings, user-facing voice). Merging to main releases it."
-            exit 1
-          fi
+  ci:
+    # Keep this condition: it is what stops an unrelated label from producing
+    # a skipped (= passing) `ci / ci-ok` check.
+    if: github.event.action != 'labeled' || github.event.label.name == 'windows'
+    uses: RobbieMinderhoud/ci-workflows/.github/workflows/tauri-ci.yml@v1
+    with:
+      windows-test-scope: -p podium-core
 
   release:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [ci, windows]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: release
-      cancel-in-progress: false
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: RobbieMinderhoud/ci-workflows/.github/workflows/release.yml@v1
     permissions:
       contents: write
       pull-requests: read
       actions: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      # Without the key, checkout falls back to GITHUB_TOKEN and the push dies
-      # on main's ruleset with an opaque GH013; fail here with the fix instead.
-      - name: Deploy key configured?
-        env:
-          HAS_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
-        run: |
-          if [ "$HAS_KEY" != "true" ]; then
-            echo "::error title=RELEASE_DEPLOY_KEY missing::The release push needs a deploy key. Run: ssh-keygen -t ed25519 -N '' -C podium-release -f podium-release; gh repo deploy-key add podium-release.pub --allow-write --title 'CI release'; gh secret set RELEASE_DEPLOY_KEY < podium-release; then delete both key files and re-run this job. main's ruleset must list DeployKey as a bypass actor."
-            exit 1
-          fi
-
-      # main, not the pushed sha: a queued second run must see the first run's
-      # release commit, or it would release the same version twice. The deploy
-      # key makes `git push` go over SSH (see the header comment).
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
-
-      # An empty Unreleased section means an earlier run already released this.
-      - name: Anything to release?
-        id: pending
-        run: |
-          if bash scripts/changelog.sh unreleased > "$RUNNER_TEMP/notes.md"; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Nothing under ## [Unreleased]; already released."
-          fi
-
-      - name: Determine version
-        if: steps.pending.outputs.release == 'true'
-        run: |
-          prev=$(git describe --tags --match 'v[0-9]*' --abbrev=0)
-          labels=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[0].labels[]?.name] | join(",")')
-          tag=$(bash scripts/next-version.sh "$prev" "$labels")
-          echo "$prev → $tag (labels: ${labels:-none})"
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
-
-      - name: Bump CHANGELOG, manifests and Cargo.lock
-        if: steps.pending.outputs.release == 'true'
-        run: |
-          bash scripts/changelog.sh release "$VERSION" "$(date -u +%F)"
-          bash scripts/sync-version.sh --set "$VERSION"
-          cargo update --workspace
-          bash scripts/sync-version.sh --check
-          git diff --stat
-
-      - name: Commit, tag and push
-        if: steps.pending.outputs.release == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          # [skip ci]: the deploy-key push would otherwise re-run ci.yml and
-          # build.yml's main trigger for a commit that only bumps the version.
-          git commit -am "Release $TAG [skip ci]"
-          git tag -a "$TAG" -m "Podium $TAG"
-          git push --atomic origin HEAD:main "$TAG"
-
-      - name: Create GitHub Release
-        if: steps.pending.outputs.release == 'true'
-        run: gh release create "$TAG" --title "Podium $TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
-
-      # The one and only installer build for a release: build.yml has no tag
-      # trigger, so it never depends on whether [skip ci] also suppresses the
-      # tag push. build.yml attaches the installers to the release.
-      - name: Build installers
-        if: steps.pending.outputs.release == 'true'
-        run: gh workflow run build.yml --ref "$TAG"
-
-  ci:
-    runs-on: macos-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      # `tauri::generate_context!` requires the frontendDist dir (../dist,
-      # gitignored) to exist when src-tauri compiles.
-      - name: Stub dist for src-tauri compilation
-        run: mkdir -p dist
-
-      - name: Rustfmt
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Rust tests
-        run: cargo test --workspace
-
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Lint
-        run: pnpm lint
-      - name: Frontend tests
-        run: pnpm test
-      - name: Frontend build
-        run: pnpm build
-
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-
-      # `tauri::generate_context!` requires the frontendDist dir (../dist,
-      # gitignored) to exist when src-tauri compiles — same stub as the macOS
-      # job's, run via bash so it's the same command on both runners.
-      - name: Stub dist for src-tauri compilation
-        shell: bash
-        run: mkdir -p dist
-
-      - name: Rustfmt
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Rust tests (podium-core)
-        run: cargo test -p podium-core
+    with:
+      title-prefix: Podium
+      require-deploy-key: true
+    secrets:
+      RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
