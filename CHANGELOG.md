@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.2.2] - 2026-10-28
+
 ### Changed
 
 - **Sub-agents start cheap.** Without a model picked by the assistant or in
