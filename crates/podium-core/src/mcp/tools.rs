@@ -29,11 +29,11 @@ use crate::responses::ResponseKind;
 use crate::subagent::SubagentKind;
 
 /// Longest argument blob shown on a proposal card.
+const MAX_SUMMARY_CHARS: usize = 300;
+
 /// The plain answer to `report_to_assistant` / `spawn_subagent` while the
 /// assistant is turned off: not an error, there is just nobody to tell.
 const ASSISTANT_OFF: &str = "the assistant is turned off; nothing was delivered";
-
-const MAX_SUMMARY_CHARS: usize = 300;
 
 /// Default number of trailing lines returned by `get_process_output`.
 const DEFAULT_OUTPUT_LINES: usize = 100;

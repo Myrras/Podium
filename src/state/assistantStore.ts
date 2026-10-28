@@ -150,9 +150,11 @@ export function resetSeenResponses(): void {
  * they have open (the backend does not file those; this covers the race).
  */
 function notifyNewResponses(items: ResponseItem[]): void {
-  if (!useAssistantStore.getState().enabled) return;
   const fresh = items.filter((i) => !seenResponseIds.has(i.id));
+  // Remembered even while off: items the backend restores on turning off
+  // are not news when the assistant comes back on.
   for (const i of items) seenResponseIds.add(i.id);
+  if (!useAssistantStore.getState().enabled) return;
   if (!responsesBaselined || fresh.length === 0 || isAssistantVisible()) return;
   const viewing = viewedAgentId();
   // The list is newest first, so is `fresh`.
@@ -551,7 +553,23 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const previous = get().enabled;
     set({ enabled });
     try {
-      set({ enabled: await assistantEnabledSet(enabled) });
+      const stored = await assistantEnabledSet(enabled);
+      set({ enabled: stored });
+      // Turning off kills the session without a turnEnd/exited event, and
+      // drops proposals and the queue backend-side: mirror that here so no
+      // spinner or Confirm button outlives them.
+      if (!stored) {
+        set((s) => ({
+          busy: false,
+          activity: null,
+          pending: [],
+          messages: s.messages.map((m) =>
+            m.proposal?.status === "pending"
+              ? { ...m, proposal: { ...m.proposal, status: "rejected" } }
+              : m,
+          ),
+        }));
+      }
     } catch (e) {
       set((s) => ({
         enabled: previous,

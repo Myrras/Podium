@@ -12,6 +12,7 @@ use podium_core::mcp::tools::{
     RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
     UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
+use podium_core::mcp::tools::{ReportToAssistantParams, SpawnSubagentParams};
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH, LOOKUP_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
@@ -19,9 +20,7 @@ use podium_core::{
     ProcessStatus, ProjectId, RestartCommands, RestartPolicy, SubagentConfig, SubagentKind,
     SubagentPhase, TodoId,
 };
-// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
-#[cfg(unix)]
-use podium_core::mcp::tools::ReportToAssistantParams;
+// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use this.
 #[cfg(unix)]
 use podium_core::TranscriptRole;
 use rmcp::handler::server::wrapper::Parameters;
@@ -1321,6 +1320,61 @@ async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
         }))
         .await
         .is_err());
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn report_and_spawn_subagent_say_the_assistant_is_off_and_do_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("Login bug agent".to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn agent");
+    orch.set_assistant_enabled(false).await.expect("off");
+
+    let report = tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: agent.to_string(),
+            summary: "Done.".to_string(),
+        }))
+        .await
+        .expect("report_to_assistant");
+    assert!(first_text(&report).contains("turned off"));
+    assert!(
+        orch.assistant_transcript().is_empty(),
+        "nothing may be delivered while off"
+    );
+
+    let spawned = tools
+        .spawn_subagent(Parameters(SpawnSubagentParams {
+            kind: SubagentKind::Lookup,
+            task: "look something up".to_string(),
+            name: None,
+            args: None,
+        }))
+        .await
+        .expect("spawn_subagent");
+    assert!(first_text(&spawned).contains("turned off"));
+    assert!(orch.list_subagents().is_empty(), "no sub-agent may start");
 
     orch.shutdown().await;
 }

@@ -100,3 +100,14 @@ impl From<CoreError> for IpcError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turned_off_assistant_maps_to_its_own_kind() {
+        let err = IpcError::from(CoreError::AssistantDisabled);
+        assert_eq!(err.kind, "assistantDisabled");
+    }
+}

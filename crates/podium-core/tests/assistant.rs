@@ -1294,6 +1294,25 @@ async fn a_pending_proposal_dies_with_its_project() {
 }
 
 #[tokio::test]
+async fn turning_the_assistant_off_drops_its_pending_proposals() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = setup_in(dir.path(), FAKE_CLAUDE);
+    orch.propose_assistant_action(
+        "set_todo_archived".to_string(),
+        "{}".to_string(),
+        None,
+        Box::new(|| Box::pin(async { Ok("archived".to_string()) })),
+    );
+    assert_eq!(orch.assistant_proposals().len(), 1);
+
+    orch.set_assistant_enabled(false).await.expect("off");
+
+    assert!(orch.assistant_proposals().is_empty());
+    assert!(orch.list_subagents().is_empty());
+    orch.shutdown().await;
+}
+
+#[tokio::test]
 async fn to_dos_left_open_are_swept_into_the_chat() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
