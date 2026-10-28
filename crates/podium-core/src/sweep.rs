@@ -53,10 +53,12 @@ use crate::error::CoreResult;
 pub const SWEEP_MODEL: &str = "haiku";
 
 /// Refused at the CLI regardless of permission mode: the sweep only reads
-/// messages. `AskUserQuestion` too — nobody is there to answer it — and the
-/// web tools, which an injected message could use to carry data out.
-const SWEEP_DISALLOWED_CLI_TOOLS: &str =
-    "Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,AskUserQuestion,WebFetch,WebSearch";
+/// messages, and only through its Slack/Teams MCP servers. `AskUserQuestion`
+/// too — nobody is there to answer it — the web tools, which an injected
+/// message could use to carry data out, and every local file reader, which
+/// it has no use for.
+const SWEEP_DISALLOWED_CLI_TOOLS: &str = "Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,\
+     AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS";
 
 /// The user's own `podium mcp-bridge` MCP server is user-scope, so the sweep
 /// loads it (no `--strict-mcp-config`, or Slack/Teams would be hidden too) and
@@ -229,9 +231,9 @@ fn sweep_command(config: &SweepConfig, resume: Option<&str>) -> CoreResult<Strin
     // Only the user's own settings: no project or local settings, hooks or
     // CLAUDE.md files, whatever the working directory holds.
     //
-    // The `--settings` deny keeps the file readers (Read, and with it Grep
-    // and Glob; the shell is denied) out of Podium's MCP config dir, which
-    // holds the bearer token and every caller key.
+    // The file readers are denied outright; this `--settings` deny is a
+    // second layer keeping them out of Podium's MCP config dir, which holds
+    // the bearer token and every caller key, should a reader ever be let back.
     let settings = config
         .mcp_dir
         .as_deref()
@@ -431,6 +433,13 @@ impl SweepManager {
                 tracing::warn!("routine check timed out; its session is restarted next time");
                 if let Some(mut hung) = slot.take() {
                     let _ = hung.child.kill().await;
+                    // A resumed spawn that hung without ever announcing
+                    // itself would otherwise time out forever on the same
+                    // id. One that did announce keeps it: the next sweep
+                    // resumes that conversation.
+                    if hung.resumed {
+                        *self.session_id.lock().expect("sweep id lock") = None;
+                    }
                 }
                 Attempt::Failed(FAIL_TIMEOUT)
             }
@@ -566,7 +575,7 @@ mod tests {
         assert!(
             line.contains(
                 "--disallowedTools Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,\
-                 AskUserQuestion,WebFetch,WebSearch,mcp__podium,mcp__podium__"
+                 AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,mcp__podium__"
             ),
             "{line}"
         );
@@ -666,6 +675,61 @@ mod tests {
         assert_eq!(*manager.session_id.lock().unwrap(), None);
         // A failure, but not yet three of them.
         assert_eq!(manager.streak.lock().unwrap().failures, 1);
+        manager.shutdown().await;
+    }
+
+    /// A manager whose "CLI" is `body`, a shell script run after the login
+    /// shell starts it, with a stored session id and `timeout` per turn.
+    #[cfg(unix)]
+    fn manager_running(dir: &std::path::Path, body: &str, timeout: Duration) -> Arc<SweepManager> {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("fake-claude");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).expect("write fake cli");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let manager = Arc::new(SweepManager::new());
+        manager.configure(SweepConfig {
+            command: script.to_string_lossy().into_owned(),
+            cwd: Some(dir.join("sweep-workspace")),
+            mcp_dir: None,
+            turn_timeout: timeout,
+        });
+        *manager.session_id.lock().unwrap() = Some("old-session".to_string());
+        manager
+    }
+
+    /// A resumed spawn that hangs without ever announcing itself times out
+    /// on the same id forever unless the id is dropped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_resumed_session_that_hangs_before_announcing_itself_drops_its_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = manager_running(dir.path(), "exec sleep 30", Duration::from_millis(500));
+        let run = manager.begin().expect("free slot");
+        assert_eq!(run.run("check").await, SweepOutcome::Quiet);
+        assert_eq!(*manager.session_id.lock().unwrap(), None);
+        manager.shutdown().await;
+    }
+
+    /// One that announced itself and then hung keeps its id: the next sweep
+    /// resumes that conversation.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_that_hangs_after_announcing_itself_keeps_its_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The timeout runs from the turn's start, shell start included: room
+        // for a slow one, since the init line must be read before it fires.
+        let manager = manager_running(
+            dir.path(),
+            r#"echo '{"type":"system","subtype":"init","session_id":"new-session"}'
+exec sleep 30"#,
+            Duration::from_secs(5),
+        );
+        let run = manager.begin().expect("free slot");
+        assert_eq!(run.run("check").await, SweepOutcome::Quiet);
+        assert_eq!(
+            manager.session_id.lock().unwrap().as_deref(),
+            Some("new-session")
+        );
         manager.shutdown().await;
     }
 

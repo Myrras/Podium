@@ -2058,6 +2058,10 @@ async fn the_sweep_runs_on_haiku_in_its_own_session_and_a_quiet_one_reaches_nobo
         "AskUserQuestion",
         "WebFetch",
         "WebSearch",
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
         // The user's own podium bridge, as a server and tool by tool.
         "mcp__podium",
         "mcp__podium__spawn_agent",
@@ -2165,9 +2169,10 @@ async fn a_hung_sweep_is_killed_and_resumed_by_the_next_one() {
         )),
     ));
     // The timeout runs from the turn's start, which includes the login shell
-    // starting the fake CLI and the init line (the resume id) arriving. Leave
-    // room for both under a loaded test run, or the second spawn is fresh.
-    orch.configure_sweep(sweep_config(dir.path(), Duration::from_secs(3)));
+    // starting the fake CLI, so on a slow runner it can fire before the CLI
+    // has said anything (and then there is no session id to resume): see the
+    // assertion below.
+    orch.configure_sweep(sweep_config(dir.path(), Duration::from_secs(2)));
     let mut rx = orch.subscribe_events();
     slack_every_tick(&orch);
     podium_core::proactivity::spawn(&orch, fast_polling());
@@ -2177,12 +2182,22 @@ async fn a_hung_sweep_is_killed_and_resumed_by_the_next_one() {
     let notice = next_notice(&mut rx).await;
     assert!(notice.contains("Grace in Teams"), "{notice}");
     let spawns = recorded_lines(dir.path(), "sweep-spawns.txt", 2).await;
-    assert_eq!(spawns[..2], ["-", "sweep-session"]);
     // Only one sweep at a time: the ticks during the hang were skipped, so
     // the hung session saw at most one turn (none when the timeout beat a
     // slow login shell to it).
     let turns = recorded_lines(dir.path(), "sweep-turns.txt", 1).await;
-    assert!(turns.iter().filter(|t| *t == "-").count() <= 1, "{turns:?}");
+    let hung_turns = turns.iter().filter(|t| *t == "-").count();
+    assert!(hung_turns <= 1, "{turns:?}");
+    // The fake says its session id before it reads a turn, so a hung session
+    // that saw its turn had announced itself well before the timeout, and the
+    // next spawn resumes it. One the timeout beat to the first word has no id
+    // to resume: the next spawn is fresh (and answers, by spawn count).
+    let expected = if hung_turns == 1 {
+        "sweep-session"
+    } else {
+        "-"
+    };
+    assert_eq!(spawns[..2], ["-", expected], "{turns:?}");
     orch.shutdown().await;
 }
 

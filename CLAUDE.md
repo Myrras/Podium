@@ -1393,7 +1393,8 @@ atomically, before the async `podium.yml` load.
   --output-format stream-json --verbose --model haiku` (`SWEEP_MODEL`)
   `--setting-sources user --permission-mode bypassPermissions
   --disallowedTools Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,
-  AskUserQuestion,WebFetch,WebSearch,mcp__podium,mcp__podium__<tool>…
+  AskUserQuestion,WebFetch,WebSearch,Read,Grep,Glob,LS,mcp__podium,
+  mcp__podium__<tool>…
   --settings '{"permissions":{"deny":["Read(//{app_data_dir}/mcp/**)"]}}'`
   plus its own short read-only identity (`--append-system-prompt`; the whole
   answer goes in the final message, since only the turn's last prose block is
@@ -1411,12 +1412,14 @@ atomically, before the async `podium.yml` load.
   server-level rule `mcp__podium` (the CLI's form for every tool of a server;
   not run against a real CLI here) and, as a second layer generated from the
   router like a lookup's, `mcp__podium__<tool>` for each tool. A bridge
-  registered under another name is not covered. The same `--settings` deny
-  keeps the file readers (`Read`, hence Grep/Glob) out of the MCP config dir
-  (token files, caller keys), `WebFetch`/`WebSearch` are refused so an injected
-  message cannot carry data out, and `--setting-sources user` keeps project
-  and local settings and `CLAUDE.md` files out. **Like a lookup sub-agent, the
-  sweep can still call the user's own other MCP servers (Slack send, Teams
+  registered under another name is not covered. The sweep reads only through
+  its Slack/Teams MCP servers, so every local file reader (`Read`, `Grep`,
+  `Glob`, `LS`) is denied too, with `WebFetch`/`WebSearch` so an injected
+  message cannot carry data out; the `--settings` deny of `Read` on the MCP
+  config dir (token files, caller keys) stays as a second layer, and
+  `--setting-sources user` keeps project and local settings and `CLAUDE.md`
+  files out. The open surface is the user's own other MCP servers: **like a
+  lookup sub-agent, the sweep can still call them (Slack send, Teams
   post, …) without a prompt, and Podium cannot enforce its read-only wording
   on those; Haiku reading untrusted messages is also more injectable than the
   main assistant was.** Binary and cwd follow `configure_assistant`;
@@ -1424,7 +1427,8 @@ atomically, before the async `podium.yml` load.
   lazily on the first sweep and **kept alive between sweeps**, so "since you
   last looked" holds within a run; a session that died is respawned with
   `--resume <its session id>` (in memory only; dropped when a resumed spawn
-  never comes up, whether the turn's write or read failed) and killed on
+  never comes up, whether the turn's write or read failed, or it hung before
+  saying anything and timed out) and killed on
   shutdown. Each sweep is one turn read straight off its stdout (no output
   task, no events, no transcript): the turn's last prose block is the result.
   **One sweep at a time** (`SweepManager::begin`, a busy flag held by
