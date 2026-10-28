@@ -594,3 +594,22 @@
   outline: 2px dashed var(--accent);
   outline-offset: -2px;
 }
+
+/* The assistant is switched off: a calm placeholder instead of the panel. */
+.offState {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  text-align: center;
+}
+
+.offTitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}

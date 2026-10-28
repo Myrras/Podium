@@ -180,7 +180,7 @@ struct Waiting {
 impl Watcher {
     /// Hand `text` to the assistant, unless the user switched proactivity off.
     async fn nudge(&self, orchestrator: &Orchestrator, text: String) {
-        if !orchestrator.assistant_proactivity() {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
         orchestrator.assistant_nudge(text).await;
@@ -191,7 +191,7 @@ impl Watcher {
     /// It runs on its own task (a sweep may take minutes), one at a time: a
     /// tick while one still runs is skipped.
     fn poll(&self, orchestrator: &Orchestrator, polling: AssistantPolling) {
-        if !orchestrator.assistant_proactivity() {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
         let Some(sweep) = orchestrator.begin_external_sweep() else {
@@ -282,6 +282,16 @@ impl Watcher {
     }
 
     async fn on_tick(&mut self, orchestrator: &Orchestrator) {
+        // While the assistant is off every raise would be dropped by `nudge`
+        // / `poll`, yet the watcher would already have spent it (MAX_RAISES,
+        // the sweep and poll clocks). Do no work at all, so turning it back
+        // on finds everything still due. The clocks keep rolling so the
+        // sweeps do not fire in a burst the moment it comes on.
+        if !orchestrator.assistant_enabled() {
+            self.last_sweep = Instant::now();
+            self.last_poll = Instant::now();
+            return;
+        }
         self.check_idle_agents(orchestrator).await;
         if self.last_sweep.elapsed() >= self.config.sweep_every {
             self.last_sweep = Instant::now();

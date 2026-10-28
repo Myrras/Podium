@@ -290,6 +290,23 @@ reason*, and to ask the user rather than guess when the to-dos and agents do
 not settle the order. There is deliberately no once-a-day lock — pressing it
 is explicit, so refusing would only annoy.
 
+## Turning the assistant off
+
+`enabled` in the same `assistant` block (default on;
+`Orchestrator::set_assistant_enabled`, IPC `assistant_enabled_get/set`). Off:
+the session is killed deliberately (no `exited`), proposals and their
+Responses items are dropped, the queue is dropped with its undelivered
+messages reported via `queueNotice`, and all sub-agents are stopped quietly.
+From then on `assistant_send`, `assistant_day_start` and
+`assistant_response_reply` fail with `CoreError::AssistantDisabled`
+(`assistantDisabled`), nudges and the external sweep are dropped per call
+(`assistant_nudge` / `assistant_poll` and the manager's `deliver_own`), and
+`report_to_assistant` / `spawn_subagent` over MCP answer plain text ("the
+assistant is turned off; nothing was delivered"), so no session is ever
+spawned. Transcript, memory and the Responses list stay on disk. Turning it on
+spawns nothing until the next send or nudge. The manager mirrors the setting
+in an atomic, preset when the settings path is set, so startup honours it too.
+
 ## Settings
 
 **Settings → Assistant** holds the proactivity toggle plus the autonomy mode
