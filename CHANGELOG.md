@@ -62,6 +62,7 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+- The CI workflow is now named "Test, Lint & Release".
 
 ## [3.1.1] - 2026-10-09
 

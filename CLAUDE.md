@@ -2026,7 +2026,7 @@ Conversations that touch no code (questions, exploration) need no branch.
   the PR-only `changelog` job in `ci.yml` fails unless the PR touches
   `CHANGELOG.md` and that section holds at least one `- ` entry
   (`scripts/changelog.sh unreleased`).
-- **CI** (`.github/workflows/ci.yml`): on every PR and push to `main`, a
+- **CI** (`.github/workflows/ci.yml`, displayed as "Test, Lint & Release"): on every PR and push to `main`, a
   `macos-latest` job — rustfmt, clippy `-D warnings`, `cargo test
   --workspace` (real PTYs), then typecheck, ESLint, Vitest, and a production
   `pnpm build` — and a `windows-latest` job. Both run rustfmt and clippy
