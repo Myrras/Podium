@@ -638,7 +638,9 @@ mod tests {
         assert!(line.contains("--input-format stream-json"), "{line}");
         assert!(line.contains("--output-format stream-json"), "{line}");
         // No built-in tools, and no MCP server at all: strict with no config.
-        assert!(line.contains(" --tools '' "), "{line}");
+        // Quoted the platform's way (`''` on Unix, `""` on Windows).
+        let empty = crate::platform::quote_arg("").expect("quote");
+        assert!(line.contains(&format!(" --tools {empty} ")), "{line}");
         assert!(line.contains(" --strict-mcp-config "), "{line}");
         assert!(!line.contains("--mcp-config"), "{line}");
         // Lean start: no skills/commands, no CLAUDE.md or hooks, own prompt.
