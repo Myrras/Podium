@@ -188,6 +188,7 @@ impl Watcher {
         let weak = self.weak.clone();
         tokio::spawn(async move {
             let outcome = sweep.run(&poll_prompt(polling)).await;
+            let not_working = matches!(outcome, SweepOutcome::NotWorking(_));
             let text = match outcome {
                 SweepOutcome::Quiet => None,
                 SweepOutcome::Finding(found) => Some(crate::sweep::finding_text(polling, &found)),
@@ -197,12 +198,20 @@ impl Watcher {
                     Some(crate::sweep::not_working_text(polling, reason))
                 }
             };
-            // The settings may have changed while the sweep ran.
+            let mut delivered = false;
             if let (Some(text), Some(orchestrator)) = (text, weak.upgrade()) {
+                // The settings may have changed while the sweep ran.
                 let polling_now = orchestrator.assistant_polling();
                 if orchestrator.assistant_proactivity() && polling_now.is_active() {
                     orchestrator.assistant_poll(text).await;
+                    delivered = true;
                 }
+            }
+            // The streak counts its notice as told when it is returned: a
+            // dropped one must be raised again, or a check that stays broken
+            // would never be mentioned.
+            if not_working && !delivered {
+                sweep.notice_discarded();
             }
             // Freed only now, so the next sweep never overlaps this one's
             // hand-off.

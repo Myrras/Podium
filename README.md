@@ -258,8 +258,9 @@ they did.
   suggested answer, then silent until you type into that agent), and on a
   6-hourly sweep for to-dos open longer than a week.
 - **External sweep** — every 10 minutes by default, the sources you enabled
-  (Slack, Teams — through your *own* MCP servers) are checked by a separate,
-  read-only Haiku session, not by the assistant itself. The assistant only
+  (Slack, Teams — through your *own* MCP servers) are checked by a separate
+  Haiku session told to only read, not by the assistant itself (Podium
+  cannot enforce that on your own MCP servers). The assistant only
   gets a turn when that check found something that needs you; a quiet check
   costs no assistant turn and leaves nothing in the chat. A found item shows
   as one faint "Podium check" line in the log.

@@ -205,6 +205,15 @@ impl FailureStreak {
     }
 }
 
+impl FailureStreak {
+    /// The notice [`Self::record`] returned was not delivered (the settings
+    /// changed during the sweep): tell it again at the next failure instead
+    /// of staying quiet about a check that is still down.
+    fn rearm(&mut self) {
+        self.told = false;
+    }
+}
+
 /// How one attempt at a sweep ended, before the streak is consulted.
 enum Attempt {
     Done(Option<String>),
@@ -497,6 +506,16 @@ pub struct SweepRun {
 }
 
 impl SweepRun {
+    /// The [`SweepOutcome::NotWorking`] notice this run returned was dropped
+    /// rather than handed on: the next failed sweep raises it again.
+    pub fn notice_discarded(&self) {
+        self.manager
+            .streak
+            .lock()
+            .expect("sweep streak lock")
+            .rearm();
+    }
+
     /// Run `prompt` as one turn of the sweep session.
     pub async fn run(&self, prompt: &str) -> SweepOutcome {
         self.manager.run(prompt).await
@@ -636,6 +655,52 @@ mod tests {
         assert_eq!(streak.record(Some(FAIL_START)), None);
         assert_eq!(streak.record(None), None);
         assert_eq!(streak.record(Some(FAIL_START)), None);
+    }
+
+    #[test]
+    fn a_discarded_notice_is_raised_again() {
+        let mut streak = FailureStreak::default();
+        for _ in 0..2 {
+            assert_eq!(streak.record(Some(FAIL_ENDED)), None);
+        }
+        assert_eq!(streak.record(Some(FAIL_ENDED)), Some(FAIL_ENDED));
+        streak.rearm();
+        assert_eq!(streak.record(Some(FAIL_ENDED)), Some(FAIL_ENDED));
+        // Delivered this time: quiet again.
+        assert_eq!(streak.record(Some(FAIL_ENDED)), None);
+    }
+
+    /// The watcher drops a notice when the settings changed during the
+    /// sweep; the check, still down, must not stay quiet for good.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dropped_not_working_notice_comes_back_with_the_next_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = manager_running(dir.path(), "exit 0", Duration::from_secs(30));
+        for _ in 0..2 {
+            let run = manager.begin().expect("free slot");
+            assert_eq!(run.run("check").await, SweepOutcome::Quiet);
+        }
+        let run = manager.begin().expect("free slot");
+        let outcome = run.run("check").await;
+        assert!(
+            matches!(outcome, SweepOutcome::NotWorking(_)),
+            "{outcome:?}"
+        );
+        run.notice_discarded();
+        drop(run);
+
+        let run = manager.begin().expect("free slot");
+        let outcome = run.run("check").await;
+        assert!(
+            matches!(outcome, SweepOutcome::NotWorking(_)),
+            "{outcome:?}"
+        );
+        drop(run);
+        // Handed on this time: quiet from here.
+        let run = manager.begin().expect("free slot");
+        assert_eq!(run.run("check").await, SweepOutcome::Quiet);
+        manager.shutdown().await;
     }
 
     #[test]
