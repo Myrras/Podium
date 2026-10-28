@@ -1,6 +1,6 @@
 # Every push to main (a merged PR) runs CI, including Windows, and then
 # releases. Pull requests run Windows only with the `windows` label; adding the
-# label re-runs CI for the PR. Any other label (e.g. patch/minor/major) starts
+# label re-runs CI for the PR. Any other label (e.g. release:patch/release:minor/release:major) starts
 # a run whose `ci` job is skipped: it doesn't cancel the running CI and adds
 # no `ci / ci-ok` check.
 name: CI
