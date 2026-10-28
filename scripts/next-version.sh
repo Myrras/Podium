@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: next-version.sh <previous tag> <PR labels, comma-separated>
 # Prints the next release tag: label `major` → vX+1.0.0, `minor` → vX.Y+1.0,
-# anything else → patch.
+# otherwise patch (the default for direct pushes without a PR; PRs must carry
+# a release label, enforced by the `Release label` check).
 set -euo pipefail
 
 prev=${1:-}

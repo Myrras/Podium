@@ -114,7 +114,10 @@ A shared to-do list per project, visible to you in the sidebar and to every
 agent over MCP. A to-do carries a description, a **comment thread** agents
 append progress notes to, and pinned **issue/PR links**. Done to-dos left
 over from an earlier day are archived automatically; anything can be archived
-by hand and found again in the Archive modal.
+by hand and found again in the Archive modal. Over MCP, `list_todos` leaves
+the archive out unless it's called with `include_archived: true` — handy for a
+script that syncs to-dos from an issue tracker and must not recreate one you
+archived.
 
 An agent **claims** a to-do when it starts working on it, so the list doubles
 as a who-is-doing-what board.
@@ -523,12 +526,12 @@ stdio bridge only through 0600 files that are wiped on every start.
 
 `podium-core` (zero Tauri dependency) holds the orchestration/PTY/MCP domain;
 `src-tauri` is a thin IPC adapter; `src/` is the React frontend. See
-[`CLAUDE.md`](./CLAUDE.md) for the full architecture, IPC contract, and
-conventions.
+[`docs/architecture/`](./docs/architecture/) for the full architecture and IPC
+contract, and [`CLAUDE.md`](./CLAUDE.md) for conventions.
 
 ## Keeping this file current
 
-This README is the user-facing half of the documentation; `CLAUDE.md` is the
+This README is the user-facing half of the documentation; `CLAUDE.md` and `docs/architecture/` are the
 contributor-facing half. A change that alters what a user can *see or do* —
 a new feature, a shortcut, a setting, a `podium.yml` key, an MCP tool — belongs
 in both, in the same PR as the change itself.
