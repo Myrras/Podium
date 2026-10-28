@@ -173,12 +173,12 @@ struct Waiting {
 }
 
 impl Watcher {
-    /// Queue `text` for the assistant, unless the user switched proactivity
-    /// off. It is not delivered at once: it waits out the debounce window
-    /// with whatever else comes up, and the batch is triaged on Haiku
-    /// ([`crate::triage`]) so only what is worth a turn reaches the
-    /// assistant — as one turn. `context` is what the triage may judge it by
-    /// beyond the text; the assistant never sees it.
+    /// Put `text` in the triage buffer, unless the user switched proactivity
+    /// off. It does not reach the assistant directly: it waits out the
+    /// debounce window with whatever else comes up, and the batch is triaged
+    /// on Haiku ([`crate::triage`]) so only what is worth a turn is
+    /// delivered — as one turn. Use [`nudge_with`](Self::nudge_with) when the
+    /// nudge is about a specific agent.
     fn nudge(&self, orchestrator: &Orchestrator, text: String) {
         self.nudge_with(
             orchestrator,
@@ -189,7 +189,8 @@ impl Watcher {
         );
     }
 
-    /// `item` carries the agent it is about, so the triage's worker can
+    /// Like [`nudge`](Self::nudge), but takes the whole [`TriageItem`]; it
+    /// carries the agent it is about, so the triage's worker can
     /// re-check at delivery that it is still worth saying.
     fn nudge_with(&self, orchestrator: &Orchestrator, item: TriageItem) {
         if !orchestrator.assistant_proactivity() {

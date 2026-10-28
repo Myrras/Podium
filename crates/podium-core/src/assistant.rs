@@ -1540,24 +1540,21 @@ impl AssistantManager {
         if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
             tracing::warn!("could not start the assistant for a nudge: {e}");
         }
-        let item = |text: String| PendingInput {
+        // One item for the whole batch, busy or idle: queued separately, a
+        // batch bigger than `MAX_PENDING` would push the user's own waiting
+        // messages off the front of the queue. (The check above is what
+        // dedupes against the queue: the joined text never matches a single
+        // waiting nudge.)
+        let joined = PendingInput {
             id: PendingId::new(),
             kind: PendingKind::Nudge,
-            text,
+            text: fresh.join("\n\n"),
             attachments: Vec::new(),
             reply_to: None,
             recorded: false,
             lasting: false,
         };
-        if state.in_flight {
-            for text in fresh {
-                let _ = deliver_or_queue(&mut state, item(text), &self.store, &self.events).await;
-            }
-        } else {
-            // Idle: queuing them separately would send the first on its own.
-            let joined = item(fresh.join("\n\n"));
-            let _ = deliver_or_queue(&mut state, joined, &self.store, &self.events).await;
-        }
+        let _ = deliver_or_queue(&mut state, joined, &self.store, &self.events).await;
     }
 
     /// A [`nudge`](Self::nudge) that outlives the conversation: how one of

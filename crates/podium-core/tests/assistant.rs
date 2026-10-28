@@ -1871,6 +1871,39 @@ async fn a_batch_skips_a_nudge_that_is_already_waiting() {
     orch.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_big_batch_while_busy_is_one_waiting_item_and_drops_nothing() {
+    let (orch, _dir) = setup(SPAWN_RECORDING_CLAUDE);
+    let mut rx = orch.subscribe_events();
+
+    // "slow" keeps the first turn running while the rest arrives.
+    orch.assistant_send("slow first").await.expect("send first");
+    orch.assistant_send("keep me").await.expect("queue user");
+    let batch: Vec<String> = (0..30)
+        .map(|i| format!("[Podium] agent {i} finished"))
+        .collect();
+    orch.assistant_nudge_all(batch).await;
+
+    let events = collect_until(
+        &mut rx,
+        |e| matches!(e, AssistantEvent::QueueChanged { items } if items.len() == 2),
+    )
+    .await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AssistantEvent::QueueNotice { .. })),
+        "nothing was dropped: {events:?}"
+    );
+    let Some(AssistantEvent::QueueChanged { items }) = events.last() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(items[0].text, "keep me");
+    assert!(items[1].text.contains("agent 0 finished"), "{items:?}");
+    assert!(items[1].text.contains("agent 29 finished"), "{items:?}");
+    orch.shutdown().await;
+}
+
 // -- attachments -------------------------------------------------------
 
 #[tokio::test]
