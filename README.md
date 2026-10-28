@@ -243,6 +243,14 @@ they did.
   people) reaches you, as a *Needs you* item with the assistant's recommended
   answer and a desktop notification; reply to it and the assistant passes the
   answer on. You can also answer in the sub-agent's terminal yourself.
+  **Cheap to start:** without a model in the assistant's args or your
+  default Claude Code args, a lookup runs on Haiku and a full one on Sonnet.
+  By default a sub-agent also starts *lean*: only Podium's MCP tools, no
+  skills, no `CLAUDE.md`, hooks or auto-memory, and only the built-in tools
+  its kind needs — about a quarter of the tokens of a normal first request.
+  A lookup that needs your own MCP servers (Slack, Teams, a ticket system),
+  a skill or a plugin is started without that, which the assistant decides
+  per task. Your permission rules apply either way.
   Sub-agents load only your
   own Claude Code settings, not ones a folder could carry. If your default
   Claude Code args (Settings → Agents) carry your own `--settings`, sub-agents

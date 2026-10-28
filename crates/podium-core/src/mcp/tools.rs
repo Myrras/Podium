@@ -278,8 +278,9 @@ pub struct SpawnAgentParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SpawnSubagentParams {
     /// `lookup` to read and look things up (no shell, no file edits: Slack,
-    /// Teams, tickets, MCP reads, a summary across projects), `full` for
-    /// shell, file or git work that belongs to no single project.
+    /// Teams, tickets, MCP reads, a summary across projects — the user's own
+    /// MCP servers need `lean: false`), `full` for shell, file or git work
+    /// that belongs to no single project.
     pub kind: SubagentKind,
     /// What to do, in full — the sub-agent starts knowing nothing else.
     pub task: String,
@@ -287,9 +288,18 @@ pub struct SpawnSubagentParams {
     pub name: Option<String>,
     /// The model and effort it runs with, replacing the global default args:
     /// only `--model <model>` and `--effort <level>` (or `--model=<model>`,
-    /// `--effort=<level>`), e.g. `["--model", "sonnet"]`. Anything else is
-    /// refused.
+    /// `--effort=<level>`), e.g. `["--model", "opus"]`. Anything else is
+    /// refused. Without a `--model` (here or in the user's default args) a
+    /// lookup runs on haiku and a full one on sonnet; pass a bigger model
+    /// only for work that needs it.
     pub args: Option<Vec<String>>,
+    /// Start it lean (default true): only Podium's MCP tools, no skills, no
+    /// CLAUDE.md, hooks or memory, and only the built-in tools its kind
+    /// needs (lookup: Read, Grep, Glob, WebFetch, WebSearch; full: also Bash,
+    /// Edit, Write). Starts at a fraction of the tokens. Pass false only
+    /// when the task needs the user's own MCP servers (Slack, Teams, mail, a
+    /// ticket system), a skill or their plugins.
+    pub lean: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -610,7 +620,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Start one of your own sub-agents on a task and get control back at once: {processId, state}, where state is \"running\", or \"queued\" when 4 already run (it starts by itself when one ends). kind \"lookup\" reads and looks things up (no shell, no file edits: Slack, Teams, tickets, MCP reads, a summary across projects); kind \"full\" has shell, files and git, for work that belongs to no single project (a check across repositories, a one-off script). Code work in a project is not a sub-agent's: use spawn_agent. The sub-agent belongs to no project and reports its result back to you as a [Podium] message. Only the assistant may call this."
+        description = "Start one of your own sub-agents on a task and get control back at once: {processId, state}, where state is \"running\", or \"queued\" when 4 already run (it starts by itself when one ends). kind \"lookup\" reads and looks things up (no shell, no file edits: Slack, Teams, tickets, MCP reads, a summary across projects); kind \"full\" has shell, files and git, for work that belongs to no single project (a check across repositories, a one-off script). Code work in a project is not a sub-agent's: use spawn_agent. The sub-agent belongs to no project and reports its result back to you as a [Podium] message. It starts lean by default: only Podium's tools and the built-in tools its kind needs, no skills, CLAUDE.md or hooks, on haiku (lookup) or sonnet (full) unless args pick a model. Pass lean: false when the task needs the user's own MCP servers (Slack, Teams, mail, a ticket system), a skill or a plugin: a lean one cannot reach them. Only the assistant may call this."
     )]
     pub async fn spawn_subagent(
         &self,
@@ -621,7 +631,7 @@ impl PodiumTools {
         }
         let spawned = self
             .orchestrator
-            .spawn_subagent(p.kind, &p.task, p.name, p.args)
+            .spawn_subagent_with(p.kind, &p.task, p.name, p.args, p.lean.unwrap_or(true))
             .await
             .map_err(core_error)?;
         json_result(&spawned)

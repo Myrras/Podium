@@ -786,12 +786,30 @@ impl Orchestrator {
     /// `name` defaults to one derived from the task; `args` replaces the
     /// global default args for this sub-agent, like `spawn_agent`'s. A start
     /// that fails right away is an error here, and leaves no row behind.
+    ///
+    /// Starts it lean; see [`Self::spawn_subagent_with`].
     pub async fn spawn_subagent(
         &self,
         kind: SubagentKind,
         task: &str,
         name: Option<String>,
         args: Option<Vec<String>>,
+    ) -> CoreResult<SubagentSpawned> {
+        self.spawn_subagent_with(kind, task, name, args, true).await
+    }
+
+    /// [`Self::spawn_subagent`], choosing whether it starts `lean`: only
+    /// Podium's MCP server, no skills, hooks, `CLAUDE.md` or auto-memory, and
+    /// only the built-in tools its kind needs (see
+    /// [`crate::subagent::launch_args`]). Not lean, it also has the user's
+    /// own MCP servers, skills and plugins.
+    pub async fn spawn_subagent_with(
+        &self,
+        kind: SubagentKind,
+        task: &str,
+        name: Option<String>,
+        args: Option<Vec<String>>,
+        lean: bool,
     ) -> CoreResult<SubagentSpawned> {
         let task = task.trim();
         if task.is_empty() {
@@ -838,6 +856,7 @@ impl Orchestrator {
                 resume_session_id: None,
                 suggest_worktree: false,
                 subagent: Some(kind),
+                subagent_lean: lean,
             })
             .await?;
         Ok(SubagentSpawned {
@@ -1771,6 +1790,7 @@ impl Orchestrator {
                 worktree_name: entry.worktree_name.clone(),
                 suggest_worktree: !made,
                 subagent: None,
+                subagent_lean: false,
             })
             .await?;
         self.reassign_restored(
@@ -2738,6 +2758,7 @@ impl Orchestrator {
             resume_session_id: None,
             suggest_worktree: true,
             subagent: None,
+            subagent_lean: false,
         })
         .await
     }
@@ -2763,6 +2784,7 @@ impl Orchestrator {
             resume_session_id,
             suggest_worktree,
             subagent,
+            subagent_lean,
         } = req;
         let (root, wsl, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
@@ -2902,9 +2924,15 @@ impl Orchestrator {
             .unwrap_or(&[]);
         let mut merged_args =
             settings::merge_args(global.merge_mode, global_args, &agents.extra_args);
-        // After the user's own, so a lookup's restrictions win.
+        // After the user's own, so a lookup's restrictions win. The model
+        // default looks at the line so far and at the user's default args,
+        // whose `--model` still counts when this spawn's own args replaced
+        // them.
         if let Some(kind) = subagent {
-            merged_args.extend(crate::subagent::launch_args(kind));
+            let user_defaults = ov.map(|o| o.default_args.as_slice()).unwrap_or(&[]);
+            let extra =
+                crate::subagent::launch_args(kind, subagent_lean, &merged_args, user_defaults);
+            merged_args.extend(extra);
         }
         let command_override = ov.and_then(|o| o.command.as_deref());
         // A sub-agent's secret for the MCP server to know its calls by; the
@@ -2930,6 +2958,7 @@ impl Orchestrator {
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && suggest_worktree && !worktree,
             subagent,
+            subagent_lean,
             caller_key: caller_key.as_deref(),
         })?;
         // A sub-agent is never restarted (Podium refuses it) nor remembered,
@@ -3980,6 +4009,9 @@ struct AgentSpawn {
     /// One of the assistant's sub-agents, of this kind: `project_id` is then
     /// the assistant's scope, `prompt` its task.
     subagent: Option<SubagentKind>,
+    /// A sub-agent started lean ([`crate::subagent::launch_args`]); ignored
+    /// for a project agent.
+    subagent_lean: bool,
 }
 
 /// What [`Orchestrator::spawn_agent_core`] made: the process, and for a

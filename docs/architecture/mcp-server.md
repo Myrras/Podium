@@ -73,7 +73,7 @@ route (see [Routes](#routes)).
 
 ### Sub-agent tool details
 
-`spawn_subagent { kind, task, name?, args? }` is gated by its `kind`
+`spawn_subagent { kind, task, name?, args?, lean? }` is gated by its `kind`
 (`assistant::requires_proposal_for`): `lookup` never, `full` like
 `spawn_agent` (a missing/unknown kind too). `args` may only be
 `--model`/`--effort` with a plain value (`subagent::validate_args`).
