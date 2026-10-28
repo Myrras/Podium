@@ -330,6 +330,7 @@ fn fast_proactivity() -> ProactivityConfig {
         // The triage child is the same fake CLI, whose canned reply does not
         // parse: everything is forwarded, as before triage existed.
         triage_window: Duration::from_millis(20),
+        output_settle: Duration::from_millis(20),
     }
 }
 
@@ -3052,7 +3053,7 @@ async fn a_mixed_batch_reaches_the_assistant_as_one_turn_with_only_what_was_forw
     ));
     let mut rx = orch.subscribe_events();
     // Long enough for both exits to land in one batch, in order.
-    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(1500)));
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(4000)));
 
     let project = orch
         .open_project(dir.path().to_path_buf())
@@ -3094,7 +3095,7 @@ async fn a_failed_triage_forwards_every_nudge() {
     // The triage dies without answering, as a CLI that rejects a flag would.
     let orch = Arc::new(setup_in(dir.path(), &triage_fake("exit 1")));
     let mut rx = orch.subscribe_events();
-    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(1500)));
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(4000)));
 
     let project = orch
         .open_project(dir.path().to_path_buf())
@@ -3128,7 +3129,7 @@ async fn a_triage_reply_split_over_two_message_blocks_still_parses() {
     echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'"#;
     let orch = Arc::new(setup_in(dir.path(), &triage_fake(split)));
     let mut rx = orch.subscribe_events();
-    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(1500)));
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(4000)));
 
     let project = orch
         .open_project(dir.path().to_path_buf())
@@ -3153,7 +3154,7 @@ async fn a_forwarded_nudge_about_an_agent_now_being_viewed_is_not_delivered() {
         &triage_fake(&triage_says("1: FORWARD")),
     ));
     let mut rx = orch.subscribe_events();
-    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(800)));
+    podium_core::proactivity::spawn(&orch, triage_proactivity(Duration::from_millis(3000)));
 
     let project = orch
         .open_project(dir.path().to_path_buf())

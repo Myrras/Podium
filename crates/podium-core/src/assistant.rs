@@ -1519,9 +1519,10 @@ impl AssistantManager {
     /// Several nudges at once (a triaged batch) as **one** turn. Texts a
     /// nudge already waiting in the queue says, and repeats within `texts`,
     /// are dropped first, like [`nudge`](Self::nudge)'s own dedupe. The rest
-    /// is joined with a blank line into a single nudge when the session is
-    /// idle; while a turn runs they are queued one by one, which the next
-    /// `TurnEnd` merges into one turn all the same.
+    /// is joined with a blank line into a single nudge, delivered when the
+    /// session is idle and queued as that one item while a turn runs. A batch
+    /// already queued as a joined item is not matched by a later identical
+    /// single nudge.
     pub async fn nudge_all(&self, texts: Vec<String>, mcp: Option<McpConnectInfo>) {
         let mut state = self.state.lock().await;
         let mut fresh: Vec<String> = Vec::new();

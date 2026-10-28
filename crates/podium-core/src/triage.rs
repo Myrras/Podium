@@ -10,7 +10,7 @@
 //! turn. The forwarded ones go to the assistant together
 //! ([`crate::Orchestrator::assistant_nudge_all`]): one turn when it is idle,
 //! with a text already waiting in its queue skipped (a busy assistant queues
-//! them, and its queue merges consecutive nudges into one turn); the dropped
+//! the batch as one joined item); the dropped
 //! ones are logged at debug, counted only, never their text. A
 //! forwarded nudge is checked once more at delivery: the batch waited at least
 //! a window, so an agent the user has since opened, or a stuck one that has

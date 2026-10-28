@@ -88,6 +88,10 @@ pub struct ProactivityConfig {
     /// ([`crate::triage`]) — the debounce window, counted from the first
     /// nudge of a batch.
     pub triage_window: Duration,
+    /// Grace after an exit before the agent's last output is read: the PTY
+    /// reader and the wait thread are independent, so the final chunk may
+    /// not be in the scrollback yet.
+    pub output_settle: Duration,
 }
 
 impl Default for ProactivityConfig {
@@ -105,6 +109,7 @@ impl Default for ProactivityConfig {
             sweep_every: Duration::from_secs(6 * 60 * 60),
             poll_unit: Duration::from_secs(60),
             triage_window: Duration::from_secs(60),
+            output_settle: Duration::from_millis(200),
         }
     }
 }
@@ -295,6 +300,10 @@ impl Watcher {
         );
         // Whether a finished agent left anything for the user is in its last
         // output; the triage has no tools to read it, so it rides along.
+        // The exit can arrive before the reader thread has stored the final
+        // chunk (a PR URL, a question); wait briefly so triage sees it. No
+        // lock is held here.
+        tokio::time::sleep(self.config.output_settle).await;
         let context = last_output(orchestrator, process_id).await;
         self.nudge_with(
             orchestrator,

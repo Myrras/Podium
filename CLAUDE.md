@@ -1406,10 +1406,12 @@ atomically, before the async `podium.yml` load.
   The forwarded nudges go to the assistant together through
   `Orchestrator::assistant_nudge_all` (`AssistantManager::nudge_all`): texts
   already waiting in the queue and repeats within the batch are dropped, the
-  rest is one nudge joined with a blank line when the assistant is idle (one
-  turn), or queued one by one while a turn runs (the queue then merges
-  consecutive nudges into one turn); dropped ones are logged at debug as a
-  count, never their text. At delivery each is checked again (`is_stale`), since the batch waited
+  rest is one nudge joined with a blank line, delivered as one turn when the
+  assistant is idle and queued as that one joined item while a turn runs. The
+  dedupe is partial: texts already waiting as a single nudge and repeats within
+  the batch are dropped, but a batch already queued as one joined item is not
+  matched by a later identical single nudge. Dropped ones are logged at debug
+  as a count, never their text. At delivery each is checked again (`is_stale`), since the batch waited
   at least a window: a nudge about an agent the user is now viewing is dropped,
   and so is a stuck-agent one (`needs_running`) whose agent is gone or no
   longer running; a to-do sweep nudge has no `process_id` and is unaffected.
