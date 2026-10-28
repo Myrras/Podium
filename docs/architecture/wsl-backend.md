@@ -89,7 +89,7 @@ only for the *start* (spawn plus a 150 ms settle), never while a command runs:
 
 - `platform::run_gated` for short commands (`run_shell_*`, git — the wait for
   output happens outside the gate),
-- `wsl_launch_guard`/`spawn_gated` for long-lived ones (PTY, assistant, external sweep; held
+- `wsl_launch_guard`/`spawn_gated` for long-lived ones (PTY, assistant, external sweep, nudge triage; held
   until the PTY reader runs).
 
 Waiting for the gate gives up after 10 s with a warning and launches anyway, so
@@ -111,7 +111,7 @@ sets `CREATE_NO_WINDOW`. Every non-ConPTY Windows spawn in this crate uses it:
 
 - `run_shell_ok`, `run_shell_stdout`, `git_command`,
 - the WSL networking check and distro listing,
-- the assistant's and the external sweep's CLI children — tokio `Command`s, via `as_std_mut()`,
+- the assistant's, the external sweep's and the nudge triage's CLI children — tokio `Command`s, via `as_std_mut()`,
 - Warp's `cmd /C start`,
 - the Git board's `gh` calls via `gh_command`, several per project on every
   board refresh.
