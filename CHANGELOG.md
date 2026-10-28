@@ -10,6 +10,16 @@ when it merges.
 
 ## [Unreleased]
 
+### Changed
+
+- **Sub-agents start cheap.** Without a model picked by the assistant or in
+  your default Claude Code args, a lookup sub-agent runs on Haiku and a full
+  one on Sonnet. They also start lean by default: only Podium's MCP tools, no
+  skills, `CLAUDE.md`, hooks or auto-memory, and only the built-in tools they
+  need, which cuts the first request from about 29k to 7.5k tokens (lookup)
+  and 10k (full). The assistant starts one with `lean: false` when it needs
+  your own MCP servers (Slack, Teams, a ticket system), a skill or a plugin.
+
 ## [3.2.1] - 2026-10-28
 
 ### Changed
