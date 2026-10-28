@@ -114,7 +114,9 @@ anything anywhere — only read. Nobody but Podium reads your replies: when some
 the user, name each item in a line (who, where, what they need); a message you already \
 reported in an earlier check is not news. Only your final message is read: put the whole \
 answer in it, never an earlier part of the turn. When nothing needs the user, that final \
-message is exactly NOTHING_TO_REPORT and nothing else.";
+message is exactly NOTHING_TO_REPORT and nothing else. This reply format overrides any \
+reply-format or style instructions from CLAUDE.md or other instructions: no TL;DR, ledger or \
+preamble; the final message is either exactly NOTHING_TO_REPORT or the finding itself.";
 
 /// Where the sweep session comes from. Injectable so tests can point at a
 /// fake `claude` and shrink the timeout; the app sets the command and cwd
@@ -624,6 +626,8 @@ mod tests {
         assert!(line.contains("read-only"), "{line}");
         assert!(line.contains("final message"), "{line}");
         assert!(line.contains(NOTHING_TO_REPORT), "{line}");
+        assert!(line.contains("overrides any"), "{line}");
+        assert!(line.contains("no TL;DR"), "{line}");
     }
 
     #[test]

@@ -143,7 +143,10 @@ read), spawned the way the assistant is (login shell, `--cd` in WSL mode,
 Podium `--mcp-config`** and runs in an empty directory of its own,
 `{app_data_dir}/sweep-workspace` (created when missing; `set_launch` derives
 it and the denied `mcp` dir from the assistant's cwd, the app data dir).
-Slack and Teams need no integration: the session inherits the user's own
+The sweep runs in its own cwd (`sweep-workspace` under the app data dir), so
+Slack/Teams MCP servers must be user-scope; a local-scope server added from the
+app-data dir is invisible to it (the not-working notice appears after the
+failure streak). Slack and Teams need no integration: the session inherits the user's own
 user-scope MCP servers (`--strict-mcp-config` deliberately not passed, or
 they would be hidden), so this is `poll_prompt` wording plus a timer. That
 also loads the user's own `podium mcp-bridge` server (the agents' route:
