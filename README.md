@@ -253,6 +253,10 @@ they did.
   sub-agents never stop on Claude Code's folder-trust question. Only if it
   cannot (a WSL backend, no Claude Code config yet) does the first one ask:
   open it from the list and answer "Yes, I trust this folder" once.
+- **Power switch** — the power button in the title bar (next to the assistant
+  button) turns the assistant off: no session, no nudges, no desktop
+  notifications, and its running sub-agents are stopped. The panel then shows
+  "The assistant is off" with a *Turn on* button; the choice is remembered.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.

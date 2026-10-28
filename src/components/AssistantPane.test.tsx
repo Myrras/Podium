@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
   assistantSend: vi.fn(() => Promise.resolve(true)),
+  assistantEnabledSet: vi.fn((v: boolean) => Promise.resolve(v)),
   assistantDayStart: vi.fn(() => Promise.resolve(true)),
   assistantAutonomyGet: vi.fn(() => Promise.resolve("confirm-destructive")),
   assistantAutonomySet: vi.fn((mode: string) => Promise.resolve(mode)),
@@ -40,6 +41,7 @@ import {
   assistantAutonomyGet,
   assistantAutonomySet,
   assistantDayStart,
+  assistantEnabledSet,
   assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
@@ -96,6 +98,7 @@ describe("AssistantPane", () => {
       busy: false,
       activity: null,
       autonomy: "confirm-destructive",
+      enabled: true,
       memory: null,
       hydrated: false,
       pending: [],
@@ -1311,5 +1314,27 @@ describe("AssistantPane", () => {
         screen.getByText(/"archive.zip" was not added/),
       ).toBeInTheDocument();
     });
+  });
+
+  it("shows a calm off state without the composer, and Turn on restores the panel", async () => {
+    useAssistantStore.setState({ enabled: false });
+    const user = userEvent.setup();
+    render(<AssistantPane />);
+
+    expect(screen.getByText("The assistant is off")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
+    expect(screen.queryByLabelText("Start my day")).toBeNull();
+    // Header controls that need the assistant are not offered while off.
+    expect(screen.queryByLabelText("Assistant memory")).toBeNull();
+    expect(screen.getByLabelText("Autonomy")).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Turn on" }));
+    expect(screen.getByLabelText("Assistant memory")).toBeInTheDocument();
+    expect(screen.getByLabelText("Autonomy")).toBeEnabled();
+    expect(assistantEnabledSet).toHaveBeenCalledWith(true);
+    expect(
+      await screen.findByPlaceholderText("Message the assistant…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("The assistant is off")).toBeNull();
   });
 });

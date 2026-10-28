@@ -263,6 +263,14 @@ impl AgentSettingsStore {
         Ok(inner.settings.clone())
     }
 
+    /// Turn the personal assistant on or off; returns the updated settings.
+    pub fn set_assistant_enabled(&self, enabled: bool) -> CoreResult<AgentSettings> {
+        let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        inner.settings.assistant.enabled = enabled;
+        save(&inner)?;
+        Ok(inner.settings.clone())
+    }
+
     /// Turn the assistant's proactive nudges on or off; returns the updated
     /// settings.
     pub fn set_assistant_proactive(&self, enabled: bool) -> CoreResult<AgentSettings> {

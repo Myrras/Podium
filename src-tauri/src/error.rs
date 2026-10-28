@@ -78,6 +78,7 @@ impl From<CoreError> for IpcError {
             CoreError::ProcessAlreadyRunning => "processAlreadyRunning",
             CoreError::ProcessNotRunning => "processNotRunning",
             CoreError::AgentLimitReached => "agentLimitReached",
+            CoreError::AssistantDisabled => "assistantDisabled",
             CoreError::ShuttingDown => "shuttingDown",
             CoreError::IssuesNotConfigured => "issuesNotConfigured",
             CoreError::IssuesNoRemote => "issuesNoRemote",
@@ -97,5 +98,16 @@ impl From<CoreError> for IpcError {
             kind: kind.to_string(),
             message: err.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turned_off_assistant_maps_to_its_own_kind() {
+        let err = IpcError::from(CoreError::AssistantDisabled);
+        assert_eq!(err.kind, "assistantDisabled");
     }
 }

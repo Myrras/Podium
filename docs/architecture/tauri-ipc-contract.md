@@ -153,6 +153,8 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_memory_set`  | `{ content }` (blank clears)                | –                 |
 | `assistant_autonomy_get` | –                                          | `AutonomyMode`    |
 | `assistant_autonomy_set` | `{ mode }`                                 | `AutonomyMode`    |
+| `assistant_enabled_get` | –                                           | `boolean`         |
+| `assistant_enabled_set` | `{ enabled }` (off: session killed quietly, sub-agents stopped, input refused with `assistantDisabled`) | `boolean` |
 | `assistant_proactivity_get` | –                                       | `boolean`         |
 | `assistant_proactivity_set` | `{ enabled }`                           | `boolean`         |
 | `assistant_polling_get` | –                                           | `AssistantPolling` |
