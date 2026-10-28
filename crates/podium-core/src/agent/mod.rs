@@ -773,7 +773,7 @@ fn subagent_session_settings(
 /// An absolute path in the CLI's permission-rule spelling: `//` then the
 /// path from the filesystem root (`/Users/a/x` → `//Users/a/x`), Windows
 /// paths in their POSIX form (`C:\Users\a` → `//c/Users/a`).
-fn absolute_path_rule(path: &str) -> String {
+pub(crate) fn absolute_path_rule(path: &str) -> String {
     let posix = path.replace('\\', "/");
     let bytes = posix.as_bytes();
     if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {

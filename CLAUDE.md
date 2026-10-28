@@ -1391,28 +1391,58 @@ atomically, before the async `podium.yml` load.
   its own** (`sweep.rs`, `SweepManager`), never in the assistant's: a second
   long-lived headless child, `exec claude -p --input-format stream-json
   --output-format stream-json --verbose --model haiku` (`SWEEP_MODEL`)
-  `--permission-mode bypassPermissions --disallowedTools
-  Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,AskUserQuestion` plus
-  its own short read-only identity (`--append-system-prompt`), spawned the
-  way the assistant is (login shell, `--cd` in WSL mode, `spawn_gated`,
-  `hide_console_window`, stderr dropped). It gets **no Podium MCP config**:
-  Slack and Teams need no integration, the session inherits the user's own
-  user-scope MCP servers (`--strict-mcp-config` deliberately not passed), so
-  this is `poll_prompt` wording plus a timer. As with a lookup sub-agent,
-  "never send/react/change anything" is wording only for servers that are not
-  Podium's. Binary and cwd follow `configure_assistant`; `configure_sweep`
-  (`SweepConfig`) also sets the turn timeout. It is spawned lazily on the
-  first sweep and **kept alive between sweeps**, so "since you last looked"
-  holds within a run; a session that died is respawned with `--resume <its
-  session id>` (in memory only; dropped when a resumed spawn never comes up)
-  and killed on shutdown. Each sweep is one turn read straight off its stdout
-  (no output task, no events, no transcript): the turn's last prose block is
-  the result. **One sweep at a time** (`SweepManager::begin`, a busy flag
-  held by `SweepRun` until the hand-off is done): the watcher runs it on its
-  own task (weak orchestrator ref) and a tick that finds one still running is
-  skipped. A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the
-  child; the next sweep respawns it. Shutdown wakes a running turn at once
-  (`Notify`). Failures are logged at debug/warn without content.
+  `--setting-sources user --permission-mode bypassPermissions
+  --disallowedTools Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,
+  AskUserQuestion,WebFetch,WebSearch,mcp__podium,mcp__podium__<tool>…
+  --settings '{"permissions":{"deny":["Read(//{app_data_dir}/mcp/**)"]}}'`
+  plus its own short read-only identity (`--append-system-prompt`; the whole
+  answer goes in the final message, since only the turn's last prose block is
+  read), spawned the way the assistant is (login shell, `--cd` in WSL mode,
+  `spawn_gated`, `hide_console_window`, stderr dropped). It is passed **no
+  Podium `--mcp-config`** and runs in an empty directory of its own,
+  `{app_data_dir}/sweep-workspace` (created when missing; `set_launch` derives
+  it and the denied `mcp` dir from the assistant's cwd, the app data dir).
+  Slack and Teams need no integration: the session inherits the user's own
+  user-scope MCP servers (`--strict-mcp-config` deliberately not passed, or
+  they would be hidden), so this is `poll_prompt` wording plus a timer. That
+  also loads the user's own `podium mcp-bridge` server (the agents' route:
+  spawn/stop/remove agents, ungated), whose input here is untrusted
+  Slack/Teams text — so the whole `podium` server is denied: the
+  server-level rule `mcp__podium` (the CLI's form for every tool of a server;
+  not run against a real CLI here) and, as a second layer generated from the
+  router like a lookup's, `mcp__podium__<tool>` for each tool. A bridge
+  registered under another name is not covered. The same `--settings` deny
+  keeps the file readers (`Read`, hence Grep/Glob) out of the MCP config dir
+  (token files, caller keys), `WebFetch`/`WebSearch` are refused so an injected
+  message cannot carry data out, and `--setting-sources user` keeps project
+  and local settings and `CLAUDE.md` files out. **Like a lookup sub-agent, the
+  sweep can still call the user's own other MCP servers (Slack send, Teams
+  post, …) without a prompt, and Podium cannot enforce its read-only wording
+  on those; Haiku reading untrusted messages is also more injectable than the
+  main assistant was.** Binary and cwd follow `configure_assistant`;
+  `configure_sweep` (`SweepConfig`) also sets the turn timeout. It is spawned
+  lazily on the first sweep and **kept alive between sweeps**, so "since you
+  last looked" holds within a run; a session that died is respawned with
+  `--resume <its session id>` (in memory only; dropped when a resumed spawn
+  never comes up, whether the turn's write or read failed) and killed on
+  shutdown. Each sweep is one turn read straight off its stdout (no output
+  task, no events, no transcript): the turn's last prose block is the result.
+  **One sweep at a time** (`SweepManager::begin`, a busy flag held by
+  `SweepRun` until the hand-off is done): the watcher runs it on its own task
+  (weak orchestrator ref) and a tick that finds one still running is skipped.
+  A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the child; the
+  next sweep respawns it. Shutdown wakes a running turn at once (`Notify`),
+  kills the child and counts as neither a finding nor a failure. Failures are
+  logged at debug/warn without content.
+
+  **A broken check must not look like a quiet one.** A spawn failure, a
+  session that ends under the turn, a timeout or a turn the CLI ended with an
+  error counts as a failed sweep (`FailureStreak`). After
+  `FAILURES_BEFORE_NOTICE` (3) in a row the sweep returns
+  `SweepOutcome::NotWorking(reason)` once, and the watcher hands the assistant
+  `sweep::not_working_text` through the same `assistant_poll` path as a
+  finding (a Podium-owned reason string, never CLI output); further failures
+  are quiet until a sweep works again and fails three more times.
 
   A reply carrying `NOTHING_TO_REPORT` on a line of its own
   (`assistant::says_nothing_to_report`, the same matcher as below), an empty

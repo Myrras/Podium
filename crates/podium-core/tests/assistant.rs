@@ -166,6 +166,12 @@ done
 /// every turn in `stdin.jsonl` and answers `ok`. Files are replaced through a
 /// temp file so a reader never sees half a line.
 fn sweep_fake(sweep_turn: &str) -> String {
+    sweep_fake_with("", sweep_turn)
+}
+
+/// As [`sweep_fake`], with `sweep_start` (shell) run right after the spawn is
+/// recorded and before the init line, to play a CLI that never comes up.
+fn sweep_fake_with(sweep_start: &str, sweep_turn: &str) -> String {
     format!(
         r#"#!/bin/sh
 dir="$(dirname "$0")"
@@ -179,6 +185,7 @@ case " $* " in
       prev=$a
     done
     record sweep-spawns.txt "$resume"
+    {sweep_start}
     echo '{{"type":"system","subtype":"init","session_id":"sweep-session"}}'
     n=0
     while IFS= read -r line; do
@@ -2038,11 +2045,45 @@ async fn the_sweep_runs_on_haiku_in_its_own_session_and_a_quiet_one_reaches_nobo
         .map(str::to_string)
         .collect();
     assert_eq!(arg_after(&argv, "--model").as_deref(), Some("haiku"));
-    assert_eq!(
-        arg_after(&argv, "--disallowedTools").as_deref(),
-        Some("Edit,Write,NotebookEdit,Bash,Agent,Task,SendMessage,AskUserQuestion")
-    );
+    let denied = arg_after(&argv, "--disallowedTools").expect("denied tools");
+    let denied: Vec<&str> = denied.split(',').collect();
+    for tool in [
+        "Edit",
+        "Write",
+        "NotebookEdit",
+        "Bash",
+        "Agent",
+        "Task",
+        "SendMessage",
+        "AskUserQuestion",
+        "WebFetch",
+        "WebSearch",
+        // The user's own podium bridge, as a server and tool by tool.
+        "mcp__podium",
+        "mcp__podium__spawn_agent",
+        "mcp__podium__stop_process",
+    ] {
+        assert!(denied.contains(&tool), "{tool} not denied: {denied:?}");
+    }
     assert!(!argv.iter().any(|a| a == "--mcp-config"), "{argv:?}");
+    assert!(!argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
+    // Only the user's own settings, plus a deny on Podium's MCP config dir.
+    assert_eq!(
+        arg_after(&argv, "--setting-sources").as_deref(),
+        Some("user")
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&arg_after(&argv, "--settings").expect("settings")).expect("json");
+    let rule = settings
+        .pointer("/permissions/deny/0")
+        .and_then(|r| r.as_str());
+    let rule = rule.expect("a deny rule");
+    assert!(
+        rule.starts_with("Read(//") && rule.ends_with("/mcp/**)"),
+        "{rule}"
+    );
+    // In an empty directory of its own, not the app data dir.
+    assert!(dir.path().join("sweep-workspace").is_dir());
 
     // The assistant never started, and nothing reached the panel.
     assert!(
@@ -2099,26 +2140,34 @@ async fn a_sweep_finding_becomes_one_poll_turn_for_the_assistant() {
     orch.shutdown().await;
 }
 
+/// Sweep settings for a fake CLI in `dir`, with `turn_timeout`.
+fn sweep_config(dir: &Path, turn_timeout: Duration) -> SweepConfig {
+    SweepConfig {
+        command: dir.join("fake-claude").to_string_lossy().into_owned(),
+        cwd: Some(dir.join("sweep-workspace")),
+        mcp_dir: Some(dir.join("mcp")),
+        turn_timeout,
+    }
+}
+
 #[tokio::test]
 async fn a_hung_sweep_is_killed_and_resumed_by_the_next_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let found = sweep_says("Grace in Teams asks for the Q3 numbers.");
+    // The first spawn hangs, whatever it was started with: told by the spawn
+    // count, so a timeout that beats a slow login shell cannot make the second
+    // spawn hang too.
     let orch = Arc::new(setup_in(
         dir.path(),
         &sweep_fake(&format!(
-            "if [ \"$resume\" = - ]; then\n      sleep 5\n      else\n      {found}\n      fi"
+            "spawns=$(wc -l < \"$dir/sweep-spawns.txt\" | tr -d ' ')\n      \
+             if [ \"$spawns\" = 1 ]; then\n      sleep 30\n      else\n      {found}\n      fi"
         )),
     ));
-    orch.configure_sweep(SweepConfig {
-        command: dir
-            .path()
-            .join("fake-claude")
-            .to_string_lossy()
-            .into_owned(),
-        cwd: Some(dir.path().to_path_buf()),
-        // Room for the login shell to start under a loaded test run.
-        turn_timeout: Duration::from_secs(1),
-    });
+    // The timeout runs from the turn's start, which includes the login shell
+    // starting the fake CLI and the init line (the resume id) arriving. Leave
+    // room for both under a loaded test run, or the second spawn is fresh.
+    orch.configure_sweep(sweep_config(dir.path(), Duration::from_secs(3)));
     let mut rx = orch.subscribe_events();
     slack_every_tick(&orch);
     podium_core::proactivity::spawn(&orch, fast_polling());
@@ -2134,6 +2183,108 @@ async fn a_hung_sweep_is_killed_and_resumed_by_the_next_one() {
     // slow login shell to it).
     let turns = recorded_lines(dir.path(), "sweep-turns.txt", 1).await;
     assert!(turns.iter().filter(|t| *t == "-").count() <= 1, "{turns:?}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn shutting_down_during_a_sweep_kills_it_and_forwards_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A turn that never answers; `exec` so the recorded pid is the one killed.
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &sweep_fake("echo $$ > \"$dir/sweep-pid\"\n      exec sleep 30"),
+    ));
+    let mut rx = orch.subscribe_events();
+    slack_every_tick(&orch);
+    podium_core::proactivity::spawn(&orch, fast_polling());
+
+    // The turn is running: it has been written and the child is busy with it.
+    recorded_lines(dir.path(), "sweep-stdin.jsonl", 1).await;
+    let pid = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(dir.path().join("sweep-pid")) {
+                if !pid.trim().is_empty() {
+                    return pid.trim().to_string();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the fake sweep records its pid");
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    assert!(alive(&pid), "the sweep child is not running");
+
+    // Shutdown wakes the turn at once rather than at its (5 minute) timeout.
+    timeout(TEST_TIMEOUT, orch.shutdown())
+        .await
+        .expect("shutdown returns while a sweep turn runs");
+    timeout(TEST_TIMEOUT, async {
+        while alive(&pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the sweep child is killed");
+
+    // Nothing was forwarded: no assistant session, turn, event or row, and
+    // no failure notice for a sweep that was merely cut short.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!dir.path().join("stdin.jsonl").exists());
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, PodiumEvent::AssistantEvent { .. }),
+            "{event:?}"
+        );
+    }
+    assert!(orch.assistant_transcript().is_empty());
+}
+
+#[tokio::test]
+async fn a_resumed_sweep_that_never_comes_up_is_replaced_by_a_fresh_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A fresh spawn dies mid-turn, after announcing its session; a resumed
+    // one exits before it says anything (a pruned session id).
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &sweep_fake_with("if [ \"$resume\" != - ]; then exit 0; fi", "exit 0"),
+    ));
+    slack_every_tick(&orch);
+    podium_core::proactivity::spawn(&orch, fast_polling());
+
+    // Fresh, then the resume of its id (which fails), then fresh again: the
+    // dead id was dropped, not retried forever.
+    let spawns = recorded_lines(dir.path(), "sweep-spawns.txt", 3).await;
+    assert_eq!(spawns[..3], ["-", "sweep-session", "-"]);
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_sweep_that_keeps_failing_tells_the_assistant_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The CLI is there but dies at once, every time (logged out, say).
+    let orch = Arc::new(setup_in(dir.path(), &sweep_fake_with("exit 0", "exit 0")));
+    let mut rx = orch.subscribe_events();
+    slack_every_tick(&orch);
+    podium_core::proactivity::spawn(&orch, fast_polling());
+
+    let notice = next_notice(&mut rx).await;
+    assert!(
+        notice.starts_with("[Podium] The routine check of Slack is not working"),
+        "{notice}"
+    );
+    // Many more failed sweeps follow, and none of them says it again.
+    recorded_lines(dir.path(), "sweep-spawns.txt", 8).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let turns = recorded_lines(dir.path(), "stdin.jsonl", 1).await;
+    assert_eq!(turns.len(), 1, "{turns:?}");
     orch.shutdown().await;
 }
 

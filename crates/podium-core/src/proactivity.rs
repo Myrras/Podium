@@ -51,6 +51,7 @@ use crate::events::PodiumEvent;
 use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessInfo, ProcessKind, ProcessStatus};
+use crate::sweep::SweepOutcome;
 
 /// How often one blocked question is raised with the assistant: the first
 /// nudge plus one escalation. Raising it every `escalate_after` for as long as
@@ -186,14 +187,21 @@ impl Watcher {
         };
         let weak = self.weak.clone();
         tokio::spawn(async move {
-            let found = sweep.run(&poll_prompt(polling)).await;
+            let outcome = sweep.run(&poll_prompt(polling)).await;
+            let text = match outcome {
+                SweepOutcome::Quiet => None,
+                SweepOutcome::Finding(found) => Some(crate::sweep::finding_text(polling, &found)),
+                // A check that keeps failing looks exactly like a quiet one,
+                // so it is raised once (the sweep session counts the streak).
+                SweepOutcome::NotWorking(reason) => {
+                    Some(crate::sweep::not_working_text(polling, reason))
+                }
+            };
             // The settings may have changed while the sweep ran.
-            if let (Some(found), Some(orchestrator)) = (found, weak.upgrade()) {
+            if let (Some(text), Some(orchestrator)) = (text, weak.upgrade()) {
                 let polling_now = orchestrator.assistant_polling();
                 if orchestrator.assistant_proactivity() && polling_now.is_active() {
-                    orchestrator
-                        .assistant_poll(crate::sweep::finding_text(polling, &found))
-                        .await;
+                    orchestrator.assistant_poll(text).await;
                 }
             }
             // Freed only now, so the next sweep never overlaps this one's
@@ -265,9 +273,9 @@ impl Watcher {
     }
 
     /// The slow lane: every `poll_interval_minutes`, check the enabled
-    /// external sources in the sweep's own session. Settings are read here rather than
-    /// captured at startup, so turning the poll off (or changing its
-    /// interval) takes effect on the next tick.
+    /// external sources in the sweep's own session. Settings are read here
+    /// rather than captured at startup, so turning the poll off (or changing
+    /// its interval) takes effect on the next tick.
     async fn poll_external(&mut self, orchestrator: &Orchestrator) {
         let polling = orchestrator.assistant_polling();
         if !polling.is_active() {
