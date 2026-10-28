@@ -20,10 +20,10 @@ portable-pty = "0.9"
 # `podium.yml` project configuration.
 serde_yaml_ng = "0.10"
 # Shell-safe quoting for agent launch command lines.
-shlex = "1"
+shlex = "2"
 # Built-in MCP server. rmcp is pinned exactly (API churn); all rmcp usage is
 # isolated to `src/mcp/`.
-rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "=3.7.0", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.8"
 schemars = "1"
 # ANSI stripping for `get_process_output` (agents read plain text).
@@ -38,7 +38,7 @@ reqwest = { version = "0.13.3", default-features = false, features = ["blocking"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 # Encoding an image attachment read from disk into a `stream-json` content
 # block; already a dependency of `src-tauri` for terminal bytes.
-base64 = "0.22"
+base64 = "0.23"
 # Shrinking an oversized image attachment before it travels as base64.
 # Decode/encode only — no filters beyond the resize, hence the trimmed
 # feature set (GIFs are passed through untouched, so no gif codec).
@@ -55,7 +55,7 @@ dunce = "1"
 # Unix-only: process-group signalling for graceful stop (killpg SIGTERM →
 # SIGKILL). Windows kills the ConPTY child via portable-pty's ChildKiller.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["signal", "process"] }
+nix = { version = "0.31", features = ["signal", "process"] }
 
 # Linux: the GitLab token goes in the Secret Service (GNOME Keyring/KWallet)
 # over D-Bus, so it persists like on macOS/Windows. Building needs libdbus
@@ -66,4 +66,4 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 [dev-dependencies]
 tempfile = "3"
 # Integration tests call the MCP tools directly (Parameters extractor).
-rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "=3.7.0", features = ["server", "macros", "transport-streamable-http-server"] }
