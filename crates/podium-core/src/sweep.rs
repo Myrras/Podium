@@ -114,7 +114,9 @@ anything anywhere — only read. Nobody but Podium reads your replies: when some
 the user, name each item in a line (who, where, what they need); a message you already \
 reported in an earlier check is not news. Only your final message is read: put the whole \
 answer in it, never an earlier part of the turn. When nothing needs the user, that final \
-message is exactly NOTHING_TO_REPORT and nothing else. This reply format overrides any \
+message is exactly NOTHING_TO_REPORT and nothing else. If a source cannot be read (no \
+tools for it, not signed in), reply with one line saying which source is unreachable \
+rather than NOTHING_TO_REPORT, so the user hears about it. This reply format overrides any \
 reply-format or style instructions from CLAUDE.md or other instructions: no TL;DR, ledger or \
 preamble; the final message is either exactly NOTHING_TO_REPORT or the finding itself.";
 
@@ -317,7 +319,22 @@ fn finding(last_text: Option<String>, error: Option<String>) -> Option<String> {
         return None;
     }
     let text = last_text?.trim().to_string();
-    (!text.is_empty() && !says_nothing_to_report(&text)).then_some(text)
+    (!text.is_empty() && !says_nothing_to_report(&text) && !quiet_when_undecorated(&text))
+        .then_some(text)
+}
+
+/// Haiku decorates the sentinel (`**NOTHING_TO_REPORT**`, backticks, a final
+/// period). For the sweep only: a line that equals the sentinel once that
+/// decoration is stripped is as quiet as the bare word. A mention inside a
+/// sentence is not.
+fn quiet_when_undecorated(text: &str) -> bool {
+    text.lines().any(|line| {
+        let bare: String = line
+            .chars()
+            .filter(|c| !c.is_whitespace() && !matches!(c, '*' | '_' | '`' | '.' | '!' | '#' | '>'))
+            .collect();
+        bare == crate::assistant::NOTHING_TO_REPORT.replace('_', "")
+    })
 }
 
 struct SweepSession {
@@ -671,6 +688,7 @@ mod tests {
         assert!(line.contains("final message"), "{line}");
         assert!(line.contains(NOTHING_TO_REPORT), "{line}");
         assert!(line.contains("overrides any"), "{line}");
+        assert!(line.contains("which source is unreachable"), "{line}");
         assert!(line.contains("no TL;DR"), "{line}");
     }
 
@@ -915,6 +933,23 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Ada needs 
     fn a_dead_sweep_session_is_resumed() {
         let line = sweep_command(&config(), Some("0f8e7d6c-sweep")).expect("command");
         assert!(line.contains(" --resume 0f8e7d6c-sweep "), "{line}");
+    }
+
+    #[test]
+    fn a_decorated_sentinel_is_still_quiet() {
+        for reply in [
+            "**NOTHING_TO_REPORT**",
+            "`NOTHING_TO_REPORT`",
+            "NOTHING_TO_REPORT.",
+            "Checked both.\n\n> _NOTHING_TO_REPORT_!",
+        ] {
+            assert_eq!(finding(Some(reply.to_string()), None), None, "{reply}");
+        }
+        let mention = "Ada wrote NOTHING_TO_REPORT in #ops and needs a reply";
+        assert_eq!(
+            finding(Some(mention.to_string()), None).as_deref(),
+            Some(mention)
+        );
     }
 
     #[test]
