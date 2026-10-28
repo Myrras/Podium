@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-28
+
 ### Added
 
 - **Assistant on/off.** The assistant can be turned off and on from the window.
