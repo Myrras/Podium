@@ -75,7 +75,7 @@ when it merges.
 
 ### Fixed
 
-- Fixed a test that failed on Windows (no change to the app).
+- Fixed tests that failed on Windows (no change to the app).
 
 ## [3.1.1] - 2026-10-09
 
