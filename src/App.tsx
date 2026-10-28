@@ -345,9 +345,7 @@ export default function App() {
           <button
             type="button"
             className={`${styles.settingsBtn} ${styles.powerBtn}`}
-            aria-label={
-              assistantEnabled ? "Turn assistant off" : "Turn assistant on"
-            }
+            aria-label="Assistant power"
             title={
               assistantEnabled ? "Turn assistant off" : "Turn assistant on"
             }

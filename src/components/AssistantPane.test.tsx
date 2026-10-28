@@ -1324,8 +1324,13 @@ describe("AssistantPane", () => {
     expect(screen.getByText("The assistant is off")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
     expect(screen.queryByLabelText("Start my day")).toBeNull();
+    // Header controls that need the assistant are not offered while off.
+    expect(screen.queryByLabelText("Assistant memory")).toBeNull();
+    expect(screen.getByLabelText("Autonomy")).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Turn on" }));
+    expect(screen.getByLabelText("Assistant memory")).toBeInTheDocument();
+    expect(screen.getByLabelText("Autonomy")).toBeEnabled();
     expect(assistantEnabledSet).toHaveBeenCalledWith(true);
     expect(
       await screen.findByPlaceholderText("Message the assistant…"),

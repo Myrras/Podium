@@ -231,6 +231,16 @@ impl Watcher {
     }
 
     async fn on_tick(&mut self, orchestrator: &Orchestrator) {
+        // While the assistant is off every raise would be dropped by `nudge`
+        // / `poll`, yet the watcher would already have spent it (MAX_RAISES,
+        // the sweep and poll clocks). Do no work at all, so turning it back
+        // on finds everything still due. The clocks keep rolling so the
+        // sweeps do not fire in a burst the moment it comes on.
+        if !orchestrator.assistant_enabled() {
+            self.last_sweep = Instant::now();
+            self.last_poll = Instant::now();
+            return;
+        }
         self.check_idle_agents(orchestrator).await;
         if self.last_sweep.elapsed() >= self.config.sweep_every {
             self.last_sweep = Instant::now();

@@ -341,6 +341,10 @@ pub struct Orchestrator {
     /// holds the Responses list ([`Self::responses`]). Shared with the
     /// sub-agent machinery's own tasks, which nudge it (see [`Hub`]).
     assistant: Arc<AssistantManager>,
+    /// Serialises [`Self::set_assistant_enabled`]: the stored setting and the
+    /// manager's flag are two writes, and two toggles interleaving them could
+    /// leave the setting on while the flag is off (sends refused until restart).
+    assistant_toggle: tokio::sync::Mutex<()>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -364,6 +368,7 @@ impl Orchestrator {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             assistant: Arc::new(AssistantManager::new(events.clone())),
+            assistant_toggle: tokio::sync::Mutex::new(()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -592,6 +597,8 @@ impl Orchestrator {
     /// and nothing starts a session again until it is turned back on and the
     /// next send or nudge comes. Transcript, memory and Responses stay.
     pub async fn set_assistant_enabled(&self, enabled: bool) -> CoreResult<bool> {
+        // Held for the whole save + manager update: the last toggle wins in both.
+        let _toggle = self.assistant_toggle.lock().await;
         let stored = self
             .agent_settings
             .set_assistant_enabled(enabled)?

@@ -2757,3 +2757,58 @@ async fn the_watcher_stays_quiet_while_the_assistant_is_off() {
     assert!(!dir.path().join("pid.txt").exists());
     orch.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_stuck_agent_is_not_spent_while_the_assistant_is_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    let mut rx = orch.subscribe_events();
+    let project = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let agent = orch
+        .add_process(project, agent_spec("sleep 30", dir.path()))
+        .await
+        .expect("add agent");
+    orch.start_process(agent).await.expect("start agent");
+
+    orch.set_assistant_enabled(false).await.expect("off");
+    podium_core::proactivity::spawn(&orch, fast_proactivity());
+    // Several ticks pass while the agent is silent: nothing may be said.
+    let quiet = timeout(Duration::from_millis(400), next_notice(&mut rx)).await;
+    assert!(quiet.is_err(), "raised while the assistant is off");
+
+    // The raise was not used up: turning it back on delivers it.
+    orch.set_assistant_enabled(true).await.expect("on");
+    let notice = next_notice(&mut rx).await;
+    assert!(notice.contains("waiting on input"), "{notice}");
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_toggles_leave_the_setting_and_the_flag_in_agreement() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    for _ in 0..20 {
+        let off = tokio::spawn({
+            let orch = orch.clone();
+            async move { orch.set_assistant_enabled(false).await }
+        });
+        let on = tokio::spawn({
+            let orch = orch.clone();
+            async move { orch.set_assistant_enabled(true).await }
+        });
+        off.await.expect("join").expect("off");
+        on.await.expect("join").expect("on");
+        // The manager's flag is observable through the send gate.
+        let stored = orch.assistant_enabled();
+        let sent = orch.assistant_send("ping").await;
+        assert_eq!(
+            stored,
+            !matches!(sent, Err(podium_core::CoreError::AssistantDisabled)),
+            "setting and flag disagree"
+        );
+    }
+    orch.shutdown().await;
+}

@@ -164,7 +164,10 @@ describe("App", () => {
     render(<App />);
 
     assistant.setResult = false;
-    await user.click(screen.getByLabelText("Turn assistant off"));
+    const power = screen.getByRole("button", { name: "Assistant power" });
+    expect(power).toHaveAttribute("aria-pressed", "true");
+    expect(power).toHaveAttribute("title", "Turn assistant off");
+    await user.click(power);
     expect(invoke).toHaveBeenCalledWith("assistant_enabled_set", {
       enabled: false,
     });
@@ -172,7 +175,9 @@ describe("App", () => {
     expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
 
     assistant.setResult = true;
-    await user.click(screen.getByLabelText("Turn assistant on"));
+    expect(power).toHaveAttribute("aria-pressed", "false");
+    expect(power).toHaveAttribute("title", "Turn assistant on");
+    await user.click(power);
     expect(invoke).toHaveBeenCalledWith("assistant_enabled_set", {
       enabled: true,
     });

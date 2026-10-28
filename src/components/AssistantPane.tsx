@@ -468,18 +468,23 @@ export function AssistantPane() {
       <header className={styles.header}>
         <AssistantIcon className={styles.headerIcon} />
         <span className={styles.title}>Assistant</span>
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label="Assistant memory"
-          title="What the assistant remembers"
-          aria-pressed={memoryOpen}
-          onClick={() => setMemoryOpen(!memoryOpen)}
-        >
-          <MemoryIcon />
-        </button>
+        {/* The memory editor lives in the body, which is gone while the
+            assistant is off: a button for it would do nothing. */}
+        {enabled && (
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Assistant memory"
+            title="What the assistant remembers"
+            aria-pressed={memoryOpen}
+            onClick={() => setMemoryOpen(!memoryOpen)}
+          >
+            <MemoryIcon />
+          </button>
+        )}
         <select
           className={styles.autonomy}
+          disabled={!enabled}
           aria-label="Autonomy"
           title="How much the assistant may do without asking"
           value={autonomy}
