@@ -14,6 +14,12 @@ when it merges.
 
 - **Assistant on/off.** The assistant can be turned off and on from the window.
 
+## [3.1.3] - 2026-10-28
+
+### Changed
+
+- The CI workflow is now named "Test, Lint & Release".
+
 ## [3.1.2] - 2026-10-28
 
 ### Added
@@ -57,6 +63,8 @@ when it merges.
 
 ### Changed
 
+- The Slack/Teams routine check runs on Haiku in its own session; the
+  assistant only speaks up when it found something.
 - **Only Responses items reach your desktop.** The assistant no longer
   notifies you for a chat reply, a confirmation card or an unprompted
   `[Podium]` turn; a new item on the Responses list does, once per batch and

@@ -38,6 +38,7 @@ use crate::subagent::{
     SubagentBook, SubagentConfig, SubagentInfo, SubagentKind, SubagentPhase, SubagentRecord,
     SubagentSpawned,
 };
+use crate::sweep::{SweepConfig, SweepManager, SweepRun};
 use crate::todo::{TodoInfo, TodoStore};
 use crate::worktree::WorktreeInfo;
 
@@ -345,6 +346,8 @@ pub struct Orchestrator {
     /// manager's flag are two writes, and two toggles interleaving them could
     /// leave the setting on while the flag is off (sends refused until restart).
     assistant_toggle: tokio::sync::Mutex<()>,
+    /// The external sweep's own Haiku session ([`crate::sweep`]).
+    sweep: Arc<SweepManager>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -369,6 +372,7 @@ impl Orchestrator {
             inner: Arc::new(Mutex::new(Inner::default())),
             assistant: Arc::new(AssistantManager::new(events.clone())),
             assistant_toggle: tokio::sync::Mutex::new(()),
+            sweep: Arc::new(SweepManager::new()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -441,9 +445,25 @@ impl Orchestrator {
     /// Point the assistant at its CLI binary, working directory and the dir
     /// holding its transcript + memory. Until this is called it uses the
     /// `claude` on `PATH`, Podium's own cwd, and keeps the conversation in
-    /// memory only.
+    /// memory only. The external sweep's session ([`crate::sweep`]) runs the
+    /// same binary in the same directory.
     pub fn configure_assistant(&self, config: AssistantConfig) {
+        self.sweep
+            .set_launch(config.command.clone(), config.cwd.clone());
         self.assistant.configure(config);
+    }
+
+    /// Point the external sweep's session at a binary / cwd and set its turn
+    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
+    /// the binary and cwd, so call this after it.
+    pub fn configure_sweep(&self, config: SweepConfig) {
+        self.sweep.configure(config);
+    }
+
+    /// Claim the one external-sweep slot; `None` while a sweep still runs
+    /// (that tick is skipped) or after shutdown. See [`crate::sweep`].
+    pub fn begin_external_sweep(&self) -> Option<SweepRun> {
+        self.sweep.begin()
     }
 
     /// Send a chat turn to the personal assistant, spawning its session on
@@ -642,12 +662,13 @@ impl Orchestrator {
         self.assistant.nudge(text, mcp).await;
     }
 
-    /// Ask the assistant to sweep the user's external sources. Like a nudge
-    /// it starts the session if there is none, but it stays out of the chat:
-    /// only an answer worth having is ever shown (see
-    /// [`crate::assistant::poll_prompt`]).
+    /// Hand the assistant what the external sweep found (the sweep itself
+    /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
+    /// session if there is none, and goes in as a `Poll` turn.
     pub async fn assistant_poll(&self, text: String) {
-        if !self.assistant_enabled() {
+        // A sweep that finished as the app quits must not start a session
+        // after the assistant was stopped; nor while the assistant is off.
+        if !self.assistant_enabled() || self.inner.lock().expect(LOCK_POISONED).shutting_down {
             return;
         }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
@@ -3792,6 +3813,10 @@ impl Orchestrator {
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
+        // The sweep first: one that finishes while the assistant is already
+        // gone would hand it a finding and start a new assistant child that
+        // nothing kills.
+        self.sweep.shutdown().await;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions().await;
