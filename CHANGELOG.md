@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-10-28
+
 ### Added
 
 - **Archived to-dos over MCP.** `list_todos` takes `include_archived: true`
