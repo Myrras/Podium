@@ -14,6 +14,13 @@ when it merges.
 
 - Agents started without a to-do now rename their session, also when launched with a prompt.
 
+## [3.2.4] - 2026-10-29
+
+### Security
+
+- **Dependency security updates.** Updated vite to 7.3.7 and dependencies to
+  their latest minor and patch versions, fixing known vulnerabilities.
+
 ## [3.2.3] - 2026-10-28
 
 ### Changed
