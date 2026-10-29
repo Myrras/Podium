@@ -23,7 +23,7 @@ serde_yaml_ng = "0.10"
 shlex = "1"
 # Built-in MCP server. rmcp is pinned exactly (API churn); all rmcp usage is
 # isolated to `src/mcp/`.
-rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "=3.7.0", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.8"
 schemars = "1"
 # ANSI stripping for `get_process_output` (agents read plain text).
@@ -66,4 +66,4 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 [dev-dependencies]
 tempfile = "3"
 # Integration tests call the MCP tools directly (Parameters extractor).
-rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "=3.7.0", features = ["server", "macros", "transport-streamable-http-server"] }
