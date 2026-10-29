@@ -2,29 +2,24 @@
 # overwrites it. Per-app settings go in .github/rust-base.json.
 #
 # Every push to main (a merged PR) runs CI, including Windows, and then
-# releases. Pull requests run Windows only with the `windows` label; adding the
-# label starts a CI run with Windows next to the running CI. Any other label
-# (e.g. release:patch) starts a run whose `ci` job is skipped: it adds no
-# `ci / ci-ok` check. No label event cancels a run.
+# releases. Pull requests run frontend and Rust only; Windows on a PR comes
+# from ci-windows.yml (the `windows` label). No label event starts this
+# workflow: GitHub judges the required `ci / ci-ok` by the latest run of this
+# workflow on the head commit, so a label run that skipped `ci` would hide it
+# ("Expected — Waiting for status to be reported").
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
 
 concurrency:
-  # Only a new commit cancels a run, so a cancelled `ci / ci-ok` always belongs
-  # to an outdated commit and never blocks the merge. Commit runs (push,
-  # opened, synchronize, reopened) share one group per branch; `synchronize`
-  # cancels the run of the previous commit. Every label run gets a group of its
-  # own: GitHub keeps only the newest pending run per group and cancels older
-  # pending ones even without cancel-in-progress, so a shared group (even one
-  # per commit) would let a burst of label events cancel a run on the head
-  # commit. Adding `windows` therefore runs CI with Windows next to the
-  # running CI instead of replacing it.
-  group: ci-${{ github.ref }}${{ github.event.action == 'labeled' && format('-run-{0}', github.run_id) || '' }}
+  # Only a new commit cancels a run (`synchronize` cancels the run of the
+  # previous commit), so a cancelled `ci / ci-ok` always belongs to an
+  # outdated commit and never blocks the merge.
+  group: ci-${{ github.ref }}
   # main: a running run is never cancelled, but a newer push cancels an older
   # pending one. Their merges ship in the next release, which takes the
   # highest release label over all PRs merged since the last tag.
@@ -35,9 +30,6 @@ permissions:
 
 jobs:
   ci:
-    # Keep this condition: it is what stops an unrelated label from producing
-    # a skipped (= passing) `ci / ci-ok` check.
-    if: github.event.action != 'labeled' || github.event.label.name == 'windows'
     uses: Myrras/rust-base/.github/workflows/reusable-tauri-ci.yml@v2
 
   release:
