@@ -1,0 +1,16 @@
+{
+  "ci": {
+    "windows-test-scope": "-p podium-core"
+  },
+  "release": {
+    "title-prefix": "Podium",
+    "require-deploy-key": true
+  },
+  "integration": {
+    "runner": "windows-latest",
+    "setup-wsl": true,
+    "wsl-distro": "Ubuntu-24.04",
+    "wsl-packages": "git procps",
+    "env": "PODIUM_TEST_WSL_DISTRO=Ubuntu-24.04"
+  }
+}

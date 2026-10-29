@@ -2,17 +2,88 @@
 
 Guidance for AI agents (and humans) working in this repository.
 
+<!-- rust-base:start -->
+<!-- Synced from rust-base. Do not edit this block here; change it in rust-base. -->
+## Shared CI and recipes (rust-base)
+
+CI, release and installer builds come from
+<https://github.com/RobbieMinderhoud/rust-base>. `.github/workflows/` holds thin
+callers (`ci.yml`, `pr-checks.yml`, `build.yml`, `integration.yml`) of its
+reusable workflows, pinned `@v2`. The callers and the shared config files
+(`.gitattributes`, `.editorconfig`, `rust-toolchain.toml`, `.prettierrc.json`,
+`.prettierignore`, `eslint.config.js`, `tsconfig*.json`,
+`.github/dependabot.yml`) are synced from rust-base: **change them there**,
+not here. Behaviour is documented in the rust-base README.
+
+App-specific CI settings (runner, Windows test scope, extra recipe, release
+title prefix, integration packages and env) live in `.github/rust-base.json`.
+That file is owned by this repo.
+
+- **Required checks on `main`:** `ci / ci-ok`, `pr-checks / Changelog entry`,
+  `pr-checks / Release label`. Don't require `ci / frontend`, `ci / rust` or
+  `ci / windows`. The labels `release:patch`, `release:minor`, `release:major`,
+  `no-release` and `windows` must exist.
+- **Release labels:** every PR carries exactly one of `release:patch`,
+  `release:minor` or `release:major`, enforced by `pr-checks.yml`. Use
+  `no-release` for CI, config or docs-only PRs. Merging to `main` releases:
+  the version is the latest `v*` tag bumped by the highest label across the PRs
+  merged since. Never bump the version or create a tag by hand; `just version`
+  is for emergencies only.
+- **Changelog gate:** every PR adds an entry under `## [Unreleased]` in
+  `CHANGELOG.md` (user-facing changes only, _Keep a Changelog_). `pr-checks.yml`
+  fails unless the PR touches `CHANGELOG.md` and that section holds at least one
+  `- ` entry. The heading must stay exactly `## [Unreleased]`. `no-release` PRs
+  need no entry.
+- **`packageManager`:** don't add one to `package.json`. The shared workflows
+  set pnpm 10; a second version fails setup.
+- **Shared recipes** (`dev`, `dev-signed`, `build`, `build-signed`,
+  `install-signed`, `check`, `test-core`, `format`, `version`, `version-check`,
+  `rust`, `frontend`, `ci`, `sweep`) come from `ci/common.just` in rust-base.
+  The justfile imports it with `import? '~/.rust-base/ci/common.just'`; link
+  your clone with `ln -s /path/to/rust-base ~/.rust-base`. Don't redefine those
+  names (just rejects duplicates) and never add `set allow-duplicate-recipes`:
+  change the shared recipe in rust-base instead. Recipes that CI calls
+  (`test-integration`) must not depend on shared recipes: in CI the optional
+  import resolves to nothing.
+
+### When to add the `windows` label
+
+Windows CI runs on pushes to `main` and on PRs that carry the `windows` label
+(adding the label re-runs CI for the PR). It gates the release. Add `windows`
+to a PR when it:
+
+- touches `cfg(windows)`, `cfg(unix)` or `target_os` code, or platform-specific modules
+- changes file paths, path separators, drive letters or case sensitivity; process spawning, PTY or shell quoting; environment variables; WSL
+- changes the Windows settings in `tauri.conf.json` (bundle, NSIS) or installer scripts
+- adds or upgrades a dependency with platform-specific code (`tauri`, `windows-rs`, `portable-pty`, …) or bumps the Rust toolchain
+- fixes a Windows bug
+
+Skip it for frontend-only, docs-only and purely cross-platform logic changes. If unsure, add it: `main` runs Windows after the merge anyway, and a failure there blocks the release.
+<!-- rust-base:end -->
+
+### Windows-sensitive files
+
+Podium has real Windows code. The Windows-sensitive spots:
+
+- `crates/podium-core/src/platform.rs` and `platform/wsl_path.rs`: the WSL backend switch, `cmd`/PowerShell command quoting (`quote_arg_windows`, `parse_windows_argv`), Windows-vs-Unix paths, `open_in_warp`
+- `crates/podium-core/src/process/pty.rs`: ConPTY vs Unix PTY, process-group kill (`killpg`) vs the Windows Job Object
+- `crates/podium-core/src/backend_settings.rs` (`backend.json`), `agent/mod.rs` (agent command planning), `mcp/install.rs`, `worktree.rs` (no `\\?\` verbatim paths), `agent/folder_trust.rs`, `sweep.rs`
+- `src-tauri/src/commands/process.rs` (default terminal: PowerShell vs `$SHELL`), `src-tauri/src/main.rs` (`windows_subsystem`), `src-tauri/tauri.windows.conf.json` (frameless window), the `bundle` block in `src-tauri/tauri.conf.json` and the NSIS build in `build.yml`
+- tests: the `#[cfg_attr(windows, ignore = "…")]` / `#[cfg(unix)]` tests in `podium-core` (`orchestrator.rs`, `tests/mcp_server.rs`, `tests/pty_engine.rs`, `tests/supervision.rs`, `tests/agent_cleanup.rs`, `tests/assistant.rs`) and the nightly-only `tests/wsl_backend.rs` / `tests/wsl_native_drives.rs`
+
+Windows CI only runs `cargo test -p podium-core`; the WSL suites need a real distro and run in `integration.yml`, not on PRs.
+
 ## What Podium is
 
 Cross-platform **desktop cockpit for AI coding agents**, built in **Rust + Tauri**. Open a project folder and Podium runs its dev servers (`podium.yml`), ad-hoc terminals and AI coding agents (Claude Code; more adapters later), each in its own PTY with lifecycle supervision. A built-in **MCP server** lets agents inspect and orchestrate those processes, including spawning more agents. macOS and Windows are built and packaged (ConPTY on Windows); Windows has an optional [WSL-backend mode](docs/architecture/wsl-backend.md). Linux is kept in mind, not packaged.
 
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id `com.podium.app`.
 
-## Boilerplate (shared skeleton)
+## rust-base (shared skeleton)
 
-The shared skeleton (workspace shape, `justfile`, the CI callers, config files, design tokens, layering/IPC conventions) is a standalone template: <https://github.com/RobbieMinderhoud/rust-application-boilerplate>. It is the **upstream** of the skeleton; Podium adds its domain on top.
+The shared skeleton (workspace shape, `justfile`, the CI callers, config files, design tokens, layering/IPC conventions) is the public template <https://github.com/RobbieMinderhoud/rust-base>, whose root is the template app. It is the **upstream** of the skeleton; Podium adds its domain on top.
 
-- **Maintainer rule (internal):** a change to the shared skeleton or conventions (not Podium domain code) also gets a **PR against the boilerplate**. App-specific code does not flow back. Outside contributors can ignore this.
+- **Maintainer rule (internal):** a change to the shared skeleton or conventions (not Podium domain code) also gets a **PR against rust-base**. App-specific code does not flow back. Outside contributors can ignore this.
 
 ## Status
 
@@ -72,7 +143,7 @@ just version 0.2.0  # bump + sync version across all manifests (emergencies only
 just version-check  # verify versions are in sync
 ```
 
-`rust`, `frontend`, `ci`, `build-signed` and `sweep` come from the shared `common.just` of `RobbieMinderhoud/ci-workflows`, imported via `import? '~/.ci-workflows/common.just'`. Locally, symlink your clone: `ln -s /path/to/ci-workflows ~/.ci-workflows`. Don't redefine those names here. `build`, `version` and `version-check` call the shared scripts in `~/.ci-workflows/scripts/`. `test-integration` must not depend on `common.just` (CI has no import).
+`build`, `version` and `version-check` call the shared scripts in `~/.rust-base/ci/scripts/`.
 
 Every recipe exports `CARGO_TARGET_DIR` at the **main checkout's** `target/`, so worktrees share one build cache. Cargo locks it: builds in different worktrees serialise. Release builds use cargo's default codegen (fat LTO + `codegen-units = 1` cost ~110s of link time for ~3.5 MB).
 
@@ -106,40 +177,17 @@ The repo is on GitHub (`RobbieMinderhoud/Podium`); use the **`gh` CLI**. **Every
 1. **Branch** from an up-to-date `main`, named `short-description` (e.g. `agent-activity-fix`), no issue-number prefix.
 2. **Implement, commit, push.** Commit subjects are free-form, imperative (Keep-a-Changelog voice). **Never add a `Co-Authored-By` trailer** (a `commit-msg` hook also strips Anthropic ones).
 3. **PR:** `gh pr create --base main --fill` (or explicit title/body). Add its entry under `## [Unreleased]` in `CHANGELOG.md` (CI fails without one). `ci / ci-ok` must be green.
-4. **Merge = release.** Nobody bumps the version or tags by hand. Every PR needs exactly one release label, `release:patch`, `release:minor` or `release:major` (`gh pr edit N --add-label release:minor`), enforced by `pr-checks.yml`. CI, config or docs-only PRs get `no-release` instead. Merge with `gh pr merge N --squash`; the branch auto-deletes. Get explicit user confirmation first, since merging publishes a release.
+4. **Merge = release.** Nobody bumps the version or tags by hand. Label the PR with a release label (see Shared CI above; `gh pr edit N --add-label release:minor`). Merge with `gh pr merge N --squash`; the branch auto-deletes. Get explicit user confirmation first, since merging publishes a release.
 
 ## Versioning & CI
 
 - **SemVer.** The `[workspace.package]` version in the root `Cargo.toml` is the source of truth; the shared `sync-version.sh` propagates it to `tauri.conf.json` and `package.json` (`just version-check` detects drift).
-- **`CHANGELOG.md`** follows _Keep a Changelog_ and lists **only user-facing changes**. Every PR adds an entry under `## [Unreleased]`; `pr-checks.yml` fails unless the PR touches `CHANGELOG.md` and that section holds at least one `- ` entry.
-- **CI** is a set of thin callers in `.github/workflows/` of the reusable workflows in `RobbieMinderhoud/ci-workflows@v1` (behaviour lives there; see its README): `ci.yml` (checks, then release on push to `main`), `pr-checks.yml` (changelog entry + release label), `build.yml` (installers, dispatch-only: the release dispatches it on the tag) and `integration.yml` (nightly `just test-integration` on Windows with WSL, `Ubuntu-24.04`). Don't add a `packageManager` field to `package.json` (the shared workflows set pnpm 10; a second version fails setup).
-- **Checks.** Rust checks (rustfmt, clippy `-D warnings`, `cargo test --workspace`) run on **ubuntu**, plus the frontend job (prettier, ESLint, Vitest, `pnpm build`). Windows (`cargo test -p podium-core`, clippy on the whole workspace) runs on pushes to `main` and on PRs that carry the `windows` label (adding the label re-runs CI for the PR). macOS is only built by `build.yml`, so macOS-only breakage shows up at release, not in a PR. Required checks: `ci / ci-ok`, `pr-checks / Changelog entry`, `pr-checks / Release label`; don't require `ci / frontend`, `ci / rust` or `ci / windows`. The `windows` label must exist in the repo.
-- **Releasing is automatic: every merge to `main` is a release.** The `release` job in `ci.yml` runs after `ci` (Windows included) on each push to `main`. An empty `## [Unreleased]` means already released. Otherwise the version is the latest `v*` tag bumped **patch by default**, `minor`/`major` by the highest `release:*` label across the PRs merged since the tag. It commits `Release vX.Y.Z [skip ci]`, tags, creates the GitHub Release ("Podium vX.Y.Z") and dispatches `build.yml` on the tag, which builds the macOS `.dmg` and Windows NSIS installers and attaches them. `build.yml` must keep that name; a hand-pushed tag builds with `gh workflow run build.yml --ref vX.Y.Z`. **Never bump the version or create a tag by hand**; `just version` is for emergencies.
-- **Release push = deploy key.** `main`'s ruleset (PR required, linear history, no force-push/deletion) is bypassable only by the admin role and `DeployKey`; GitHub refuses the Actions app as a bypass actor on a user-owned repo, so a `GITHUB_TOKEN` push fails with `GH013`. The release job checks out with `ssh-key: secrets.RELEASE_DEPLOY_KEY` (private half of a write-enabled deploy key; the owner creates both) and pushes over SSH. The caller sets `require-deploy-key: true`, so a missing secret fails the release up front instead of dying on `GH013`. A deploy-key push *does* trigger workflows: `[skip ci]` stops the release commit re-running `ci.yml` and `build.yml`'s `main` trigger. Whether it also covers the tag is unclear, hence no tag trigger. Rotate = new deploy key + `gh secret set RELEASE_DEPLOY_KEY`, then delete the old key.
-- **Dependabot** (`.github/dependabot.yml`) opens weekly grouped PRs for GitHub Actions, Cargo and npm.
+- **`CHANGELOG.md`** follows _Keep a Changelog_ and lists **only user-facing changes**.
+- **CI** callers are synced from rust-base (see above). `integration.yml` runs `just test-integration` nightly on Windows with WSL, `Ubuntu-24.04`. App settings are in `.github/rust-base.json`.
+- **Checks.** Rust checks (rustfmt, clippy `-D warnings`, `cargo test --workspace`) run on **ubuntu**, plus the frontend job (prettier, ESLint, Vitest, `pnpm build`). Windows runs `cargo test -p podium-core` and clippy on the whole workspace. macOS is only built by `build.yml`, so macOS-only breakage shows up at release, not in a PR.
+- **Releasing is automatic: every merge to `main` is a release.** The `release` job in `ci.yml` runs after `ci` (Windows included) on each push to `main`. An empty `## [Unreleased]` means already released. It commits `Release vX.Y.Z [skip ci]`, tags, creates the GitHub Release ("Podium vX.Y.Z") and dispatches `build.yml` on the tag, which builds the macOS `.dmg` and Windows NSIS installers and attaches them. `build.yml` must keep that name; a hand-pushed tag builds with `gh workflow run build.yml --ref vX.Y.Z`.
+- **Release push = deploy key.** `main`'s ruleset (PR required, linear history, no force-push/deletion) is bypassable only by the admin role and `DeployKey`; GitHub refuses the Actions app as a bypass actor on a user-owned repo, so a `GITHUB_TOKEN` push fails with `GH013`. The release job checks out with `ssh-key: secrets.RELEASE_DEPLOY_KEY` (private half of a write-enabled deploy key; the owner creates both) and pushes over SSH. `.github/rust-base.json` sets `require-deploy-key: true`, so a missing secret fails the release up front instead of dying on `GH013`. A deploy-key push *does* trigger workflows: `[skip ci]` stops the release commit re-running `ci.yml` and `build.yml`'s `main` trigger. Whether it also covers the tag is unclear, hence no tag trigger. Rotate = new deploy key + `gh secret set RELEASE_DEPLOY_KEY`, then delete the old key.
 - **Not yet set up:** signed/notarized releases.
-
-### When to add the `windows` label
-
-Add `windows` to a PR when it:
-
-- touches `cfg(windows)`, `cfg(unix)` or `target_os` code, or platform-specific modules
-- changes file paths, path separators, drive letters or case sensitivity; process spawning, PTY or shell quoting; environment variables; WSL
-- changes the Windows settings in `tauri.conf.json` (bundle, NSIS) or installer scripts
-- adds or upgrades a dependency with platform-specific code (`tauri`, `windows-rs`, `portable-pty`, …) or bumps the Rust toolchain
-- fixes a Windows bug
-
-Skip it for frontend-only, docs-only and purely cross-platform logic changes. If unsure, add it: `main` runs Windows after the merge anyway, and a failure there blocks the release.
-
-Podium has real Windows code. The Windows-sensitive spots:
-
-- `crates/podium-core/src/platform.rs` and `platform/wsl_path.rs`: the WSL backend switch, `cmd`/PowerShell command quoting (`quote_arg_windows`, `parse_windows_argv`), Windows-vs-Unix paths, `open_in_warp`
-- `crates/podium-core/src/process/pty.rs`: ConPTY vs Unix PTY, process-group kill (`killpg`) vs the Windows Job Object
-- `crates/podium-core/src/backend_settings.rs` (`backend.json`), `agent/mod.rs` (agent command planning), `mcp/install.rs`, `worktree.rs` (no `\\?\` verbatim paths), `agent/folder_trust.rs`, `sweep.rs`
-- `src-tauri/src/commands/process.rs` (default terminal: PowerShell vs `$SHELL`), `src-tauri/src/main.rs` (`windows_subsystem`), `src-tauri/tauri.windows.conf.json` (frameless window), the `bundle` block in `src-tauri/tauri.conf.json` and the NSIS build in `build.yml`
-- tests: the `#[cfg_attr(windows, ignore = "…")]` / `#[cfg(unix)]` tests in `podium-core` (`orchestrator.rs`, `tests/mcp_server.rs`, `tests/pty_engine.rs`, `tests/supervision.rs`, `tests/agent_cleanup.rs`, `tests/assistant.rs`) and the nightly-only `tests/wsl_backend.rs` / `tests/wsl_native_drives.rs`
-
-Windows CI only runs `cargo test -p podium-core`; the WSL suites need a real distro and run in `integration.yml`, not on PRs.
 
 ## Roadmap
 

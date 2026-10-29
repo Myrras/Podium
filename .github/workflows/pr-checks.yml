@@ -1,6 +1,9 @@
+# Synced from rust-base (sync/files/); don't edit it in the app, the next sync
+# overwrites it.
+#
 # Every PR needs a CHANGELOG entry under `## [Unreleased]` and exactly one of
-# the labels `release:patch`, `release:minor`, `release:major` (the version bump on merge). Separate
-# from ci.yml so that (un)labelling a PR doesn't re-run the full build.
+# the labels `release:patch`, `release:minor`, `release:major` or `no-release`.
+# Separate from ci.yml so that (un)labelling a PR doesn't re-run the full build.
 name: PR checks
 
 on:
@@ -16,6 +19,4 @@ permissions:
 
 jobs:
   pr-checks:
-    uses: RobbieMinderhoud/ci-workflows/.github/workflows/pr-checks.yml@v1
-    # with:
-    #   ci-ref: v1
+    uses: RobbieMinderhoud/rust-base/.github/workflows/reusable-pr-checks.yml@v2
