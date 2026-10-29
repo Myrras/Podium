@@ -1,7 +1,9 @@
+# Synced from rust-base (sync/files/); don't edit it in the app, the next sync
+# overwrites it.
 name: Build
 
-# release.yml (shared release workflow) dispatches this file by name with
-# `--ref <tag>`, so it must stay named `build.yml`.
+# The shared release workflow dispatches this file by name with `--ref <tag>`,
+# so it must stay named `build.yml`.
 # Also runnable by hand from the Actions tab, or for a hand-pushed tag with
 # `gh workflow run build.yml --ref vX.Y.Z`.
 on:
@@ -12,4 +14,4 @@ permissions:
 
 jobs:
   build:
-    uses: RobbieMinderhoud/ci-workflows/.github/workflows/build.yml@v1
+    uses: RobbieMinderhoud/rust-base/.github/workflows/reusable-build.yml@v2
