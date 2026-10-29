@@ -1,0 +1,2 @@
+# Checkouts are LF on every OS: tests compare fixture bytes, rustfmt checks line endings.
+* text=auto eol=lf
