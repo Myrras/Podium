@@ -139,7 +139,8 @@ when asked to — they always *start* in the project root, where your tooling
 and caches live.
 
 Each worktree row in the sidebar can open a terminal rooted in it, open it in
-Warp, run the Commands modal against it, or be removed. Removal is refused
+Warp, run the Commands modal against it, or be removed. The section header's
+refresh button re-reads the list after changes made outside Podium. Removal is refused
 while a process is running in it or while it has uncommitted changes (unless
 forced); the branch is always kept.
 

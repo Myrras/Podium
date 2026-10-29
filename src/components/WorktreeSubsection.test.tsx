@@ -110,6 +110,29 @@ describe("WorktreeSubsection", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("refresh button re-reads the list and is disabled while loading", async () => {
+    worktreeListMock.mockResolvedValueOnce([wt("fix-login")]);
+    renderSubsection();
+    const btn = await screen.findByRole("button", {
+      name: "Refresh worktrees",
+    });
+    await waitFor(() => expect(worktreeListMock).toHaveBeenCalledTimes(1));
+
+    let resolve!: (v: WorktreeInfo[]) => void;
+    worktreeListMock.mockReturnValueOnce(
+      new Promise<WorktreeInfo[]>((r) => {
+        resolve = r;
+      }),
+    );
+    fireEvent.click(btn);
+    expect(worktreeListMock).toHaveBeenCalledTimes(2);
+    expect(btn).toBeDisabled();
+
+    resolve([wt("fix-login"), wt("add-search")]);
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    expect(await screen.findByText("add-search")).toBeInTheDocument();
+  });
+
   it("opens a terminal rooted in the worktree", async () => {
     worktreeListMock.mockResolvedValue([wt("fix-login")]);
     processAddMock.mockResolvedValue({

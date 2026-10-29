@@ -3,7 +3,8 @@
  * Terminals. Lists Podium-managed git worktrees with their own terminals
  * nested underneath (via the shared `ProcessRow`, so status/click/rename all
  * work as usual) — those terminals are excluded from the plain Terminals
- * list above. No header "+": worktrees come from `create_worktree` over MCP
+ * list above. The header's only action is a refresh (re-reads git, for
+ * changes made outside Podium); no "+": worktrees come from `create_worktree` over MCP
  * (an agent's own doing), never from the sidebar. Hidden entirely when the
  * project has none, same as the Processes subsection when there are no
  * `podium.yml` services.
@@ -37,6 +38,7 @@ import {
   BranchIcon,
   DeleteIcon,
   ExternalLinkIcon,
+  RestartIcon,
   RunIcon,
   TerminalIcon,
 } from "./icons";
@@ -84,6 +86,8 @@ export function WorktreeSubsection({
   /** Name of the worktree whose removal is in flight — git can take a
    * moment, so its delete button is disabled until it resolves. */
   const [removing, setRemoving] = useState<string | null>(null);
+  /** A manual refresh (header button) is in flight. */
+  const [refreshing, setRefreshing] = useState(false);
 
   // Initial pull; later changes arrive via the `worktree:changed` refresh.
   useEffect(() => {
@@ -114,6 +118,18 @@ export function WorktreeSubsection({
       ...(shell ? { command: shell } : {}),
     });
     if (info) await startProcess(info.id);
+  };
+
+  // Re-reads `git worktree list`, for changes made outside Podium (the
+  // `worktree:changed` event only covers create/remove through it).
+  const refreshNow = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await refresh(projectId);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const removeWorktree = async (wt: WorktreeInfo) => {
@@ -158,6 +174,17 @@ export function WorktreeSubsection({
           collapsed={collapsed}
           onToggle={() => setCollapsed(!collapsed)}
         />
+        <button
+          type="button"
+          className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction} ${ownStyles.refreshBtn}`}
+          aria-label="Refresh worktrees"
+          title={refreshing ? "Refreshing…" : "Refresh worktrees"}
+          data-busy={refreshing || undefined}
+          disabled={refreshing}
+          onClick={() => void refreshNow()}
+        >
+          <RestartIcon size={13} />
+        </button>
       </div>
       {!collapsed && (
         <div className={styles.rows}>
