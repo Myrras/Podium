@@ -843,8 +843,8 @@ pub fn peer_name_carries(sender_name: &str, tag: &str) -> bool {
 /// that act on the calling agent (`rename_session`, `assign_todo`) need its
 /// process id, but models don't fish `PODIUM_PROCESS_ID` out of the
 /// environment or act on the MCP server instructions on their own — so spell
-/// the ids out in-context, and tell a generically named session outright to
-/// rename itself.
+/// the ids out in-context, and tell a session with only a placeholder name
+/// outright to rename itself.
 ///
 /// `peer_messaging` says whether this CLI can receive cross-session messages
 /// at all; the note about verifying a sender is pointless noise for one that
@@ -866,8 +866,9 @@ fn identity_prompt(ctx: &AgentLaunchCtx, peer_messaging: bool, push_rules: bool)
     );
     if !ctx.named {
         prompt.push_str(
-            " This session has a generic window name: immediately after the \
-             user's first message, call the podium rename_session tool with a \
+            " This session has only a placeholder name: as your first action \
+             on the user's first message (a launch prompt counts), call the \
+             podium rename_session tool (mcp__podium__rename_session) with a \
              short name describing the session, then continue with the task.",
         );
     }
@@ -1656,7 +1657,7 @@ mod tests {
         assert!(blurb.contains(&process_id.to_string()));
         assert!(blurb.contains(&project_id.to_string()));
         assert!(blurb.contains("rename_session"));
-        assert!(blurb.contains("generic window name"));
+        assert!(blurb.contains("only a placeholder name"));
     }
 
     #[test]
@@ -1684,7 +1685,7 @@ mod tests {
         let tokens = split_command(&plan.command);
         let blurb = &tokens[tokens.len() - 1];
         assert!(blurb.contains(&ctx.process_id.to_string()));
-        assert!(!blurb.contains("generic window name"));
+        assert!(!blurb.contains("only a placeholder name"));
     }
 
     #[test]
