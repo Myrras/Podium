@@ -7,7 +7,7 @@ Guidance for AI agents (and humans) working in this repository.
 ## Shared CI and recipes (rust-base)
 
 CI, release and installer builds come from
-<https://github.com/RobbieMinderhoud/rust-base>. `.github/workflows/` holds thin
+<https://github.com/Myrras/rust-base>. `.github/workflows/` holds thin
 callers (`ci.yml`, `pr-checks.yml`, `build.yml`, `integration.yml`) of its
 reusable workflows, pinned `@v2`. The callers and the shared config files
 (`.gitattributes`, `.editorconfig`, `rust-toolchain.toml`, `.prettierrc.json`,
@@ -85,7 +85,7 @@ Cross-platform **desktop cockpit for AI coding agents**, built in **Rust + Tauri
 
 ## rust-base (shared skeleton)
 
-The shared skeleton (workspace shape, `justfile`, the CI callers, config files, design tokens, layering/IPC conventions) is the public template <https://github.com/RobbieMinderhoud/rust-base>, whose root is the template app. It is the **upstream** of the skeleton; Podium adds its domain on top.
+The shared skeleton (workspace shape, `justfile`, the CI callers, config files, design tokens, layering/IPC conventions) is the public template <https://github.com/Myrras/rust-base>, whose root is the template app. It is the **upstream** of the skeleton; Podium adds its domain on top.
 
 - **Maintainer rule (internal):** a change to the shared skeleton or conventions (not Podium domain code) also gets a **PR against rust-base**. App-specific code does not flow back. Outside contributors can ignore this.
 
@@ -176,7 +176,7 @@ Core integration tests (`crates/podium-core/tests/`) use **real PTYs** and a rea
 
 ## Git workflow
 
-The repo is on GitHub (`RobbieMinderhoud/Podium`); use the **`gh` CLI**. **Every code change goes through a branch → PR**, never straight to `main`, which stays releasable. No GitHub issue per change: the PR (title + body: what and why) is the unit of work. Conversations that touch no code need no branch.
+The repo is on GitHub (`Myrras/Podium`); use the **`gh` CLI**. **Every code change goes through a branch → PR**, never straight to `main`, which stays releasable. No GitHub issue per change: the PR (title + body: what and why) is the unit of work. Conversations that touch no code need no branch.
 
 1. **Branch** from an up-to-date `main`, named `short-description` (e.g. `agent-activity-fix`), no issue-number prefix.
 2. **Implement, commit, push.** Commit subjects are free-form, imperative (Keep-a-Changelog voice). **Never add a `Co-Authored-By` trailer** (a `commit-msg` hook also strips Anthropic ones).
