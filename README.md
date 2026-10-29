@@ -364,7 +364,7 @@ just build    # production desktop bundle (.app + .dmg on macOS)
 just ci       # rustfmt, clippy, tests, prettier, eslint, Vitest, build (shared common.just)
 ```
 
-`just ci` and the release helpers come from the shared CI repo: symlink a clone of
+`just dev`, `just build`, `just ci` and the other dev recipes (`just --list`) come from the shared CI repo: symlink a clone of
 `RobbieMinderhoud/ci-workflows` as `~/.ci-workflows`.
 
 ## Configuring a project
