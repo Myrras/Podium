@@ -1,7 +1,7 @@
 # Podium — development tasks. Run `just` (or `just --list`) to see them.
 # Shared recipes (dev, build, check, test-core, format, version, ci, ...; see
-# `just --list`) come from the ci-workflows clone: `ln -s /path/to/ci-workflows ~/.ci-workflows`.
-import? '~/.ci-workflows/common.just'
+# `just --list`) come from the rust-base clone: `ln -s /path/to/rust-base ~/.rust-base`.
+import? '~/.rust-base/ci/common.just'
 
 # Share one target/ across the main checkout and every git worktree. A fresh
 # worktree otherwise starts cold and rebuilds every dependency (minutes);

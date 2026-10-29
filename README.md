@@ -361,11 +361,11 @@ recipes); the Tauri CLI is the local dev-dependency, so no global install.
 ```sh
 just dev      # run the app (Vite + Tauri, hot reload)
 just build    # production desktop bundle (.app + .dmg on macOS)
-just ci       # rustfmt, clippy, tests, prettier, eslint, Vitest, build (shared common.just)
+just ci       # rustfmt, clippy, tests, prettier, eslint, Vitest, build (shared `ci/common.just`)
 ```
 
-`just dev`, `just build`, `just ci` and the other dev recipes (`just --list`) come from the shared CI repo: symlink a clone of
-`RobbieMinderhoud/ci-workflows` as `~/.ci-workflows`.
+`just dev`, `just build`, `just ci` and the other dev recipes (`just --list`) come from the shared rust-base repo: symlink a clone of
+`RobbieMinderhoud/rust-base` as `~/.rust-base`.
 
 ## Configuring a project
 

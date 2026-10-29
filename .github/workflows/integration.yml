@@ -1,5 +1,10 @@
-# Opt-in Windows + WSL tests (`just test-integration`): they need a real WSL
-# distro. Off the per-PR path: nightly and on demand.
+# Synced from rust-base (sync/files/); don't edit it in the app, the next sync
+# overwrites it. Per-app settings (runner, apt packages, WSL, env, recipe) go
+# in the `integration` section of .github/rust-base.json.
+#
+# Runs `just test-integration` (or the configured recipe) from this repo's
+# justfile. Off the per-PR path on purpose: image pulls, WSL and real external
+# services make these slow and occasionally flaky. Nightly and on demand.
 name: Integration tests
 
 on:
@@ -12,11 +17,8 @@ permissions:
 
 jobs:
   integration:
-    uses: RobbieMinderhoud/ci-workflows/.github/workflows/integration.yml@v1
-    with:
-      runner: windows-latest
-      setup-wsl: true
-      wsl-distro: Ubuntu-24.04
-      wsl-packages: git procps
-      env: |
-        PODIUM_TEST_WSL_DISTRO=Ubuntu-24.04
+    uses: RobbieMinderhoud/rust-base/.github/workflows/reusable-integration.yml@v2
+    secrets:
+      # Exposed to the test step as env INTEGRATION_TOKEN; empty when the repo
+      # has no such secret.
+      INTEGRATION_TOKEN: ${{ secrets.INTEGRATION_TOKEN }}
