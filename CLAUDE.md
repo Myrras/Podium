@@ -8,7 +8,8 @@ Guidance for AI agents (and humans) working in this repository.
 
 CI, release and installer builds come from
 <https://github.com/Myrras/rust-base>. `.github/workflows/` holds thin
-callers (`ci.yml`, `pr-checks.yml`, `build.yml`, `integration.yml`) of its
+callers (`ci.yml`, `ci-windows.yml`, `pr-checks.yml`, `build.yml`,
+`integration.yml`) of its
 reusable workflows, pinned `@v2`. The callers and the shared config files
 (`.gitattributes`, `.editorconfig`, `rust-toolchain.toml`, `.prettierrc.json`,
 `.prettierignore`, `eslint.config.js`, `tsconfig*.json`,
@@ -24,8 +25,8 @@ Dependabot runs monthly with minor/patch grouped (Cargo and npm); PRs carry
 (React, Tauri, Vite, ESLint, ...) are ignored here: rust-base decides them.
 
 - **Required checks on `main`:** `ci / ci-ok`, `pr-checks / Changelog entry`,
-  `pr-checks / Release label`. Don't require `ci / frontend`, `ci / rust` or
-  `ci / windows`. The labels `release:patch`, `release:minor`, `release:major`,
+  `pr-checks / Release label`. Don't require `ci / frontend`, `ci / rust`,
+  `ci / windows` or any `ci-windows` check. The labels `release:patch`, `release:minor`, `release:major`,
   `no-release` and `windows` must exist.
 - **Release labels:** every PR carries exactly one of `release:patch`,
   `release:minor` or `release:major`, enforced by `pr-checks.yml`. Use
@@ -52,9 +53,11 @@ Dependabot runs monthly with minor/patch grouped (Cargo and npm); PRs carry
 
 ### When to add the `windows` label
 
-Windows CI runs on pushes to `main` and on PRs that carry the `windows` label
-(adding the label re-runs CI for the PR). It gates the release. Add `windows`
-to a PR when it:
+Windows CI runs on pushes to `main`, where it gates the release, and on PRs
+that carry the `windows` label: `ci-windows.yml` runs it when the label is
+added and on every new commit while it is there. On a PR it is not a required
+check, so wait for `ci-windows / windows` before merging. Add `windows` to a PR
+when it:
 
 - touches `cfg(windows)`, `cfg(unix)` or `target_os` code, or platform-specific modules
 - changes file paths, path separators, drive letters or case sensitivity; process spawning, PTY or shell quoting; environment variables; WSL
