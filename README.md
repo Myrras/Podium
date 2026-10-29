@@ -365,7 +365,7 @@ just ci       # rustfmt, clippy, tests, prettier, eslint, Vitest, build (shared 
 ```
 
 `just dev`, `just build`, `just ci` and the other dev recipes (`just --list`) come from the shared rust-base repo: symlink a clone of
-`RobbieMinderhoud/rust-base` as `~/.rust-base`.
+`Myrras/rust-base` as `~/.rust-base`.
 
 ## Configuring a project
 
