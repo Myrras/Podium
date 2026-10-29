@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- A refresh button in the sidebar's Worktrees header re-reads the worktree list, for worktrees created or removed outside Podium.
+
 ## [3.2.5] - 2026-10-29
 
 ### Fixed
