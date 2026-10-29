@@ -1,6 +1,7 @@
 # Minor/patch updates are grouped; app-specific majors arrive as separate PRs.
 # Shared-stack majors are decided in rust-base (its own Dependabot is the canary)
 # and later arrive via the shared package; the ignore lists are a bridge until then.
+# ESLint plugins live in @myrras/rust-base-config; its majors arrive as a separate PR.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -50,14 +51,6 @@ updates:
       - dependency-name: "@testing-library/*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "eslint"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@eslint/*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "eslint-plugin-*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "typescript-eslint"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "globals"
         update-types: ["version-update:semver-major"]
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]

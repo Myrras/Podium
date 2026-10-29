@@ -10,12 +10,13 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, labeled, unlabeled, edited]
 
-concurrency:
-  group: pr-checks-${{ github.ref }}
-  cancel-in-progress: true
-
+# No concurrency group: every run must complete. A cancelled run stays on the
+# head commit as a cancelled required check and blocks the merge. The jobs read
+# the PR's current labels after a short wait (hence pull-requests: read), so
+# every run of a burst of label events reaches the same result.
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   pr-checks:
