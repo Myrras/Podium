@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   integration:
-    uses: RobbieMinderhoud/rust-base/.github/workflows/reusable-integration.yml@v2
+    uses: Myrras/rust-base/.github/workflows/reusable-integration.yml@v2
     secrets:
       # Exposed to the test step as env INTEGRATION_TOKEN; empty when the repo
       # has no such secret.

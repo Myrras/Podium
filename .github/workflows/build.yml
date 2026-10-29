@@ -14,4 +14,4 @@ permissions:
 
 jobs:
   build:
-    uses: RobbieMinderhoud/rust-base/.github/workflows/reusable-build.yml@v2
+    uses: Myrras/rust-base/.github/workflows/reusable-build.yml@v2
