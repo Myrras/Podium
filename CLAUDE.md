@@ -79,11 +79,11 @@ Cross-platform **desktop cockpit for AI coding agents**, built in **Rust + Tauri
 
 > Naming: product and repo are **Podium**. Core crate `podium-core`; bundle id `com.podium.app`.
 
-## Boilerplate (shared skeleton)
+## rust-base (shared skeleton)
 
-The shared skeleton (workspace shape, `justfile`, the CI callers, config files, design tokens, layering/IPC conventions) is a standalone template: <https://github.com/RobbieMinderhoud/rust-application-boilerplate>. It is the **upstream** of the skeleton; Podium adds its domain on top.
+The shared skeleton (workspace shape, `justfile`, the CI callers, config files, design tokens, layering/IPC conventions) is the public template <https://github.com/RobbieMinderhoud/rust-base>, whose root is the template app. It is the **upstream** of the skeleton; Podium adds its domain on top.
 
-- **Maintainer rule (internal):** a change to the shared skeleton or conventions (not Podium domain code) also gets a **PR against the boilerplate**. App-specific code does not flow back. Outside contributors can ignore this.
+- **Maintainer rule (internal):** a change to the shared skeleton or conventions (not Podium domain code) also gets a **PR against rust-base**. App-specific code does not flow back. Outside contributors can ignore this.
 
 ## Status
 
