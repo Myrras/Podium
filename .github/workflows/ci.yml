@@ -3,9 +3,9 @@
 #
 # Every push to main (a merged PR) runs CI, including Windows, and then
 # releases. Pull requests run Windows only with the `windows` label; adding the
-# label re-runs CI for the PR. Any other label (e.g. release:patch) starts a
-# run whose `ci` job is skipped: it doesn't cancel the running CI and adds no
-# `ci / ci-ok` check.
+# label starts a CI run with Windows next to the running CI. Any other label
+# (e.g. release:patch) starts a run whose `ci` job is skipped: it adds no
+# `ci / ci-ok` check. No label event cancels a run.
 name: CI
 
 on:
@@ -15,15 +15,20 @@ on:
     types: [opened, synchronize, reopened, labeled]
 
 concurrency:
-  # Labels other than `windows` get their own group, so they never cancel the
-  # running CI. Adding `windows` shares the group: it replaces the running CI
-  # with one that includes Windows, so only one `ci / ci-ok` is in flight.
-  group: ci-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'windows' && format('-label-{0}', github.event.label.name) || '' }}
-  # PRs: a new push cancels the running check. main: a running run is never
-  # cancelled, but GitHub keeps only the newest pending run per group and
-  # cancels older pending ones. Their merges ship in the next release, which
-  # takes the highest release label over all PRs merged since the last tag.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Only a new commit cancels a run, so a cancelled `ci / ci-ok` always belongs
+  # to an outdated commit and never blocks the merge. Commit runs (push,
+  # opened, synchronize, reopened) share one group per branch; `synchronize`
+  # cancels the run of the previous commit. Every label run gets a group of its
+  # own: GitHub keeps only the newest pending run per group and cancels older
+  # pending ones even without cancel-in-progress, so a shared group (even one
+  # per commit) would let a burst of label events cancel a run on the head
+  # commit. Adding `windows` therefore runs CI with Windows next to the
+  # running CI instead of replacing it.
+  group: ci-${{ github.ref }}${{ github.event.action == 'labeled' && format('-run-{0}', github.run_id) || '' }}
+  # main: a running run is never cancelled, but a newer push cancels an older
+  # pending one. Their merges ship in the next release, which takes the
+  # highest release label over all PRs merged since the last tag.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 permissions:
   contents: read
