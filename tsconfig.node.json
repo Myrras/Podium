@@ -1,10 +1,4 @@
 {
-  "compilerOptions": {
-    "composite": true,
-    "skipLibCheck": true,
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
-  },
+  "extends": "@myrras/rust-base-config/tsconfig.node.json",
   "include": ["vite.config.ts"]
 }

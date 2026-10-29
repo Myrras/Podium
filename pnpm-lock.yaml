@@ -75,9 +75,9 @@ importers:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)(use-sync-external-store@1.6.0(react@19.2.7))
     devDependencies:
-      '@eslint/js':
-        specifier: ^9.18.0
-        version: 9.39.4
+      '@myrras/rust-base-config':
+        specifier: ^0.1.0
+        version: 0.1.0(eslint@9.39.4)(prettier@3.9.4)(typescript@5.8.3)
       '@tauri-apps/cli':
         specifier: ^2
         version: 2.11.4
@@ -102,15 +102,6 @@ importers:
       eslint:
         specifier: ^9.18.0
         version: 9.39.4
-      eslint-plugin-react-hooks:
-        specifier: ^5.1.0
-        version: 5.2.0(eslint@9.39.4)
-      eslint-plugin-react-refresh:
-        specifier: ^0.4.18
-        version: 0.4.26(eslint@9.39.4)
-      globals:
-        specifier: ^15.14.0
-        version: 15.15.0
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -120,9 +111,6 @@ importers:
       typescript:
         specifier: ~5.8.3
         version: 5.8.3
-      typescript-eslint:
-        specifier: ^8.20.0
-        version: 8.62.1(eslint@9.39.4)(typescript@5.8.3)
       vite:
         specifier: ^7.0.4
         version: 7.3.6
@@ -491,6 +479,13 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@myrras/rust-base-config@0.1.0':
+    resolution: {integrity: sha512-cVNtzPxhrJAchbTFZId0LWBAEWQEKU3FHUQSQRP0ODY746CqzhFBNZELN9z+vTssi9YsDDoH6JmZLL93RXyhAA==}
+    peerDependencies:
+      eslint: ^9.18.0
+      prettier: ^3.4.2
+      typescript: ^5.8.3
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -2663,6 +2658,19 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@myrras/rust-base-config@0.1.0(eslint@9.39.4)(prettier@3.9.4)(typescript@5.8.3)':
+    dependencies:
+      '@eslint/js': 9.39.4
+      eslint: 9.39.4
+      eslint-plugin-react-hooks: 5.2.0(eslint@9.39.4)
+      eslint-plugin-react-refresh: 0.4.26(eslint@9.39.4)
+      globals: 15.15.0
+      prettier: 3.9.4
+      typescript: 5.8.3
+      typescript-eslint: 8.62.1(eslint@9.39.4)(typescript@5.8.3)
+    transitivePeerDependencies:
+      - supports-color
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 
