@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.2.6] - 2026-10-29
+
 ### Added
 
 - A refresh button in the sidebar's Worktrees header re-reads the worktree list, for worktrees created or removed outside Podium.
