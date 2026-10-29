@@ -19,6 +19,10 @@ App-specific CI settings (runner, Windows test scope, extra recipe, release
 title prefix, integration packages and env) live in `.github/rust-base.json`.
 That file is owned by this repo.
 
+Dependabot runs monthly with minor/patch grouped (Cargo and npm); PRs carry
+`release:patch`. Majors of app-specific dependencies come as separate PRs. Shared-stack majors
+(React, Tauri, Vite, ESLint, ...) are ignored here: rust-base decides them.
+
 - **Required checks on `main`:** `ci / ci-ok`, `pr-checks / Changelog entry`,
   `pr-checks / Release label`. Don't require `ci / frontend`, `ci / rust` or
   `ci / windows`. The labels `release:patch`, `release:minor`, `release:major`,
