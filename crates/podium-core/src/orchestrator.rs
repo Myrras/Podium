@@ -2862,15 +2862,17 @@ impl Orchestrator {
         // Window name, in precedence: an explicit name, the first to-do's
         // text (an agent spawned on to-dos), the first scratchpad's title (an
         // agent spawned on scratchpads), a short label derived from the
-        // prompt, else the adapter binary. A generically named agent (the
-        // binary fallback) is told via its launch plan to rename itself over
-        // MCP after the first user message.
+        // prompt, else the adapter binary. The prompt-derived label is only
+        // a placeholder: it is shown, but does not count as `named`. An agent
+        // without an explicit or to-do/scratchpad name is told via its launch
+        // plan to rename itself over MCP on its first message (a launch
+        // prompt counts).
         let explicit = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         // A single to-do/scratchpad names the session after it; with several
         // grouped, picking one is arbitrary ("a random to-do"), so leave the
         // name underived — `named` stays false and the agent renames itself
         // over MCP once it has read all of them.
-        let derived = todos
+        let grouped_name = todos
             .first()
             .filter(|_| todos.len() == 1)
             .map(|t| t.text.trim())
@@ -2883,13 +2885,15 @@ impl Orchestrator {
                     .map(|s| s.title.trim())
                     .filter(|t| !t.is_empty())
                     .map(str::to_string)
-            })
-            .or_else(|| base_prompt.and_then(name_from_prompt));
-        let named = explicit.is_some() || derived.is_some();
+            });
+        // Sub-agents never rename themselves: their task is their name.
+        let named = explicit.is_some() || grouped_name.is_some() || subagent.is_some();
         let name = match explicit {
             Some(n) => n.to_string(),
             None => next_free_name(
-                &derived.unwrap_or_else(|| adapter.binary().to_string()),
+                &grouped_name
+                    .or_else(|| base_prompt.and_then(name_from_prompt))
+                    .unwrap_or_else(|| adapter.binary().to_string()),
                 &existing_names,
             ),
         };
@@ -7714,6 +7718,52 @@ mod tests {
         orch.set_assistant_workspace(data.join("assistant-workspace"))
             .unwrap();
         (orch, adapter)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn only_an_explicit_or_single_todo_name_counts_as_named() {
+        let data = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let (orch, adapter) = sub_orch(data.path(), sub_config(4));
+        let project = orch
+            .open_project(project_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let todo = orch.add_todo(project, "Fix the login form", None).unwrap();
+        let spawn = |name: Option<&str>, prompt: Option<&str>, todos: Vec<TodoId>| {
+            orch.spawn_agent(
+                project,
+                Some("subfake".to_string()),
+                name.map(str::to_string),
+                prompt.map(str::to_string),
+                todos,
+                Vec::new(),
+                false,
+                None,
+                None,
+            )
+        };
+
+        // A prompt alone gives a placeholder name, but the agent still has
+        // to rename itself.
+        let id = spawn(None, Some("Summarise the open issues\nmore"), Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            orch.process_info(id).unwrap().name,
+            "Summarise the open issues"
+        );
+        assert!(!adapter.launches.lock().unwrap()[0].named);
+
+        // An explicit name or a single to-do is a real name.
+        spawn(Some("Docs"), Some("Write docs"), Vec::new())
+            .await
+            .unwrap();
+        assert!(adapter.launches.lock().unwrap()[1].named);
+        let id = spawn(None, None, vec![todo.id]).await.unwrap();
+        assert_eq!(orch.process_info(id).unwrap().name, "Fix the login form");
+        assert!(adapter.launches.lock().unwrap()[2].named);
     }
 
     fn phase_of(orch: &Orchestrator, id: ProcessId) -> Option<SubagentPhase> {

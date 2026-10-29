@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Fixed
+
+- Agents started without a to-do now rename their session, also when launched with a prompt.
+
 ## [3.2.3] - 2026-10-28
 
 ### Changed
