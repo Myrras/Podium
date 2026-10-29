@@ -58,11 +58,11 @@ Notes live in `docs/architecture/`, not here. Read the matching file before chan
 Prefer `just` (run `just` to list recipes). The Tauri CLI is the local dev-dependency: use `pnpm tauri …`, no global install.
 
 ```
-just dev            # run the app (Vite + Tauri, hot reload)
-just dev-signed     # debug .app, stable signing identity, no hot reload (macOS)
-just build          # release bundle: .app + .dmg (what CI ships)
+just dev            # shared: run the app (Vite + Tauri, hot reload)
+just dev-signed     # shared: debug .app, stable signing identity, no hot reload (macOS)
+just build          # shared: release bundle .app + .dmg
 just build-signed   # shared: signed release .app, opens Finder on it (macOS)
-just install-signed # build-signed, then copy into /Applications
+just install-signed # shared: signed release, atomic install into /Applications (no Finder)
 just check          # cargo check --workspace
 just test-core      # podium-core tests only
 just test-integration # opt-in WSL tests (Windows + a WSL distro only; run nightly by CI)
