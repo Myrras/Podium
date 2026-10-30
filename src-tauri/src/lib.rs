@@ -214,6 +214,9 @@ pub fn run() {
             // no session to kill this early, so this only rewrites one file.
             // Nothing runs yet, so there are no sub-agents to keep or stop.
             tauri::async_runtime::block_on(state.orchestrator.assistant_new_conversation(false));
+            // With the assistant turned off (Settings → Assistant) nothing
+            // below starts a session: the watcher's nudges and sweeps are
+            // dropped one by one while the setting is off.
             // Watch the workspace on the assistant's behalf: an agent that
             // finished or crashed, one that looks stuck and lingering to-dos
             // become chat nudges — each starting the assistant's CLI if it is
@@ -299,6 +302,8 @@ pub fn run() {
             commands::assistant::assistant_memory_set,
             commands::assistant::assistant_autonomy_get,
             commands::assistant::assistant_autonomy_set,
+            commands::assistant::assistant_enabled_get,
+            commands::assistant::assistant_enabled_set,
             commands::assistant::assistant_proactivity_get,
             commands::assistant::assistant_proactivity_set,
             commands::assistant::assistant_polling_get,

@@ -330,6 +330,11 @@ pub enum AutonomyMode {
 pub struct AssistantSettings {
     #[serde(default)]
     pub autonomy: AutonomyMode,
+    /// Whether the assistant exists at all. Off: no session is ever started,
+    /// no nudge or poll is sent and the chat refuses messages. Defaults to
+    /// on — also for an `agents.json` written before this field existed.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Whether Podium may nudge the assistant unprompted (an agent finished,
     /// one looks stuck, to-dos are lingering, a new day started). Defaults to
     /// on — also for an `agents.json` written before this field existed.
@@ -363,6 +368,7 @@ impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
             autonomy: AutonomyMode::default(),
+            enabled: true,
             proactive: true,
             poll_interval_minutes: DEFAULT_POLL_INTERVAL_MINUTES,
             poll_slack: true,
@@ -391,24 +397,30 @@ impl AssistantPolling {
     }
 }
 
-/// The turn the external sweep sends. It names only the enabled sources, and
-/// spells out the silence contract: nothing to act on means exactly
-/// [`NOTHING_TO_REPORT`], which Podium swallows. Nothing else is needed to
-/// reach Slack/Teams — the assistant inherits the user's own MCP servers
-/// (`--strict-mcp-config` is deliberately not passed), so this is wording,
-/// not an integration.
-pub fn poll_prompt(polling: AssistantPolling) -> String {
-    let sources = match (polling.slack, polling.teams) {
+/// The enabled sources, as the sweep's wording names them.
+pub(crate) fn poll_sources(polling: AssistantPolling) -> &'static str {
+    match (polling.slack, polling.teams) {
         (true, true) => "Slack and Microsoft Teams",
         (false, true) => "Microsoft Teams",
         _ => "Slack",
-    };
+    }
+}
+
+/// The turn the external sweep sends — to its own Haiku session
+/// ([`crate::sweep`]), never to the assistant. It names only the enabled
+/// sources, and spells out the silence contract: nothing to act on means
+/// exactly [`NOTHING_TO_REPORT`], which Podium swallows. Nothing else is
+/// needed to reach Slack/Teams — the sweep session inherits the user's own
+/// MCP servers (`--strict-mcp-config` is deliberately not passed), so this is
+/// wording, not an integration.
+pub fn poll_prompt(polling: AssistantPolling) -> String {
+    let sources = poll_sources(polling);
     format!(
         "[Podium] Routine check: look at {sources} for messages to the user since you last \
          looked, and judge whether any of them actually need the user to act or answer. If \
          something does, say what it is and what it needs, in a line or two. If nothing does, \
          reply with exactly {NOTHING_TO_REPORT} and nothing else — no greeting, no \
-         explanation, no summary of what you checked. Do not tell the user you ran this check."
+         explanation, no summary of what you checked."
     )
 }
 
@@ -1053,6 +1065,9 @@ pub struct AssistantManager {
     /// `propose-all`). Shared with each session's output task, which swaps a
     /// session that no longer matches at its next `TurnEnd`.
     block_send_message: Arc<AtomicBool>,
+    /// Mirror of the `enabled` setting. While off, nothing here starts a
+    /// session or accepts input.
+    enabled: AtomicBool,
 }
 
 impl AssistantManager {
@@ -1065,7 +1080,43 @@ impl AssistantManager {
             peer_tag: crate::agent::peer_tag(&uuid::Uuid::new_v4().to_string()),
             events,
             block_send_message: Arc::new(AtomicBool::new(false)),
+            enabled: AtomicBool::new(true),
         }
+    }
+
+    /// Whether the assistant is turned on.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Set the flag without touching a session (startup, before any exists).
+    pub fn preset_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Turn the assistant off: the session is killed (deliberately, so it is
+    /// not reported as `exited`), proposals and their Responses items are
+    /// dropped, and whatever was waiting in the queue is reported as
+    /// undelivered. Transcript, memory and the other Responses items stay.
+    pub async fn disable(&self) {
+        self.enabled.store(false, Ordering::Relaxed);
+        let waiting = {
+            let mut state = self.state.lock().await;
+            if let Some(mut session) = state.session.take() {
+                session.quiet_exit.store(true, Ordering::Relaxed);
+                let _ = session.child.kill().await;
+            }
+            state.end_turn();
+            std::mem::take(&mut state.pending)
+        };
+        self.proposals.lock().expect(LOCK_POISONED).clear();
+        if let Err(e) = self.store.responses().remove_where(
+            |i| i.source.as_deref() == Some(PROPOSAL_SOURCE),
+            |items| publish_responses(&self.events, items),
+        ) {
+            tracing::warn!("could not clear the proposal items: {e}");
+        }
+        report_undelivered(&self.store, &self.events, waiting);
     }
 
     /// Set what the next session spawns with, without touching a live one —
@@ -1170,6 +1221,9 @@ impl AssistantManager {
         reply_to: Option<ResponseItem>,
         mcp: Option<McpConnectInfo>,
     ) -> CoreResult<bool> {
+        if !self.is_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         let text = text.trim();
         if text.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -1181,6 +1235,10 @@ impl AssistantManager {
             self.publish(AssistantEvent::QueueNotice { text: notice });
         }
         let mut state = self.state.lock().await;
+        // Again under the lock: `disable` flips the flag before it takes it.
+        if !self.is_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         self.ensure_session(&mut state, mcp.as_ref())?;
         let item = PendingInput {
             id: PendingId::new(),
@@ -1510,6 +1568,48 @@ impl AssistantManager {
         self.deliver_own(PendingKind::Nudge, text, mcp, false).await;
     }
 
+    /// Several nudges at once (a triaged batch) as **one** turn. Texts a
+    /// nudge already waiting in the queue says, and repeats within `texts`,
+    /// are dropped first, like [`nudge`](Self::nudge)'s own dedupe. The rest
+    /// is joined with a blank line into a single nudge, delivered when the
+    /// session is idle and queued as that one item while a turn runs. A batch
+    /// already queued as a joined item is not matched by a later identical
+    /// single nudge.
+    pub async fn nudge_all(&self, texts: Vec<String>, mcp: Option<McpConnectInfo>) {
+        let mut state = self.state.lock().await;
+        let mut fresh: Vec<String> = Vec::new();
+        for text in texts {
+            let waiting = state
+                .pending
+                .iter()
+                .any(|p| p.kind == PendingKind::Nudge && p.text == text);
+            if !waiting && !fresh.contains(&text) {
+                fresh.push(text);
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
+            tracing::warn!("could not start the assistant for a nudge: {e}");
+        }
+        // One item for the whole batch, busy or idle: queued separately, a
+        // batch bigger than `MAX_PENDING` would push the user's own waiting
+        // messages off the front of the queue. (The check above is what
+        // dedupes against the queue: the joined text never matches a single
+        // waiting nudge.)
+        let joined = PendingInput {
+            id: PendingId::new(),
+            kind: PendingKind::Nudge,
+            text: fresh.join("\n\n"),
+            attachments: Vec::new(),
+            reply_to: None,
+            recorded: false,
+            lasting: false,
+        };
+        let _ = deliver_or_queue(&mut state, joined, &self.store, &self.events).await;
+    }
+
     /// A [`nudge`](Self::nudge) that outlives the conversation: how one of
     /// the assistant's own sub-agents ended. The user may reset the
     /// conversation and keep its sub-agents running; their results are then
@@ -1520,13 +1620,13 @@ impl AssistantManager {
         self.deliver_own(PendingKind::Nudge, text, mcp, true).await;
     }
 
-    /// Ask the assistant to sweep the user's external sources (the slow lane
-    /// in [`crate::proactivity`]). Spawns the session like a nudge, but goes
-    /// in as a `Poll`, which leaves the same row a nudge does so the panel
-    /// folds the sweep's actions into one faint "Podium check" line instead
-    /// of mixing them with the user's own. The user only ever sees the
-    /// *answer*, and only when there is one: a sweep that found nothing
-    /// replies [`NOTHING_TO_REPORT`], which is swallowed.
+    /// Hand the assistant what the external sweep found (the slow lane in
+    /// [`crate::proactivity`]). The sweep itself runs in its own Haiku
+    /// session ([`crate::sweep`]); only a sweep that found something reaches
+    /// this. Spawns the session like a nudge, but goes in as a `Poll`, which
+    /// leaves the same row a nudge does so the panel folds the turn's actions
+    /// into one faint "Podium check" line instead of mixing them with the
+    /// user's own.
     pub async fn poll(&self, text: String, mcp: Option<McpConnectInfo>) {
         self.deliver_own(PendingKind::Poll, text, mcp, false).await;
     }
@@ -1541,6 +1641,9 @@ impl AssistantManager {
         lasting: bool,
     ) {
         let mut state = self.state.lock().await;
+        if !self.is_enabled() {
+            return;
+        }
         if let Err(e) = self.ensure_session(&mut state, mcp.as_ref()) {
             tracing::warn!("could not start the assistant for a nudge: {e}");
         }
@@ -1869,8 +1972,13 @@ fn spawn_session(ctx: SpawnCtx) -> CoreResult<Session> {
 /// the sentinel mid-sentence while reporting something real still reaches the
 /// user.
 fn is_nothing_to_report(event: &AssistantEvent) -> bool {
-    matches!(event, AssistantEvent::Message { text }
-        if text.lines().any(|line| line.trim() == NOTHING_TO_REPORT))
+    matches!(event, AssistantEvent::Message { text } if says_nothing_to_report(text))
+}
+
+/// Whether `text` carries [`NOTHING_TO_REPORT`] on a line of its own — the
+/// matcher behind [`is_nothing_to_report`], shared with [`crate::sweep`].
+pub(crate) fn says_nothing_to_report(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == NOTHING_TO_REPORT)
 }
 
 /// Strip an [`ACTION_REQUIRED`] line out of a message. Returns `None` when
@@ -3568,6 +3676,17 @@ mod tests {
                 .contains("confirmed")
         );
         assert!(outcome_notice("add_todo", Some(Err("nope".to_string()))).contains("failed"));
+    }
+
+    #[test]
+    fn enabled_defaults_to_on_including_for_older_settings_files() {
+        assert!(AssistantSettings::default().enabled);
+        let legacy: AssistantSettings =
+            serde_json::from_str(r#"{"autonomy":"full"}"#).expect("legacy settings");
+        assert!(legacy.enabled);
+        let off: AssistantSettings =
+            serde_json::from_str(r#"{"enabled":false}"#).expect("settings");
+        assert!(!off.enabled);
     }
 
     #[test]

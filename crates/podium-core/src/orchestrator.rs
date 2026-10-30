@@ -38,7 +38,9 @@ use crate::subagent::{
     SubagentBook, SubagentConfig, SubagentInfo, SubagentKind, SubagentPhase, SubagentRecord,
     SubagentSpawned,
 };
+use crate::sweep::{SweepConfig, SweepManager, SweepRun};
 use crate::todo::{TodoInfo, TodoStore};
+use crate::triage::{TriageConfig, TriageItem, TriageManager};
 use crate::worktree::WorktreeInfo;
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
@@ -347,6 +349,15 @@ pub struct Orchestrator {
     /// holds the Responses list ([`Self::responses`]). Shared with the
     /// sub-agent machinery's own tasks, which nudge it (see [`Hub`]).
     assistant: Arc<AssistantManager>,
+    /// Serialises [`Self::set_assistant_enabled`]: the stored setting and the
+    /// manager's flag are two writes, and two toggles interleaving them could
+    /// leave the setting on while the flag is off (sends refused until restart).
+    assistant_toggle: tokio::sync::Mutex<()>,
+    /// The external sweep's own Haiku session ([`crate::sweep`]).
+    sweep: Arc<SweepManager>,
+    /// The proactivity nudges' debounce buffer and Haiku triage
+    /// ([`crate::triage`]).
+    triage: Arc<TriageManager>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -370,6 +381,9 @@ impl Orchestrator {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             assistant: Arc::new(AssistantManager::new(events.clone())),
+            assistant_toggle: tokio::sync::Mutex::new(()),
+            sweep: Arc::new(SweepManager::new()),
+            triage: Arc::new(TriageManager::new()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -442,9 +456,46 @@ impl Orchestrator {
     /// Point the assistant at its CLI binary, working directory and the dir
     /// holding its transcript + memory. Until this is called it uses the
     /// `claude` on `PATH`, Podium's own cwd, and keeps the conversation in
-    /// memory only.
+    /// memory only. The external sweep's session ([`crate::sweep`]) runs the
+    /// same binary in the same directory.
     pub fn configure_assistant(&self, config: AssistantConfig) {
+        self.sweep
+            .set_launch(config.command.clone(), config.cwd.clone());
+        self.triage
+            .set_launch(config.command.clone(), config.cwd.clone());
         self.assistant.configure(config);
+    }
+
+    /// Point the external sweep's session at a binary / cwd and set its turn
+    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
+    /// the binary and cwd, so call this after it.
+    pub fn configure_sweep(&self, config: SweepConfig) {
+        self.sweep.configure(config);
+    }
+
+    /// Point the nudge triage's session at a binary / cwd and set its
+    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
+    /// the binary and cwd, so call this after it.
+    pub fn configure_triage(&self, config: TriageConfig) {
+        self.triage.configure(config);
+    }
+
+    /// The nudge triage ([`crate::triage`]), for its worker.
+    pub(crate) fn triage(&self) -> Arc<TriageManager> {
+        Arc::clone(&self.triage)
+    }
+
+    /// Buffer a proactivity nudge for triage instead of handing it to the
+    /// assistant at once; `true` when the caller must start the triage
+    /// worker ([`crate::triage::start_worker`]).
+    pub(crate) fn push_triage(&self, item: TriageItem) -> bool {
+        self.triage.push(item)
+    }
+
+    /// Claim the one external-sweep slot; `None` while a sweep still runs
+    /// (that tick is skipped) or after shutdown. See [`crate::sweep`].
+    pub fn begin_external_sweep(&self) -> Option<SweepRun> {
+        self.sweep.begin()
     }
 
     /// Send a chat turn to the personal assistant, spawning its session on
@@ -467,6 +518,9 @@ impl Orchestrator {
         text: &str,
         attachments: Vec<Attachment>,
     ) -> CoreResult<bool> {
+        if !self.assistant_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.send(text, attachments, mcp).await
     }
@@ -584,6 +638,35 @@ impl Orchestrator {
         Ok(stored)
     }
 
+    /// Whether the personal assistant is turned on (Settings → Assistant).
+    pub fn assistant_enabled(&self) -> bool {
+        self.agent_settings.get().assistant.enabled
+    }
+
+    /// Turn the assistant on or off; returns what was stored. Off: the
+    /// session is killed quietly, proposals and the queue are dropped (the
+    /// undelivered messages reported), the sub-agents are stopped quietly,
+    /// and nothing starts a session again until it is turned back on and the
+    /// next send or nudge comes. Transcript, memory and Responses stay.
+    pub async fn set_assistant_enabled(&self, enabled: bool) -> CoreResult<bool> {
+        // Held for the whole save + manager update: the last toggle wins in both.
+        let _toggle = self.assistant_toggle.lock().await;
+        let stored = self
+            .agent_settings
+            .set_assistant_enabled(enabled)?
+            .assistant
+            .enabled;
+        if stored {
+            self.assistant.preset_enabled(true);
+        } else {
+            self.stop_all_subagents();
+            self.assistant.disable().await;
+            // Again once the session is gone, for a spawn that raced it.
+            self.stop_all_subagents();
+        }
+        Ok(stored)
+    }
+
     /// Whether Podium may nudge the assistant unprompted (Settings →
     /// Assistant). Off silences [`crate::proactivity`] entirely.
     pub fn assistant_proactivity(&self) -> bool {
@@ -604,15 +687,32 @@ impl Orchestrator {
     /// about a finished agent when it finishes rather than whenever they next
     /// happen to type.
     pub async fn assistant_nudge(&self, text: String) {
+        if !self.assistant_enabled() {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.nudge(text, mcp).await;
     }
 
-    /// Ask the assistant to sweep the user's external sources. Like a nudge
-    /// it starts the session if there is none, but it stays out of the chat:
-    /// only an answer worth having is ever shown (see
-    /// [`crate::assistant::poll_prompt`]).
+    /// [`assistant_nudge`](Self::assistant_nudge) for several texts at once:
+    /// one turn when the assistant is idle, texts already waiting skipped.
+    pub async fn assistant_nudge_all(&self, texts: Vec<String>) {
+        if !self.assistant_enabled() {
+            return;
+        }
+        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
+        self.assistant.nudge_all(texts, mcp).await;
+    }
+
+    /// Hand the assistant what the external sweep found (the sweep itself
+    /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
+    /// session if there is none, and goes in as a `Poll` turn.
     pub async fn assistant_poll(&self, text: String) {
+        // A sweep that finished as the app quits must not start a session
+        // after the assistant was stopped; nor while the assistant is off.
+        if !self.assistant_enabled() || self.inner.lock().expect(LOCK_POISONED).shutting_down {
+            return;
+        }
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         self.assistant.poll(text, mcp).await;
     }
@@ -692,12 +792,30 @@ impl Orchestrator {
     /// `name` defaults to one derived from the task; `args` replaces the
     /// global default args for this sub-agent, like `spawn_agent`'s. A start
     /// that fails right away is an error here, and leaves no row behind.
+    ///
+    /// Starts it lean; see [`Self::spawn_subagent_with`].
     pub async fn spawn_subagent(
         &self,
         kind: SubagentKind,
         task: &str,
         name: Option<String>,
         args: Option<Vec<String>>,
+    ) -> CoreResult<SubagentSpawned> {
+        self.spawn_subagent_with(kind, task, name, args, true).await
+    }
+
+    /// [`Self::spawn_subagent`], choosing whether it starts `lean`: only
+    /// Podium's MCP server, no skills, hooks, `CLAUDE.md` or auto-memory, and
+    /// only the built-in tools its kind needs (see
+    /// [`crate::subagent::launch_args`]). Not lean, it also has the user's
+    /// own MCP servers, skills and plugins.
+    pub async fn spawn_subagent_with(
+        &self,
+        kind: SubagentKind,
+        task: &str,
+        name: Option<String>,
+        args: Option<Vec<String>>,
+        lean: bool,
     ) -> CoreResult<SubagentSpawned> {
         let task = task.trim();
         if task.is_empty() {
@@ -744,6 +862,7 @@ impl Orchestrator {
                 resume_session_id: None,
                 suggest_worktree: false,
                 subagent: Some(kind),
+                subagent_lean: lean,
             })
             .await?;
         Ok(SubagentSpawned {
@@ -1346,6 +1465,9 @@ impl Orchestrator {
     /// puts it back to try again. Returns delivered-or-queued, as
     /// [`assistant_send`](Self::assistant_send).
     pub async fn reply_assistant_response(&self, id: ResponseId, text: &str) -> CoreResult<bool> {
+        if !self.assistant_enabled() {
+            return Err(CoreError::AssistantDisabled);
+        }
         if text.trim().is_empty() {
             return Err(CoreError::InvalidInput(
                 "reply must not be blank".to_string(),
@@ -1376,6 +1498,7 @@ impl Orchestrator {
         // The assistant's first session must already match the stored mode.
         self.assistant
             .preset_send_message_blocked(self.assistant_autonomy() == AutonomyMode::ProposeAll);
+        self.assistant.preset_enabled(self.assistant_enabled());
     }
 
     /// Point the remembered-sessions store at its backing file (app data
@@ -1673,6 +1796,7 @@ impl Orchestrator {
                 worktree_name: entry.worktree_name.clone(),
                 suggest_worktree: !made,
                 subagent: None,
+                subagent_lean: false,
             })
             .await?;
         self.reassign_restored(
@@ -2640,6 +2764,7 @@ impl Orchestrator {
             resume_session_id: None,
             suggest_worktree: true,
             subagent: None,
+            subagent_lean: false,
         })
         .await
     }
@@ -2665,6 +2790,7 @@ impl Orchestrator {
             resume_session_id,
             suggest_worktree,
             subagent,
+            subagent_lean,
         } = req;
         let (root, wsl, agents, existing_names, session_color) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
@@ -2742,15 +2868,17 @@ impl Orchestrator {
         // Window name, in precedence: an explicit name, the first to-do's
         // text (an agent spawned on to-dos), the first scratchpad's title (an
         // agent spawned on scratchpads), a short label derived from the
-        // prompt, else the adapter binary. A generically named agent (the
-        // binary fallback) is told via its launch plan to rename itself over
-        // MCP after the first user message.
+        // prompt, else the adapter binary. The prompt-derived label is only
+        // a placeholder: it is shown, but does not count as `named`. An agent
+        // without an explicit or to-do/scratchpad name is told via its launch
+        // plan to rename itself over MCP on its first message (a launch
+        // prompt counts).
         let explicit = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         // A single to-do/scratchpad names the session after it; with several
         // grouped, picking one is arbitrary ("a random to-do"), so leave the
         // name underived — `named` stays false and the agent renames itself
         // over MCP once it has read all of them.
-        let derived = todos
+        let grouped_name = todos
             .first()
             .filter(|_| todos.len() == 1)
             .map(|t| t.text.trim())
@@ -2763,13 +2891,15 @@ impl Orchestrator {
                     .map(|s| s.title.trim())
                     .filter(|t| !t.is_empty())
                     .map(str::to_string)
-            })
-            .or_else(|| base_prompt.and_then(name_from_prompt));
-        let named = explicit.is_some() || derived.is_some();
+            });
+        // Sub-agents never rename themselves: their task is their name.
+        let named = explicit.is_some() || grouped_name.is_some() || subagent.is_some();
         let name = match explicit {
             Some(n) => n.to_string(),
             None => next_free_name(
-                &derived.unwrap_or_else(|| adapter.binary().to_string()),
+                &grouped_name
+                    .or_else(|| base_prompt.and_then(name_from_prompt))
+                    .unwrap_or_else(|| adapter.binary().to_string()),
                 &existing_names,
             ),
         };
@@ -2804,9 +2934,15 @@ impl Orchestrator {
             .unwrap_or(&[]);
         let mut merged_args =
             settings::merge_args(global.merge_mode, global_args, &agents.extra_args);
-        // After the user's own, so a lookup's restrictions win.
+        // After the user's own, so a lookup's restrictions win. The model
+        // default looks at the line so far and at the user's default args,
+        // whose `--model` still counts when this spawn's own args replaced
+        // them.
         if let Some(kind) = subagent {
-            merged_args.extend(crate::subagent::launch_args(kind));
+            let user_defaults = ov.map(|o| o.default_args.as_slice()).unwrap_or(&[]);
+            let extra =
+                crate::subagent::launch_args(kind, subagent_lean, &merged_args, user_defaults);
+            merged_args.extend(extra);
         }
         let command_override = ov.and_then(|o| o.command.as_deref());
         // A sub-agent's secret for the MCP server to know its calls by; the
@@ -2832,6 +2968,7 @@ impl Orchestrator {
             worktree_name: wt_name,
             suggest_worktree: global.suggest_worktree && suggest_worktree && !worktree,
             subagent,
+            subagent_lean,
             caller_key: caller_key.as_deref(),
         })?;
         // A sub-agent is never restarted (Podium refuses it) nor remembered,
@@ -3771,6 +3908,12 @@ impl Orchestrator {
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
+        // The sweep first: one that finishes while the assistant is already
+        // gone would hand it a finding and start a new assistant child that
+        // nothing kills. A triage worker likewise must not deliver to an
+        // assistant session after it has been killed.
+        self.triage.shutdown();
+        self.sweep.shutdown().await;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
             self.capture_agent_sessions().await;
@@ -3896,6 +4039,9 @@ struct AgentSpawn {
     /// One of the assistant's sub-agents, of this kind: `project_id` is then
     /// the assistant's scope, `prompt` its task.
     subagent: Option<SubagentKind>,
+    /// A sub-agent started lean ([`crate::subagent::launch_args`]); ignored
+    /// for a project agent.
+    subagent_lean: bool,
 }
 
 /// What [`Orchestrator::spawn_agent_core`] made: the process, and for a
@@ -7599,6 +7745,52 @@ mod tests {
         orch.set_assistant_workspace(data.join("assistant-workspace"))
             .unwrap();
         (orch, adapter)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in SubFake")]
+    async fn only_an_explicit_or_single_todo_name_counts_as_named() {
+        let data = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let (orch, adapter) = sub_orch(data.path(), sub_config(4));
+        let project = orch
+            .open_project(project_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let todo = orch.add_todo(project, "Fix the login form", None).unwrap();
+        let spawn = |name: Option<&str>, prompt: Option<&str>, todos: Vec<TodoId>| {
+            orch.spawn_agent(
+                project,
+                Some("subfake".to_string()),
+                name.map(str::to_string),
+                prompt.map(str::to_string),
+                todos,
+                Vec::new(),
+                false,
+                None,
+                None,
+            )
+        };
+
+        // A prompt alone gives a placeholder name, but the agent still has
+        // to rename itself.
+        let id = spawn(None, Some("Summarise the open issues\nmore"), Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            orch.process_info(id).unwrap().name,
+            "Summarise the open issues"
+        );
+        assert!(!adapter.launches.lock().unwrap()[0].named);
+
+        // An explicit name or a single to-do is a real name.
+        spawn(Some("Docs"), Some("Write docs"), Vec::new())
+            .await
+            .unwrap();
+        assert!(adapter.launches.lock().unwrap()[1].named);
+        let id = spawn(None, None, vec![todo.id]).await.unwrap();
+        assert_eq!(orch.process_info(id).unwrap().name, "Fix the login form");
+        assert!(adapter.launches.lock().unwrap()[2].named);
     }
 
     fn phase_of(orch: &Orchestrator, id: ProcessId) -> Option<SubagentPhase> {

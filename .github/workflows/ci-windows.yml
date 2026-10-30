@@ -1,0 +1,76 @@
+# Synced from rust-base (sync/files/); don't edit it in the app, the next sync
+# overwrites it. Per-app settings go in .github/rust-base.json.
+#
+# Runs only the Windows job of the CI, on a pull request that carries the
+# `windows` label: when the label is added, and on every new commit while it
+# is there. ci.yml never runs Windows on a pull request, so nothing runs twice.
+# No `opened`: a PR created with labels gets `labeled` events for them, while
+# the `opened` payload may already list them too, which would run it twice.
+# The checks (`ci-windows / windows`, ...) are not required: a Windows failure
+# on a PR is a warning; on main Windows runs in ci.yml and gates the release.
+#
+# A separate workflow because GitHub judges a required check by the latest run
+# of its workflow on the head commit: label runs here never replace a
+# `ci / ci-ok` from ci.yml.
+name: CI Windows
+
+on:
+  pull_request:
+    types: [synchronize, reopened, labeled]
+
+concurrency:
+  # As ci.yml: only a new commit cancels a run. Every label run gets a group of
+  # its own: GitHub keeps only the newest pending run per group and cancels
+  # older pending ones even without cancel-in-progress, which would leave
+  # cancelled checks on the head commit after a burst of label events.
+  group: ci-windows-${{ github.ref }}${{ github.event.action == 'labeled' && format('-run-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # The event says `windows` (this label was just added, or a new commit or
+  # reopen of a PR that has it); confirm that the PR still has it after a short wait, so
+  # adding and quickly removing the label runs nothing. Other labels and
+  # unlabelled PRs skip this job without using a runner.
+  label:
+    name: windows label
+    if: >-
+      (github.event.action == 'labeled' && github.event.label.name == 'windows')
+      || (github.event.action != 'labeled'
+          && contains(github.event.pull_request.labels.*.name, 'windows'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      windows: ${{ steps.read.outputs.windows }}
+    steps:
+      - name: Read the current labels
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SETTLE_SECONDS: 10
+        shell: bash
+        run: |
+          sleep "$SETTLE_SECONDS"
+          labels=
+          for retry in 0 5 10; do
+            sleep "$retry"
+            labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name]') && break
+          done
+          if [ -z "$labels" ]; then
+            echo "::error::Could not read the labels of PR #$PR."
+            exit 1
+          fi
+          echo "labels: $labels"
+          echo "windows=$(jq 'any(.[]; . == "windows")' <<< "$labels")" >> "$GITHUB_OUTPUT"
+
+  ci-windows:
+    needs: label
+    if: needs.label.outputs.windows == 'true'
+    uses: Myrras/rust-base/.github/workflows/reusable-tauri-ci.yml@v2
+    with:
+      only: windows

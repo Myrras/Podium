@@ -39,7 +39,7 @@ pub const MAX_RUNNING_SUBAGENTS: usize = 4;
 /// The CLI tools a lookup sub-agent may never run: the assistant's own list
 /// (no shell, no file edits), plus `SendMessage` and the CLI's own subagents.
 /// Its Podium tools are denied separately, see [`lookup_disallowed_tools`].
-const LOOKUP_DISALLOWED_CLI_TOOLS: &[&str] = &[
+pub(crate) const LOOKUP_DISALLOWED_CLI_TOOLS: &[&str] = &[
     "Bash",
     "Edit",
     "MultiEdit",
@@ -107,6 +107,29 @@ impl SubagentKind {
         match self {
             Self::Lookup => "lookup",
             Self::Full => "full",
+        }
+    }
+
+    /// The model a sub-agent of this kind runs on when nothing else picks
+    /// one ([`launch_args`]): a lookup only reads and sums up, a full one
+    /// runs commands and edits files.
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Self::Lookup => "haiku",
+            Self::Full => "sonnet",
+        }
+    }
+
+    /// The built-in CLI tools a lean sub-agent of this kind gets (`--tools`):
+    /// what the kind is for and nothing else, since every tool schema is
+    /// part of the first request. A lookup has no shell or edits anyway
+    /// ([`LOOKUP_DISALLOWED_CLI_TOOLS`]). `ToolSearch` stays: without it the
+    /// CLI sends every Podium tool's schema up front instead of deferring
+    /// them (Claude Code 2.1.311: a full one's first request 19k → 10k).
+    pub fn lean_tools(self) -> &'static str {
+        match self {
+            Self::Lookup => "Read,Grep,Glob,WebFetch,WebSearch,ToolSearch",
+            Self::Full => "Bash,Read,Edit,Write,Grep,Glob,WebFetch,WebSearch,ToolSearch",
         }
     }
 }
@@ -537,8 +560,42 @@ impl SubagentRecord {
 /// settings, `CLAUDE.md` files (those of its parent directories included) and
 /// project MCP approvals must not reach them, whatever one of them left
 /// behind ([`scrub_workspace`] removes it besides).
-pub fn launch_args(kind: SubagentKind) -> Vec<String> {
-    let mut args = vec!["--setting-sources".to_string(), "user".to_string()];
+///
+/// `args` is the launch line so far (the spawn's own args, or the user's
+/// default args when it has none) and `user_default_args` the user's default
+/// args (Settings → Agents). The model is the first `--model` of `args`, else
+/// of `user_default_args` (which a spawn's own args otherwise replace), else
+/// the kind's [`SubagentKind::default_model`]: a sub-agent never falls back
+/// to the user's own default model, which is usually the expensive one.
+///
+/// A `lean` sub-agent starts with as little context as the CLI allows: only
+/// Podium's MCP server (`--strict-mcp-config`, so none of the user's own
+/// servers or their tool names), no skills or commands
+/// (`--disable-slash-commands`) and only the kind's
+/// [`SubagentKind::lean_tools`]. Its session settings also turn off hooks,
+/// `CLAUDE.md` files and auto-memory (see `agent::subagent_session_settings`).
+/// The user's settings still load, so their permission rules apply.
+pub fn launch_args(
+    kind: SubagentKind,
+    lean: bool,
+    args: &[String],
+    user_default_args: &[String],
+) -> Vec<String> {
+    let mut extra = Vec::new();
+    if flag_value(args, "--model").is_none() {
+        let model = flag_value(user_default_args, "--model").unwrap_or(kind.default_model());
+        extra.extend(["--model".to_string(), model.to_string()]);
+    }
+    extra.extend(["--setting-sources".to_string(), "user".to_string()]);
+    if lean {
+        extra.extend([
+            "--strict-mcp-config".to_string(),
+            "--disable-slash-commands".to_string(),
+            "--tools".to_string(),
+            kind.lean_tools().to_string(),
+        ]);
+    }
+    let mut args = extra;
     match kind {
         SubagentKind::Lookup => args.extend([
             "--permission-mode".to_string(),
@@ -552,6 +609,22 @@ pub fn launch_args(kind: SubagentKind) -> Vec<String> {
         ]),
     }
     args
+}
+
+/// The value of long option `flag` in `args`, as its own word
+/// (`--model sonnet`) or in the `--model=sonnet` form. The last one wins, as
+/// on the CLI.
+fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let mut value = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.strip_prefix(flag) {
+            Some("") => value = args.next().map(String::as_str).or(value),
+            Some(rest) if rest.starts_with('=') => value = Some(&rest[1..]),
+            _ => {}
+        }
+    }
+    value
 }
 
 /// Remove from the assistant workspace's root whatever of
@@ -1006,18 +1079,17 @@ mod tests {
     /// fails here until it is classified.
     #[test]
     fn a_lookup_is_denied_every_podium_tool_that_changes_something() {
-        let args = launch_args(SubagentKind::Lookup);
-        assert_eq!(
-            args[..5],
-            [
-                "--setting-sources",
-                "user",
-                "--permission-mode",
-                "bypassPermissions",
-                "--disallowedTools"
-            ]
-        );
-        let denied: Vec<&str> = args[5].split(',').collect();
+        // Lean or not, the restrictions are the same.
+        for lean in [true, false] {
+            let args = launch_args(SubagentKind::Lookup, lean, &[], &[]);
+            assert_eq!(after(&args, "--setting-sources"), Some("user"));
+            assert_eq!(after(&args, "--permission-mode"), Some("bypassPermissions"));
+            assert_lookup_denied(after(&args, "--disallowedTools").expect("denied tools"));
+        }
+    }
+
+    fn assert_lookup_denied(denied: &str) {
+        let denied: Vec<&str> = denied.split(',').collect();
         for tool in [
             "Bash",
             "Edit",
@@ -1083,15 +1155,116 @@ mod tests {
     /// sessions or starts subagents of its own.
     #[test]
     fn a_full_sub_agent_keeps_its_prompts_but_starts_no_subagents() {
-        assert_eq!(
-            launch_args(SubagentKind::Full),
-            vec![
-                "--setting-sources",
-                "user",
-                "--disallowedTools",
-                "SendMessage,Agent,Task,AskUserQuestion"
-            ]
+        for lean in [true, false] {
+            let args = launch_args(SubagentKind::Full, lean, &[], &[]);
+            assert_eq!(after(&args, "--setting-sources"), Some("user"));
+            assert_eq!(
+                after(&args, "--disallowedTools"),
+                Some("SendMessage,Agent,Task,AskUserQuestion")
+            );
+            assert!(!args.iter().any(|a| a == "--permission-mode"), "{args:?}");
+        }
+    }
+
+    /// The value following `flag` in `args`.
+    fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        let at = args.iter().position(|a| a == flag)?;
+        args.get(at + 1).map(String::as_str)
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// With no model picked anywhere, a lookup runs on Haiku and a full one
+    /// on Sonnet, never on the user's (usually larger) default model.
+    #[test]
+    fn a_sub_agent_without_a_model_gets_its_kind_s_default() {
+        for (kind, model) in [
+            (SubagentKind::Lookup, "haiku"),
+            (SubagentKind::Full, "sonnet"),
+        ] {
+            for lean in [true, false] {
+                let args = launch_args(kind, lean, &strings(&["--effort", "low"]), &[]);
+                assert_eq!(after(&args, "--model"), Some(model), "{kind:?}");
+                assert_eq!(args.iter().filter(|a| *a == "--model").count(), 1);
+            }
+        }
+    }
+
+    /// A `--model` in the spawn's own args, or else in the user's default
+    /// args, wins over the kind's default.
+    #[test]
+    fn an_explicit_model_wins_over_the_default() {
+        // In the line so far (the spawn's args, or the user's defaults when
+        // it has none): nothing is added.
+        for own in [&["--model", "opus"][..], &["--model=opus"][..]] {
+            let args = launch_args(SubagentKind::Lookup, true, &strings(own), &[]);
+            assert!(!args.iter().any(|a| a == "--model"), "{args:?}");
+        }
+        // Only in the user's defaults, which the spawn's own args replaced:
+        // the user's model is carried over.
+        for defaults in [
+            &["--model", "opus"][..],
+            &["--model=opus", "--effort", "high"][..],
+        ] {
+            let args = launch_args(
+                SubagentKind::Full,
+                true,
+                &strings(&["--effort", "low"]),
+                &strings(defaults),
+            );
+            assert_eq!(after(&args, "--model"), Some("opus"), "{args:?}");
+        }
+        // The spawn's own model beats the user's default one.
+        let args = launch_args(
+            SubagentKind::Full,
+            false,
+            &strings(&["--model", "haiku"]),
+            &strings(&["--model", "opus"]),
         );
+        assert!(!args.iter().any(|a| a == "--model"), "{args:?}");
+        // The last one counts, as on the CLI.
+        assert_eq!(
+            flag_value(&strings(&["--model", "a", "--model=b"]), "--model"),
+            Some("b")
+        );
+        assert_eq!(flag_value(&strings(&["--models", "a"]), "--model"), None);
+        assert_eq!(flag_value(&strings(&["--model"]), "--model"), None);
+    }
+
+    /// A lean sub-agent gets only Podium's MCP server, no skills and only the
+    /// built-in tools its kind needs; one that is not lean keeps all three.
+    #[test]
+    fn a_lean_sub_agent_starts_with_only_what_its_kind_needs() {
+        let lookup = launch_args(SubagentKind::Lookup, true, &[], &[]);
+        assert!(
+            lookup.iter().any(|a| a == "--strict-mcp-config"),
+            "{lookup:?}"
+        );
+        assert!(
+            lookup.iter().any(|a| a == "--disable-slash-commands"),
+            "{lookup:?}"
+        );
+        assert_eq!(
+            after(&lookup, "--tools"),
+            Some("Read,Grep,Glob,WebFetch,WebSearch,ToolSearch")
+        );
+        let full = launch_args(SubagentKind::Full, true, &[], &[]);
+        assert_eq!(
+            after(&full, "--tools"),
+            Some("Bash,Read,Edit,Write,Grep,Glob,WebFetch,WebSearch,ToolSearch")
+        );
+        // No tool a lookup is denied comes back through `--tools`.
+        for tool in SubagentKind::Lookup.lean_tools().split(',') {
+            assert!(!LOOKUP_DISALLOWED_CLI_TOOLS.contains(&tool), "{tool}");
+        }
+        for kind in [SubagentKind::Lookup, SubagentKind::Full] {
+            let args = launch_args(kind, false, &[], &[]);
+            for flag in ["--strict-mcp-config", "--disable-slash-commands", "--tools"] {
+                assert!(!args.iter().any(|a| a == flag), "{flag}: {args:?}");
+            }
+        }
     }
 
     /// What one sub-agent leaves at the shared workspace's root never reaches

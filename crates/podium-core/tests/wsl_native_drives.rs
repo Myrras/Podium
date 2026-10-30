@@ -32,9 +32,16 @@ struct WslDir {
 }
 
 impl WslDir {
+    /// Lives in `/var/tmp`, not `/tmp`: the first test of a run often boots
+    /// a stopped distro, and creating the directory through
+    /// `\\wsl.localhost` is what boots it. With systemd (on in the Ubuntu
+    /// WSL images) boot then empties `/tmp` (`D /tmp` in
+    /// `tmpfiles.d/tmp.conf`) after the directory was made, and the next
+    /// `wsl.exe --cd` fails with `chdir(...) failed 2`. `/var/tmp` exists on
+    /// every distro, is world-writable and survives boot.
     fn new(distro: &str, name: &str) -> Self {
         let unique = format!("podium-test-native-{name}-{}", std::process::id());
-        let windows = PathBuf::from(format!(r"\\wsl.localhost\{distro}\tmp\{unique}"));
+        let windows = PathBuf::from(format!(r"\\wsl.localhost\{distro}\var\tmp\{unique}"));
         std::fs::create_dir_all(&windows).expect("create dir inside the distro");
         Self { windows }
     }

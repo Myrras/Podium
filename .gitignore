@@ -23,3 +23,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Local signing identity for just dev-signed / install-signed (machine-specific)
+src-tauri/tauri.dev-signed.conf.json

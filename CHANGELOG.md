@@ -10,6 +10,77 @@ when it merges.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Terminals fill their pane again.** A process that started or restarted
+  while its terminal was already open used to run 80 columns wide until the
+  window was resized; it now starts at the size of its pane.
+- **No more scrambled output on Windows.** Terminals now tell xterm.js they
+  run behind ConPTY, so output such as a finished `git pull` no longer ends up
+  jumbled.
+
+## [3.2.6] - 2026-10-29
+
+### Added
+
+- A refresh button in the sidebar's Worktrees header re-reads the worktree list, for worktrees created or removed outside Podium.
+
+## [3.2.5] - 2026-10-29
+
+### Fixed
+
+- Agents started without a to-do now rename their session, also when launched with a prompt.
+
+## [3.2.4] - 2026-10-29
+
+### Security
+
+- **Dependency security updates.** Updated vite to 7.3.7 and dependencies to
+  their latest minor and patch versions, fixing known vulnerabilities.
+
+## [3.2.3] - 2026-10-28
+
+### Changed
+
+- **CI now uses the shared workflows from ci-workflows.** Checks, release and
+  installer builds are unchanged for contributors; Rust checks run on Linux,
+  Windows runs on `main` and on PRs labelled `windows`, and a nightly WSL
+  integration run is added.
+
+## [3.2.2] - 2026-10-28
+
+### Changed
+
+- **Sub-agents start cheap.** Without a model picked by the assistant or in
+  your default Claude Code args, a lookup sub-agent runs on Haiku and a full
+  one on Sonnet. They also start lean by default: only Podium's MCP tools, no
+  skills, `CLAUDE.md`, hooks or auto-memory, and only the built-in tools they
+  need, which cuts the first request from about 29k to 7.5k tokens (lookup)
+  and 10k (full). The assistant starts one with `lean: false` when it needs
+  your own MCP servers (Slack, Teams, a ticket system), a skill or a plugin.
+
+## [3.2.1] - 2026-10-28
+
+### Changed
+
+- Podium's own notes about agents and old to-dos are gathered for a minute
+  and checked on Haiku first; a routine finish or a repeat no longer costs
+  an assistant turn, and the rest arrive together as one turn.
+
+## [3.2.0] - 2026-10-28
+
+### Added
+
+- **Assistant on/off.** The assistant can be turned off and on from the window.
+
+## [3.1.3] - 2026-10-28
+
+### Changed
+
+- The CI workflow is now named "Test, Lint & Release".
+
+## [3.1.2] - 2026-10-28
+
 ### Added
 
 - **Archived to-dos over MCP.** `list_todos` takes `include_archived: true`
@@ -51,6 +122,8 @@ when it merges.
 
 ### Changed
 
+- The Slack/Teams routine check runs on Haiku in its own session; the
+  assistant only speaks up when it found something.
 - **Only Responses items reach your desktop.** The assistant no longer
   notifies you for a chat reply, a confirmation card or an unprompted
   `[Podium]` turn; a new item on the Responses list does, once per batch and
@@ -68,15 +141,17 @@ when it merges.
   tells it which agent you have open (window in front, terminal showing); it
   skips nudges and Responses items about that agent, and leaving the agent
   does not trigger an immediate nudge.
+- **Contributor docs are easier to navigate.** The architecture notes moved out
+  of `CLAUDE.md` into `docs/architecture/`, split into headed sections, tables
+  and links instead of long paragraphs; `CLAUDE.md` keeps a one-line index per
+  file.
+- **Every pull request needs a release label.** A PR must carry exactly one of
+  `patch`, `minor` or `major`, or the `Release label` check fails; the label
+  sets the version bump when the PR merges.
 
 ### Fixed
 
-- **Terminals fill their pane again.** A process that started or restarted
-  while its terminal was already open used to run 80 columns wide until the
-  window was resized; it now starts at the size of its pane.
-- **No more scrambled output on Windows.** Terminals now tell xterm.js they
-  run behind ConPTY, so output such as a finished `git pull` no longer ends up
-  jumbled.
+- Fixed tests that failed on Windows (no change to the app).
 
 ## [3.1.1] - 2026-10-09
 

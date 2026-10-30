@@ -12,6 +12,7 @@ use podium_core::mcp::tools::{
     RespawnAgentParams, ScratchpadTagParams, SetScratchpadArchivedParams, SpawnAgentParams,
     UpdateAssistantMemoryParams, UpdateScratchpadParams, UpdateTodoParams, VerifySenderParams,
 };
+use podium_core::mcp::tools::{ReportToAssistantParams, SpawnSubagentParams};
 use podium_core::mcp::{self, McpServer, ASSISTANT_PATH, LOOKUP_PATH};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantEvent, AutonomyMode, CoreError,
@@ -19,9 +20,7 @@ use podium_core::{
     ProcessStatus, ProjectId, RestartCommands, RestartPolicy, SubagentConfig, SubagentKind,
     SubagentPhase, TodoId,
 };
-// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use these.
-#[cfg(unix)]
-use podium_core::mcp::tools::ReportToAssistantParams;
+// Only the `#[cfg(unix)]` report_to_assistant tests (fake shell-script CLI) use this.
 #[cfg(unix)]
 use podium_core::TranscriptRole;
 use rmcp::handler::server::wrapper::Parameters;
@@ -1321,6 +1320,62 @@ async fn report_to_assistant_names_the_agent_and_delivers_it_live() {
         }))
         .await
         .is_err());
+
+    orch.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn report_and_spawn_subagent_say_the_assistant_is_off_and_do_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(
+        Orchestrator::new().with_adapters(AdapterRegistry::new(vec![Arc::new(FakeAgentAdapter)])),
+    );
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let tools = PodiumTools::new(Arc::clone(&orch));
+    let agent = orch
+        .spawn_agent(
+            project_id,
+            Some("fake".to_string()),
+            Some("Login bug agent".to_string()),
+            None,
+            vec![],
+            vec![],
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("spawn agent");
+    orch.set_assistant_enabled(false).await.expect("off");
+
+    let report = tools
+        .report_to_assistant(Parameters(ReportToAssistantParams {
+            process_id: agent.to_string(),
+            summary: "Done.".to_string(),
+        }))
+        .await
+        .expect("report_to_assistant");
+    assert!(first_text(&report).contains("turned off"));
+    assert!(
+        orch.assistant_transcript().is_empty(),
+        "nothing may be delivered while off"
+    );
+
+    let spawned = tools
+        .spawn_subagent(Parameters(SpawnSubagentParams {
+            kind: SubagentKind::Lookup,
+            task: "look something up".to_string(),
+            name: None,
+            args: None,
+            lean: None,
+        }))
+        .await
+        .expect("spawn_subagent");
+    assert!(first_text(&spawned).contains("turned off"));
+    assert!(orch.list_subagents().is_empty(), "no sub-agent may start");
 
     orch.shutdown().await;
 }
@@ -3881,6 +3936,11 @@ async fn spawn_subagent_runs_over_the_assistant_route_and_never_on_the_agents() 
         .expect("a process id");
     let (kind, args, _) = adapter.launches.lock().unwrap()[0].clone();
     assert_eq!(kind, Some(SubagentKind::Lookup));
+    // Lean by default, on Haiku when nothing picks a model.
+    assert_eq!(arg_after_flag(&args, "--model"), "haiku");
+    for flag in ["--strict-mcp-config", "--disable-slash-commands", "--tools"] {
+        assert!(args.iter().any(|a| a == flag), "{flag}: {args:?}");
+    }
     // It reaches Podium over the agents' route, which has no gate: what it
     // could change there is denied it at the CLI.
     let denied = arg_after_flag(&args, "--disallowedTools");
@@ -4048,6 +4108,85 @@ async fn spawn_subagent_runs_over_the_assistant_route_and_never_on_the_agents() 
     windows,
     ignore = "spawns a fake agent binary; see FakeAgentAdapter's comment"
 )]
+/// `spawn_subagent`'s `lean` (default true) and `args` reach the launch: a
+/// lean one gets only Podium's MCP server and a trimmed tool set, `lean:
+/// false` neither, and an explicit model replaces the kind's default.
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_subagent_starts_lean_unless_told_otherwise() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_orch, server, adapter) = subagent_server(dir.path()).await;
+    let assistant = open_session(&server, ASSISTANT_PATH).await;
+    let schema = listed_tool_schema(&server, &assistant, "spawn_subagent").await;
+    assert_eq!(
+        schema["properties"]["lean"]["type"],
+        serde_json::json!(["boolean", "null"]),
+        "{schema}"
+    );
+
+    for (id, arguments) in [
+        (
+            2,
+            serde_json::json!({ "kind": "full", "task": "Count the repos" }),
+        ),
+        (
+            3,
+            serde_json::json!({ "kind": "lookup", "task": "Read the Slack thread", "lean": false }),
+        ),
+        (
+            4,
+            serde_json::json!({ "kind": "full", "task": "Tidy a script", "args": ["--model", "opus"] }),
+        ),
+    ] {
+        call_tool_text(
+            &server,
+            ASSISTANT_PATH,
+            &assistant,
+            id,
+            "spawn_subagent",
+            arguments,
+        )
+        .await;
+    }
+    let launches = adapter.launches.lock().unwrap().clone();
+    let (_, lean_full, _) = &launches[0];
+    assert_eq!(arg_after_flag(lean_full, "--model"), "sonnet");
+    assert!(lean_full.iter().any(|a| a == "--strict-mcp-config"));
+    assert!(arg_after_flag(lean_full, "--tools").contains("Bash"));
+    let (_, plain_lookup, _) = &launches[1];
+    assert_eq!(arg_after_flag(plain_lookup, "--model"), "haiku");
+    for flag in ["--strict-mcp-config", "--disable-slash-commands", "--tools"] {
+        assert!(!plain_lookup.iter().any(|a| a == flag), "{flag}");
+    }
+    let (_, own_model, _) = &launches[2];
+    assert_eq!(
+        own_model.iter().filter(|a| *a == "--model").count(),
+        1,
+        "{own_model:?}"
+    );
+    assert_eq!(arg_after_flag(own_model, "--model"), "opus");
+}
+
+/// The input schema `tools/list` gives for `name` on the assistant route.
+async fn listed_tool_schema(server: &McpServer, session: &str, name: &str) -> serde_json::Value {
+    let (status, response) = http_post_path(
+        server.url(),
+        ASSISTANT_PATH,
+        Some(server.token()),
+        Some(session),
+        &serde_json::json!({ "jsonrpc": "2.0", "id": 90, "method": "tools/list" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let body = extract_json_body(&response);
+    body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|t| t["name"] == name)
+        .unwrap_or_else(|| panic!("{name} listed"))["inputSchema"]
+        .clone()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn under_propose_all_a_lookup_starts_and_a_full_sub_agent_waits_for_the_user() {
     let dir = tempfile::tempdir().expect("tempdir");

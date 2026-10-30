@@ -31,3 +31,16 @@
     opacity: 0.3;
   }
 }
+
+/* Header refresh in flight: pulses (opacity-only, so the global reduced-motion
+   guard covers it) and stays visible even when the header isn't hovered. */
+.refreshBtn:disabled {
+  cursor: progress;
+}
+
+.refreshBtn[data-busy] {
+  opacity: 1;
+  pointer-events: auto;
+  animation: removePulse var(--dur-4, 1s) var(--ease-in-out, ease-in-out)
+    infinite;
+}

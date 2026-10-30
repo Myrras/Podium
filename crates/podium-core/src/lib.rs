@@ -26,7 +26,9 @@ pub mod project;
 pub mod responses;
 pub mod scratchpad;
 pub mod subagent;
+pub mod sweep;
 pub mod todo;
+pub mod triage;
 pub mod worktree;
 
 pub use agent::cleanup::AgentCleanupConfig;
@@ -61,5 +63,7 @@ pub use scratchpad::ScratchpadInfo;
 pub use subagent::{
     SubagentConfig, SubagentInfo, SubagentKind, SubagentMeta, SubagentPhase, SubagentSpawned,
 };
+pub use sweep::SweepConfig;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
+pub use triage::TriageConfig;
 pub use worktree::WorktreeInfo;

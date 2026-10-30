@@ -1,106 +1,19 @@
+# Synced from rust-base (sync/files/); don't edit it in the app, the next sync
+# overwrites it.
 name: Build
 
-# Build installable desktop bundles.
-# - workflow_dispatch: build on demand from the Actions tab.
-# - push to main: every merge to main produces the artifact.
-# - CI's release job dispatches this on the new vX.Y.Z tag; on a tag ref the
-#   installers are also attached to that tag's GitHub Release.
-#
-# Deliberately no `tags` trigger: the release job pushes commit + tag with a
-# deploy key, which does fire workflows. The commit carries [skip ci], but
-# GitHub's docs don't say whether that also suppresses the tag push, so a tag
-# trigger could mean zero or two builds per release. The explicit dispatch is
-# exactly one. A hand-pushed tag builds with `gh workflow run build.yml --ref vX.Y.Z`.
-#
-# Matrix over macOS (.dmg) and Windows (NSIS .exe). Cross-compiling is painful,
-# so each OS builds natively on its own runner.
+# The shared release workflow dispatches this file by name with `--ref <tag>`,
+# so it must stay named `build.yml`.
+# Also runnable by hand from the Actions tab, or for a hand-pushed tag with
+# `gh workflow run build.yml --ref vX.Y.Z`.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Install Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Cargo workspace root (target/ lives here, not under src-tauri/).
-          workspaces: .
-          key: ${{ matrix.os }}
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      # macOS: Tauri's own dmg step uses HFS+, which is broken on macOS 26+, so
-      # we build the .app here and package the .dmg ourselves (APFS) via
-      # scripts/make-dmg.sh — the same path `just build` uses locally.
-      # `tauri build` runs beforeBuildCommand (pnpm build) first, producing dist.
-      - name: Build app bundle (macOS)
-        if: runner.os == 'macOS'
-        run: pnpm tauri build --bundles app
-
-      - name: Package DMG (APFS)
-        if: runner.os == 'macOS'
-        run: ./scripts/make-dmg.sh
-
-      - name: Upload macOS bundle
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: podium-macos
-          # Cargo workspace: target/ is at the repo root, not under src-tauri/.
-          path: target/release/bundle/dmg/*.dmg
-          if-no-files-found: error
-
-      - name: Attach macOS installer to release
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/dmg/*.dmg --clobber
-
-      # Windows: build only the NSIS .exe installer.
-      - name: Build app bundle (Windows)
-        if: runner.os == 'Windows'
-        run: pnpm tauri build --bundles nsis
-
-      - name: Upload Windows bundle
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: podium-windows
-          path: target/release/bundle/nsis/*.exe
-          if-no-files-found: error
-
-      - name: Attach Windows installer to release
-        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" target/release/bundle/nsis/*.exe --clobber
+    uses: Myrras/rust-base/.github/workflows/reusable-build.yml@v2

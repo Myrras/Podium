@@ -139,7 +139,8 @@ when asked to — they always *start* in the project root, where your tooling
 and caches live.
 
 Each worktree row in the sidebar can open a terminal rooted in it, open it in
-Warp, run the Commands modal against it, or be removed. Removal is refused
+Warp, run the Commands modal against it, or be removed. The section header's
+refresh button re-reads the list after changes made outside Podium. Removal is refused
 while a process is running in it or while it has uncommitted changes (unless
 forced); the branch is always kept.
 
@@ -243,6 +244,14 @@ they did.
   people) reaches you, as a *Needs you* item with the assistant's recommended
   answer and a desktop notification; reply to it and the assistant passes the
   answer on. You can also answer in the sub-agent's terminal yourself.
+  **Cheap to start:** without a model in the assistant's args or your
+  default Claude Code args, a lookup runs on Haiku and a full one on Sonnet.
+  By default a sub-agent also starts *lean*: only Podium's MCP tools, no
+  skills, no `CLAUDE.md`, hooks or auto-memory, and only the built-in tools
+  its kind needs — about a quarter of the tokens of a normal first request.
+  A lookup that needs your own MCP servers (Slack, Teams, a ticket system),
+  a skill or a plugin is started without that, which the assistant decides
+  per task. Your permission rules apply either way.
   Sub-agents load only your
   own Claude Code settings, not ones a folder could carry. If your default
   Claude Code args (Settings → Agents) carry your own `--settings`, sub-agents
@@ -253,17 +262,30 @@ they did.
   sub-agents never stop on Claude Code's folder-trust question. Only if it
   cannot (a WSL backend, no Claude Code config yet) does the first one ask:
   open it from the list and answer "Yes, I trust this folder" once.
+- **Power switch** — the power button in the title bar (next to the assistant
+  button) turns the assistant off: no session, no nudges, no desktop
+  notifications, and its running sub-agents are stopped. The panel then shows
+  "The assistant is off" with a *Turn on* button; the choice is remembered.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
 - **Proactivity** — Podium speaks first when an agent exits, when an agent
   looks stuck (silent for 5 minutes, escalating once after 10 with a
   suggested answer, then silent until you type into that agent), and on a
-  6-hourly sweep for to-dos open longer than a week.
-- **External sweep** — every 10 minutes by default, it checks the sources you
-  enabled (Slack, Teams — through your *own* MCP servers) and stays silent
-  when there is nothing to report. Its actions show as one faint "Podium
-  check" line in the log.
+  6-hourly sweep for to-dos open longer than a week. These notes are
+  gathered for a minute and checked first by a small Haiku session with no
+  tools: only the ones worth your attention (a crash, a blocked agent,
+  finished work with something to look at) reach the assistant, together as
+  one turn. A routine finish or a repeat costs no assistant turn. If that
+  check fails, everything goes through as before. Reports agents send
+  themselves and sub-agent results always go straight to the assistant.
+- **External sweep** — every 10 minutes by default, the sources you enabled
+  (Slack, Teams — through your *own* MCP servers) are checked by a separate
+  Haiku session told to only read, not by the assistant itself (Podium
+  cannot enforce that on your own MCP servers). The assistant only
+  gets a turn when that check found something that needs you; a quiet check
+  costs no assistant turn and leaves nothing in the chat. A found item shows
+  as one faint "Podium check" line in the log.
 - **Responses** — the assistant files a short *Needs you* or *FYI* item in a
   collapsible list pinned above the chat (agent, project, to-do, age), and
   only for things you actually need: an agent blocked on a question only you
@@ -340,9 +362,11 @@ recipes); the Tauri CLI is the local dev-dependency, so no global install.
 ```sh
 just dev      # run the app (Vite + Tauri, hot reload)
 just build    # production desktop bundle (.app + .dmg on macOS)
-just test     # Rust workspace tests + frontend Vitest
-just lint     # clippy -D warnings + eslint
+just ci       # rustfmt, clippy, tests, prettier, eslint, Vitest, build (shared `ci/common.just`)
 ```
+
+`just dev`, `just build`, `just ci` and the other dev recipes (`just --list`) come from the shared rust-base repo: symlink a clone of
+`Myrras/rust-base` as `~/.rust-base`.
 
 ## Configuring a project
 
@@ -526,12 +550,12 @@ stdio bridge only through 0600 files that are wiped on every start.
 
 `podium-core` (zero Tauri dependency) holds the orchestration/PTY/MCP domain;
 `src-tauri` is a thin IPC adapter; `src/` is the React frontend. See
-[`CLAUDE.md`](./CLAUDE.md) for the full architecture, IPC contract, and
-conventions.
+[`docs/architecture/`](./docs/architecture/) for the full architecture and IPC
+contract, and [`CLAUDE.md`](./CLAUDE.md) for conventions.
 
 ## Keeping this file current
 
-This README is the user-facing half of the documentation; `CLAUDE.md` is the
+This README is the user-facing half of the documentation; `CLAUDE.md` and `docs/architecture/` are the
 contributor-facing half. A change that alters what a user can *see or do* —
 a new feature, a shortcut, a setting, a `podium.yml` key, an MCP tool — belongs
 in both, in the same PR as the change itself.

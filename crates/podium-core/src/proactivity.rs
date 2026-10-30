@@ -17,7 +17,9 @@
 //! announced: they are looking at it. Its blocked question is recorded as
 //! already raised, so leaving the agent does not fire a nudge at once.
 //!
-//! Each of those becomes one `[Podium] …` turn handed to the assistant, which
+//! Each of those becomes a `[Podium] …` nudge. Nudges are gathered for a
+//! debounce window and triaged on Haiku first ([`crate::triage`]): only the
+//! ones worth a turn reach the assistant, together as one turn, which it
 //! answers in the chat panel like it would to the user. A nudge **starts the
 //! session** when there is none ([`crate::assistant::AssistantManager::nudge`]):
 //! the fast lane is event-driven, so a quiet day costs nothing, but when
@@ -25,13 +27,15 @@
 //! happen to type.
 //!
 //! There is a second, slower lane: every `poll_interval_minutes` (default 10,
-//! 0 = off) the assistant is asked to look at the user's enabled external
-//! sources — Slack, Microsoft Teams — and speak only if something needs them.
-//! It reaches those through the user's *own* MCP servers, which the assistant
-//! inherits; Podium contributes the timer and the wording, no integration. A
-//! sweep that found nothing answers with the
-//! [`NOTHING_TO_REPORT`](crate::assistant::NOTHING_TO_REPORT) sentinel, which
-//! is swallowed before it can become a chat row or a notification.
+//! 0 = off) the user's enabled external sources — Slack, Microsoft Teams —
+//! are checked for anything that needs them. The check runs on Haiku in a
+//! session of its own ([`crate::sweep`]), not in the assistant's: it reaches
+//! those sources through the user's *own* MCP servers; Podium contributes the
+//! timer and the wording, no integration. A sweep that found nothing answers
+//! with the [`NOTHING_TO_REPORT`](crate::assistant::NOTHING_TO_REPORT)
+//! sentinel and the assistant never hears of it; only a real finding becomes
+//! an assistant turn. One sweep runs at a time: a tick while one still runs
+//! is skipped.
 //!
 //! The whole thing is silent while the `proactive` setting is off — the switch
 //! is checked per nudge, so flipping it takes effect immediately. Likewise the
@@ -39,16 +43,18 @@
 //! a restart.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::assistant::poll_prompt;
+use crate::assistant::{poll_prompt, AssistantPolling};
 use crate::events::PodiumEvent;
 use crate::ids::ProcessId;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessInfo, ProcessKind, ProcessStatus};
+use crate::sweep::SweepOutcome;
+use crate::triage::TriageItem;
 
 /// How often one blocked question is raised with the assistant: the first
 /// nudge plus one escalation. Raising it every `escalate_after` for as long as
@@ -79,6 +85,10 @@ pub struct ProactivityConfig {
     /// the app; milliseconds in tests, so the slow lane can be exercised
     /// without waiting for it.
     pub poll_unit: Duration,
+    /// How long nudges are held and gathered before the batch is triaged
+    /// ([`crate::triage`]) — the debounce window, counted from the first
+    /// nudge of a batch.
+    pub triage_window: Duration,
 }
 
 impl Default for ProactivityConfig {
@@ -95,6 +105,7 @@ impl Default for ProactivityConfig {
             lingering_after: Duration::from_secs(7 * 24 * 60 * 60),
             sweep_every: Duration::from_secs(6 * 60 * 60),
             poll_unit: Duration::from_secs(60),
+            triage_window: Duration::from_secs(60),
         }
     }
 }
@@ -105,6 +116,7 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     let weak = Arc::downgrade(orchestrator);
     let mut events = orchestrator.subscribe_events();
     let mut watcher = Watcher {
+        weak: weak.clone(),
         config,
         waiting: HashMap::new(),
         // The first sweep comes a whole interval after startup, not the
@@ -135,7 +147,21 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     });
 }
 
+/// What the assistant is told of a finished sweep, worded for `polling` (the
+/// sources enabled when it is handed over); `None` for a quiet one.
+fn sweep_notice(polling: AssistantPolling, outcome: SweepOutcome) -> Option<String> {
+    match outcome {
+        SweepOutcome::Quiet => None,
+        SweepOutcome::Finding(found) => Some(crate::sweep::finding_text(polling, &found)),
+        // A check that keeps failing looks exactly like a quiet one, so it is
+        // raised once (the sweep session counts the streak).
+        SweepOutcome::NotWorking(reason) => Some(crate::sweep::not_working_text(polling, reason)),
+    }
+}
+
 struct Watcher {
+    /// For the external sweep's own task, which outlives a tick.
+    weak: Weak<Orchestrator>,
     config: ProactivityConfig,
     /// Agents already flagged as possibly waiting, so one stuck agent is not
     /// mentioned on every tick. Kept for as long as the agent lives — *not*
@@ -160,21 +186,74 @@ struct Waiting {
 }
 
 impl Watcher {
-    /// Hand `text` to the assistant, unless the user switched proactivity off.
-    async fn nudge(&self, orchestrator: &Orchestrator, text: String) {
-        if !orchestrator.assistant_proactivity() {
-            return;
-        }
-        orchestrator.assistant_nudge(text).await;
+    /// Put `text` in the triage buffer, unless the user switched proactivity
+    /// off. It does not reach the assistant directly: it waits out the
+    /// debounce window with whatever else comes up, and the batch is triaged
+    /// on Haiku ([`crate::triage`]) so only what is worth a turn is
+    /// delivered — as one turn. Use [`nudge_with`](Self::nudge_with) when the
+    /// nudge is about a specific agent.
+    fn nudge(&self, orchestrator: &Orchestrator, text: String) {
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                ..TriageItem::default()
+            },
+        );
     }
 
-    /// Hand the assistant an external-sweep errand, unless the user switched
-    /// proactivity off. Same gate as a nudge, but it stays out of the chat.
-    async fn poll(&self, orchestrator: &Orchestrator, text: String) {
-        if !orchestrator.assistant_proactivity() {
+    /// Like [`nudge`](Self::nudge), but takes the whole [`TriageItem`]; it
+    /// carries the agent it is about, so the triage's worker can
+    /// re-check at delivery that it is still worth saying.
+    fn nudge_with(&self, orchestrator: &Orchestrator, item: TriageItem) {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
-        orchestrator.assistant_poll(text).await;
+        if orchestrator.push_triage(item) {
+            crate::triage::start_worker(self.weak.clone(), self.config.triage_window);
+        }
+    }
+
+    /// Run the external sweep in its own session, unless the user switched
+    /// proactivity off, and hand the assistant what it found — if anything.
+    /// It runs on its own task (a sweep may take minutes), one at a time: a
+    /// tick while one still runs is skipped.
+    fn poll(&self, orchestrator: &Orchestrator, polling: AssistantPolling) {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
+            return;
+        }
+        let Some(sweep) = orchestrator.begin_external_sweep() else {
+            return;
+        };
+        let weak = self.weak.clone();
+        tokio::spawn(async move {
+            let outcome = sweep.run(&poll_prompt(polling)).await;
+            let not_working = matches!(outcome, SweepOutcome::NotWorking(_));
+            let mut delivered = false;
+            if let Some(orchestrator) = weak.upgrade() {
+                // The settings may have changed while the sweep ran: the
+                // notice is worded from what is on *now*, so it never names
+                // a source the user has since switched off (a finding that
+                // came from that source cannot be told apart, and is worded
+                // the same).
+                let polling_now = orchestrator.assistant_polling();
+                if orchestrator.assistant_proactivity() && polling_now.is_active() {
+                    if let Some(text) = sweep_notice(polling_now, outcome) {
+                        orchestrator.assistant_poll(text).await;
+                        delivered = true;
+                    }
+                }
+            }
+            // The streak counts its notice as told when it is returned: a
+            // dropped one must be raised again, or a check that stays broken
+            // would never be mentioned.
+            if not_working && !delivered {
+                sweep.notice_discarded();
+            }
+            // Freed only now, so the next sweep never overlaps this one's
+            // hand-off.
+            drop(sweep);
+        });
     }
 
     async fn on_event(&mut self, orchestrator: &Orchestrator, event: PodiumEvent) {
@@ -213,24 +292,59 @@ impl Watcher {
         if process.viewing {
             return;
         }
+        // Nothing below is worth building when no nudge will be sent.
+        if !orchestrator.assistant_proactivity() {
+            return;
+        }
         let where_ = describe(orchestrator, &process);
-        let text = if crashed {
-            format!(
+        if crashed {
+            let text = format!(
                 "[Podium] The agent {where_} crashed ({}). Look at its last output and tell \
                  the user what went wrong and what it leaves unfinished.",
                 exit_code(code)
-            )
-        } else {
-            format!(
-                "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
-                 last output — and tell the user in a line or two.",
-                exit_code(code)
-            )
-        };
-        self.nudge(orchestrator, text).await;
+            );
+            self.nudge_with(
+                orchestrator,
+                TriageItem {
+                    text,
+                    process_id: Some(process_id),
+                    ..TriageItem::default()
+                },
+            );
+            return;
+        }
+        let text = format!(
+            "[Podium] The agent {where_} finished ({}). Check what it did — its to-do and \
+             last output — and tell the user in a line or two.",
+            exit_code(code)
+        );
+        // Whether a finished agent left anything for the user is in its last
+        // output; the triage has no tools to read it. It is read when the
+        // batch is taken (`wants_output`, see `triage::run_worker`), not here:
+        // the exit can arrive before the PTY reader has stored the final
+        // chunk, and waiting for it would stall this loop once per agent.
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                process_id: Some(process_id),
+                wants_output: true,
+                ..TriageItem::default()
+            },
+        );
     }
 
     async fn on_tick(&mut self, orchestrator: &Orchestrator) {
+        // While the assistant is off every raise would be dropped by `nudge`
+        // / `poll`, yet the watcher would already have spent it (MAX_RAISES,
+        // the sweep and poll clocks). Do no work at all, so turning it back
+        // on finds everything still due. The clocks keep rolling so the
+        // sweeps do not fire in a burst the moment it comes on.
+        if !orchestrator.assistant_enabled() {
+            self.last_sweep = Instant::now();
+            self.last_poll = Instant::now();
+            return;
+        }
         self.check_idle_agents(orchestrator).await;
         if self.last_sweep.elapsed() >= self.config.sweep_every {
             self.last_sweep = Instant::now();
@@ -239,10 +353,10 @@ impl Watcher {
         self.poll_external(orchestrator).await;
     }
 
-    /// The slow lane: every `poll_interval_minutes`, ask the assistant to
-    /// check the enabled external sources. Settings are read here rather than
-    /// captured at startup, so turning the poll off (or changing its
-    /// interval) takes effect on the next tick.
+    /// The slow lane: every `poll_interval_minutes`, check the enabled
+    /// external sources in the sweep's own session. Settings are read here
+    /// rather than captured at startup, so turning the poll off (or changing
+    /// its interval) takes effect on the next tick.
     async fn poll_external(&mut self, orchestrator: &Orchestrator) {
         let polling = orchestrator.assistant_polling();
         if !polling.is_active() {
@@ -260,7 +374,7 @@ impl Watcher {
             return;
         }
         self.last_poll = Instant::now();
-        self.poll(orchestrator, poll_prompt(polling)).await;
+        self.poll(orchestrator, polling);
     }
 
     /// Flag running agents that need the user: one the UI saw a prompt on
@@ -319,7 +433,7 @@ impl Watcher {
             };
             if process.subagent.is_some() {
                 let text = self.stuck_subagent_text(&process, nudges, prompting);
-                self.nudge(orchestrator, text).await;
+                self.nudge_stuck(orchestrator, text, process.id);
                 continue;
             }
             let where_ = describe(orchestrator, &process);
@@ -346,8 +460,22 @@ impl Watcher {
                     minutes(self.config.idle_after),
                 )
             };
-            self.nudge(orchestrator, text).await;
+            self.nudge_stuck(orchestrator, text, process.id);
         }
+    }
+
+    /// A stuck-agent nudge: only worth saying while the agent still runs and
+    /// the user is not looking at it, which the triage re-checks at delivery.
+    fn nudge_stuck(&self, orchestrator: &Orchestrator, text: String, id: ProcessId) {
+        self.nudge_with(
+            orchestrator,
+            TriageItem {
+                text,
+                process_id: Some(id),
+                needs_running: true,
+                ..TriageItem::default()
+            },
+        );
     }
 
     /// What to say about one of the assistant's own sub-agents that looks
@@ -484,8 +612,7 @@ impl Watcher {
                 lingering.len(),
                 days(self.config.lingering_after),
             ),
-        )
-        .await;
+        );
     }
 }
 
@@ -499,6 +626,29 @@ fn live_agents(orchestrator: &Orchestrator) -> HashSet<ProcessId> {
         .filter(|p| matches!(p.status, ProcessStatus::Running { .. }))
         .map(|p| p.id)
         .collect()
+}
+
+/// How much of an agent's output is read for the triage, and how many of its
+/// last lines are kept.
+const LAST_OUTPUT_BYTES: usize = 8 * 1024;
+const LAST_OUTPUT_LINES: usize = 30;
+
+/// The ANSI-stripped last lines an agent printed, for the triage to judge a
+/// "finished" nudge by. `None` when it printed nothing (or is gone).
+pub(crate) async fn last_output(orchestrator: &Orchestrator, id: ProcessId) -> Option<String> {
+    let raw = orchestrator.tail_text(id, LAST_OUTPUT_BYTES).await.ok()?;
+    let plain = String::from_utf8_lossy(&strip_ansi_escapes::strip(raw.as_bytes())).into_owned();
+    let lines: Vec<&str> = plain
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(LAST_OUTPUT_LINES);
+    let tail = lines[start..].join("\n");
+    // Bounded by characters too: a few very long lines (a TUI repaint) would
+    // otherwise ride along whole, and it is the end that matters.
+    (!tail.is_empty())
+        .then(|| crate::triage::truncate_tail(&tail, crate::triage::MAX_CONTEXT_CHARS))
 }
 
 /// The agent process with this id, or `None` when it is gone or not an agent.
@@ -558,6 +708,35 @@ fn days(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sweep_notice_names_only_the_sources_enabled_when_it_is_handed_over() {
+        let both = AssistantPolling {
+            interval_minutes: 10,
+            slack: true,
+            teams: true,
+        };
+        let slack_only = AssistantPolling {
+            teams: false,
+            ..both
+        };
+        let finding = || SweepOutcome::Finding("Ada asks for the Q3 numbers".to_string());
+        let text = sweep_notice(slack_only, finding()).expect("a finding");
+        assert!(text.contains("routine check of Slack found"), "{text}");
+        assert!(!text.contains("Teams"), "{text}");
+        assert_eq!(
+            sweep_notice(both, finding()).as_deref(),
+            Some(crate::sweep::finding_text(both, "Ada asks for the Q3 numbers").as_str())
+        );
+        let down = sweep_notice(slack_only, SweepOutcome::NotWorking("it took too long"))
+            .expect("a notice");
+        assert!(
+            down.contains("routine check of Slack is not working"),
+            "{down}"
+        );
+        assert!(!down.contains("Slack and Microsoft Teams"), "{down}");
+        assert_eq!(sweep_notice(both, SweepOutcome::Quiet), None);
+    }
 
     #[test]
     fn durations_read_as_prose() {
