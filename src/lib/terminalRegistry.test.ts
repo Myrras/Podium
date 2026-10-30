@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { proposeGrid, reparentTerminalElement } from "./terminalRegistry";
+import {
+  proposeGrid,
+  reparentTerminalElement,
+  windowsPtyOption,
+} from "./terminalRegistry";
 
 // `fitTerminal` needs a real renderer (xterm cell metrics), so we test the
 // pure grid math it delegates to. The regression this guards: the proposal
@@ -84,5 +88,26 @@ describe("reparentTerminalElement", () => {
     reparentTerminalElement(el, host);
     expect(host.firstElementChild).toBe(el);
     expect(host.childElementCount).toBe(1);
+  });
+});
+
+describe("windowsPtyOption", () => {
+  it("gives no hint off Windows", () => {
+    expect(windowsPtyOption(false, 15)).toBeUndefined();
+  });
+
+  it("marks ConPTY without a build (reflow off) until the release is known", () => {
+    expect(windowsPtyOption(true, null)).toEqual({ backend: "conpty" });
+  });
+
+  it("keeps reflow off on Windows 10", () => {
+    expect(windowsPtyOption(true, 10)).toEqual({ backend: "conpty" });
+  });
+
+  it("enables reflow on Windows 11, whose ConPTY wraps lines correctly", () => {
+    expect(windowsPtyOption(true, 13)).toEqual({
+      backend: "conpty",
+      buildNumber: 22000,
+    });
   });
 });

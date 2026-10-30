@@ -13,6 +13,16 @@ double-mounts and keeps scrollback across tab switches. The registry owns
 attach/re-attach (including the `lagged` recovery) and re-themes live
 terminals on theme change.
 
+Every `process_resize` is also remembered on the process in core
+(`ManagedProcess.term_size`, even while it is not running), and `do_start`
+opens the next PTY at that size instead of 80x24: a terminal is only refitted
+when its host changes size, so a process (re)started under an open terminal
+otherwise stayed 80 columns wide. On Windows each terminal gets xterm's
+`windowsPty` hint (`windowsPtyOption`): ConPTY repaints its own screen on
+resize, and xterm reflowing on top of that scrambled output. The build number
+(Windows 11 → reflow on) comes from the WebView's async UA client hints and is
+applied to live terminals when it arrives.
+
 ## Activity indicator
 
 The **activity indicator** is derived once a second by `agentActivityStore`'s

@@ -10,6 +10,15 @@ when it merges.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Terminals fill their pane again.** A process that started or restarted
+  while its terminal was already open used to run 80 columns wide until the
+  window was resized; it now starts at the size of its pane.
+- **No more scrambled output on Windows.** Terminals now tell xterm.js they
+  run behind ConPTY, so output such as a finished `git pull` no longer ends up
+  jumbled.
+
 ## [3.2.6] - 2026-10-29
 
 ### Added
