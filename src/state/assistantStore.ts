@@ -32,6 +32,7 @@ import {
   assistantResolveProposal,
   assistantResponseDismiss,
   assistantResponseReply,
+  assistantResponsesDismiss,
   assistantResponsesList,
   assistantSend,
   assistantSubagentStop,
@@ -240,6 +241,8 @@ interface AssistantState {
   pruneExpiredSubagents: (now?: number) => void;
   /** Tick a Responses item off. */
   dismissResponse: (id: string) => Promise<void>;
+  /** Tick off every Responses item currently listed ("Mark all as read"). */
+  dismissAllResponses: () => Promise<void>;
   /** Reply to a Responses item; returns whether it was accepted. */
   replyResponse: (id: string, text: string) => Promise<boolean>;
   /** Replay the persisted transcript into the log (once, on mount). */
@@ -385,6 +388,22 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       // Back to the backend's list rather than the one from before the
       // click: a snapshot may have landed meanwhile (the item superseded,
       // a new one filed), and restoring the old array would undo it.
+      set((s) => ({
+        messages: [...s.messages, message("notice", toIpcError(e).message)],
+      }));
+      await get().loadResponses();
+    }
+  },
+  dismissAllResponses: async () => {
+    // Only what is on screen now: an item the backend files while this is
+    // in flight was never seen, so it must survive the click.
+    const ids = get().responses.map((r) => r.id);
+    if (ids.length === 0) return;
+    set((s) => ({ responses: s.responses.filter((r) => !ids.includes(r.id)) }));
+    try {
+      await assistantResponsesDismiss(ids);
+    } catch (e) {
+      // As `dismissResponse`: back to the backend's list, not the old array.
       set((s) => ({
         messages: [...s.messages, message("notice", toIpcError(e).message)],
       }));

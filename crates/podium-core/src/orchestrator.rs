@@ -1452,6 +1452,17 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Mark several Responses items as read in one write (the panel's "Mark
+    /// all as read"). Takes the ids the user was looking at rather than
+    /// clearing the list outright, so an item filed while the click was on
+    /// its way is not removed unseen. Ids already gone are skipped.
+    pub fn dismiss_assistant_responses(&self, ids: &[ResponseId]) -> CoreResult<()> {
+        self.responses().remove_where(
+            |i| ids.contains(&i.id),
+            |items| self.publish_responses(items),
+        )
+    }
+
     /// Answer one Responses item: `text` goes to the assistant as the user's
     /// message, carrying which item it answers, and the item is removed.
     /// Taken off the list *before* sending, so a double submit finds nothing

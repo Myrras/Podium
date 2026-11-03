@@ -24,6 +24,7 @@ vi.mock("../ipc/commands", () => ({
   assistantTranscript: vi.fn(() => Promise.resolve([])),
   assistantResponsesList: vi.fn(() => Promise.resolve([])),
   assistantResponseDismiss: vi.fn(() => Promise.resolve()),
+  assistantResponsesDismiss: vi.fn(() => Promise.resolve()),
   assistantResponseReply: vi.fn(() => Promise.resolve(true)),
   assistantSubagentsList: vi.fn(() => Promise.resolve([])),
   assistantSubagentStop: vi.fn(() => Promise.resolve()),
@@ -47,6 +48,7 @@ import {
   assistantQueueRemove,
   assistantQueueSendNow,
   assistantResponseDismiss,
+  assistantResponsesDismiss,
   assistantResponseReply,
   assistantNewConversation,
   assistantResponsesList,
@@ -186,6 +188,40 @@ describe("assistantStore", () => {
       expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
         role: "notice",
         text: "no such item",
+      });
+    });
+
+    it("marks every listed item as read in one call", async () => {
+      vi.mocked(assistantResponsesDismiss).mockReset();
+      vi.mocked(assistantResponsesDismiss).mockResolvedValue(undefined);
+      useAssistantStore.setState({
+        responses: [responseItem(), responseItem({ id: "r-2" })],
+      });
+
+      await useAssistantStore.getState().dismissAllResponses();
+      expect(assistantResponsesDismiss).toHaveBeenCalledWith(["r-1", "r-2"]);
+      expect(useAssistantStore.getState().responses).toEqual([]);
+
+      // Nothing listed: no call at all.
+      vi.mocked(assistantResponsesDismiss).mockClear();
+      await useAssistantStore.getState().dismissAllResponses();
+      expect(assistantResponsesDismiss).not.toHaveBeenCalled();
+    });
+
+    it("reloads the backend's list when marking all as read fails", async () => {
+      useAssistantStore.setState({ responses: [responseItem()] });
+      const newer = responseItem({ id: "r-2", text: "newer" });
+      vi.mocked(assistantResponsesList).mockResolvedValueOnce([newer]);
+      vi.mocked(assistantResponsesDismiss).mockRejectedValueOnce({
+        kind: "io",
+        message: "could not save",
+      });
+
+      await useAssistantStore.getState().dismissAllResponses();
+      expect(useAssistantStore.getState().responses).toEqual([newer]);
+      expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
+        role: "notice",
+        text: "could not save",
       });
     });
 

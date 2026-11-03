@@ -265,6 +265,17 @@ pub async fn assistant_response_dismiss(
     Ok(())
 }
 
+/// Mark several Responses items as read in one go (the panel's "Mark all as
+/// read"): the ids the user was looking at, so a newer item survives.
+#[tauri::command]
+pub async fn assistant_responses_dismiss(
+    state: State<'_, AppState>,
+    ids: Vec<ResponseId>,
+) -> Result<(), IpcError> {
+    state.orchestrator.dismiss_assistant_responses(&ids)?;
+    Ok(())
+}
+
 /// Answer one Responses item: the reply goes to the assistant as the user's
 /// message and the item is removed. Returns delivered-or-queued, as
 /// `assistant_send`.

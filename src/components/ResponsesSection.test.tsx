@@ -34,11 +34,13 @@ function item(overrides: Partial<ResponseItem> = {}): ResponseItem {
 }
 
 const dismissResponse = vi.fn(() => Promise.resolve());
+const dismissAllResponses = vi.fn(() => Promise.resolve());
 const replyResponse = vi.fn(() => Promise.resolve(true));
 
 describe("ResponsesSection", () => {
   beforeEach(() => {
     dismissResponse.mockClear();
+    dismissAllResponses.mockClear();
     replyResponse.mockClear();
     replyResponse.mockResolvedValue(true);
     useAssistantStore.setState({
@@ -59,6 +61,7 @@ describe("ResponsesSection", () => {
         }),
       ],
       dismissResponse,
+      dismissAllResponses,
       replyResponse,
     });
   });
@@ -114,6 +117,19 @@ describe("ResponsesSection", () => {
 
     await user.click(screen.getAllByLabelText("Mark as read")[0]);
     expect(dismissResponse).toHaveBeenCalledWith("r-1");
+  });
+
+  it("marks every item as read from the header", async () => {
+    const user = userEvent.setup();
+    render(<ResponsesSection />);
+
+    await user.click(screen.getByRole("button", { name: "Mark all as read" }));
+    expect(dismissAllResponses).toHaveBeenCalledTimes(1);
+    // The header's own toggle was not triggered along with it.
+    expect(screen.getByRole("button", { name: /Responses/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
   });
 
   it("sends a reply to the item it answers", async () => {

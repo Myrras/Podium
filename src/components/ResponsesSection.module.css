@@ -11,7 +11,19 @@
   border-bottom: 1px solid var(--border);
 }
 
+.headerRow {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.headerRow:hover {
+  background: var(--surface-hover);
+}
+
 .header {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--sp-1);
@@ -26,8 +38,22 @@
   flex-shrink: 0;
 }
 
-.header:hover {
-  background: var(--surface-hover);
+.markAllBtn {
+  flex-shrink: 0;
+  margin-right: var(--sp-2);
+  padding: 0 var(--sp-1);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  line-height: 20px;
+}
+
+.markAllBtn:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .caret {

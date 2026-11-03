@@ -12,8 +12,8 @@ use podium_core::assistant::{AssistantEvent, AssistantPolling, TranscriptRole};
 use podium_core::{
     AdapterRegistry, AgentAdapter, AgentLaunchCtx, AssistantConfig, Attachment, AutonomyMode,
     CoreError, CoreResult, LaunchPlan, McpConnectInfo, Orchestrator, PendingId, PodiumEvent,
-    ProactivityConfig, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy,
-    SubagentConfig, SubagentKind, SweepConfig,
+    ProactivityConfig, ProcessId, ProcessKind, ProcessSpec, ProcessStatus, ResponseId,
+    RestartPolicy, SubagentConfig, SubagentKind, SweepConfig,
 };
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
@@ -2635,6 +2635,46 @@ async fn every_change_to_the_responses_list_publishes_a_snapshot() {
     assert!(
         matches!(dismissed.last(), Some(AssistantEvent::ResponsesChanged { items }) if items.is_empty())
     );
+
+    orch.shutdown().await;
+}
+
+#[tokio::test]
+async fn marking_all_as_read_removes_only_the_items_the_user_saw() {
+    use podium_core::ResponseKind;
+
+    let (orch, _dir) = setup(ECHOING_CLAUDE);
+    let file = |text: &str, source: &str| {
+        orch.add_assistant_response(ResponseKind::Fyi, text, None, None, None, Some(source))
+            .expect("add response")
+            .expect("filed")
+    };
+    let first = file("Merged.", "GitHub");
+    let second = file("Deploy finished.", "Slack");
+    // Filed after the user clicked: not among the ids sent along.
+    let late = file("New question in the channel.", "Teams");
+
+    let mut rx = orch.subscribe_events();
+    let is_snapshot = |e: &AssistantEvent| matches!(e, AssistantEvent::ResponsesChanged { .. });
+    // An id that is already gone is no reason to refuse the rest.
+    orch.dismiss_assistant_responses(&[first.id, second.id, ResponseId::new()])
+        .expect("dismiss all");
+    let snapshot = collect_until(&mut rx, is_snapshot).await;
+    assert!(matches!(
+        snapshot.last(),
+        Some(AssistantEvent::ResponsesChanged { items }) if items.len() == 1 && items[0].id == late.id
+    ));
+    assert_eq!(
+        orch.assistant_responses()
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+        vec![late.id]
+    );
+
+    // Nothing left to remove: a no-op, not an error.
+    orch.dismiss_assistant_responses(&[first.id])
+        .expect("nothing to remove");
 
     orch.shutdown().await;
 }

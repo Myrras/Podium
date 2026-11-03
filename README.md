@@ -293,7 +293,8 @@ they did.
   confirmation card for an action it proposes, finished work you asked for
   (a result, a PR/MR link), or an agent that crashed. No "no change"
   reminders, no agent that simply finished with nothing left for you. The
-  details stay in its chat reply. Tick an item off, or reply inline — the
+  details stay in its chat reply. Tick an item off (or clear the lot with
+  **Mark all as read** in the list's header), or reply inline — the
   reply goes to the assistant as your message and shows in the chat as a
   one-line "Re: …". A newer item about the same agent or to-do replaces the
   old one, and open items survive restarts and new conversations.
