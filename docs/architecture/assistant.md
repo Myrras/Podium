@@ -389,7 +389,11 @@ in the order the changes happened, and a write that fails leaves the list
 ### Dismissing and replying
 
 The user either ticks an item (`assistant_response_dismiss`, it is just
-removed) or replies (`assistant_response_reply`). The reply is an ordinary
+removed), clears the list with the header's "Mark all as read"
+(`assistant_responses_dismiss`, one write and one snapshot — it sends the ids
+on screen rather than meaning "everything", so an item filed while the click
+was in flight survives unseen-but-unlost; ids already gone are skipped) or
+replies (`assistant_response_reply`). The reply is an ordinary
 user turn through `send`'s path (`AssistantManager::send_reply`, so it queues
 like any message) carrying the answered `ResponseItem` itself. The session
 sees it as `[Reply to your Responses item — "<label>": "<item text>"]` + the

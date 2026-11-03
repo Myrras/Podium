@@ -166,6 +166,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
 | `assistant_responses_list` | –                                        | `ResponseItem[]` (newest first) |
 | `assistant_response_dismiss` | `{ id }` (unknown id: `responseNotFound`) | –              |
+| `assistant_responses_dismiss` | `{ ids }` (ids already gone are skipped) | –           |
 | `assistant_response_reply` | `{ id, text }`                           | `bool` — as `assistant_send` |
 
 ## Window

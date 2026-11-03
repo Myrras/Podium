@@ -65,6 +65,7 @@ function placeDrafts(
 
 export function ResponsesSection() {
   const responses = useAssistantStore((s) => s.responses);
+  const dismissAllResponses = useAssistantStore((s) => s.dismissAllResponses);
   const [open, setOpen] = useState(true);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   // One tick for the whole section re-renders every row's age.
@@ -99,18 +100,32 @@ export function ResponsesSection() {
 
   return (
     <section className={styles.section} aria-label="Responses">
-      <button
-        type="button"
-        className={styles.header}
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <span className={styles.caret} data-open={open}>
-          <CaretIcon />
-        </span>
-        Responses
-        <span className={styles.count}>{responses.length}</span>
-      </button>
+      <div className={styles.headerRow}>
+        <button
+          type="button"
+          className={styles.header}
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <span className={styles.caret} data-open={open}>
+            <CaretIcon />
+          </span>
+          Responses
+          <span className={styles.count}>{responses.length}</span>
+        </button>
+        <button
+          type="button"
+          className={styles.markAllBtn}
+          title="Mark all as read"
+          onClick={() => {
+            // Open replies go with their items, as a single tick does.
+            setDrafts([]);
+            void dismissAllResponses();
+          }}
+        >
+          Mark all as read
+        </button>
+      </div>
       {open && (
         <ul className={styles.list}>
           {responses.map((item) => (

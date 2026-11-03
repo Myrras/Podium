@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- **Mark all as read** in the assistant's Responses header clears every listed item in one click. An item that arrives while you click stays on the list.
+
 ## [3.2.6] - 2026-10-29
 
 ### Added

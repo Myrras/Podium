@@ -845,6 +845,14 @@ export function assistantResponseDismiss(id: string): Promise<void> {
 }
 
 /**
+ * Tick several Responses items off at once ("Mark all as read"). Pass the
+ * ids on screen, so an item filed meanwhile is not cleared unseen.
+ */
+export function assistantResponsesDismiss(ids: string[]): Promise<void> {
+  return invoke("assistant_responses_dismiss", { ids });
+}
+
+/**
  * Reply to a Responses item: the reply goes to the assistant as the user's
  * message and the item is removed. Resolves to whether it was delivered
  * rather than queued, like {@link assistantSend}.

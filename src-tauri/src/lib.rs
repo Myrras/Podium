@@ -315,6 +315,7 @@ pub fn run() {
             commands::assistant::assistant_interrupt,
             commands::assistant::assistant_responses_list,
             commands::assistant::assistant_response_dismiss,
+            commands::assistant::assistant_responses_dismiss,
             commands::assistant::assistant_response_reply,
             commands::assistant::assistant_subagents_list,
             commands::assistant::assistant_subagent_stop,
