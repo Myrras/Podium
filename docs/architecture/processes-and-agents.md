@@ -40,9 +40,11 @@ over MCP).
 
 ### Agent hooks
 
-`activity/hooks.rs` adds four Claude Code command hooks (`SubagentStart`,
-`SubagentStop`, `Stop`, `PostToolUse` on `Bash`) to the `--settings` Podium
-already passes, to count running sub-agents and background shells. Each hook
+`activity/hooks.rs` adds five Claude Code command hooks (`SessionStart`,
+`SubagentStart`, `SubagentStop`, `Stop`, `PostToolUse` on `Bash`) to the
+`--settings` Podium already passes, to count running sub-agents and background
+shells. Every payload's `transcript_path` also names the Claude config dir the
+agent really uses (`Store::config_dir`). Each hook
 writes one event file (`<secs>-<pid>.json`, temp name then rename) into
 `<mcp config dir>/hooks/<process id>/` (dir 0700, files 0600). `Store::counts`
 drains and deletes them on every activity poll. `PostToolUse` saves only a

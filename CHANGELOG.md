@@ -23,6 +23,11 @@ when it merges.
 - Selecting a row raises it without a colour. Agent rows show an identity square instead of a tinted row, and a to-do shows its owner's square, hollow when that agent has stopped.
 - An agent keeps its colour after it stops and across restarts.
 
+### Fixed
+
+- An agent no longer reads Working because you type in it or resize its terminal.
+- Claude Code agents whose shell profile points them at another Claude config dir now report their real state too.
+
 ## [3.2.6] - 2026-10-29
 
 ### Added

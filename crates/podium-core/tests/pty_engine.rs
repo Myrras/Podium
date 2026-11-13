@@ -474,3 +474,37 @@ async fn a_shell_terminal_is_busy_while_a_command_runs_in_its_foreground() {
     assert_eq!(busy(&pty), None);
     pty.stop();
 }
+
+// Unix-only: `cat` and the `sh` loop are POSIX commands.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn typed_echoes_are_no_burst_but_a_printing_loop_is() {
+    let burst = |orch: &Orchestrator, id| orch.output_activity().get(&id).map(|a| a.burst_ms);
+
+    // The tty echoes each key at once: two keys 350 ms apart are no work.
+    // Typing before the shell reaches `cat` can be swallowed: wait for it.
+    let (orch, id, _dir) = setup("printf ready; cat").await;
+    orch.start_process(id).await.expect("start");
+    wait_for_output(&orch, id, "ready").await;
+    orch.write_stdin(id, b"a").await.expect("write");
+    sleep(Duration::from_millis(350)).await;
+    orch.write_stdin(id, b"b").await.expect("write");
+    wait_for_output(&orch, id, "ab").await;
+    assert!(
+        burst(&orch, id).unwrap_or(0) < 300,
+        "{:?}",
+        burst(&orch, id)
+    );
+    orch.stop_process(id).await.expect("stop");
+
+    let (orch, id, _dir) = setup("while :; do printf .; sleep 0.1; done").await;
+    orch.start_process(id).await.expect("start");
+    timeout(TEST_TIMEOUT, async {
+        while burst(&orch, id).unwrap_or(0) < 300 {
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .expect("a loop printing every 100 ms never read as a burst");
+    orch.stop_process(id).await.expect("stop");
+}

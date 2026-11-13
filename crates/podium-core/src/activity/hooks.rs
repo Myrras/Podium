@@ -1,11 +1,15 @@
 //! What an agent's hooks report about the work running behind it.
 //!
-//! Podium adds four command hooks to a Claude Code agent's own `--settings`
+//! Podium adds five command hooks to a Claude Code agent's own `--settings`
 //! ([`settings`]). Each hands its stdin JSON to Podium through the
 //! filesystem: one file per event, written under a temp name and renamed
 //! into the agent's own directory under `<mcp config dir>/hooks/` (0700,
 //! files 0600), so the per-start wipe of that dir clears it too. No network,
 //! no token. [`Store::counts`] drains those files on every activity poll.
+//!
+//! The events also name the Claude config dir the agent really uses
+//! ([`Store::config_dir`]): a user's shell profile can set
+//! `CLAUDE_CONFIG_DIR` per repo, so Podium's own guess may be wrong.
 //!
 //! Native Unix only: the hook is a POSIX `sh` line. Agents without hooks
 //! (Windows, WSL, a user's own `--settings`, a lean sub-agent) are never
@@ -66,6 +70,8 @@ pub(crate) fn settings(id: ProcessId, config_dir: &Path) -> Option<serde_json::V
         serde_json::json!([entry])
     };
     Some(serde_json::json!({
+        // Fires at launch, so the config dir is known before the first turn.
+        "SessionStart": hook(None, &command),
         "SubagentStart": hook(None, &command),
         "SubagentStop": hook(None, &command),
         "Stop": hook(None, &command),
@@ -142,6 +148,8 @@ struct Inner {
 struct Agent {
     subagents: HashSet<String>,
     shells: HashSet<String>,
+    /// The Claude config dir its events came from.
+    config_dir: Option<PathBuf>,
     /// The poll round it was last asked about.
     round: u64,
 }
@@ -189,6 +197,13 @@ impl Store {
             subagents: n(&agent.subagents),
             shells: n(&agent.shells),
         })
+    }
+
+    /// The Claude config dir agent `id` runs with, learned from its events'
+    /// `transcript_path`; `None` until one arrived. Does not drain: call it
+    /// after [`Self::counts`].
+    pub fn config_dir(&self, id: ProcessId) -> Option<PathBuf> {
+        lock(&self.inner).agents.get(&id)?.config_dir.clone()
     }
 
     /// Start agent `id` over from zero: forget its counts and delete what is
@@ -249,6 +264,8 @@ struct Event {
     agent_id: Option<String>,
     background_tasks: Option<Vec<Task>>,
     tool_response: Option<serde_json::Value>,
+    /// `<config dir>/projects/<slug>/<session>.jsonl`, on every event.
+    transcript_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,6 +280,14 @@ struct Task {
 
 impl Agent {
     fn apply(&mut self, event: Event) {
+        let projects = event
+            .transcript_path
+            .as_deref()
+            .and_then(|p| p.parent()?.parent());
+        if let Some(projects) = projects.filter(|p| p.file_name().is_some_and(|n| n == "projects"))
+        {
+            self.config_dir = projects.parent().map(Path::to_path_buf);
+        }
         match event.hook_event_name.as_str() {
             "SubagentStart" => {
                 self.subagents.extend(event.agent_id);
@@ -411,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_hook_four_events_with_quoted_commands() {
+    fn the_settings_hook_five_events_with_quoted_commands() {
         let root = tempfile::tempdir().expect("tempdir");
         let config = root.path().join("it's mine");
         let id = ProcessId::new();
@@ -429,7 +454,7 @@ mod tests {
         let quoted = crate::platform::quote_posix(dir.to_str().unwrap()).unwrap();
         assert!(command.starts_with(&format!("d={quoted}; ")), "{command}");
         assert!(command.ends_with("exit 0"), "{command}");
-        for name in ["SubagentStart", "SubagentStop", "Stop"] {
+        for name in ["SessionStart", "SubagentStart", "SubagentStop", "Stop"] {
             assert_eq!(
                 hooks[name],
                 serde_json::json!([{ "hooks": [{ "type": "command", "command": command }] }]),
@@ -453,13 +478,30 @@ mod tests {
         );
         assert!(shell.contains(&format!("d={quoted}; ")), "{shell}");
         assert!(shell.ends_with(";; esac; exit 0"), "{shell}");
-        assert_eq!(hooks.as_object().unwrap().len(), 4);
+        assert_eq!(hooks.as_object().unwrap().len(), 5);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o700);
         }
+    }
+
+    #[test]
+    fn the_transcript_path_names_the_config_dir() {
+        let session_start = |path: &str| {
+            event(serde_json::json!({
+                "hook_event_name": "SessionStart",
+                "source": "startup",
+                "transcript_path": path,
+            }))
+        };
+        let mut a = Agent::default();
+        a.apply(session_start("/fictitious/alt/projects/-p/0.jsonl"));
+        assert_eq!(a.config_dir, Some(PathBuf::from("/fictitious/alt")));
+        let mut b = Agent::default();
+        b.apply(session_start("/fictitious/alt/elsewhere/-p/0.jsonl"));
+        assert_eq!(b.config_dir, None, "not under projects/");
     }
 
     #[test]
@@ -563,7 +605,12 @@ mod tests {
             "1-2.json",
             r#"{"hook_event_name":"SubagentStart","agent_id":"sub-2"}"#,
         );
+        write(
+            "1-3.json",
+            r#"{"hook_event_name":"SessionStart","transcript_path":"/fictitious/alt/projects/-p/0.jsonl"}"#,
+        );
         assert_eq!(store.counts(id).unwrap().subagents, 2);
+        assert_eq!(store.config_dir(id), Some(PathBuf::from("/fictitious/alt")));
         // Left over from the killed run: an unread event and a half write.
         write(
             "2-1.json",
@@ -572,6 +619,7 @@ mod tests {
         write(".3.tmp", "{");
 
         store.reset(id);
+        assert_eq!(store.config_dir(id), None);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         assert_eq!(store.counts(id), Some(Counts::default()));
         // Nothing to reset is no error.

@@ -3825,7 +3825,11 @@ impl Orchestrator {
     }
 
     pub async fn write_stdin(&self, id: ProcessId, bytes: &[u8]) -> CoreResult<()> {
-        self.running_pty(id)?.write(bytes)?;
+        let pty = self.running_pty(id)?;
+        if is_stimulus(bytes) {
+            self.note_stimulus(id);
+        }
+        pty.write(bytes)?;
         if is_user_input(bytes) {
             if let Some(p) = self
                 .inner
@@ -3846,7 +3850,25 @@ impl Orchestrator {
     }
 
     pub async fn resize(&self, id: ProcessId, cols: u16, rows: u16) -> CoreResult<()> {
-        self.running_pty(id)?.resize(cols, rows)
+        let pty = self.running_pty(id)?;
+        self.note_stimulus(id);
+        pty.resize(cols, rows)
+    }
+
+    /// The process's next output answers the user (an echo, a repaint), so
+    /// the activity fallback ignores it. Noted before the PTY sees the input,
+    /// so a fast echo cannot slip in ahead.
+    fn note_stimulus(&self, id: ProcessId) {
+        let scrollback = self
+            .inner
+            .lock()
+            .expect(LOCK_POISONED)
+            .processes
+            .get(&id)
+            .map(|p| Arc::clone(&p.scrollback));
+        if let Some(scrollback) = scrollback {
+            scrollback.lock().expect(LOCK_POISONED).note_stimulus();
+        }
     }
 
     fn running_pty(&self, id: ProcessId) -> CoreResult<Arc<PtyProcess>> {
@@ -4969,6 +4991,13 @@ fn is_user_input(bytes: &[u8]) -> bool {
     }
 }
 
+/// Whether a stdin write makes the process answer with output that is no
+/// work of its own. A bare pointer-motion report is not: Claude Code turns on
+/// any-motion mouse tracking, and moving the mouse would hide its work.
+fn is_stimulus(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && !bytes.starts_with(b"\x1b[<35;")
+}
+
 /// Longest escape sequence the terminal itself sends back (a cursor-position
 /// report is about a dozen bytes).
 const MAX_TERMINAL_REPLY_BYTES: usize = 16;
@@ -5175,7 +5204,11 @@ impl ActivityProbe {
     fn report(&self, config_dir: Option<&Path>, hooks: &hooks::Store) -> Reported {
         match self.kind {
             ProcessKind::Agent { .. } => {
-                Reported::agent(self.claude_status(config_dir), hooks.counts(self.id))
+                // Counts first: draining the events is what learns the agent's
+                // own config dir, which a shell profile may have changed.
+                let counts = hooks.counts(self.id);
+                let own = hooks.config_dir(self.id);
+                Reported::agent(self.claude_status(own.as_deref().or(config_dir)), counts)
             }
             ProcessKind::Terminal => {
                 Reported::terminal(self.pty.as_deref().and_then(foreground::busy))
@@ -6144,6 +6177,21 @@ mod tests {
         orch.remove_process(agent).await.unwrap();
 
         assert_eq!(orch.viewing(), None);
+    }
+
+    #[test]
+    fn pointer_motion_is_no_stimulus() {
+        for yes in [
+            &b"a"[..],
+            b"\r",
+            b"\x1b[A",
+            b"\x1b[<64;10;10M",
+            b"\x1b[<0;10;10M",
+        ] {
+            assert!(is_stimulus(yes), "{yes:?}");
+        }
+        assert!(!is_stimulus(b"\x1b[<35;10;10M"));
+        assert!(!is_stimulus(b""));
     }
 
     #[test]
@@ -8877,6 +8925,61 @@ mod tests {
         orch.start_process(id).await.unwrap();
         assert_eq!(std::fs::read_dir(&events).unwrap().count(), 0);
         assert_eq!(store.counts(id), Some(hooks::Counts::default()));
+        orch.shutdown().await;
+    }
+
+    /// A shell profile can point an agent at another Claude config dir: its
+    /// `SessionStart` event says which, and the status is read from there.
+    // Unix-only: the hooks and Claude Code's status exist only there.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_hooks_name_the_config_dir_the_status_is_read_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut spec = spec_of(agent_kind(), dir.path());
+        spec.command = "sleep 30".to_string();
+        let id = orch.add_process(project_id, spec).await.unwrap();
+        hooks::settings(id, dir.path()).expect("hooks on unix");
+        orch.start_process(id).await.unwrap();
+
+        let events = dir.path().join("hooks").join(id.to_string());
+        let transcript = other.path().join("projects/-p/0.jsonl");
+        std::fs::write(
+            events.join("1-1.json"),
+            serde_json::json!({
+                "hook_event_name": "SessionStart",
+                "source": "startup",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let cwd = orch.inner.lock().unwrap().processes[&id].spec.cwd.clone();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let sessions = other.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("1.json"),
+            serde_json::json!({
+                "pid": 1,
+                "name": crate::agent::peer_session_name(&crate::agent::peer_tag(&id.to_string())),
+                "cwd": cwd,
+                "startedAt": started_at,
+                "status": "idle",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            orch.output_activity()[&id].state,
+            Some(crate::activity::ReportedState::Idle)
+        );
         orch.shutdown().await;
     }
 }
