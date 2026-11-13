@@ -44,16 +44,16 @@ describe("FloorHeader", () => {
     expect(screen.getByText("2 need you")).toBeTruthy();
     expect(screen.getByText("1 crashed")).toBeTruthy();
     expect(screen.getByText("2 working")).toBeTruthy();
-    fireEvent.click(screen.getByText("Zoom out"));
+    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
     expect(zoomBy).toHaveBeenCalledWith(0.8);
-    fireEvent.click(screen.getByText("Zoom in"));
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(zoomBy).toHaveBeenCalledWith(1.25);
-    fireEvent.click(screen.getByText("Reset layout"));
+    fireEvent.click(screen.getByRole("button", { name: "Reset layout" }));
     expect(reset).toHaveBeenCalled();
     expect(jumpTo).toHaveBeenLastCalledWith("all");
     for (const name of ["Zoom out", "Zoom in", "Fit all", "Reset layout"])
       expect(
-        screen.getByText(name).closest("[data-popover-keep]"),
+        screen.getByRole("button", { name }).closest("[data-popover-keep]"),
       ).not.toBeNull();
     fireEvent.click(screen.getByText("Add project…"));
     expect(open).toHaveBeenCalled();
