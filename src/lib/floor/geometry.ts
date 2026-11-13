@@ -2,7 +2,7 @@ import type { Camera, Rect, Size } from "./types";
 
 export const GRID = 40,
   DESK_W = 152,
-  DESK_ROW_H = 240,
+  DESK_H = 172,
   WALL_H = 80,
   ZOOM_MIN = 0.3,
   ZOOM_MAX = 2,
@@ -14,9 +14,13 @@ const WORLD_W = 1680;
 const DESKS_PER_ROW = 4;
 const PUSH_ROUNDS = 200;
 
+// Room.module.css: 1px border x2, desks padding 8 x2, row gap 8; the wall is WALL_H.
+const ROOM_CHROME = 2 + WALL_H + 16;
+const ROW_GAP = 8;
+
 export function roomSize(deskCount: number, hasServices: boolean): Size {
   const min = hasServices ? 280 : 200;
-  if (deskCount <= 0) return { w: min, h: 120 };
+  if (deskCount <= 0) return { w: min, h: ROOM_CHROME };
   const cols = Math.min(deskCount, DESKS_PER_ROW);
   const rows = Math.ceil(deskCount / DESKS_PER_ROW);
   return {
@@ -24,7 +28,7 @@ export function roomSize(deskCount: number, hasServices: boolean): Size {
       min,
       Math.ceil((30 + cols * DESK_W + (cols - 1) * 8) / GRID) * GRID,
     ),
-    h: 160 + rows * DESK_ROW_H,
+    h: ROOM_CHROME + rows * DESK_H + (rows - 1) * ROW_GAP,
   };
 }
 

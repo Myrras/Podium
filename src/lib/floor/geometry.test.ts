@@ -18,14 +18,14 @@ const r = (x: number, y: number, w = 200, h = 120) => ({ x, y, w, h });
 
 describe("roomSize", () => {
   it("is a bare wall without desks", () => {
-    expect(roomSize(0, false)).toEqual({ w: 200, h: 120 });
-    expect(roomSize(0, true)).toEqual({ w: 280, h: 120 });
+    expect(roomSize(0, false)).toEqual({ w: 200, h: 98 });
+    expect(roomSize(0, true)).toEqual({ w: 280, h: 98 });
   });
   it("sizes by columns and rows", () => {
-    expect(roomSize(1, false)).toEqual({ w: 200, h: 400 });
-    expect(roomSize(2, false)).toEqual({ w: 360, h: 400 });
-    expect(roomSize(4, false)).toEqual({ w: 680, h: 400 });
-    expect(roomSize(5, false)).toEqual({ w: 680, h: 640 });
+    expect(roomSize(1, false)).toEqual({ w: 200, h: 270 });
+    expect(roomSize(2, false)).toEqual({ w: 360, h: 270 });
+    expect(roomSize(4, false)).toEqual({ w: 680, h: 270 });
+    expect(roomSize(5, false)).toEqual({ w: 680, h: 450 });
     expect(roomSize(1, true).w).toBe(280);
   });
 });

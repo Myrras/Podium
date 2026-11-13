@@ -15,6 +15,10 @@ import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { Desk } from "./Desk";
 
+vi.mock("../../lib/floor/menus", () => ({
+  processMenu: vi.fn(() => [{ label: "Mock item", onSelect: vi.fn() }]),
+}));
+
 const proc = (over: Partial<ProcessInfo> = {}): ProcessInfo => ({
   id: "p1",
   projectId: "proj",
@@ -140,6 +144,36 @@ describe("Desk", () => {
   it("renders a terminal desk without a bot", () => {
     render(<Desk process={proc({ kind: { kind: "terminal" } })} />);
     expect(screen.getByText("terminal")).toBeTruthy();
+  });
+
+  it("shows a stopped terminal grey and labelled stopped, a running one not", () => {
+    const term = (status: unknown) =>
+      proc({ kind: { kind: "terminal" }, status: status as never });
+    const a = render(<Desk process={term({ state: "notStarted" })} />);
+    expect(a.getByText("stopped")).toBeTruthy();
+    expect(a.getByRole("button")).toHaveAttribute("data-stopped");
+    a.unmount();
+    const b = render(
+      <Desk process={term({ state: "exited", code: 1, crashed: true })} />,
+    );
+    expect(b.container.textContent).toContain("!");
+    b.unmount();
+    const c = render(<Desk process={term(proc().status)} />);
+    expect(c.getByText("terminal")).toBeTruthy();
+    expect(c.getByRole("button")).not.toHaveAttribute("data-stopped");
+    expect(c.container.textContent).not.toContain("!");
+  });
+
+  it("opens one process menu on right-click and keeps left click opening", () => {
+    render(<Desk process={proc()} />);
+    const btn = screen.getByRole("button", { name: /Fix login/ });
+    const ev = fireEvent.contextMenu(btn, { clientX: 10, clientY: 20 });
+    expect(ev).toBe(false);
+    expect(screen.getByText("Mock item")).toBeTruthy();
+    fireEvent.contextMenu(btn, { clientX: 30, clientY: 40 });
+    expect(screen.getAllByText("Mock item")).toHaveLength(1);
+    fireEvent.click(btn);
+    expect(useFloorStore.getState().terminalId).toBe("p1");
   });
 
   it("pins and opens on click, reports hover, outlines the active desk", () => {
