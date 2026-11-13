@@ -9,8 +9,10 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ResponseItem } from "../ipc/types";
 import { formatRelativeTime } from "../lib/dateFormat";
+import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
-import { CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
+import { useLayoutStore } from "../state/layoutStore";
+import { AgentIcon, CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
 import styles from "./ResponsesSection.module.css";
 
 /**
@@ -139,6 +141,7 @@ function ResponseRow({
 }) {
   const dismissResponse = useAssistantStore((s) => s.dismissResponse);
   const replyResponse = useAssistantStore((s) => s.replyResponse);
+  const onFloor = useLayoutStore((s) => s.mode === "floor");
   // Focused only when the user opens the reply box — never on mount, or a
   // row that replaced one with an open draft would steal focus from
   // whatever the user is typing in now.
@@ -227,6 +230,17 @@ function ResponseRow({
           </div>
         )}
       </div>
+      {onFloor && item.processId && (
+        <button
+          type="button"
+          className={styles.iconBtn}
+          aria-label="Show on floor"
+          title="Show on floor"
+          onClick={() => item.processId && showAgent(item.processId)}
+        >
+          <AgentIcon />
+        </button>
+      )}
       <button
         type="button"
         className={styles.iconBtn}

@@ -103,7 +103,23 @@ describe("AssistantPane", () => {
       hydrated: false,
       pending: [],
       responses: [],
+      draft: null,
     });
+  });
+
+  it("takes over a handed-over draft, focused with the caret at the end", () => {
+    render(<AssistantPane />);
+    act(() =>
+      useAssistantStore.getState().setDraft("Start an agent in Webshop on "),
+    );
+
+    const input = screen.getByLabelText(
+      "Message the assistant",
+    ) as HTMLTextAreaElement;
+    expect(input).toHaveValue("Start an agent in Webshop on ");
+    expect(input).toHaveFocus();
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(useAssistantStore.getState().draft).toBeNull();
   });
 
   it("sends the typed turn and shows it in the log", async () => {

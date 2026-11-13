@@ -5,9 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The store imports the IPC layer; nothing here should reach it, since the
 // row actions are replaced with spies below.
 vi.mock("../ipc/commands", () => ({}));
+vi.mock("../lib/floor/camera", () => ({ showAgent: vi.fn() }));
 
 import type { ResponseItem } from "../ipc/types";
+import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
+import { useLayoutStore } from "../state/layoutStore";
 import { formatRelativeTime } from "../lib/dateFormat";
 import { ResponsesSection } from "./ResponsesSection";
 
@@ -41,6 +44,8 @@ describe("ResponsesSection", () => {
     dismissResponse.mockClear();
     replyResponse.mockClear();
     replyResponse.mockResolvedValue(true);
+    vi.mocked(showAgent).mockClear();
+    useLayoutStore.setState({ mode: "project" });
     useAssistantStore.setState({
       responses: [
         item(),
@@ -79,6 +84,19 @@ describe("ResponsesSection", () => {
     expect(screen.getByText("Slack")).toBeInTheDocument();
     expect(screen.getByText("FYI")).toBeInTheDocument();
     expect(screen.getByText("3h")).toBeInTheDocument();
+  });
+
+  it("shows the agent on the floor, only in Floor mode and with a process id", async () => {
+    const { rerender } = render(<ResponsesSection />);
+    expect(screen.queryByRole("button", { name: "Show on floor" })).toBeNull();
+
+    act(() => useLayoutStore.setState({ mode: "floor" }));
+    rerender(<ResponsesSection />);
+    // Only the first item has a process id.
+    const buttons = screen.getAllByRole("button", { name: "Show on floor" });
+    expect(buttons).toHaveLength(1);
+    await userEvent.click(buttons[0]);
+    expect(showAgent).toHaveBeenCalledWith("proc-1");
   });
 
   it("leaves blank name parts out of the row's name, as the label does", () => {
