@@ -18,36 +18,8 @@
   box-shadow:
     inset 0 1px 0 var(--glass-hi),
     var(--shadow-lg);
+  position: relative;
   animation: rise var(--dur-3) var(--ease-out);
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border);
-}
-
-.title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.nameInput {
-  min-width: 0;
-  width: 240px;
-  font-weight: 600;
-}
-
-.end {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-left: auto;
 }
 
 @keyframes fade {
@@ -63,21 +35,46 @@
   }
 }
 
-.state {
-  flex: none;
-  font-size: var(--fs-sm);
-  color: var(--text);
+/* Confirm dialog: covers the card so nothing behind it takes a click. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  animation: fade var(--dur-2) var(--ease-out);
 }
 
-.state[data-tone="stopped"] {
+.confirm {
+  composes: glass from global;
+  width: min(360px, 100% - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--pop-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: rise var(--dur-2) var(--ease-out);
+}
+
+.confirmTitle {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.confirmBody {
+  margin: 0;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 
-.state[data-tone="crashed"] {
-  color: var(--danger);
-}
-
-.danger {
-  color: var(--danger);
-  border-color: var(--danger);
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }

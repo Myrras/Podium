@@ -5,13 +5,12 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { ProcessInfo } from "../../ipc/types";
-import { isActive, pillState, pillWord } from "../../lib/processStatus";
+import { isActive, pillState } from "../../lib/processStatus";
 import { subagentProcess } from "../../lib/subagents";
-import { useProcessActivity } from "../../lib/useAgentActivity";
 import {
   UNTRACKED_ACTIVITY,
   useAgentActivityStore,
@@ -20,12 +19,32 @@ import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
-import { CloseIcon } from "../icons";
+import { CloseIcon, RestartIcon, RunIcon, StopIcon } from "../icons";
 import { TerminalPane } from "../TerminalPane";
 import styles from "./FloorTerminalModal.module.css";
 
 const FOCUSABLE =
   'button:not([disabled]), input, textarea, [href], [tabindex]:not([tabindex="-1"])';
+
+// Tab stays inside the element it is bound to. A focused terminal never gets
+// here: xterm cancels Tab (and Esc) itself and sends it to the PTY.
+function trapTab(e: KeyboardEvent<HTMLDivElement>) {
+  if (e.key !== "Tab" || e.defaultPrevented) return;
+  const items = Array.from(
+    e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE),
+  );
+  if (items.length === 0) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const at = document.activeElement;
+  if (e.shiftKey && (at === first || !e.currentTarget.contains(at))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (at === last || !e.currentTarget.contains(at))) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
 export function FloorTerminalModal() {
   const terminalId = useFloorStore((s) => s.terminalId);
@@ -38,6 +57,21 @@ export function FloorTerminalModal() {
   const process = useProcessStore(
     (s) => s.processes.find((p) => p.id === terminalId) ?? null,
   );
+  const renameProcess = useProcessStore((s) => s.renameProcess);
+  const startProcess = useProcessStore((s) => s.startProcess);
+  const stopProcess = useProcessStore((s) => s.stopProcess);
+  const restartProcess = useProcessStore((s) => s.restartProcess);
+  const removeProcess = useProcessStore((s) => s.removeProcess);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  // A question about one process never carries over to the next one shown.
+  const [askedFor, setAskedFor] = useState({ terminalId, openSubagentId });
+  if (
+    askedFor.terminalId !== terminalId ||
+    askedFor.openSubagentId !== openSubagentId
+  ) {
+    setAskedFor({ terminalId, openSubagentId });
+    setConfirm(null);
+  }
 
   // The process was removed elsewhere (or the sub-agent expired): close.
   useEffect(() => {
@@ -51,25 +85,27 @@ export function FloorTerminalModal() {
   if (!shown) return null;
   const close = subagent ? clearOpenSubagent : closeTerminal;
 
-  // Tab stays inside the card. A focused terminal never gets here: xterm
-  // cancels Tab (and Esc) itself and sends it to the PTY.
-  const trapTab = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "Tab" || e.defaultPrevented) return;
-    const items = Array.from(
-      e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE),
-    );
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    const at = document.activeElement;
-    if (e.shiftKey && (at === first || !e.currentTarget.contains(at))) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && (at === last || !e.currentTarget.contains(at))) {
-      e.preventDefault();
-      first.focus();
-    }
+  const kind = shown.kind.kind;
+  const rename = (name: string | null) => {
+    // The store cannot clear a name: a blank one keeps the current name.
+    if (name !== null) void renameProcess(shown.id, name);
   };
+  const hide = (
+    <button
+      type="button"
+      className="ghost"
+      aria-label="Hide terminal"
+      title="Hide (keeps running)"
+      onClick={close}
+    >
+      <CloseIcon />
+    </button>
+  );
+  const bar: Bar = subagent
+    ? { trailing: hide }
+    : kind === "agent"
+      ? agentBar(shown, hide)
+      : terminalBar(shown, hide);
 
   return createPortal(
     <div
@@ -86,173 +122,230 @@ export function FloorTerminalModal() {
         aria-label={shown.name}
         onKeyDown={trapTab}
       >
-        <header className={styles.header}>
-          {subagent ? (
-            <span className={styles.title}>{shown.name}</span>
-          ) : (
-            <AgentActions process={shown} onCleared={closeTerminal} />
-          )}
-          {!subagent && shown.kind.kind !== "agent" && (
-            <TerminalState process={shown} onRemoved={closeTerminal} />
-          )}
-          <span className={styles.end}>
-            {!subagent && <NextNeedsYou currentId={shown.id} />}
-            <button
-              type="button"
-              className="ghost"
-              aria-label="Hide terminal"
-              title="Hide (keeps running)"
-              onClick={close}
-            >
-              <CloseIcon />
-            </button>
-          </span>
-        </header>
-        <TerminalPane process={shown} />
+        <TerminalPane
+          process={shown}
+          leading={bar.leading}
+          trailing={bar.trailing}
+          onRename={subagent ? undefined : rename}
+          hideActions={!subagent}
+        />
+        {confirm && (
+          <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />
+        )}
       </div>
     </div>,
     document.body,
   );
+
+  function agentBar(p: ProcessInfo, hideBtn: ReactNode): Bar {
+    const ended = p.status.state === "exited";
+    return {
+      leading: isActive(p.status) ? (
+        <IconButton
+          label={`Stop ${p.name}`}
+          title="Stop"
+          onClick={() =>
+            setConfirm({
+              title: `Stop ${p.name}?`,
+              body: "The session ends. You can resume it later.",
+              action: "Stop",
+              run: () => void stopProcess(p.id),
+            })
+          }
+        >
+          <StopIcon />
+        </IconButton>
+      ) : (
+        <IconButton
+          label={`Resume ${p.name}`}
+          title="Resume session"
+          onClick={() => void startProcess(p.id)}
+        >
+          <RunIcon />
+        </IconButton>
+      ),
+      trailing: (
+        <>
+          <NextNeedsYou currentId={p.id} />
+          {ended && (
+            <button
+              type="button"
+              className="danger"
+              onClick={() =>
+                setConfirm({
+                  title: "Clear the desk?",
+                  body: "The agent is removed from the floor.",
+                  action: "Clear the desk",
+                  run: () => void removeProcess(p.id).then(closeTerminal),
+                })
+              }
+            >
+              Clear the desk
+            </button>
+          )}
+          {hideBtn}
+        </>
+      ),
+    };
+  }
+
+  function terminalBar(p: ProcessInfo, hideBtn: ReactNode): Bar {
+    const active = isActive(p.status);
+    const closeFully = async () => {
+      if (isActive(p.status)) await stopProcess(p.id);
+      await removeProcess(p.id);
+      closeTerminal();
+    };
+    return {
+      leading: active ? (
+        <IconButton
+          label={`Stop ${p.name}`}
+          title="Stop"
+          onClick={() =>
+            setConfirm({
+              title: `Stop ${p.name}?`,
+              body: "The process stops. You can start it again later.",
+              action: "Stop",
+              run: () => void stopProcess(p.id),
+            })
+          }
+        >
+          <StopIcon />
+        </IconButton>
+      ) : (
+        <IconButton
+          label={`Start ${p.name}`}
+          title="Start"
+          onClick={() => void startProcess(p.id)}
+        >
+          <RunIcon />
+        </IconButton>
+      ),
+      trailing: (
+        <>
+          {active && (
+            <IconButton
+              label={`Restart ${p.name}`}
+              title="Restart"
+              onClick={() => void restartProcess(p.id)}
+            >
+              <RestartIcon />
+            </IconButton>
+          )}
+          {p.kind.kind === "terminal" && (
+            <button
+              type="button"
+              className="danger"
+              onClick={() =>
+                setConfirm({
+                  title: `Close ${p.name}?`,
+                  body: "The terminal and its output are removed.",
+                  action: "Close terminal",
+                  run: () => void closeFully(),
+                })
+              }
+            >
+              Close terminal
+            </button>
+          )}
+          {hideBtn}
+        </>
+      ),
+    };
+  }
+}
+
+type Bar = { leading?: ReactNode; trailing: ReactNode };
+
+type Confirm = { title: string; body: string; action: string; run: () => void };
+
+function IconButton({
+  label,
+  title,
+  onClick,
+  children,
+}: {
+  label: string;
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="ghost"
+      aria-label={label}
+      title={title}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
 }
 
 /**
- * Status word for a terminal or service; terminals also get Close, which
- * removes them for good. Stop/Start/Restart are in TerminalPane's header.
+ * Asks before a destructive action, inside the card. Not `Modal`: that one
+ * closes on Esc through a document listener. Esc here only cancels.
  */
-function TerminalState({
-  process,
-  onRemoved,
-}: {
-  process: ProcessInfo;
-  onRemoved: () => void;
-}) {
-  const stopProcess = useProcessStore((s) => s.stopProcess);
-  const removeProcess = useProcessStore((s) => s.removeProcess);
-  const activity = useProcessActivity(process.id);
-  const state = pillState(process.status, process.kind.kind, activity);
-  const tone =
-    state === "crashed"
-      ? "crashed"
-      : isActive(process.status)
-        ? "live"
-        : "stopped";
-
-  const closeFully = async () => {
-    if (isActive(process.status)) await stopProcess(process.id);
-    await removeProcess(process.id);
-    onRemoved();
-  };
-
-  return (
-    <>
-      <span className={styles.state} data-tone={tone}>
-        {pillWord(state, process.kind.kind)}
-      </span>
-      {process.kind.kind === "terminal" && (
-        <button
-          type="button"
-          className={styles.danger}
-          onClick={() => void closeFully()}
-        >
-          Close terminal
-        </button>
-      )}
-    </>
-  );
-}
-
-/** The name (click to rename) and, for an agent, its session actions. */
-function AgentActions({
-  process,
-  onCleared,
-}: {
-  process: ProcessInfo;
-  onCleared: () => void;
-}) {
-  const renameProcess = useProcessStore((s) => s.renameProcess);
-  const startProcess = useProcessStore((s) => s.startProcess);
-  const stopProcess = useProcessStore((s) => s.stopProcess);
-  const removeProcess = useProcessStore((s) => s.removeProcess);
-  const [draft, setDraft] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const editing = draft !== null;
-
+function ConfirmDialog({
+  title,
+  body,
+  action,
+  run,
+  onCancel,
+}: Confirm & { onCancel: () => void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (editing) inputRef.current?.select();
-  }, [editing]);
-
-  if (process.kind.kind !== "agent") {
-    return <span className={styles.title}>{process.name}</span>;
-  }
-
-  const commit = () => {
-    const next = draft?.trim() ?? "";
-    setDraft(null);
-    if (next.length > 0 && next !== process.name) {
-      void renameProcess(process.id, next);
-    }
-  };
-  const ended = process.status.state === "exited";
+    const opener = document.activeElement as HTMLElement | null;
+    cancelRef.current?.focus();
+    return () => opener?.focus();
+  }, []);
 
   return (
-    <>
-      {editing ? (
-        <input
-          ref={inputRef}
-          className={styles.nameInput}
-          aria-label="Agent name"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            } else if (e.key === "Escape") {
-              // Cancels the edit only; Esc never closes the modal.
-              e.preventDefault();
-              setDraft(null);
-            }
-          }}
-        />
-      ) : (
-        <button
-          type="button"
-          className={`ghost ${styles.title}`}
-          title="Rename"
-          onClick={() => setDraft(process.name)}
-        >
-          {process.name}
-        </button>
-      )}
-      {isActive(process.status) && (
-        <button type="button" onClick={() => void stopProcess(process.id)}>
-          Stop
-        </button>
-      )}
-      {ended && (
-        <>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void startProcess(process.id)}
-          >
-            Resume session
+    <div className={styles.scrim}>
+      <div
+        className={styles.confirm}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="floor-confirm-title"
+        aria-describedby="floor-confirm-body"
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            onCancel();
+          } else if (e.key === "Tab") {
+            trapTab(e);
+            // The card's own trap must not move focus out of the dialog.
+            e.stopPropagation();
+          }
+        }}
+      >
+        <h2 id="floor-confirm-title" className={styles.confirmTitle}>
+          {title}
+        </h2>
+        <p id="floor-confirm-body" className={styles.confirmBody}>
+          {body}
+        </p>
+        <div className={styles.confirmActions}>
+          <button ref={cancelRef} type="button" onClick={onCancel}>
+            Cancel
           </button>
           <button
             type="button"
+            className="danger"
             onClick={() => {
-              void removeProcess(process.id).then(onCleared);
+              onCancel();
+              run();
             }}
           >
-            Clear the desk
+            {action}
           </button>
-        </>
-      )}
-    </>
+        </div>
+      </div>
+    </div>
   );
 }
-
 /** "Next that needs you": the next waiting agent after this one, wrapping round. */
 function NextNeedsYou({ currentId }: { currentId: string }) {
   const processes = useProcessStore((s) => s.processes);

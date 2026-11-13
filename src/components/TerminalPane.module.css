@@ -127,3 +127,34 @@
 .subagentKind + .headerActions {
   margin-left: var(--sp-2);
 }
+
+/* The name as a rename button: looks like the plain name. */
+.nameBtn {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: text;
+}
+
+.nameInput {
+  min-width: 0;
+  width: 240px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/* Caller's actions at the far right; pushed right unless something already is. */
+.trailing {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.gitInfo + .trailing,
+.subagentKind + .trailing,
+.headerActions + .trailing {
+  margin-left: var(--sp-2);
+}
