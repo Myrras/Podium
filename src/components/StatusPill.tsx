@@ -81,6 +81,7 @@ export function StatusPill({
   subagents = 0,
   shells = 0,
   count,
+  detail,
 }: {
   state: PillState;
   kind?: ProcessKind["kind"];
@@ -90,6 +91,8 @@ export function StatusPill({
   shells?: number;
   /** Count form: glyph plus this number instead of the word. */
   count?: number;
+  /** Tooltip on the word form, e.g. "Crashed · code 1"; start it with the word. */
+  detail?: string;
 }) {
   // One minute is the finest unit shown, so a slow tick is enough.
   const [now, setNow] = useState(() => Date.now());
@@ -122,7 +125,7 @@ export function StatusPill({
   const since = formatSince(sinceMs, now);
   const working = state === "working";
   return (
-    <span className={className} data-tone={tone}>
+    <span className={className} data-tone={tone} title={detail}>
       <Glyph state={state} />
       {pillWord(state, kind)}
       {since && (
