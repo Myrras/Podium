@@ -1,0 +1,42 @@
+.menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.menu button {
+  text-align: left;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.colorInput {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+}
+
+.sub {
+  margin-left: auto;
+  color: var(--text-dim, inherit);
+  font-size: 0.85em;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.danger {
+  color: var(--danger, inherit);
+}
