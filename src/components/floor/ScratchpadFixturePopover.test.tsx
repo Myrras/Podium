@@ -175,4 +175,26 @@ describe("ScratchpadFixturePopover", () => {
       screen.getByLabelText("Scratchpad title"),
     );
   });
+
+  it("full_screen_pane_stays_inside_the_popover_and_re_docks", () => {
+    renderPopover("a");
+    const popover = screen.getByRole("group");
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+
+    // Popover.module.css drops the popover's backdrop-filter via :has(), so
+    // the fixed pane covers the window instead of the popover.
+    const pane = document.querySelector("[data-fullscreen]");
+    expect(popover).toContainElement(pane as HTMLElement);
+    expect(popover.matches(":has([data-fullscreen])")).toBe(true);
+
+    fireEvent.click(screen.getByLabelText("Exit fullscreen"));
+    expect(document.querySelector("[data-fullscreen]")).toBeNull();
+    expect(popover.matches(":has([data-fullscreen])")).toBe(false);
+    expect(document.querySelector("header")).toContainElement(
+      screen.getByLabelText("Scratchpad title"),
+    );
+    expect(document.querySelector("footer")).toContainElement(
+      screen.getByRole("button", { name: "Full screen" }),
+    );
+  });
 });

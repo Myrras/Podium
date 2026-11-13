@@ -17,8 +17,10 @@
 }
 
 /* A fullscreen child (scratchpad) is position: fixed; backdrop-filter and
-   transform would make this popover its containing block. */
-.popover:has([data-fullscreen]) {
+   transform would make this popover its containing block. The theme prefix
+   outranks `:root[data-theme="glass-*"] .glass` in global.css, which a bare
+   `.popover:has()` loses to, so the pane folded into the popover. */
+:global(:root[data-theme^="glass"]) .popover:has([data-fullscreen]) {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   transform: none;
