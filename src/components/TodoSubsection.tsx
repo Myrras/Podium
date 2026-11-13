@@ -88,7 +88,7 @@ function TodoRow({
       data-open={open ? "true" : undefined}
       data-assigned={assigned ? "true" : undefined}
       style={
-        // A stopped owner has no colour: the link stays, tinted neutral grey.
+        // A stopped owner has no colour: the link stays, shown as a grey square.
         assigned
           ? ({
               "--session-color": assigned.color ?? "var(--text-faint)",
@@ -97,6 +97,11 @@ function TodoRow({
       }
     >
       <div className={styles.rowMain}>
+        <span
+          className={styles.owner}
+          data-owned={assigned ? "true" : undefined}
+          title={assigned ? `Owned by ${assigned.name}` : undefined}
+        />
         <input
           type="checkbox"
           className={styles.checkbox}

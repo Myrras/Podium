@@ -353,7 +353,7 @@ describe("TodoSubsection assigned to-dos", () => {
     useSelectionStore.setState({ text: "", items: [] });
   });
 
-  it("hides the spawn button and tints the row with the session colour", () => {
+  it("hides the spawn button and shows the owner square in the session colour", () => {
     seed([assignedTodo("a", "Todo A", "#3e63dd")]);
     render(
       <TodoSubsection
@@ -375,9 +375,29 @@ describe("TodoSubsection assigned to-dos", () => {
     expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
       "#3e63dd",
     );
+    const square = row!.querySelector('[data-owned="true"]');
+    expect(square).toHaveAttribute("title", "Owned by session");
+    // No tint: the row itself sets no background of its own via inline style.
+    expect((row as HTMLElement).style.background).toBe("");
   });
 
-  it("keeps a stopped owner's link but tints it neutral grey", () => {
+  it("leaves the owner slot empty on an unowned row", () => {
+    seed([todo("a", "Todo A")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    const row =
+      screen.getByText("Todo A").closest("[data-open]") ??
+      screen.getByText("Todo A").closest("div")!;
+    expect(row.querySelector('[data-owned="true"]')).toBeNull();
+  });
+
+  it("keeps a stopped owner's link but shows a neutral grey square", () => {
     seed([assignedTodo("a", "Todo A", null)]);
     render(
       <TodoSubsection

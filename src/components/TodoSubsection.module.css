@@ -85,8 +85,8 @@
 /* Open in the work area — a subtle "you're viewing this" highlight, matching
    how an agent/terminal row looks when selected. */
 .row[data-open="true"] .rowMain {
-  background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--row-selected, var(--surface-hover));
+  box-shadow: inset 0 0 0 1px var(--row-selected-ring, var(--border-strong));
 }
 
 /* Part of a Cmd/Ctrl+click multi-select — queued to be handed to one agent, so
@@ -97,23 +97,18 @@
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-/* An assigned to-do wears its owning session's colour (subtle tint + accent);
-   --session-color is set inline from the assigned agent. */
-.row[data-assigned="true"] .rowMain {
-  background: color-mix(in srgb, var(--session-color) 12%, transparent);
-  box-shadow: inset 2px 0 0 var(--session-color);
+/* Leading slot, always reserved so owned and unowned rows line up. An owned
+   row fills it with its session's identity square (--session-color is set
+   inline from the assigned agent). */
+.owner {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 3px;
 }
 
-/* When an assigned row is also open, deepen its own tint rather than switch to
-   the generic accent (higher specificity wins). Assigned rows can't join a
-   multi-select, so only the open case needs handling. */
-.row[data-assigned="true"][data-open="true"] .rowMain {
-  background: color-mix(in srgb, var(--session-color) 22%, transparent);
-  box-shadow: inset 2px 0 0 var(--session-color);
-}
-
-.row[data-assigned="true"] .rowMain:hover {
-  background: color-mix(in srgb, var(--session-color) 18%, transparent);
+.owner[data-owned="true"] {
+  background: var(--session-color);
 }
 
 /* Bar under the list to hand every selected to-do to one agent. */
