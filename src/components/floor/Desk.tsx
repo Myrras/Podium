@@ -3,10 +3,13 @@ import { useShallow } from "zustand/react/shallow";
 import type { ProcessInfo } from "../../ipc/types";
 import { botVariants } from "../../lib/floor/botVariant";
 import { deskState } from "../../lib/floor/rooms";
-import { formatSince } from "../../lib/processStatus";
+import { formatSince, pillState } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
+import { DESK_H } from "../../lib/floor/geometry";
+import { processMenu } from "../../lib/floor/menus";
+import { ContextMenu } from "../ContextMenu";
 import { Bot, MiniBot, Monitor, TerminalDeskArt } from "./Bot";
 import styles from "./Desk.module.css";
 
@@ -57,9 +60,15 @@ export function Desk({ process }: { process: ProcessInfo }) {
 
   const terminal = process.kind.kind === "terminal";
   const state = deskState(process, act);
+  const ps = pillState(process.status, process.kind.kind, act);
+  const stopped =
+    terminal && (ps === "exited" || ps === "crashed" || ps === "notStarted");
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const since = formatSince(act.sinceMs, now);
   const label = terminal
-    ? "terminal"
+    ? stopped
+      ? "stopped"
+      : "terminal"
     : state === "ended" || state === "crashed"
       ? state
       : `${state === "needs" ? "waiting" : state}${since ? ` ${since}` : ""}`;
@@ -74,76 +83,95 @@ export function Desk({ process }: { process: ProcessInfo }) {
     useFloorStore.getState().setHoverDesk(id);
 
   return (
-    <button
-      type="button"
-      className={styles.desk}
-      data-state={terminal ? "terminal" : state}
-      data-working={working || undefined}
-      data-active={active || undefined}
-      style={
-        {
-          "--agent": process.color ?? "var(--text-faint)",
-        } as React.CSSProperties
-      }
-      aria-label={`${process.name}, ${label}`}
-      onClick={open}
-      onMouseEnter={hover(process.id)}
-      onMouseLeave={hover(null)}
-      onFocus={hover(process.id)}
-      onBlur={hover(null)}
-    >
-      {!terminal && (
-        <Row
-          n={act.shells}
-          className={styles.shells}
-          item={(i) => <Monitor key={i} seed={`${process.id}m${i}`} />}
-        />
-      )}
-      <span className={styles.pad}>
-        {terminal ? (
-          <TerminalDeskArt />
-        ) : (
-          <Bot
-            color={process.color}
-            state={state}
-            seed={process.id}
-            variant={variant}
+    <>
+      <button
+        type="button"
+        className={styles.desk}
+        data-state={terminal ? "terminal" : state}
+        data-working={working || undefined}
+        data-active={active || undefined}
+        data-stopped={stopped || undefined}
+        style={
+          {
+            height: DESK_H,
+            "--agent": process.color ?? "var(--text-faint)",
+          } as React.CSSProperties
+        }
+        aria-label={`${process.name}, ${label}`}
+        onClick={open}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+        onMouseEnter={hover(process.id)}
+        onMouseLeave={hover(null)}
+        onFocus={hover(process.id)}
+        onBlur={hover(null)}
+      >
+        {!terminal && (
+          <Row
+            n={act.shells}
+            className={styles.shells}
+            item={(i) => <Monitor key={i} seed={`${process.id}m${i}`} />}
           />
         )}
-        {state === "idle" && !terminal && (
-          <span className={styles.zzz} aria-hidden="true">
-            <i>z</i>
-            <i>z</i>
-            <i>Z</i>
-          </span>
-        )}
-        {state === "needs" && !terminal && (
-          <span className={`${styles.mark} ${styles.ask}`} aria-hidden="true">
-            ?
-          </span>
-        )}
-        {state === "crashed" && !terminal && (
-          <span className={`${styles.mark} ${styles.bang}`} aria-hidden="true">
-            !
-          </span>
-        )}
-      </span>
-      {!terminal && (
-        <Row
-          n={act.subagents}
-          className={styles.minis}
-          dim={!working}
-          item={(i) => (
-            <MiniBot
-              key={i}
+        <span className={styles.pad}>
+          {terminal ? (
+            <TerminalDeskArt />
+          ) : (
+            <Bot
               color={process.color}
-              seed={`${process.id}s${i}`}
+              state={state}
+              seed={process.id}
+              variant={variant}
             />
           )}
+          {state === "idle" && !terminal && (
+            <span className={styles.zzz} aria-hidden="true">
+              <i>z</i>
+              <i>z</i>
+              <i>Z</i>
+            </span>
+          )}
+          {state === "needs" && !terminal && (
+            <span className={`${styles.mark} ${styles.ask}`} aria-hidden="true">
+              ?
+            </span>
+          )}
+          {(terminal ? stopped && ps === "crashed" : state === "crashed") && (
+            <span
+              className={`${styles.mark} ${styles.bang}`}
+              aria-hidden="true"
+            >
+              !
+            </span>
+          )}
+        </span>
+        {!terminal && (
+          <Row
+            n={act.subagents}
+            className={styles.minis}
+            dim={!working}
+            item={(i) => (
+              <MiniBot
+                key={i}
+                color={process.color}
+                seed={`${process.id}s${i}`}
+              />
+            )}
+          />
+        )}
+        <span className={styles.name}>{process.name}</span>
+        <span className={styles.label}>{label}</span>
+      </button>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={processMenu(process, act)}
+          onClose={() => setMenu(null)}
         />
       )}
-      <span className={styles.name}>{process.name}</span>
-      <span className={styles.label}>{label}</span>
-    </button>
+    </>
   );
 }

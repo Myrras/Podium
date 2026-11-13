@@ -4,6 +4,7 @@
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  box-sizing: border-box;
   width: 152px;
   padding: 8px 4px;
   background: none;
@@ -39,6 +40,12 @@
 .desk[data-state="ended"] .pad,
 .desk[data-state="crashed"] .pad {
   background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+}
+
+/* A stopped terminal: grey art, like an ended agent. */
+.desk[data-stopped] .pad > :first-child {
+  opacity: 0.45;
+  filter: grayscale(1);
 }
 
 /* Only a working bot moves. */
