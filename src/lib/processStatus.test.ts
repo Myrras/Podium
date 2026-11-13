@@ -5,26 +5,7 @@ import {
   type ProcessActivity,
   UNTRACKED_ACTIVITY,
 } from "../state/agentActivityStore";
-import {
-  activityLabel,
-  formatSince,
-  pillState,
-  pillWord,
-} from "./processStatus";
-
-describe("activityLabel", () => {
-  it("labels the three activities", () => {
-    expect(activityLabel("working")).toBe("working…");
-    expect(activityLabel("waiting")).toBe("needs input");
-    expect(activityLabel("idle")).toBe("idle");
-  });
-
-  it("qualifies the label with background shells", () => {
-    expect(activityLabel("idle", 1)).toBe("idle · 1 shell");
-    expect(activityLabel("idle", 2)).toBe("idle · 2 shells");
-    expect(activityLabel("working", 3)).toBe("working… · 3 shells");
-  });
-});
+import { formatSince, pillState, pillWord } from "./processStatus";
 
 describe("pillState", () => {
   const act = (patch: Partial<ProcessActivity>): ProcessActivity => ({

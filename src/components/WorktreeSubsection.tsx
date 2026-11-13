@@ -19,7 +19,7 @@
  * guard remains the authority and surfaces as a toast if it fires anyway.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   toIpcError,
@@ -27,8 +27,10 @@ import {
   worktreeRemove,
 } from "../ipc/commands";
 import type { ProcessInfo, ProjectId, WorktreeInfo } from "../ipc/types";
+import { activityRollup } from "../lib/activityRollup";
 import { isActive } from "../lib/processStatus";
 import { terminalShellFor } from "../lib/terminalShell";
+import { useAgentActivityStore } from "../state/agentActivityStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { toastError } from "../state/toastStore";
@@ -42,10 +44,7 @@ import {
   RunIcon,
   TerminalIcon,
 } from "./icons";
-import {
-  useSectionCollapsed,
-  useWaitingCount,
-} from "../lib/useSectionCollapsed";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
 import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
@@ -99,10 +98,14 @@ export function WorktreeSubsection({
     "worktrees",
   );
   // Terminals nested under a worktree row hide with it when collapsed.
-  const waiting = useWaitingCount(
-    terminals
-      .filter((p) => p.worktree != null && p.status.state === "running")
-      .map((p) => p.id),
+  const details = useAgentActivityStore((s) => s.details);
+  const { working, needs } = useMemo(
+    () =>
+      activityRollup(
+        terminals.filter((p) => p.worktree != null),
+        details,
+      ),
+    [terminals, details],
   );
 
   if (worktrees.length === 0) return null;
@@ -170,7 +173,8 @@ export function WorktreeSubsection({
           title="Worktrees"
           Icon={BranchIcon}
           count={worktrees.length}
-          waiting={waiting}
+          working={working}
+          needs={needs}
           collapsed={collapsed}
           onToggle={() => setCollapsed(!collapsed)}
         />
