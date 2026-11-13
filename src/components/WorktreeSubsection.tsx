@@ -30,10 +30,9 @@ import {
 import type { ProcessInfo, ProjectId, WorktreeInfo } from "../ipc/types";
 import { activityRollup } from "../lib/activityRollup";
 import { isActive } from "../lib/processStatus";
-import { terminalShellFor } from "../lib/terminalShell";
+import { newTerminal } from "../lib/terminals";
 import { useAgentActivityStore } from "../state/agentActivityStore";
 import { useProcessStore } from "../state/processStore";
-import { useProjectStore } from "../state/projectStore";
 import { toastError } from "../state/toastStore";
 import { useWorktreeStore } from "../state/worktreeStore";
 import { ProcessRow } from "./ProcessRow";
@@ -80,8 +79,6 @@ export function WorktreeSubsection({
   const refresh = useWorktreeStore((s) => s.refresh);
   const setWorktrees = useWorktreeStore((s) => s.setWorktrees);
   const processes = useProcessStore((s) => s.processes);
-  const addProcess = useProcessStore((s) => s.addProcess);
-  const startProcess = useProcessStore((s) => s.startProcess);
 
   /** Name of the worktree whose removal is in flight — git can take a
    * moment, so its delete button is disabled until it resolves. */
@@ -109,19 +106,6 @@ export function WorktreeSubsection({
   );
 
   if (worktrees.length === 0) return null;
-
-  const openTerminal = async (wt: WorktreeInfo) => {
-    // Same as every other sidebar action: acting on a project activates it.
-    useProjectStore.getState().setActiveProject(projectId);
-    const shell = terminalShellFor(nativeInWslMode);
-    const info = await addProcess(projectId, {
-      name: `Terminal (${wt.name})`,
-      kind: "terminal",
-      cwd: `.podium/worktrees/${wt.name}`,
-      ...(shell ? { command: shell } : {}),
-    });
-    if (info) await startProcess(info.id);
-  };
 
   // Re-reads `git worktree list`, for changes made outside Podium (the
   // `worktree:changed` event only covers create/remove through it).
@@ -210,7 +194,9 @@ export function WorktreeSubsection({
                       className={styles.action}
                       aria-label={`Open terminal in ${wt.name}`}
                       title="Open terminal here"
-                      onClick={() => void openTerminal(wt)}
+                      onClick={() =>
+                        void newTerminal({ id: projectId, nativeInWslMode }, wt)
+                      }
                     >
                       <TerminalIcon size={13} />
                     </button>
