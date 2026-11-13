@@ -55,6 +55,16 @@ describe("Desk", () => {
     expect(screen.getByText("+1")).toBeTruthy();
   });
 
+  it("flags only a working desk so other animations pause", () => {
+    seed({ activity: "working" });
+    const a = render(<Desk process={proc()} />);
+    expect(a.getByRole("button")).toHaveAttribute("data-working");
+    a.unmount();
+    seed({ activity: "waiting" });
+    const b = render(<Desk process={proc()} />);
+    expect(b.getByRole("button")).not.toHaveAttribute("data-working");
+  });
+
   it("marks needs with ? and crashed with !, without mini bots when idle", () => {
     seed({ activity: "waiting", subagents: 2 });
     const a = render(<Desk process={proc()} />);

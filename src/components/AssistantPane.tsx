@@ -340,14 +340,15 @@ export function AssistantPane() {
     el.style.height = `${el.scrollHeight}px`;
   }, [draft]);
 
-  // A draft handed over from elsewhere (the floor's + button) replaces the
-  // composer text. The tick focuses the input once that text has rendered.
+  // A draft handed over from elsewhere (the floor's + button) fills an empty
+  // composer, or goes on a new line under what the user typed. The tick
+  // focuses the input (caret at the end) once that text has rendered.
   const incoming = useAssistantStore((s) => s.draft);
   const clearIncoming = useAssistantStore((s) => s.setDraft);
   const [focusTick, setFocusTick] = useState(0);
   useEffect(() => {
     if (incoming === null) return;
-    setDraft(incoming);
+    setDraft((cur) => (cur ? `${cur}\n${incoming}` : incoming));
     setHistoryIndex(null);
     setFocusTick((n) => n + 1);
     clearIncoming(null);

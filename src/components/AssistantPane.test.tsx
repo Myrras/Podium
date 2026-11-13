@@ -122,6 +122,18 @@ describe("AssistantPane", () => {
     expect(useAssistantStore.getState().draft).toBeNull();
   });
 
+  it("appends a handed-over draft on a new line when the composer has text", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPane />);
+    const input = screen.getByLabelText(
+      "Message the assistant",
+    ) as HTMLTextAreaElement;
+    await user.type(input, "typed");
+    act(() => useAssistantStore.getState().setDraft("from nameplate"));
+    expect(input).toHaveValue("typed\nfrom nameplate");
+    expect(input.selectionStart).toBe(input.value.length);
+  });
+
   it("sends the typed turn and shows it in the log", async () => {
     const user = userEvent.setup();
     render(<AssistantPane />);

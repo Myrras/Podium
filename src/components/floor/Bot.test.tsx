@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Bot, MiniBot, Monitor, TerminalDeskArt } from "./Bot";
 
 describe("Bot", () => {
-  it("sets state, size and a seed-derived delay", () => {
+  it("sets state, size and a seed-derived phase", () => {
     const a = render(
       <Bot color="#58a6ff" state="working" seed="a1" size={48} />,
     ).container;
@@ -13,12 +13,12 @@ describe("Bot", () => {
     const bot = a.firstElementChild as HTMLElement;
     expect(bot.dataset.state).toBe("working");
     expect(bot.style.getPropertyValue("--s")).toBe("48px");
-    const da = (bot.firstElementChild as HTMLElement).style.animationDelay;
-    expect(da).toMatch(/^-\d+ms$/);
-    expect(da).not.toBe(
-      (b.firstElementChild!.firstElementChild as HTMLElement).style
-        .animationDelay,
-    );
+    const ph = (e: Element) =>
+      (e as HTMLElement).style.getPropertyValue("--phase");
+    const pa = ph(bot.firstElementChild!);
+    expect(Number(pa)).toBeGreaterThanOrEqual(0);
+    expect(Number(pa)).toBeLessThan(1);
+    expect(pa).not.toBe(ph(b.firstElementChild!.firstElementChild!));
   });
 
   it("greys ended bots and falls back without a colour", () => {

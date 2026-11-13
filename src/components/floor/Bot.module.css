@@ -16,6 +16,7 @@
 
 .bot[data-state="working"] > i {
   animation: type var(--dur-beat) steps(4) infinite;
+  animation-delay: calc(var(--dur-beat) * var(--phase, 0) * -1);
 }
 
 .bot[data-state="needs"] > i {
@@ -54,10 +55,12 @@
   background-size: 100% 100%;
   image-rendering: pixelated;
   animation: two var(--dur-beat) steps(2) infinite;
+  animation-delay: calc(var(--dur-beat) * var(--phase, 0) * -1);
 }
 
 .mon > i {
   animation-duration: calc(var(--dur-beat) * 1.5);
+  animation-delay: calc(var(--dur-beat) * 1.5 * var(--phase, 0) * -1);
 }
 
 @keyframes type {

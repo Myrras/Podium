@@ -12,17 +12,15 @@ import styles from "./Bot.module.css";
 const FAINT = "#6e7681";
 const GONE = "#8b949e";
 
-// Stable per-seed offset so bots do not animate in step.
-const delay = (seed: string, mod: number) => {
+// Stable per-seed phase (0..1) so bots do not animate in step; CSS turns it into a delay.
+const phase = (seed: string) => {
   let h = 0;
   for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) % 100003;
-  return `-${h % mod}ms`;
+  return h / 100003;
 };
 
-const frame = (image: string, seed: string, mod: number): CSSProperties => ({
-  backgroundImage: image,
-  animationDelay: delay(seed, mod),
-});
+const frame = (image: string, seed: string): CSSProperties =>
+  ({ backgroundImage: image, "--phase": phase(seed) }) as CSSProperties;
 
 export function Bot({
   color,
@@ -44,7 +42,7 @@ export function Bot({
       style={size ? ({ "--s": `${size}px` } as CSSProperties) : undefined}
       aria-hidden="true"
     >
-      <i style={frame(botSheet(body), seed, 900)} />
+      <i style={frame(botSheet(body), seed)} />
     </span>
   );
 }
@@ -58,7 +56,7 @@ export function MiniBot({
 }) {
   return (
     <span className={styles.px} aria-hidden="true">
-      <i style={frame(miniSheet(color ?? FAINT), seed, 700)} />
+      <i style={frame(miniSheet(color ?? FAINT), seed)} />
     </span>
   );
 }
@@ -66,7 +64,7 @@ export function MiniBot({
 export function Monitor({ seed }: { seed: string }) {
   return (
     <span className={`${styles.px} ${styles.mon}`} aria-hidden="true">
-      <i style={frame(monitorSheet(), seed, 1400)} />
+      <i style={frame(monitorSheet(), seed)} />
     </span>
   );
 }

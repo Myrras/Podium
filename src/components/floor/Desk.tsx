@@ -64,6 +64,7 @@ export function Desk({ process }: { process: ProcessInfo }) {
       type="button"
       className={styles.desk}
       data-state={terminal ? "terminal" : state}
+      data-working={working || undefined}
       data-active={active || undefined}
       style={
         {
