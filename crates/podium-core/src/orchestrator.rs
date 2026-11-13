@@ -188,9 +188,6 @@ struct ManagedProcess {
     /// CLI session it is on (see [`AgentSession`]). `None` for everything
     /// else.
     session: Option<AgentSession>,
-    /// The colour an exited agent gave up, which its next start takes back
-    /// unless another live agent holds it by then.
-    last_color: Option<String>,
 }
 
 /// An agent's CLI session: the commands a restart picks from
@@ -2843,7 +2840,7 @@ impl Orchestrator {
                 .filter(|p| p.project_id == project_id)
                 .map(|p| p.spec.name.clone())
                 .collect();
-            let color = pick_session_color(&inner, project_id, None);
+            let color = pick_session_color(&inner, project_id);
             (root, wsl, agents, names, color)
         };
         // Adapter precedence: an explicit choice, then the project's pinned
@@ -4628,12 +4625,12 @@ const SESSION_COLORS: [&str; 8] = [
     "#ffb224", // amber
 ];
 
-/// Pick a session colour not currently used by another live agent in the
-/// project — `preferred` when it is free; once the palette is exhausted,
-/// cycle by the used count.
+/// Pick a session colour not currently used by a live agent in the project
+/// (exited agents keep theirs but reserve nothing); once the palette is
+/// exhausted, cycle by the used count.
 // ponytail: two concurrent spawns could momentarily pick the same colour —
 // cosmetic only, and the max is 8 agents = palette size, so it's rare.
-fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&str>) -> String {
+fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
     let used: HashSet<&str> = inner
         .processes
         .values()
@@ -4644,9 +4641,9 @@ fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&s
         })
         .filter_map(|p| p.spec.color.as_deref())
         .collect();
-    preferred
-        .into_iter()
-        .chain(SESSION_COLORS.iter().copied())
+    SESSION_COLORS
+        .iter()
+        .copied()
         .find(|c| !used.contains(c))
         .unwrap_or(SESSION_COLORS[used.len() % SESSION_COLORS.len()])
         .to_string()
@@ -4688,7 +4685,7 @@ struct Removed {
 /// Take process `id` out of the registry: its to-do/scratchpad links go
 /// (cleared while it is still in the map — clearing needs its project id),
 /// a pending supervised restart is cancelled and a live PTY stopped. Its
-/// colour (or the `last_color` an exited agent kept) goes with it. `None`
+/// colour goes with it. `None`
 /// when there is no such process (clearing then found nothing either).
 fn take_process(inner: &mut Inner, id: ProcessId) -> Option<Removed> {
     let cleared = clear_agent_assignments(inner, id);
@@ -5012,7 +5009,6 @@ fn insert_process(
             spawn_worktree_name: None,
             seq,
             session: None,
-            last_color: None,
         },
     );
 }
@@ -5053,22 +5049,6 @@ fn do_start(
             "this sub-agent has already ended".to_string(),
         ));
     }
-    // An agent that lost its colour on exit takes it back if no live agent
-    // holds it now, else gets a new one picked exactly as at spawn.
-    let new_color = match guard.processes.get(&id) {
-        Some(p)
-            if p.spec.color.is_none()
-                && !p.is_active()
-                && matches!(p.spec.kind, ProcessKind::Agent { .. }) =>
-        {
-            Some(pick_session_color(
-                &guard,
-                p.project_id,
-                p.last_color.as_deref(),
-            ))
-        }
-        _ => None,
-    };
     let proc = guard
         .processes
         .get_mut(&id)
@@ -5116,10 +5096,6 @@ fn do_start(
         session.id = r.session_id;
         session.resumed = r.resumed;
     }
-    let recolored = new_color.is_some();
-    if recolored {
-        proc.spec.color = new_color;
-    }
     // Publish while still holding the lock: the exit callback also takes
     // the lock, so an instantly-exiting child's Exited event can never be
     // observed before this Running event.
@@ -5128,9 +5104,7 @@ fn do_start(
         process_id: id,
         status,
     });
-    if recolored {
-        publish_color_change(&guard, events, id, project_id);
-    }
+    publish_assignment_change(&guard, events, id, project_id);
     Ok(())
 }
 
@@ -5336,14 +5310,20 @@ fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration
     session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
 }
 
-/// Tell the UI an agent's colour changed: its own row (`ProcessUpdated`
-/// re-lists processes) and the to-dos/scratchpads it owns, which carry the
-/// colour on their assignment.
-fn publish_color_change(inner: &Inner, events: &EventBus, id: ProcessId, project_id: ProjectId) {
-    events.publish(PodiumEvent::ProcessUpdated {
-        project_id,
-        process_id: id,
-    });
+/// Tell the UI the to-dos/scratchpads an agent owns changed state: their
+/// assignment carries `active`, which flips when the agent exits or starts.
+fn publish_assignment_change(
+    inner: &Inner,
+    events: &EventBus,
+    id: ProcessId,
+    project_id: ProjectId,
+) {
+    if !matches!(
+        inner.processes.get(&id).map(|p| &p.spec.kind),
+        Some(ProcessKind::Agent { .. })
+    ) {
+        return;
+    }
     if inner.todo_assignments.values().any(|p| *p == id) {
         events.publish(PodiumEvent::TodosChanged { project_id });
     }
@@ -5424,23 +5404,13 @@ fn make_exit_handler(
             } else {
                 None
             };
-            // An exited agent that is not being restarted keeps its
-            // to-dos/scratchpads (a restart picks the work back up) but loses
-            // its colour, so the UI shows it as no longer live. The next
-            // start takes it back if it is still free.
-            let decolored = restart.is_none()
-                && matches!(p.spec.kind, ProcessKind::Agent { .. })
-                && p.spec.color.is_some();
-            if decolored {
-                p.last_color = p.spec.color.take();
-            }
             events.publish(PodiumEvent::ProcessStatusChanged {
                 project_id,
                 process_id: id,
                 status,
             });
-            if decolored {
-                publish_color_change(&guard, &events, id, project_id);
+            if restart.is_none() {
+                publish_assignment_change(&guard, &events, id, project_id);
             }
             // A sub-agent's exit decides its phase and frees its slot: the
             // driver acts on it, on the runtime rather than this wait thread.
@@ -7457,6 +7427,105 @@ mod tests {
             stopped,
             at: Utc::now() - chrono::Duration::from_std(ago).unwrap(),
         }
+    }
+
+    /// Give process `id` the session colour `color` (fictitious).
+    fn set_color(orch: &Orchestrator, id: ProcessId, color: &str) {
+        let mut inner = orch.inner.lock().unwrap();
+        inner.processes.get_mut(&id).unwrap().spec.color = Some(color.to_string());
+    }
+
+    #[tokio::test]
+    async fn an_exited_agent_keeps_its_colour_and_reserves_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let gone = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(1), false),
+        )
+        .await;
+        set_color(&orch, gone, SESSION_COLORS[0]);
+
+        assert_eq!(
+            orch.process_info(gone).unwrap().color.as_deref(),
+            Some(SESSION_COLORS[0])
+        );
+        let inner = orch.inner.lock().unwrap();
+        assert_eq!(pick_session_color(&inner, project), SESSION_COLORS[0]);
+    }
+
+    #[tokio::test]
+    async fn a_live_agent_reserves_its_colour_from_new_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let live = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Running {
+                pid: 1,
+                since: Utc::now(),
+            },
+        )
+        .await;
+        set_color(&orch, live, SESSION_COLORS[0]);
+
+        let inner = orch.inner.lock().unwrap();
+        assert_eq!(pick_session_color(&inner, project), SESSION_COLORS[1]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell")]
+    async fn a_restart_reuses_the_agents_own_colour() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let exited = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(1), false),
+        )
+        .await;
+        set_color(&orch, exited, SESSION_COLORS[0]);
+        // A live agent took the same colour in the meantime.
+        let other = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Running {
+                pid: 1,
+                since: Utc::now(),
+            },
+        )
+        .await;
+        set_color(&orch, other, SESSION_COLORS[0]);
+
+        let todo = orch.add_todo(project, "Fictional task", None).unwrap();
+        orch.assign_todo(project, todo.id, exited).unwrap();
+        let mut rx = orch.subscribe_events();
+
+        orch.start_process(exited).await.unwrap();
+
+        assert_eq!(
+            orch.process_info(exited).unwrap().color.as_deref(),
+            Some(SESSION_COLORS[0])
+        );
+        let mut todos_changed = false;
+        while let Ok(event) = rx.try_recv() {
+            todos_changed |=
+                matches!(event, PodiumEvent::TodosChanged { project_id } if project_id == project);
+        }
+        assert!(todos_changed, "the owner's to-dos are re-listed on restart");
+        orch.shutdown().await;
     }
 
     const WINDOW: Duration = Duration::from_secs(5 * 60);
