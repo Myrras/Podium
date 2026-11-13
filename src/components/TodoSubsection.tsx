@@ -63,7 +63,7 @@ interface TodoRowProps {
 }
 
 /** Whether a running agent owns the to-do. A stopped owner keeps its link
- * (tinted grey) but no longer blocks spawning on it or selecting it. */
+ * (hollow square) but no longer blocks spawning on it or selecting it. */
 const ownedByLiveAgent = (todo: TodoInfo) =>
   todo.assignedAgent?.active === true;
 
@@ -88,7 +88,7 @@ function TodoRow({
       data-open={open ? "true" : undefined}
       data-assigned={assigned ? "true" : undefined}
       style={
-        // A stopped owner has no colour: the link stays, tinted neutral grey.
+        // A stopped owner may have no colour: the square falls back to grey.
         assigned
           ? ({
               "--session-color": assigned.color ?? "var(--text-faint)",
@@ -97,6 +97,16 @@ function TodoRow({
       }
     >
       <div className={styles.rowMain}>
+        <span
+          className={styles.owner}
+          data-owned={assigned ? "true" : undefined}
+          data-stopped={assigned && !assigned.active ? "true" : undefined}
+          title={
+            assigned
+              ? `Owned by ${assigned.name}${assigned.active ? "" : " (stopped)"}`
+              : undefined
+          }
+        />
         <input
           type="checkbox"
           className={styles.checkbox}
