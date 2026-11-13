@@ -1,0 +1,40 @@
+.room {
+  position: absolute;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+}
+
+.room[data-tinted="true"] {
+  background: color-mix(in srgb, var(--pc) 7%, var(--surface));
+}
+
+.room[data-lit="false"] {
+  background: var(--canvas);
+  border-color: var(--border);
+}
+
+/* Above the box, not inside it. */
+.plate {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+}
+
+.wall {
+  position: relative;
+  height: var(--wall-h);
+}
+
+.desks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+}
+
+.desks > * {
+  width: var(--desk-w);
+}
