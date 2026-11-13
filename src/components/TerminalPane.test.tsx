@@ -176,4 +176,77 @@ describe("TerminalPane header actions", () => {
       expect(screen.getByText("Exited")).toBeVisible();
     });
   });
+
+  describe("caller props", () => {
+    const service = () => process("s1", "dev", { kind: "service" });
+
+    it("renders as before without them", () => {
+      const { container } = render(<TerminalPane process={service()} />);
+      expect(container.querySelector("header svg")).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "dev" })).toBeNull();
+      expect(screen.getByText("dev")).toBeVisible();
+    });
+
+    it("puts leading in place of the icon and renders trailing", () => {
+      const { container } = render(
+        <TerminalPane
+          process={service()}
+          leading={<button type="button">Lead</button>}
+          trailing={<button type="button">Trail</button>}
+        />,
+      );
+      const header = container.querySelector("header")!;
+      expect(header.firstElementChild).toBe(
+        screen.getByRole("button", { name: "Lead" }),
+      );
+      expect(header.lastElementChild).toContainElement(
+        screen.getByRole("button", { name: "Trail" }),
+      );
+    });
+
+    it("hides the built-in actions with hideActions", () => {
+      render(<TerminalPane process={service()} hideActions />);
+      expect(screen.queryByRole("button", { name: "Stop dev" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Restart dev" })).toBeNull();
+    });
+
+    it("renames inline: Enter saves, blank is null", () => {
+      const onRename = vi.fn();
+      render(<TerminalPane process={service()} onRename={onRename} />);
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "  web " },
+      });
+      fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Enter" });
+      expect(onRename).toHaveBeenLastCalledWith("web");
+
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: " " },
+      });
+      fireEvent.blur(screen.getByLabelText("Name"));
+      expect(onRename).toHaveBeenLastCalledWith(null);
+    });
+
+    it("cancels the edit on Esc without letting it bubble", () => {
+      const onRename = vi.fn();
+      const outer = vi.fn();
+      render(
+        <div onKeyDown={outer}>
+          <TerminalPane process={service()} onRename={onRename} />
+        </div>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "draft" },
+      });
+      const notCancelled = fireEvent.keyDown(screen.getByLabelText("Name"), {
+        key: "Escape",
+      });
+      expect(notCancelled).toBe(false);
+      expect(outer).not.toHaveBeenCalled();
+      expect(onRename).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "dev" })).toBeVisible();
+    });
+  });
 });
