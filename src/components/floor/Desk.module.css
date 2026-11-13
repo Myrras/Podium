@@ -1,0 +1,104 @@
+.desk {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 152px;
+  padding: 8px 4px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-md, 8px);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.desk[data-active] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.pad {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  border-radius: var(--radius-md, 8px);
+}
+
+.desk[data-state="working"] .pad {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+}
+
+.desk[data-state="needs"] .pad {
+  background: var(--warning);
+}
+
+.desk[data-state="idle"] .pad,
+.desk[data-state="ended"] .pad,
+.desk[data-state="crashed"] .pad {
+  background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+}
+
+.mark {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-weight: 700;
+  transform: scale(calc(1 / var(--z, 1)));
+  transform-origin: top right;
+}
+
+.ask {
+  background: var(--warning);
+  color: var(--bg, #000);
+}
+
+.bang {
+  background: var(--danger);
+  color: #fff;
+}
+
+.shells {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.minis {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.more {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+:global([data-far]) .name,
+:global([data-far]) .label {
+  visibility: hidden;
+}
