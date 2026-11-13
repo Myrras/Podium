@@ -11,11 +11,14 @@ use tokio::sync::broadcast;
 use crate::error::{CoreError, CoreResult};
 use crate::platform::WslBackend;
 use crate::process::scrollback::ScrollbackBuffer;
-#[cfg(windows)]
-use crate::process::ProcessKind;
-use crate::process::ProcessSpec;
+use crate::process::{ProcessKind, ProcessSpec};
 
 const LOCK_POISONED: &str = "pty lock poisoned";
+
+/// The default terminal command on Unix and the WSL backend
+/// (`src-tauri`'s `terminal_default_command`): the wrapper shell execs an
+/// interactive shell, so the PTY child is that shell.
+pub const INTERACTIVE_SHELL_COMMAND: &str = "exec \"$SHELL\" -i";
 #[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
@@ -45,6 +48,9 @@ pub struct PtyProcess {
     #[cfg(windows)]
     killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     pid: u32,
+    /// A terminal running [`INTERACTIVE_SHELL_COMMAND`]: its foreground
+    /// group is the shell's own at the prompt (see [`crate::activity::foreground`]).
+    interactive_shell: bool,
 }
 
 impl PtyProcess {
@@ -255,11 +261,28 @@ impl PtyProcess {
             #[cfg(windows)]
             killer: Mutex::new(killer),
             pid,
+            interactive_shell: matches!(spec.kind, ProcessKind::Terminal)
+                && spec.command == INTERACTIVE_SHELL_COMMAND,
         })
     }
 
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    pub fn is_interactive_shell(&self) -> bool {
+        self.interactive_shell
+    }
+
+    /// The PTY's foreground process group (`tcgetpgrp` on the master), or
+    /// `None` when the PTY is gone. One syscall under the master lock, which
+    /// only `resize` shares.
+    #[cfg(unix)]
+    pub fn foreground_group(&self) -> Option<i32> {
+        self.master
+            .lock()
+            .expect(LOCK_POISONED)
+            .process_group_leader()
     }
 
     pub fn write(&self, bytes: &[u8]) -> CoreResult<()> {

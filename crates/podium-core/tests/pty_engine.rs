@@ -339,3 +339,87 @@ async fn output_activity_lists_running_processes_that_printed() {
     wait_for_exit(&orch, id).await;
     assert!(!orch.output_activity().contains_key(&id));
 }
+
+#[cfg(unix)]
+const BUSY_POLL: Duration = Duration::from_millis(25);
+
+/// Spawn `spec` straight on a PTY, without the orchestrator, so the test can
+/// ask [`podium_core::activity::foreground::busy`] directly.
+#[cfg(unix)]
+fn spawn_pty(
+    spec: &ProcessSpec,
+) -> (
+    podium_core::process::pty::PtyProcess,
+    std::sync::Arc<std::sync::Mutex<podium_core::process::scrollback::ScrollbackBuffer>>,
+) {
+    use podium_core::process::{pty::PtyProcess, scrollback::ScrollbackBuffer};
+    use std::sync::{Arc, Mutex};
+
+    let scrollback = Arc::new(Mutex::new(ScrollbackBuffer::new()));
+    let (chunk_tx, _) = tokio::sync::broadcast::channel(64);
+    let pty = PtyProcess::spawn(
+        spec,
+        None,
+        None,
+        None,
+        Arc::clone(&scrollback),
+        chunk_tx,
+        Box::new(|_| {}),
+    )
+    .expect("spawn pty");
+    (pty, scrollback)
+}
+
+#[cfg(unix)]
+async fn wait_for_busy(pty: &podium_core::process::pty::PtyProcess, want: Option<bool>) {
+    use podium_core::activity::foreground::busy;
+    timeout(TEST_TIMEOUT, async {
+        while busy(pty) != want {
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for busy == {want:?}"));
+}
+
+// Unix-only: reads the PTY's foreground process group, which Windows lacks
+// (`busy` is always `None` there).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_terminal_is_busy_while_a_command_runs_in_its_foreground() {
+    use podium_core::activity::foreground::busy;
+    use podium_core::process::pty::INTERACTIVE_SHELL_COMMAND;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut shell = spec(INTERACTIVE_SHELL_COMMAND, dir.path());
+    shell.kind = ProcessKind::Terminal;
+    let (pty, scrollback) = spawn_pty(&shell);
+
+    // Wait for the interactive shell to run a command (the quotes keep the
+    // tty's echo of the input from matching), so rc-file commands are over.
+    pty.write(b"echo podium-\"\"ready\n").expect("write");
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let (bytes, _) = scrollback.lock().unwrap().snapshot();
+            if String::from_utf8_lossy(&bytes).contains("podium-ready") {
+                return;
+            }
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .expect("shell never ran a command");
+    wait_for_busy(&pty, Some(false)).await;
+
+    pty.write(b"sleep 2\n").expect("write");
+    wait_for_busy(&pty, Some(true)).await;
+    wait_for_busy(&pty, Some(false)).await;
+    pty.stop();
+
+    // A terminal started with its own command is never read as idle.
+    let mut command = spec("sleep 30", dir.path());
+    command.kind = ProcessKind::Terminal;
+    let (pty, _) = spawn_pty(&command);
+    assert_eq!(busy(&pty), None);
+    pty.stop();
+}
