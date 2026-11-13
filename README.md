@@ -44,6 +44,49 @@ over MCP.
 Both actions above live on the Terminals header, so they go away with that
 section. With Worktrees off, a worktree's terminals are listed under Terminals.
 
+### Floor mode
+
+Podium has two views. **Project mode** is the sidebar and work area above.
+**Floor mode** replaces them with a map: a **room per project**, a **desk per
+agent**. Podium asks which you want on first start (and once after updating
+from a version without it). Closing the question without choosing gives you
+Project mode for that run and asks again next start. Switch any time in
+Settings > General > Appearance > View.
+
+- **Map.** Drag the floor to pan; Ctrl/Cmd + scroll, or Zoom in / Zoom out in the
+  header, to zoom (plain scroll does nothing). Drag a room by its nameplate (or
+  focus it and use the arrow keys): rooms snap to a grid and never touch.
+  Positions are saved; **Reset layout** puts every room back. The header's chips,
+  a click on a nameplate and **Fit all** move the camera to one project or to all
+  of them; Esc shows everything.
+- **Desks.** A working agent types in a lit room; idle agents sit in the dark,
+  one that waits on you has an amber **?**, ended and crashed ones are grey
+  (crashed with a red **!**). Sub-agents stand in front of the desk as mini bots,
+  background shells as monitors behind it (three each, then +N). Terminals are
+  desks with a monitor and no bot. Zoomed far out, labels hide.
+- **Fixtures.** The back wall of a room holds what the sidebar held: a
+  **pinboard** (to-dos, notes in the owning agent's colour), a **shelf**
+  (scratchpads) and a **rack** (`podium.yml` services, one light each; a crash
+  adds a red **!**). A click opens a popover right there with the list, the item
+  with its editor, and the usual actions (start an agent, archive, reload
+  `podium.yml`). A section hidden for the project hides its fixture.
+- **Terminal.** A click on a desk or service opens its terminal in a modal over the
+  floor. Esc goes to the terminal, so it does not close the modal: use the
+  close button or click beside it. Click the agent's name to rename it; Stop,
+  **Resume session** and **Clear the desk** are in the header, and **Next that needs
+  you** steps through waiting agents. There are no answer buttons: type the answer.
+- **Nameplate.** **+** starts an agent: with the assistant on and its panel open
+  it drafts a prompt there, otherwise (or with Cmd/Ctrl held) it opens the New
+  agent screen. **⋯** is the project menu: rename, colour, worktrees, New
+  terminal, Git board, Reload podium.yml, Remove project. **Add project...** is
+  the last chip in the header.
+- **Waypoints.** A room that needs you while out of view gets a marker on the edge
+  of the map with an amber **?** (waiting agents) or red **!** (crashed) count;
+  click it to fly there. Counts also show in the header, the chips and nameplates.
+- **Status bar.** A hint, the room's counts while one room is in view, or the
+  details of the hovered or selected agent. "Show on floor" in the assistant
+  moves the camera to an agent.
+
 ### Processes, terminals and supervision
 
 Three kinds of process, all in their own PTY with a real terminal view:
@@ -418,7 +461,7 @@ you added by hand alone.
 
 | Tab           | What's in it                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **General**   | Theme (**dark**, **light**, **retro**, **glass dark**, **glass light**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
+| **General**   | View (**Project mode** or **Floor mode**), theme (**dark**, **light**, **retro**, **glass dark**, **glass light**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation (after a `/clear`, the one from after it, with the same limits as a restart) the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off; "remove exited agents after" — minutes after its last exit that a finished, crashed or stopped agent is removed from the list, with its terminal and to-do links (default 5, `0` = never, at most 1440; terminals and services stay) |
 | **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation (asks keep or stop when sub-agents are running)                                 |
 | **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |

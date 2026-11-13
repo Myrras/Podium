@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- Floor mode: a map with a room per project and a desk per agent, with to-dos, scratchpads and services as fixtures on each room's wall, the agent's terminal in a modal, and markers at the edge for rooms that need you. Choose it on first start or in Settings > General > View; Project mode stays as it was.
+
 ## [3.4.0] - 2026-11-13
 
 ### Added

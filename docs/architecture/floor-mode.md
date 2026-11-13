@@ -1,0 +1,81 @@
+# Floor mode
+
+An alternative to the sidebar and work area: a map with a room per project and
+a desk per agent. Frontend only; no Rust or IPC change. UI in
+`src/components/floor/`, pure logic in `src/lib/floor/`.
+
+## Mode and entry
+
+`layoutStore.mode` is `"project" | "floor" | null`, persisted in `podium.layout`.
+`null` = not chosen: `ModeChooser` (a `Modal`) shows and the app renders Project
+mode. Closing it without a choice keeps `null` (asked again next start). The
+choice is changed in Settings > General > Appearance > View (`setMode`).
+`App` renders `Floor` inside `<main>` when `mode === "floor"`; every
+subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount.
+
+## Stores
+
+- `layoutStore` (persisted): `floorPositions` (`project.root` → `[x, y]`),
+  `setFloorPosition`, `resetFloorPositions`; `forgetProject(root)` drops the
+  position too.
+- `floorStore` (memory): `camera {x,y,z}`, `animate`, `viewport`, `focus`
+  (`"all"` | project id | `null` after a manual pan or zoom), `popover`,
+  `terminalId`, `hoverDesk`, `agentModal`, `scratchpadAgentModal`.
+  `setCamera` defaults to `focus: null, animate: false`; `openTerminal` closes
+  the popover.
+- The pinned desk is `processStore.activeProcessId`; the open modal is
+  `floorStore.terminalId`.
+
+## Library (`src/lib/floor/`)
+
+- `types.ts`: `RoomModel`, `DeskState` (`working | needs | idle | ended | crashed`),
+  `Camera`, `Rect`, `Size`, popover and modal request types.
+- `geometry.ts`: pure numbers, no DOM: `roomSize`, `snap` and `hits` (40 px grid,
+  one cell apart), `layoutRooms`, `bounds`, `frame`, `zoomAt`, `toScreen`; zoom
+  0.3 to 2, far below 0.4.
+- `rooms.ts`: `deskState`, `useRooms`/`getRooms` (never write), `roomOf`,
+  `useFloorData` (loads to-dos and scratchpads for every project and writes back
+  changed room positions; only `FloorMap` calls it).
+- `camera.ts`: `jumpTo("all" | projectId)` (animated), `zoomBy`, `showAgent`.
+- `startAgent.ts`: `startAgentIn` for the nameplate +.
+- `waypoints.ts`: edge markers for rooms that need you and are out of view.
+- `sprites.ts` + `Bot.tsx`: pixel art as SVG data URLs; only a working bot moves.
+
+## Components
+
+`Floor` → `FloorHeader`, then `GitBoard` (when `openBoard` is set) or `FloorMap`
++ `FloorWaypoints`, then `FloorStatusBar`, `FloorPopovers`, `FloorTerminalModal`,
+`FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
+
+- The camera never goes through React state: `FloorMap` subscribes to the store
+  and writes the world layer's `transform`, `--z` and `data-far` (z < 0.4;
+  labels hide with `:global([data-far])`). Only transform and opacity animate.
+- Pan starts from a pointerdown whose target is outside
+  `button, [role="button"], a, input, textarea, select, [data-no-pan]`, after
+  4 px. Every clickable thing on the map is a `<button>` or has `data-no-pan`.
+- Popovers anchor on `data-fixture="<projectId>:<todos|scratchpads|services|menu>"`;
+  `FloorPopovers` looks it up on each render and closes when it is gone, so
+  fixtures stay mounted while open. One popover at a time.
+- A section hidden in `ProjectInfo.sections` hides its fixture. Services show
+  only when the project has any.
+
+## Esc and terminal rules
+
+- No `keydown` listener on `window` or `document`. Esc "show all" is an
+  `onKeyDown` on the map viewport and one on the header root; both do nothing
+  while a popover or the terminal modal is open.
+- A popover closes on Esc only while focus is inside it (it takes focus on open
+  and gives it back to the anchor).
+- `FloorTerminalModal` is a portal overlay, not `Modal`: Esc must reach the
+  terminal (Claude Code uses it) and the card must not scale (xterm mouse
+  mapping). It closes with its button or a mousedown on the overlay. Esc in the
+  rename field only cancels the edit. Tab is trapped in the card; a focused
+  xterm sends Tab and Esc to the PTY.
+- Agent actions map to existing commands: Resume session = `startProcess`, Stop
+  = `stopProcess`, Clear the desk = `removeProcess`.
+
+## Not built
+
+Multi-select as assistant context, a terminal commands list, Open in Warp,
+section toggles in Floor mode, a Stopping light, keyboard travel between rooms,
+answer buttons in the modal.
