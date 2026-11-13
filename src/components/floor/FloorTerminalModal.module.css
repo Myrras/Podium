@@ -4,6 +4,16 @@
   animation: fade var(--dur-3) var(--ease-out);
 }
 
+/* Glass themes tint their own backdrop faintly; dim the floor like light does.
+   Doubled class outranks Modal's per-theme rules whatever the load order. */
+:global(:root[data-theme^="glass"]) .overlay.overlay {
+  background: color-mix(in srgb, var(--floor-screen) 55%, transparent);
+}
+
+:global(:root[data-theme^="glass"]) .scrim {
+  background: color-mix(in srgb, var(--floor-screen) 40%, transparent);
+}
+
 /* A definite height: TerminalPane's .pane is flex: 1; min-height: 0. */
 .card {
   composes: glass from global;
