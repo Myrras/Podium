@@ -470,25 +470,70 @@ describe("Sidebar project header", () => {
     expect(useLayoutStore.getState().collapsedSections).toEqual({});
   });
 
-  it("flags a collapsed subsection whose hidden row needs input", () => {
-    useProjectStore.setState({ projects: [project()] });
-    useProcessStore.setState({
-      processes: [terminal("t1", "shell", null), terminal("t2", "logs", null)],
+  describe("activity roll-up", () => {
+    const act = (activity: "working" | "waiting") => ({
+      activity,
+      reported: true,
+      waitingFor: null,
+      sinceMs: null,
+      subagents: 0,
+      shells: 0,
     });
-    useAgentActivityStore.setState({ activity: { t2: "waiting" } });
-    render(<Sidebar />);
+    function seed() {
+      useProjectStore.setState({ projects: [project()] });
+      useProcessStore.setState({
+        processes: [
+          terminal("t1", "shell", null),
+          terminal("t2", "logs", null),
+          terminal("t3", "build", null),
+        ],
+      });
+      useAgentActivityStore.setState({
+        details: {
+          t1: act("working"),
+          t2: act("waiting"),
+          t3: act("waiting"),
+        },
+      });
+    }
 
-    // Expanded, the row itself shows it; the header stays quiet.
-    expect(
-      screen.queryByRole("img", { name: /needs your input/ }),
-    ).not.toBeInTheDocument();
+    it("shows pills on a collapsed section, none while expanded", () => {
+      seed();
+      render(<Sidebar />);
+      expect(screen.queryByRole("img", { name: /needs you/ })).toBeNull();
+      expect(
+        screen.queryByRole("img", { name: /working|running/i }),
+      ).toBeNull();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Terminals", expanded: true }),
-    );
-    expect(
-      screen.getByRole("button", { name: "Terminals (2) 1 needs your input" }),
-    ).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Terminals", expanded: true }),
+      );
+      expect(screen.getByRole("img", { name: "2 needs you" })).toBeVisible();
+      expect(screen.getByRole("img", { name: "1 working" })).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: /^Terminals \(3\)/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("shows pills on a collapsed project, none while expanded", () => {
+      seed();
+      render(<Sidebar />);
+      expect(screen.queryByRole("img", { name: /needs you/ })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Collapse Webshop" }));
+      expect(screen.getByRole("img", { name: "2 needs you" })).toBeVisible();
+      expect(screen.getByRole("img", { name: "1 working" })).toBeVisible();
+    });
+
+    it("shows nothing on a collapsed project with no activity", () => {
+      seed();
+      useAgentActivityStore.setState({ details: {} });
+      render(<Sidebar />);
+      fireEvent.click(screen.getByRole("button", { name: "Collapse Webshop" }));
+      expect(
+        screen.queryByRole("img", { name: /needs you|working/ }),
+      ).toBeNull();
+    });
   });
 
   it("collapses and expands every subsection from the project header", () => {
