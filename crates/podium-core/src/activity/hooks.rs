@@ -123,8 +123,8 @@ const STALE_ROUNDS: u64 = 60;
 /// poll round (the UI polls every agent at once, once per second).
 const ROUND_GAP: Duration = Duration::from_millis(500);
 
-/// The counts each agent's hooks last reported. The orchestrator holds one
-/// ([`crate::Orchestrator::hooks`]).
+/// The counts each agent's hooks last reported. The orchestrator holds one,
+/// read by [`crate::Orchestrator::output_activity`] and reset on each start.
 #[derive(Debug, Default)]
 pub struct Store {
     inner: Mutex<Inner>,
@@ -153,8 +153,8 @@ impl Store {
     ///
     /// Cleanup: an agent missing from [`STALE_ROUNDS`] poll rounds in a row
     /// (stopped or removed) loses its state and directory. Counted in rounds,
-    /// not time, so a UI that paused polling sweeps nothing. A later restart
-    /// starts from zero; its hook recreates the directory.
+    /// not time, so a UI that paused polling sweeps nothing. Its hook
+    /// recreates the directory if it runs again.
     pub fn counts(&self, id: ProcessId) -> Option<Counts> {
         let dir = watched(id)?;
         let mut inner = lock(&self.inner);
@@ -169,12 +169,8 @@ impl Store {
                 if round - agent.round <= STALE_ROUNDS {
                     return true;
                 }
-                // Back after a stop: a new run, whose events are already
-                // waiting in its directory.
-                if *other == id {
-                    *agent = Agent::default();
-                    return true;
-                }
+                // The `WATCHED` entry stays: a restart reuses the launch
+                // planned once at spawn, so nothing would register it again.
                 if let Some(dir) = watched(*other) {
                     let _ = std::fs::remove_dir_all(dir);
                 }
@@ -193,6 +189,19 @@ impl Store {
             subagents: n(&agent.subagents),
             shells: n(&agent.shells),
         })
+    }
+
+    /// Start agent `id` over from zero: forget its counts and delete what is
+    /// left in its directory. A stop kills the whole process group, which
+    /// fires no `SubagentStop` or `Stop`, so a new run cannot trust them.
+    /// Call it before the run spawns, so none of its own events are lost.
+    pub fn reset(&self, id: ProcessId) {
+        let mut inner = lock(&self.inner);
+        inner.agents.remove(&id);
+        let Some(dir) = watched(id) else { return };
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -531,6 +540,42 @@ mod tests {
         assert!(!root.path().join(gone.to_string()).exists());
         assert!(!lock(&store.inner).agents.contains_key(&gone));
         assert!(root.path().join(live.to_string()).exists());
+        // Its directory is gone, its registration is not: a restart reuses it.
+        assert!(watched(gone).is_some());
+    }
+
+    #[test]
+    fn reset_starts_a_run_from_zero() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let id = ProcessId::new();
+        let dir = root.path().join(id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        lock(&WATCHED).insert(id, dir.clone());
+        let store = Store::default();
+        let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+
+        // Stopped with two sub-agents running: no stop event ever came.
+        write(
+            "1-1.json",
+            r#"{"hook_event_name":"SubagentStart","agent_id":"sub-1"}"#,
+        );
+        write(
+            "1-2.json",
+            r#"{"hook_event_name":"SubagentStart","agent_id":"sub-2"}"#,
+        );
+        assert_eq!(store.counts(id).unwrap().subagents, 2);
+        // Left over from the killed run: an unread event and a half write.
+        write(
+            "2-1.json",
+            r#"{"hook_event_name":"SubagentStart","agent_id":"sub-3"}"#,
+        );
+        write(".3.tmp", "{");
+
+        store.reset(id);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(store.counts(id), Some(Counts::default()));
+        // Nothing to reset is no error.
+        store.reset(ProcessId::new());
     }
 
     /// Runs hook `command` through `sh` with `payload` on stdin.

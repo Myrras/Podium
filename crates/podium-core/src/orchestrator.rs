@@ -279,6 +279,9 @@ struct Inner {
     /// Where the exit handler hands a sub-agent's exit to the sub-agent
     /// driver ([`run_subagent_driver`]); set when the driver starts.
     subagent_exits: Option<tokio::sync::mpsc::UnboundedSender<ProcessId>>,
+    /// What the agents' hooks reported. Here so [`do_start`] can reset it;
+    /// an `Arc` so [`Orchestrator::output_activity`] reads it outside the lock.
+    hooks: Arc<hooks::Store>,
 }
 
 /// The personal assistant's own scope: the Podium-internal "project" its
@@ -354,8 +357,6 @@ pub struct Orchestrator {
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
     subagent_driver: AtomicBool,
-    /// What the agents' hooks reported ([`Self::hooks`]).
-    hooks: hooks::Store,
     /// When each process's reported state last changed, as of the latest
     /// [`Self::output_activity`] poll.
     reported_seen: Mutex<activity::Seen>,
@@ -392,14 +393,8 @@ impl Orchestrator {
             session_memory: SessionMemoryStore::new(),
             subagent_config: SubagentConfig::default(),
             subagent_driver: AtomicBool::new(false),
-            hooks: hooks::Store::default(),
             reported_seen: Mutex::default(),
         }
-    }
-
-    /// The store the agents' hooks report their sub-agent and shell counts to.
-    pub fn hooks(&self) -> &hooks::Store {
-        &self.hooks
     }
 
     /// Replace the agent adapter registry (tests inject fakes).
@@ -1214,20 +1209,21 @@ impl Orchestrator {
     /// run after the lock is released, on the caller's thread.
     pub fn output_activity(&self) -> HashMap<ProcessId, OutputActivity> {
         let now = Instant::now();
-        let probes: Vec<ActivityProbe> = {
+        let (probes, hooks): (Vec<ActivityProbe>, _) = {
             let inner = self.inner.lock().expect(LOCK_POISONED);
-            inner
+            let probes = inner
                 .processes
                 .iter()
                 .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
                 .map(|(id, p)| activity_probe(&inner, *id, p, now))
-                .collect()
+                .collect();
+            (probes, Arc::clone(&inner.hooks))
         };
-        let config_dir = activity::claude_config_dir();
+        let config_dir = crate::agent::claude_config_dir();
         let polled = probes
             .into_iter()
             .map(|probe| activity::Polled {
-                reported: probe.report(config_dir.as_deref(), &self.hooks),
+                reported: probe.report(config_dir.as_deref(), &hooks),
                 id: probe.id,
                 output: probe.output,
                 started: probe.started,
@@ -5049,6 +5045,7 @@ fn do_start(
             "this sub-agent has already ended".to_string(),
         ));
     }
+    let hooks = Arc::clone(&guard.hooks);
     let proc = guard
         .processes
         .get_mut(&id)
@@ -5056,6 +5053,8 @@ fn do_start(
     if proc.is_active() {
         return Err(CoreError::ProcessAlreadyRunning);
     }
+    // Every run counts its sub-agents and shells from zero.
+    hooks.reset(id);
     if manual {
         proc.restart.cancel();
         proc.restart.reset();
@@ -5145,7 +5144,8 @@ struct ActivityProbe {
     cwd: PathBuf,
     started_wall: Option<std::time::SystemTime>,
     /// Whether Claude Code's own status can be read: an agent on that
-    /// adapter, on the native backend (in WSL its files live in the distro).
+    /// adapter, on Unix, on the native backend (in WSL its files live in the
+    /// distro).
     claude: bool,
 }
 
@@ -5162,7 +5162,9 @@ fn activity_probe(inner: &Inner, id: ProcessId, p: &ManagedProcess, now: Instant
         pty: p.pty.clone(),
         cwd: p.spec.cwd.clone(),
         started_wall: p.started_wall,
-        claude: matches!(&p.spec.kind, ProcessKind::Agent { adapter } if adapter == crate::agent::CLAUDE_CODE.id)
+        // Off on Windows: untested there, and not offered.
+        claude: cfg!(unix)
+            && matches!(&p.spec.kind, ProcessKind::Agent { adapter } if adapter == crate::agent::CLAUDE_CODE.id)
             && project_backend(inner, p.project_id).is_none(),
     }
 }
@@ -8834,6 +8836,47 @@ mod tests {
         assert!(!ws.join(".claude").exists());
         assert!(!ws.join(".mcp.json").exists());
         assert!(!ws.join("CLAUDE.md").exists());
+        orch.shutdown().await;
+    }
+
+    /// A group kill fires no stop hook, so a start must not inherit the last
+    /// run's hook counts or its unread events.
+    // Unix-only: the hooks (and so their directory) exist only there.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_resets_the_hook_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = orch
+            .add_process(
+                project_id,
+                ProcessSpec {
+                    name: "fictitious".to_string(),
+                    command: "sleep 30".to_string(),
+                    cwd: dir.path().to_path_buf(),
+                    env: Vec::new(),
+                    kind: ProcessKind::Service,
+                    restart_policy: RestartPolicy::Never,
+                    color: None,
+                },
+            )
+            .await
+            .unwrap();
+        hooks::settings(id, dir.path()).expect("hooks on unix");
+        let events = dir.path().join("hooks").join(id.to_string());
+        std::fs::write(
+            events.join("1-1.json"),
+            r#"{"hook_event_name":"SubagentStart","agent_id":"sub-1"}"#,
+        )
+        .unwrap();
+        let store = Arc::clone(&orch.inner.lock().unwrap().hooks);
+        assert_eq!(store.counts(id).unwrap().subagents, 1);
+        std::fs::write(events.join(".2.tmp"), "{").unwrap();
+
+        orch.start_process(id).await.unwrap();
+        assert_eq!(std::fs::read_dir(&events).unwrap().count(), 0);
+        assert_eq!(store.counts(id), Some(hooks::Counts::default()));
         orch.shutdown().await;
     }
 }

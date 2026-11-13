@@ -340,6 +340,57 @@ async fn output_activity_lists_running_processes_that_printed() {
     assert!(!orch.output_activity().contains_key(&id));
 }
 
+/// The reported state of `id` in the orchestrator's activity poll.
+#[cfg(unix)]
+fn reported_state(orch: &Orchestrator, id: ProcessId) -> Option<podium_core::ReportedState> {
+    orch.output_activity().get(&id).and_then(|a| a.state)
+}
+
+#[cfg(unix)]
+async fn wait_for_state(orch: &Orchestrator, id: ProcessId, want: podium_core::ReportedState) {
+    timeout(TEST_TIMEOUT, async {
+        while reported_state(orch, id) != Some(want) {
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for state {want:?}"));
+}
+
+// Unix-only: the foreground provider reads the PTY's foreground process
+// group, which Windows lacks.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_terminal_reports_its_state_through_output_activity() {
+    use podium_core::process::pty::INTERACTIVE_SHELL_COMMAND;
+    use podium_core::ReportedState::{Idle, Working};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Orchestrator::new();
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let mut shell = spec(INTERACTIVE_SHELL_COMMAND, dir.path());
+    shell.kind = ProcessKind::Terminal;
+    let id = orch.add_process(project_id, shell).await.expect("add");
+    orch.start_process(id).await.expect("start");
+
+    // Past the rc files once the shell ran a command (see the test below).
+    orch.write_stdin(id, b"echo podium-\"\"ready\n")
+        .await
+        .expect("write");
+    wait_for_output(&orch, id, "podium-ready").await;
+    wait_for_state(&orch, id, Idle).await;
+
+    orch.write_stdin(id, b"sleep 2\n").await.expect("write");
+    wait_for_state(&orch, id, Working).await;
+    wait_for_state(&orch, id, Idle).await;
+
+    orch.stop_process(id).await.expect("stop");
+    wait_for_exit(&orch, id).await;
+}
+
 #[cfg(unix)]
 const BUSY_POLL: Duration = Duration::from_millis(25);
 

@@ -39,11 +39,6 @@ pub struct ClaudeStatus {
     pub since: Option<SystemTime>,
 }
 
-/// Slack on "the record was written by a CLI started after Podium's spawn".
-// Same value as the private `agent::LIVE_SESSION_SLACK`; share it once that
-// is `pub(crate)`.
-const SLACK: Duration = Duration::from_secs(5);
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Live {
@@ -62,7 +57,7 @@ pub fn read(probe: &Probe) -> Option<ClaudeStatus> {
     let dir = probe.config_dir.join("sessions");
     let earliest = probe
         .started
-        .checked_sub(SLACK)
+        .checked_sub(crate::agent::LIVE_SESSION_SLACK)
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_millis());
     let trusted = |live: &Live| {

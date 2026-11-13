@@ -461,7 +461,7 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 // the login shell profile is missed: a restart then runs
 // `RestartCommands::fresh` (a new conversation, the old one not resumed)
 // rather than failing. (The WSL check runs in the login shell, so it sees it.)
-fn claude_config_dir() -> Option<PathBuf> {
+pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         return Some(dir.into());
     }
@@ -482,7 +482,7 @@ fn claude_session_in(config_dir: &Path, session_id: &str) -> bool {
 
 /// Slack on "the record was written by a CLI started after Podium's spawn":
 /// the CLI stamps its own start, a little after the PTY child's.
-const LIVE_SESSION_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const LIVE_SESSION_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The `sessionId` Claude Code's live registry holds for CLI process `cli`:
 /// `<config_dir>/sessions/<pid>.json`, written while the CLI runs (and

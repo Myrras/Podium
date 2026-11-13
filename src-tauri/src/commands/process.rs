@@ -166,8 +166,9 @@ pub fn process_list(state: State<'_, AppState>, project_id: Option<ProjectId>) -
 }
 
 /// How recently and how steadily each running process has been printing;
-/// the frontend's activity monitor polls this once a second.
-#[tauri::command]
+/// the frontend's activity monitor polls this once a second. Async so its
+/// file and PTY reads stay off the main thread.
+#[tauri::command(async)]
 pub fn process_activity(state: State<'_, AppState>) -> HashMap<ProcessId, OutputActivity> {
     state.orchestrator.output_activity()
 }

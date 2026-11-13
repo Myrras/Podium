@@ -8,7 +8,6 @@ pub mod foreground;
 pub mod hooks;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
@@ -54,12 +53,9 @@ impl Reported {
         if let Some(status) = status {
             // Idle is done: nothing it started still runs, so stale hook
             // counts (an event missed, a stop that never fired) clear here.
-            // Claude's own shell flag is the one exception.
             if status.state == ReportedState::Idle {
                 reported.subagents = 0;
-                if !status.shell {
-                    reported.shells = 0;
-                }
+                reported.shells = 0;
             }
             // A shell Claude reports is running, whether a hook counted it or not.
             reported.shells = reported.shells.max(u32::from(status.shell));
@@ -142,20 +138,6 @@ pub(crate) fn merge(
     out
 }
 
-/// Claude Code's config dir on the native backend: `$CLAUDE_CONFIG_DIR`, else
-/// `~/.claude`.
-// ponytail: a copy of the private `agent::claude_config_dir`, with the same
-// limit (a CLAUDE_CONFIG_DIR set only in the login shell profile is missed).
-// Drop this for that one once it is `pub(crate)`.
-pub(crate) fn claude_config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
-        return Some(dir.into());
-    }
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|home| PathBuf::from(home).join(".claude"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::claude_status::ClaudeStatus;
@@ -216,8 +198,9 @@ mod tests {
 
     #[test]
     fn a_shell_claude_reports_counts_as_at_least_one() {
+        // As `claude_status::read` gives it: `shell` comes only with Working.
         let shell_only = || ClaudeStatus {
-            state: ReportedState::Idle,
+            state: ReportedState::Working,
             shell: true,
             waiting_for: None,
             since: None,
@@ -232,9 +215,9 @@ mod tests {
 
     #[test]
     fn an_idle_agent_has_nothing_running() {
-        let idle = |shell| ClaudeStatus {
+        let idle = ClaudeStatus {
             state: ReportedState::Idle,
-            shell,
+            shell: false,
             waiting_for: None,
             since: None,
         };
@@ -242,15 +225,12 @@ mod tests {
             subagents: 2,
             shells: 3,
         };
-        let reported = Reported::agent(Some(idle(false)), Some(counted));
+        let reported = Reported::agent(Some(idle.clone()), Some(counted));
         assert_eq!((reported.subagents, reported.shells), (0, 0));
-        // With a shell Claude still reports, the hooks' shell count stands.
-        let reported = Reported::agent(Some(idle(true)), Some(counted));
-        assert_eq!((reported.subagents, reported.shells), (0, 3));
         // Working keeps the counts as they are.
         let working = ClaudeStatus {
             state: ReportedState::Working,
-            ..idle(false)
+            ..idle
         };
         let reported = Reported::agent(Some(working), Some(counted));
         assert_eq!((reported.subagents, reported.shells), (2, 3));
@@ -361,18 +341,18 @@ mod tests {
     #[test]
     fn the_wire_is_camel_case_with_nulls_when_nothing_is_reported() {
         let id = ProcessId::new();
-        let reported = Reported {
-            waiting_for: Some("permission".to_string()),
-            ..Reported::agent(
-                Some(ClaudeStatus {
-                    state: ReportedState::Waiting,
-                    shell: true,
-                    waiting_for: None,
-                    since: None,
-                }),
-                None,
-            )
-        };
+        let reported = Reported::agent(
+            Some(ClaudeStatus {
+                state: ReportedState::Waiting,
+                shell: false,
+                waiting_for: Some("permission".to_string()),
+                since: None,
+            }),
+            Some(Counts {
+                subagents: 0,
+                shells: 1,
+            }),
+        );
         let out = merge(
             polled(id, reported),
             &mut Seen::new(),
