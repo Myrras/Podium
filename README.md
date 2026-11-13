@@ -83,9 +83,10 @@ Settings > General > Appearance > View.
   hides its fixture.
 - **Terminal.** A click on a desk or service opens its terminal in a modal over the
   floor. Esc goes to the terminal, so it does not close the modal: use the
-  close button or click beside it. The modal shows the terminal's state, and
-  terminals have **Close terminal**. Click the agent's name to rename it; Stop,
-  **Resume session** and **Clear the desk** are in the header, and **Next that needs
+  close button or click beside it. The modal has one header bar (the terminal's own) with the
+  terminal's state. Stop is an icon at the far left and asks first; **Close terminal**
+  and **Clear the desk** ask first too. Click the agent's name to rename it;
+  **Resume session** is in the header, and **Next that needs
   you** steps through waiting agents. There are no answer buttons: type the answer.
 - **Nameplate.** **+** starts an agent: with the assistant on and its panel open
   it drafts a prompt there, otherwise (or with Cmd/Ctrl held) it opens the New

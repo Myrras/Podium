@@ -74,7 +74,7 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `PopoverSlot`. The Commands popover (`CommandsFixturePopover`) lists commands
   and has Edit commands in the header.
 - Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
-  modal shows the state and Close terminal; the nameplate's terminal icon calls
+  modal shows the state and Close terminal (after a confirmation); the nameplate's terminal icon calls
   `newTerminal`.
 
 ## Esc and terminal rules
@@ -89,8 +89,13 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   mapping). It closes with its button or a mousedown on the overlay. Esc in the
   rename field only cancels the edit. Tab is trapped in the card; a focused
   xterm sends Tab and Esc to the PTY.
+- The modal has one header bar: `TerminalPane`'s, filled through its optional
+  `leading`, `trailing`, `onRename` and `hideActions` props (the modal draws no
+  bar of its own). Stop is an icon at the far left.
 - Agent actions map to existing commands: Resume session = `startProcess`, Stop
-  = `stopProcess`, Clear the desk = `removeProcess`.
+  = `stopProcess`, Clear the desk = `removeProcess`. Stop, Close terminal and
+  Clear the desk ask first in a confirm dialog inside the card (Esc only
+  cancels it).
 
 ## Not built
 
