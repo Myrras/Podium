@@ -54,8 +54,9 @@ pub(crate) fn settings(id: ProcessId, config_dir: &Path) -> Option<serde_json::V
         return None;
     }
     let command = hook_command(&dir)?;
+    let shell_command = background_shell_command(&dir)?;
     lock(&WATCHED).insert(id, dir);
-    let hook = |matcher: Option<&str>| {
+    let hook = |matcher: Option<&str>, command: &str| {
         let mut entry = serde_json::json!({
             "hooks": [{ "type": "command", "command": command }],
         });
@@ -65,10 +66,10 @@ pub(crate) fn settings(id: ProcessId, config_dir: &Path) -> Option<serde_json::V
         serde_json::json!([entry])
     };
     Some(serde_json::json!({
-        "SubagentStart": hook(None),
-        "SubagentStop": hook(None),
-        "Stop": hook(None),
-        "PostToolUse": hook(Some("Bash")),
+        "SubagentStart": hook(None, &command),
+        "SubagentStop": hook(None, &command),
+        "Stop": hook(None, &command),
+        "PostToolUse": hook(Some("Bash"), &shell_command),
     }))
 }
 
@@ -92,10 +93,25 @@ fn private_dir(dir: &Path) -> std::io::Result<()> {
 /// swept it. Prints nothing (hook stdout can be read as a reply) and always
 /// exits 0. `None` if the path cannot be quoted.
 fn hook_command(dir: &Path) -> Option<String> {
+    Some(format!("{}; exit 0", save(dir, "cat")?))
+}
+
+/// [`hook_command`] for `PostToolUse`, which fires for every Bash call with
+/// its full output: saves only a payload that starts a background shell
+/// (carries `"backgroundTaskId"`), so foreground output never reaches disk.
+fn background_shell_command(dir: &Path) -> Option<String> {
+    let save = save(dir, "printf '%s' \"$p\"")?;
+    Some(format!(
+        "p=$(cat); case $p in *'\"backgroundTaskId\"'*) {save};; esac; exit 0"
+    ))
+}
+
+/// Shell commands writing `source`'s output to a new event file in `dir`.
+fn save(dir: &Path, source: &str) -> Option<String> {
     let dir = crate::platform::quote_posix(dir.to_str()?).ok()?;
     Some(format!(
         "d={dir}; [ -d \"$d\" ] || mkdir -m 700 -p \"$d\"; t=\"$d/.$$.tmp\"; \
-         (umask 077; cat >\"$t\") && mv \"$t\" \"$d/$(date +%s)-$$.json\"; exit 0"
+         (umask 077; {source} >\"$t\") && mv \"$t\" \"$d/$(date +%s)-$$.json\""
     ))
 }
 
@@ -386,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_hook_four_events_with_one_quoted_command() {
+    fn the_settings_hook_four_events_with_quoted_commands() {
         let root = tempfile::tempdir().expect("tempdir");
         let config = root.path().join("it's mine");
         let id = ProcessId::new();
@@ -411,13 +427,23 @@ mod tests {
                 "{name}"
             );
         }
+        // Bash gets its own command, saving background starts only.
+        let shell = hooks["PostToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command");
         assert_eq!(
             hooks["PostToolUse"],
             serde_json::json!([{
                 "matcher": "Bash",
-                "hooks": [{ "type": "command", "command": command }],
+                "hooks": [{ "type": "command", "command": shell }],
             }])
         );
+        assert!(
+            shell.starts_with("p=$(cat); case $p in *'\"backgroundTaskId\"'*) "),
+            "{shell}"
+        );
+        assert!(shell.contains(&format!("d={quoted}; ")), "{shell}");
+        assert!(shell.ends_with(";; esac; exit 0"), "{shell}");
         assert_eq!(hooks.as_object().unwrap().len(), 4);
         #[cfg(unix)]
         {
@@ -507,24 +533,10 @@ mod tests {
         assert!(root.path().join(live.to_string()).exists());
     }
 
+    /// Runs hook `command` through `sh` with `payload` on stdin.
     #[cfg(unix)]
-    #[test]
-    fn the_hook_command_hands_its_stdin_to_counts() {
+    fn run_hook(command: &str, payload: &serde_json::Value) {
         use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = tempfile::tempdir().expect("tempdir");
-        let id = ProcessId::new();
-        let hooks = settings(id, root.path()).expect("hooks");
-        let command = hooks["PostToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap();
-        let payload = serde_json::json!({
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Bash",
-            "tool_input": { "command": "sleep 25", "run_in_background": true },
-            "tool_response": { "backgroundTaskId": "shell-1" },
-        });
         let mut child = std::process::Command::new("sh")
             .args(["-c", command])
             .stdin(std::process::Stdio::piped())
@@ -540,8 +552,42 @@ mod tests {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
         assert!(out.stdout.is_empty(), "a hook must print nothing");
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_hook_commands_hand_their_stdin_to_counts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let id = ProcessId::new();
+        let hooks = settings(id, root.path()).expect("hooks");
+        let command = |event: &str| {
+            hooks[event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
         let dir = root.path().join("hooks").join(id.to_string());
+        let files = || std::fs::read_dir(&dir).unwrap().flatten().count();
+        let bash = |background: bool| {
+            let mut response = serde_json::json!({ "stdout": "fictitious output\n" });
+            if background {
+                response["backgroundTaskId"] = "shell-1".into();
+            }
+            serde_json::json!({
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_input": { "command": "sleep 25", "run_in_background": background },
+                "tool_response": response,
+            })
+        };
+
+        // A foreground Bash call's output never reaches the disk.
+        run_hook(&command("PostToolUse"), &bash(false));
+        assert_eq!(files(), 0);
+
+        run_hook(&command("PostToolUse"), &bash(true));
         let file = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -556,6 +602,20 @@ mod tests {
                 shells: 1
             })
         );
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "drained");
+        assert_eq!(files(), 0, "drained");
+
+        let start = serde_json::json!({
+            "hook_event_name": "SubagentStart",
+            "agent_id": "sub-1",
+            "agent_type": "general-purpose",
+        });
+        run_hook(&command("SubagentStart"), &start);
+        assert_eq!(
+            store.counts(id),
+            Some(Counts {
+                subagents: 1,
+                shells: 1
+            })
+        );
     }
 }
