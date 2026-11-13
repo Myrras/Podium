@@ -77,6 +77,9 @@ import {
   Paperclip,
   Image as ImageGlyph,
   File as FileGlyph,
+  Scan,
+  ZoomIn,
+  ZoomOut,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
@@ -137,6 +140,9 @@ export const DeleteIcon = icon(Trash2, { size: 13 });
 export const IssueIcon = icon(CircleDot);
 export const PrIcon = icon(GitPullRequest);
 export const BoardIcon = icon(SquareKanban);
+export const ZoomOutIcon = icon(ZoomOut, { size: 15 });
+export const ZoomInIcon = icon(ZoomIn, { size: 15 });
+export const FitIcon = icon(Scan, { size: 15 });
 export const BranchIcon = icon(GitBranch, { size: 13 });
 export const ExternalLinkIcon = icon(ExternalLink, { size: 13 });
 export const GripIcon = icon(GripVertical, { size: 14 });

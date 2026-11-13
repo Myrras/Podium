@@ -7,6 +7,7 @@ import { useAgentActivityStore } from "../../state/agentActivityStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProjectStore } from "../../state/projectStore";
+import { FitIcon, ZoomInIcon, ZoomOutIcon } from "../icons";
 import { ProjectBadge } from "../ProjectBadge";
 import styles from "./FloorHeader.module.css";
 
@@ -93,14 +94,29 @@ export function FloorHeader() {
         {working > 0 && <span>{working} working</span>}
       </div>
       <div className={styles.buttons} data-popover-keep>
-        <button type="button" onClick={() => zoomBy(0.8)}>
-          Zoom out
+        <button
+          type="button"
+          aria-label="Zoom out"
+          title="Zoom out"
+          onClick={() => zoomBy(0.8)}
+        >
+          <ZoomOutIcon />
         </button>
-        <button type="button" onClick={() => zoomBy(1.25)}>
-          Zoom in
+        <button
+          type="button"
+          aria-label="Zoom in"
+          title="Zoom in"
+          onClick={() => zoomBy(1.25)}
+        >
+          <ZoomInIcon />
         </button>
-        <button type="button" onClick={() => jumpTo("all")}>
-          Fit all
+        <button
+          type="button"
+          aria-label="Fit all"
+          title="Fit all"
+          onClick={() => jumpTo("all")}
+        >
+          <FitIcon />
         </button>
         <button
           type="button"
