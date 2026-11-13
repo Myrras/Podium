@@ -52,6 +52,15 @@ impl Reported {
             ..Self::default()
         };
         if let Some(status) = status {
+            // Idle is done: nothing it started still runs, so stale hook
+            // counts (an event missed, a stop that never fired) clear here.
+            // Claude's own shell flag is the one exception.
+            if status.state == ReportedState::Idle {
+                reported.subagents = 0;
+                if !status.shell {
+                    reported.shells = 0;
+                }
+            }
             // A shell Claude reports is running, whether a hook counted it or not.
             reported.shells = reported.shells.max(u32::from(status.shell));
             reported.state = Some(status.state);
@@ -219,6 +228,32 @@ mod tests {
             shells: 4,
         };
         assert_eq!(Reported::agent(Some(shell_only()), Some(counted)).shells, 4);
+    }
+
+    #[test]
+    fn an_idle_agent_has_nothing_running() {
+        let idle = |shell| ClaudeStatus {
+            state: ReportedState::Idle,
+            shell,
+            waiting_for: None,
+            since: None,
+        };
+        let counted = Counts {
+            subagents: 2,
+            shells: 3,
+        };
+        let reported = Reported::agent(Some(idle(false)), Some(counted));
+        assert_eq!((reported.subagents, reported.shells), (0, 0));
+        // With a shell Claude still reports, the hooks' shell count stands.
+        let reported = Reported::agent(Some(idle(true)), Some(counted));
+        assert_eq!((reported.subagents, reported.shells), (0, 3));
+        // Working keeps the counts as they are.
+        let working = ClaudeStatus {
+            state: ReportedState::Working,
+            ..idle(false)
+        };
+        let reported = Reported::agent(Some(working), Some(counted));
+        assert_eq!((reported.subagents, reported.shells), (2, 3));
     }
 
     #[test]
