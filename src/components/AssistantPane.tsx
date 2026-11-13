@@ -340,6 +340,25 @@ export function AssistantPane() {
     el.style.height = `${el.scrollHeight}px`;
   }, [draft]);
 
+  // A draft handed over from elsewhere (the floor's + button) replaces the
+  // composer text. The tick focuses the input once that text has rendered.
+  const incoming = useAssistantStore((s) => s.draft);
+  const clearIncoming = useAssistantStore((s) => s.setDraft);
+  const [focusTick, setFocusTick] = useState(0);
+  useEffect(() => {
+    if (incoming === null) return;
+    setDraft(incoming);
+    setHistoryIndex(null);
+    setFocusTick((n) => n + 1);
+    clearIncoming(null);
+  }, [incoming, clearIncoming]);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (focusTick === 0 || !el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [focusTick]);
+
   /** Add attachments, refusing (with a notice naming each) whatever would
    * push the tray past the per-message cap — the same limit the backend
    * enforces, checked here too for immediate feedback. */
