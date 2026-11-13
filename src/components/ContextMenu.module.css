@@ -17,6 +17,14 @@
   animation: in var(--dur-1) var(--ease-out);
 }
 
+/* Glass: the translucent fill over the busy floor left map content readable.
+   Lay it over the theme canvas (its last layer is a solid colour): opaque,
+   still tinted like the glass islands. */
+:global(:root[data-theme^="glass"]) .menu {
+  background:
+    linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
+}
+
 @keyframes in {
   from {
     opacity: 0;

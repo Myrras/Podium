@@ -22,6 +22,16 @@
   animation: rise var(--dur-3) var(--ease-out);
 }
 
+/* Glass: --term-bg is transparent there and TerminalPane has no fill, so the
+   terminal shows the card, and the translucent card the room behind it. Lay
+   the fill over the theme canvas (its last layer is a solid colour): opaque,
+   still tinted like the glass islands. */
+:global(:root[data-theme^="glass"]) .card,
+:global(:root[data-theme^="glass"]) .confirm {
+  background:
+    linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
+}
+
 @keyframes fade {
   from {
     opacity: 0;

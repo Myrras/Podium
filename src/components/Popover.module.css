@@ -16,6 +16,14 @@
     var(--shadow-md);
 }
 
+/* Glass: the translucent fill over the busy floor left map content readable.
+   Lay it over the theme canvas (its last layer is a solid colour): opaque,
+   still tinted like the glass islands. */
+:global(:root[data-theme^="glass"]) .popover {
+  background:
+    linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
+}
+
 /* A fullscreen child (scratchpad) is position: fixed; backdrop-filter and
    transform would make this popover its containing block. The theme prefix
    outranks `:root[data-theme="glass-*"] .glass` in global.css, which a bare
