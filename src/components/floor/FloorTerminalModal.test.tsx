@@ -129,14 +129,14 @@ describe("FloorTerminalModal", () => {
     expect(useFloorStore.getState().terminalId).toBeNull();
 
     open("a1");
-    fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide terminal" }));
     expect(useFloorStore.getState().terminalId).toBeNull();
   });
 
   it("does not close on Esc with focus on a header button", () => {
     render(<FloorTerminalModal />);
     open("a1");
-    const close = screen.getByRole("button", { name: "Close terminal" });
+    const close = screen.getByRole("button", { name: "Hide terminal" });
     close.focus();
     fireEvent.keyDown(close, { key: "Escape" });
     fireEvent.keyDown(document, { key: "Escape" });
@@ -206,6 +206,44 @@ describe("FloorTerminalModal", () => {
     expect(screen.queryByRole("button", { name: "Shell" })).toBeNull();
   });
 
+  it("shows the status word of a running and a stopped terminal", () => {
+    render(<FloorTerminalModal />);
+    open("t1");
+    expect(screen.getByText("Up")).toHaveAttribute("data-tone", "live");
+    act(() => seed([proc("t1", "Shell", EXITED, { kind: "terminal" })]));
+    expect(screen.getByText("Exited")).toHaveAttribute("data-tone", "stopped");
+  });
+
+  it("closes a running terminal fully: stop, remove, then close", async () => {
+    const order: string[] = [];
+    stopProcess.mockImplementationOnce(async () => void order.push("stop"));
+    removeProcess.mockImplementationOnce(async () => void order.push("remove"));
+    render(<FloorTerminalModal />);
+    open("t1");
+    fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
+    await act(async () => {});
+    expect(order).toEqual(["stop", "remove"]);
+    expect(useFloorStore.getState().terminalId).toBeNull();
+  });
+
+  it("does not stop a stopped terminal before removing it", async () => {
+    seed([proc("t1", "Shell", EXITED, { kind: "terminal" })]);
+    render(<FloorTerminalModal />);
+    open("t1");
+    fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
+    await act(async () => {});
+    expect(stopProcess).not.toHaveBeenCalled();
+    expect(removeProcess).toHaveBeenCalledWith("t1");
+  });
+
+  it("gives a service a status word but no Close", () => {
+    seed([proc("s1", "Web", RUNNING, { kind: "service" } as ProcessKind)]);
+    render(<FloorTerminalModal />);
+    open("s1");
+    expect(screen.getByText("Up")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close terminal" })).toBeNull();
+  });
+
   it("steps to the next agent that needs you, wrapping round", () => {
     seed(
       [
@@ -269,7 +307,7 @@ describe("FloorTerminalModal", () => {
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByText(/Next that needs you/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide terminal" }));
     expect(useLayoutStore.getState().openSubagent).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
   });

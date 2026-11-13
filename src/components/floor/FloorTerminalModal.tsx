@@ -9,8 +9,9 @@ import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
 import type { ProcessInfo } from "../../ipc/types";
-import { isActive, pillState } from "../../lib/processStatus";
+import { isActive, pillState, pillWord } from "../../lib/processStatus";
 import { subagentProcess } from "../../lib/subagents";
+import { useProcessActivity } from "../../lib/useAgentActivity";
 import {
   UNTRACKED_ACTIVITY,
   useAgentActivityStore,
@@ -91,12 +92,16 @@ export function FloorTerminalModal() {
           ) : (
             <AgentActions process={shown} onCleared={closeTerminal} />
           )}
+          {!subagent && shown.kind.kind !== "agent" && (
+            <TerminalState process={shown} onRemoved={closeTerminal} />
+          )}
           <span className={styles.end}>
             {!subagent && <NextNeedsYou currentId={shown.id} />}
             <button
               type="button"
               className="ghost"
-              aria-label="Close terminal"
+              aria-label="Hide terminal"
+              title="Hide (keeps running)"
               onClick={close}
             >
               <CloseIcon />
@@ -107,6 +112,52 @@ export function FloorTerminalModal() {
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * Status word for a terminal or service; terminals also get Close, which
+ * removes them for good. Stop/Start/Restart are in TerminalPane's header.
+ */
+function TerminalState({
+  process,
+  onRemoved,
+}: {
+  process: ProcessInfo;
+  onRemoved: () => void;
+}) {
+  const stopProcess = useProcessStore((s) => s.stopProcess);
+  const removeProcess = useProcessStore((s) => s.removeProcess);
+  const activity = useProcessActivity(process.id);
+  const state = pillState(process.status, process.kind.kind, activity);
+  const tone =
+    state === "crashed"
+      ? "crashed"
+      : isActive(process.status)
+        ? "live"
+        : "stopped";
+
+  const closeFully = async () => {
+    if (isActive(process.status)) await stopProcess(process.id);
+    await removeProcess(process.id);
+    onRemoved();
+  };
+
+  return (
+    <>
+      <span className={styles.state} data-tone={tone}>
+        {pillWord(state, process.kind.kind)}
+      </span>
+      {process.kind.kind === "terminal" && (
+        <button
+          type="button"
+          className={styles.danger}
+          onClick={() => void closeFully()}
+        >
+          Close terminal
+        </button>
+      )}
+    </>
   );
 }
 

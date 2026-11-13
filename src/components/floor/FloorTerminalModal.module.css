@@ -62,3 +62,22 @@
     transform: translateY(8px);
   }
 }
+
+.state {
+  flex: none;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.state[data-tone="stopped"] {
+  color: var(--text-muted);
+}
+
+.state[data-tone="crashed"] {
+  color: var(--danger);
+}
+
+.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
