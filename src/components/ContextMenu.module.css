@@ -61,3 +61,28 @@
   margin: var(--sp-1) 0;
   background: var(--border);
 }
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 220px;
+  max-width: 280px;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.confirmTitle {
+  font-weight: 600;
+}
+
+.confirmBody {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
