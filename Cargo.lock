@@ -3039,7 +3039,7 @@ dependencies = [
 name = "podium"
 version = "3.3.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dirs 6.0.0",
  "podium-core",
@@ -3062,7 +3062,7 @@ name = "podium-core"
 version = "3.3.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dunce",
  "image",

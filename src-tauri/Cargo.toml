@@ -31,7 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 # Terminal bytes are base64-encoded across the IPC bridge for JSON safety.
-base64 = "0.22"
+base64 = "0.23"
 tokio.workspace = true
 uuid.workspace = true
 # Structured instrumentation. The `log` feature makes `tracing` events fall

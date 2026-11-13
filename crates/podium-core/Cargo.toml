@@ -38,7 +38,7 @@ reqwest = { version = "0.13.3", default-features = false, features = ["blocking"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 # Encoding an image attachment read from disk into a `stream-json` content
 # block; already a dependency of `src-tauri` for terminal bytes.
-base64 = "0.22"
+base64 = "0.23"
 # Shrinking an oversized image attachment before it travels as base64.
 # Decode/encode only — no filters beyond the resize, hence the trimmed
 # feature set (GIFs are passed through untouched, so no gif codec).
