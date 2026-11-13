@@ -12,6 +12,7 @@ export const GRID = 40,
 
 const WORLD_W = 1680;
 const DESKS_PER_ROW = 4;
+const PUSH_ROUNDS = 200;
 
 export function roomSize(deskCount: number, hasServices: boolean): Size {
   const min = hasServices ? 280 : 200;
@@ -52,24 +53,45 @@ export function layoutRooms(
     out[key] = [x, y];
     placed.push({ x, y, ...size });
   };
+  // Rooms with a valid saved spot start there, then push each other apart.
+  const pushed = rooms.flatMap((room) => {
+    const s = saved[room.key];
+    return Array.isArray(s) && s.length === 2 && s.every(Number.isFinite)
+      ? [{ room, rect: { x: s[0], y: s[1], ...room.size } }]
+      : [];
+  });
+  // Every move goes only right or down, so this ends; the cap bounds big piles.
+  for (let round = 0; round < PUSH_ROUNDS; round++) {
+    let pair: [number, number] | null = null;
+    for (let i = 0; i < pushed.length && !pair; i++)
+      for (let j = i + 1; j < pushed.length && !pair; j++)
+        if (hits(pushed[i].rect, [pushed[j].rect])) pair = [i, j];
+    if (!pair) break;
+    const [a, b] = pair.map((i) => pushed[i]);
+    const sum = (r: Rect) => r.x + r.y;
+    // The room that did not grow moves; else the one further right/down (tie: later in input).
+    const [mover, still] =
+      Boolean(a.room.grown) !== Boolean(b.room.grown)
+        ? a.room.grown
+          ? [b, a]
+          : [a, b]
+        : sum(a.rect) > sum(b.rect)
+          ? [a, b]
+          : [b, a];
+    const m = mover.rect,
+      o = still.rect;
+    const x = Math.ceil((o.x + o.w + GRID) / GRID) * GRID;
+    const y = Math.ceil((o.y + o.h + GRID) / GRID) * GRID;
+    if (x - m.x <= y - m.y) m.x = x;
+    else m.y = y;
+  }
+  // Rooms still overlapping after the cap fall back to first-fit below.
+  for (const { room, rect } of pushed)
+    if (!hits(rect, placed)) put(room.size, rect.x, rect.y, room.key);
   // Array.sort is stable: rooms with desks first, input order otherwise.
   const ordered = [...rooms].sort(
     (a, b) => Number(b.hasDesks) - Number(a.hasDesks),
   );
-  // Saved places first, grown rooms last: a room that outgrew its spot moves, not its neighbour.
-  for (const grown of [false, true]) {
-    for (const room of ordered) {
-      const s = saved[room.key];
-      if (
-        Boolean(room.grown) === grown &&
-        Array.isArray(s) &&
-        s.length === 2 &&
-        s.every(Number.isFinite) &&
-        !hits({ x: s[0], y: s[1], ...room.size }, placed)
-      )
-        put(room.size, s[0], s[1], room.key);
-    }
-  }
   for (const { key, size } of ordered) {
     if (key in out) continue;
     // Terminates: past the lowest placed room, row y is always free. A room wider than the

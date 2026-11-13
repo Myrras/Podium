@@ -44,16 +44,27 @@ const stateOf =
   (details: Record<string, ProcessActivity>) => (p: ProcessInfo) =>
     deskState(p, details[p.id] ?? UNTRACKED_ACTIVITY);
 
-/** Last size per room key and whether it grew at its last change; sticky so every caller agrees. */
-const lastSize = new Map<string, { size: Size; grown: boolean }>();
+/** Last size per room key, and the keys that grew at the latest size change of any room. */
+const lastSize = new Map<string, Size>();
+let grownKeys = new Set<string>();
 
-function grew(key: string, size: Size): boolean {
-  const last = lastSize.get(key);
-  if (last && last.size.w === size.w && last.size.h === size.h)
-    return last.grown;
-  const grown = !!last && (size.w > last.size.w || size.h > last.size.h);
-  lastSize.set(key, { size, grown });
-  return grown;
+/** Kept until the next size change so every caller agrees; cleared then so an old growth never wins a later push. */
+function grown(sizes: { key: string; size: Size }[]): Set<string> {
+  const changed = sizes.filter(({ key, size }) => {
+    const last = lastSize.get(key);
+    return !last || last.w !== size.w || last.h !== size.h;
+  });
+  if (changed.length === 0) return grownKeys;
+  grownKeys = new Set(
+    changed
+      .filter(({ key, size }) => {
+        const last = lastSize.get(key);
+        return !!last && (size.w > last.w || size.h > last.h);
+      })
+      .map(({ key }) => key),
+  );
+  for (const { key, size } of changed) lastSize.set(key, size);
+  return grownKeys;
 }
 
 /** Room model; `state` gives each process's desk state. */
@@ -82,17 +93,17 @@ function buildRooms(
       lit: states.some((s) => s === "working" || s === "needs"),
     };
   });
+  const items = parts.map((r) => {
+    const desks = r.agents.length + r.terminals.length;
+    return {
+      key: r.project.root,
+      size: roomSize(desks, r.services.length > 0),
+      hasDesks: desks > 0,
+    };
+  });
+  const grew = grown(items);
   const places = layoutRooms(
-    parts.map((r) => {
-      const desks = r.agents.length + r.terminals.length;
-      const size = roomSize(desks, r.services.length > 0);
-      return {
-        key: r.project.root,
-        size,
-        hasDesks: desks > 0,
-        grown: grew(r.project.root, size),
-      };
-    }),
+    items.map((i) => ({ ...i, grown: grew.has(i.key) })),
     saved,
   );
   return parts.map((r) => {

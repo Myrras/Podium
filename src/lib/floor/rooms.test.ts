@@ -129,7 +129,7 @@ describe("rooms", () => {
     expect(roomOf("nope", rooms)).toBeNull();
   });
 
-  it("moves a room that outgrows its spot, not its neighbour", () => {
+  it("pushes the neighbour aside when a room outgrows its spot", () => {
     useProjectStore.setState({ projects: [project("ga"), project("gb")] });
     useLayoutStore.setState({
       floorPositions: { "/fake/ga": [0, 0], "/fake/gb": [240, 0] },
@@ -147,9 +147,27 @@ describe("rooms", () => {
     // Every later call agrees, not only the first one after the change.
     for (let i = 0; i < 2; i++) {
       const [a, b] = getRooms();
-      expect(a.rect).toMatchObject({ x: 480, y: 0, w: 360 });
-      expect(b.rect).toMatchObject({ x: 240, y: 0 });
+      expect(a.rect).toMatchObject({ x: 0, y: 0, w: 360 });
+      expect(b.rect).toMatchObject({ x: 400, y: 0 });
     }
+  });
+
+  it("forgets an older growth when another room grows", () => {
+    useProjectStore.setState({ projects: [project("ha"), project("hb")] });
+    useLayoutStore.setState({
+      floorPositions: { "/fake/ha": [360, 0], "/fake/hb": [0, 400] },
+    });
+    const a = (n: number) => proc(`ha${n}`, "ha", "agent");
+    const b = (n: number) => proc(`hb${n}`, "hb", "agent");
+    useProcessStore.setState({ processes: [a(1), b(1)] });
+    getRooms();
+    useProcessStore.setState({ processes: [a(1), a(2), b(1)] });
+    getRooms(); // ha grew; it hits nothing
+    useProcessStore.setState({ processes: [a(1), a(2), b(1), b(2), b(3)] });
+    // hb grew into ha: ha moves even though hb lies further right/down.
+    const [ha, hb] = getRooms();
+    expect(hb.rect).toMatchObject({ x: 0, y: 400, w: 520 });
+    expect(ha.rect).toMatchObject({ x: 560, y: 0 });
   });
 
   it("useRooms keeps its identity while only activity time ticks", () => {
