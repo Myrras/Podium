@@ -127,11 +127,24 @@
 
 .shells {
   position: absolute;
-  top: 0;
+  top: 8px;
   left: 8px;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: center;
   gap: 2px;
+}
+
+/* A column left of the pad (the desk has 38px each side of it), so monitors never cover the bot. */
+.shells > span {
+  --m: 20px;
+
+  width: var(--m);
+  height: var(--m);
+}
+
+.shells > b {
+  line-height: 1;
 }
 
 .minis {
