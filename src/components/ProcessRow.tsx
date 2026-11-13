@@ -1,15 +1,15 @@
-/** One process in a sidebar section: status dot, name, hover actions. */
+/** One process in a sidebar section: identity, name, hover actions, status pill. */
 
 import { useEffect, useRef, useState } from "react";
 
 import type { ProcessInfo } from "../ipc/types";
-import { activityLabel, isActive } from "../lib/processStatus";
+import { isActive, pillState } from "../lib/processStatus";
 import { toggleSelectedItem, useSelectionStore } from "../lib/selection";
-import { useAgentActivity, useAgentShells } from "../lib/useAgentActivity";
+import { useProcessActivity } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
 import { AgentScratchpadList } from "./AgentScratchpadList";
 import { AgentTodoList } from "./AgentTodoList";
-import { StatusDot } from "./StatusDot";
+import { StatusPill } from "./StatusPill";
 import {
   BranchIcon,
   CloseIcon,
@@ -17,6 +17,7 @@ import {
   RestartIcon,
   RunIcon,
   StopIcon,
+  TerminalIcon,
 } from "./icons";
 import styles from "./ProcessRow.module.css";
 
@@ -39,12 +40,8 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
   const isAgent = process.kind.kind === "agent";
   // Services come from `podium.yml`, so their name is owned by the config.
   const renamable = isAgent || process.kind.kind === "terminal";
-  const running = process.status.state === "running";
-  const activity = useAgentActivity(process.id);
-  const shells = useAgentShells(process.id);
-  // Agents show their full activity; for anything else only "needs input" is
-  // worth surfacing — "working…"/"idle" says nothing about a plain shell.
-  const showActivity = isAgent || activity === "waiting";
+  const activity = useProcessActivity(process.id);
+  const state = pillState(process.status, process.kind.kind, activity);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(process.name);
@@ -78,7 +75,7 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
         className={styles.row}
         data-selected={selected ? "true" : undefined}
         data-multiselect={inContext ? "true" : undefined}
-        data-session={isAgent && process.color ? "true" : undefined}
+        data-quiet={state === "idle" ? "true" : undefined}
         style={
           process.color
             ? ({ "--session-color": process.color } as React.CSSProperties)
@@ -104,10 +101,15 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
           }
         }}
       >
-        <StatusDot
-          status={process.status}
-          activity={showActivity ? activity : undefined}
-        />
+        <span className={styles.slot}>
+          {isAgent ? (
+            <span className={styles.identity} />
+          ) : process.kind.kind === "terminal" ? (
+            <TerminalIcon size={12} />
+          ) : (
+            <RunIcon size={12} />
+          )}
+        </span>
         {editing ? (
           <input
             ref={inputRef}
@@ -151,11 +153,6 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
             title={`Runs in worktree ${process.worktree}`}
           >
             <BranchIcon size={11} />
-          </span>
-        )}
-        {showActivity && running && !editing && (
-          <span className={styles.activity} data-activity={activity}>
-            {activityLabel(activity, shells)}
           </span>
         )}
         <span className={styles.actions} onClick={(e) => e.stopPropagation()}>
@@ -216,6 +213,13 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
             <CloseIcon size={12} />
           </button>
         </span>
+        <StatusPill
+          state={state}
+          kind={process.kind.kind}
+          sinceMs={activity.sinceMs}
+          subagents={activity.subagents}
+          shells={activity.shells}
+        />
       </div>
       {isAgent && (
         <AgentTodoList projectId={process.projectId} processId={process.id} />
