@@ -6,8 +6,10 @@ import { GRID, hits, snap } from "../../lib/floor/geometry";
 import { getRooms } from "../../lib/floor/rooms";
 import { startAgentIn } from "../../lib/floor/startAgent";
 import type { RoomModel } from "../../lib/floor/types";
+import { newTerminal } from "../../lib/terminals";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
+import { TerminalIcon } from "../icons";
 import { ProjectBadge } from "../ProjectBadge";
 import styles from "./RoomNameplate.module.css";
 
@@ -131,6 +133,17 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
       >
         +
       </button>
+      {project.sections.terminals && (
+        <button
+          type="button"
+          className={styles.btn}
+          aria-label={`New terminal in ${project.name}`}
+          title="New terminal"
+          onClick={() => void newTerminal(project)}
+        >
+          <TerminalIcon />
+        </button>
+      )}
       <button
         type="button"
         className={styles.btn}

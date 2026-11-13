@@ -6,12 +6,14 @@ import type { RoomModel } from "../../lib/floor/types";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 
+vi.mock("../../lib/terminals", () => ({ newTerminal: vi.fn() }));
 const m = vi.hoisted(() => ({ rooms: [] as unknown[] }));
 vi.mock("../../lib/floor/camera", () => ({ jumpTo: vi.fn() }));
 vi.mock("../../lib/floor/startAgent", () => ({ startAgentIn: vi.fn() }));
 vi.mock("../../lib/floor/rooms", () => ({ getRooms: () => m.rooms }));
 
 import { jumpTo } from "../../lib/floor/camera";
+import { newTerminal } from "../../lib/terminals";
 import { startAgentIn } from "../../lib/floor/startAgent";
 import { RoomNameplate } from "./RoomNameplate";
 
@@ -22,6 +24,7 @@ const mk = (id: string, x: number, y: number): RoomModel => ({
     name: `Proj ${id}`,
     iconInitials: "PX",
     color: null,
+    sections: { terminals: true },
   } as unknown as ProjectInfo,
   rect: { x, y, w: 400, h: 400 },
   agents: [],
@@ -51,7 +54,8 @@ beforeEach(() => {
   useLayoutStore.setState({ floorPositions: {} });
 });
 
-const grip = () => screen.getByRole("button", { name: /Proj a/ });
+const grip = () =>
+  screen.getByText("Proj a").closest("button") as HTMLButtonElement;
 const drag = (dx: number) => {
   fireEvent.pointerDown(grip(), {
     clientX: 0,
@@ -79,6 +83,24 @@ describe("RoomNameplate", () => {
       kind: "menu",
       itemId: null,
     });
+  });
+
+  it("has a terminal button that opens a terminal without jumping", () => {
+    render(<RoomNameplate room={a} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "New terminal in Proj a" }),
+    );
+    expect(newTerminal).toHaveBeenCalledWith(a.project);
+    expect(jumpTo).not.toHaveBeenCalled();
+  });
+
+  it("hides the terminal button when terminals are off", () => {
+    const room = {
+      ...a,
+      project: { ...a.project, sections: { terminals: false } },
+    } as RoomModel;
+    render(<RoomNameplate room={room} />);
+    expect(screen.queryByRole("button", { name: /New terminal/ })).toBeNull();
   });
 
   it("keeps the full name on hover, also when ellipsised", () => {
