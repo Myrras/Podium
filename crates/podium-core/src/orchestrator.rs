@@ -5104,6 +5104,7 @@ fn do_start(
         process_id: id,
         status,
     });
+    publish_assignment_change(&guard, events, id, project_id);
     Ok(())
 }
 
@@ -5309,6 +5310,28 @@ fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration
     session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
 }
 
+/// Tell the UI the to-dos/scratchpads an agent owns changed state: their
+/// assignment carries `active`, which flips when the agent exits or starts.
+fn publish_assignment_change(
+    inner: &Inner,
+    events: &EventBus,
+    id: ProcessId,
+    project_id: ProjectId,
+) {
+    if !matches!(
+        inner.processes.get(&id).map(|p| &p.spec.kind),
+        Some(ProcessKind::Agent { .. })
+    ) {
+        return;
+    }
+    if inner.todo_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::TodosChanged { project_id });
+    }
+    if inner.scratchpad_assignments.values().any(|p| *p == id) {
+        events.publish(PodiumEvent::ScratchpadsChanged { project_id });
+    }
+}
+
 /// Handler run on the PTY wait-thread when the child exits. A non-zero exit
 /// only counts as a crash when the user did not stop the process. Depending
 /// on the restart policy, schedules a supervised restart with exponential
@@ -5386,6 +5409,9 @@ fn make_exit_handler(
                 process_id: id,
                 status,
             });
+            if restart.is_none() {
+                publish_assignment_change(&guard, &events, id, project_id);
+            }
             // A sub-agent's exit decides its phase and frees its slot: the
             // driver acts on it, on the runtime rather than this wait thread.
             if guard.subagents.contains(&id) {
@@ -7483,12 +7509,22 @@ mod tests {
         .await;
         set_color(&orch, other, SESSION_COLORS[0]);
 
+        let todo = orch.add_todo(project, "Fictional task", None).unwrap();
+        orch.assign_todo(project, todo.id, exited).unwrap();
+        let mut rx = orch.subscribe_events();
+
         orch.start_process(exited).await.unwrap();
 
         assert_eq!(
             orch.process_info(exited).unwrap().color.as_deref(),
             Some(SESSION_COLORS[0])
         );
+        let mut todos_changed = false;
+        while let Ok(event) = rx.try_recv() {
+            todos_changed |=
+                matches!(event, PodiumEvent::TodosChanged { project_id } if project_id == project);
+        }
+        assert!(todos_changed, "the owner's to-dos are re-listed on restart");
         orch.shutdown().await;
     }
 
