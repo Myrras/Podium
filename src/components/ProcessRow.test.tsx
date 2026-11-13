@@ -241,6 +241,35 @@ describe("ProcessRow status pill", () => {
     expect(screen.getByText("Not started")).toBeInTheDocument();
   });
 
+  it("puts the old status line in the pill's tooltip", () => {
+    const p: ProcessInfo = {
+      ...process("s1", "dev", { kind: "service" }),
+      status: {
+        state: "exited",
+        code: 1,
+        crashed: true,
+        stopped: false,
+        at: "2026-01-01T00:00:00Z",
+      },
+    };
+    render(<ProcessRow process={p} />);
+    expect(screen.getByTitle("Crashed · code 1")).toHaveTextContent("Crashed");
+  });
+
+  it("shows the pid of a running process in the tooltip", () => {
+    seedActivity("p1", { activity: "working", reported: true });
+    render(<ProcessRow process={running(agent)} />);
+    expect(screen.getByTitle("Running · pid 42")).toHaveTextContent("Working");
+  });
+
+  it("explains what a waiting agent needs in the tooltip", () => {
+    seedActivity("p1", { activity: "waiting", waitingFor: "input needed" });
+    render(<ProcessRow process={running(agent)} />);
+    expect(screen.getByTitle("Needs you: input needed")).toHaveTextContent(
+      "Needs you",
+    );
+  });
+
   it("dims an idle row's name", () => {
     seedActivity("p1", { activity: "idle", reported: true });
     render(<ProcessRow process={running(agent)} />);

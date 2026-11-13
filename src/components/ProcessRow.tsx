@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ProcessInfo } from "../ipc/types";
-import { isActive, pillState } from "../lib/processStatus";
+import { isActive, pillState, statusLabel } from "../lib/processStatus";
 import { toggleSelectedItem, useSelectionStore } from "../lib/selection";
 import { useProcessActivity } from "../lib/useAgentActivity";
 import { useProcessStore } from "../state/processStore";
@@ -219,6 +219,11 @@ export function ProcessRow({ process }: { process: ProcessInfo }) {
           sinceMs={activity.sinceMs}
           subagents={activity.subagents}
           shells={activity.shells}
+          detail={
+            state === "needs" && activity.waitingFor
+              ? `Needs you: ${activity.waitingFor}`
+              : statusLabel(process.status)
+          }
         />
       </div>
       {isAgent && (

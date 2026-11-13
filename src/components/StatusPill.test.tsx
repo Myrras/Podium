@@ -45,6 +45,11 @@ describe("StatusPill", () => {
     expect(screen.queryByTitle(/running$/)).toBeNull();
   });
 
+  it("shows the detail as the pill's tooltip, after the word", () => {
+    render(<StatusPill state="crashed" detail="Crashed · code 1" />);
+    expect(screen.getByTitle("Crashed · code 1")).toHaveTextContent(/^Crashed/);
+  });
+
   it("renders the count form as glyph plus number", () => {
     render(<StatusPill state="needs" count={3} />);
     const pill = screen.getByRole("img", { name: "3 needs you" });
