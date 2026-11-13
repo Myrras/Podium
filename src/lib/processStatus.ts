@@ -1,7 +1,7 @@
 /** Presentation helpers for `ProcessStatus` (shared by dot, rows, pane). */
 
 import type { ProcessKind, ProcessStatus } from "../ipc/types";
-import type { AgentActivity, ProcessActivity } from "./useAgentActivity";
+import type { ProcessActivity } from "./useAgentActivity";
 
 /** What a status pill shows (see `StatusPill`). */
 export type PillState =
@@ -63,22 +63,6 @@ export function formatSince(sinceMs: number | null, now: number): string {
   if (min < 1) return "";
   const h = Math.floor(min / 60);
   return h > 0 ? `${h}h ${min % 60}m` : `${min}m`;
-}
-
-/**
- * Short human label for an agent's activity (sidebar row / pane hint).
- * `shells` qualifies it with the agent's background shells — an idle agent
- * with a build still running reads "idle · 1 shell", not just "idle".
- */
-export function activityLabel(activity: AgentActivity, shells = 0): string {
-  const base =
-    activity === "working"
-      ? "working…"
-      : activity === "waiting"
-        ? "needs input"
-        : "idle";
-  if (shells === 0) return base;
-  return `${base} · ${shells} ${shells === 1 ? "shell" : "shells"}`;
 }
 
 /** Human-readable one-liner for a process status. */

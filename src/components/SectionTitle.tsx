@@ -18,8 +18,6 @@ interface SectionTitleProps {
   /** Hidden rows working / needing the user; only surfaced while collapsed. */
   working?: number;
   needs?: number;
-  /** Old name of `needs`, still passed by WorktreeSubsection. */
-  waiting?: number;
   collapsed: boolean;
   onToggle: () => void;
 }
@@ -29,8 +27,7 @@ export function SectionTitle({
   Icon,
   count,
   working = 0,
-  waiting = 0,
-  needs = waiting,
+  needs = 0,
   collapsed,
   onToggle,
 }: SectionTitleProps) {
