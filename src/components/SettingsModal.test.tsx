@@ -181,6 +181,7 @@ vi.mock("@tauri-apps/plugin-log", () => ({
 
 import { useAssistantStore } from "../state/assistantStore";
 import { useIssueStore } from "../state/issueStore";
+import { useLayoutStore } from "../state/layoutStore";
 import { SettingsModal } from "./SettingsModal";
 import { useSettingsStore } from "../state/settingsStore";
 
@@ -662,6 +663,16 @@ describe("SettingsModal — Issues tab", () => {
 });
 
 describe("SettingsModal — General tab", () => {
+  it("switches the view mode in the layout store", () => {
+    useLayoutStore.setState({ mode: "project" });
+    render(<SettingsModal open onClose={() => undefined} />);
+    expect(
+      screen.getByRole("button", { name: "Project mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Floor mode" }));
+    expect(useLayoutStore.getState().mode).toBe("floor");
+  });
+
   it("persists the preferred terminal shell", () => {
     render(<SettingsModal open onClose={() => undefined} />);
     fireEvent.change(screen.getByLabelText("Shell"), {

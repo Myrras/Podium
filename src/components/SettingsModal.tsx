@@ -18,6 +18,7 @@ import {
 } from "../state/settingsRequestStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useIssueStore } from "../state/issueStore";
+import { useLayoutStore } from "../state/layoutStore";
 import { AUTONOMY_LABELS } from "./AssistantPane";
 import { isWindows } from "../lib/platform";
 import { isSubagentLive } from "../lib/subagents";
@@ -1151,6 +1152,8 @@ function NotificationsSettings() {
 function GeneralTab() {
   const mode = useThemeStore((s) => s.mode);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const viewMode = useLayoutStore((s) => s.mode);
+  const setViewMode = useLayoutStore((s) => s.setMode);
   const settings = useSettingsStore();
   const fontSize = settings.terminal.fontSize;
   // Fetched once here for both the shell hint and the Backend section.
@@ -1189,6 +1192,27 @@ function GeneralTab() {
               )}
             </button>
           ))}
+        </div>
+        <div className={styles.row}>
+          <span className={styles.rowLabel}>View</span>
+          <div className={styles.viewOptions}>
+            {(
+              [
+                ["project", "Project mode"],
+                ["floor", "Floor mode"],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                className={`${styles.viewOption} ${viewMode === m ? styles.active : ""}`}
+                onClick={() => setViewMode(m)}
+                aria-pressed={viewMode === m}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <SettingToggle
           label="Reduce motion"
