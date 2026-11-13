@@ -352,11 +352,20 @@ impl AgentAdapter for CliAdapter {
             let podium_settings = match self.settings_flag {
                 Some(flag) if !has_flag(ctx.extra_args, flag) => {
                     args.push(flag.to_string());
+                    // Hooks counting sub-agents and background shells: on the
+                    // native backend only (the hook is a POSIX `sh` line), and
+                    // never for a lean sub-agent, whose hooks are all off.
+                    let lean = ctx.subagent.is_some() && ctx.subagent_lean;
+                    let hooks = (wsl.is_none() && !lean)
+                        .then(|| crate::activity::hooks::settings(ctx.process_id, &mcp.config_dir))
+                        .flatten();
                     // A sub-agent has no branch to push and no PR to open,
                     // so it gets none of the go-ahead rules.
                     let settings = match ctx.subagent {
-                        Some(kind) => subagent_session_settings(kind, ctx.subagent_lean, mcp, wsl)?,
-                        None => agent_session_settings(),
+                        Some(kind) => {
+                            subagent_session_settings(kind, ctx.subagent_lean, mcp, wsl, hooks)?
+                        }
+                        None => agent_session_settings(hooks),
                     };
                     args.push(quote(&settings)?);
                     true
@@ -452,7 +461,7 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 // the login shell profile is missed: a restart then runs
 // `RestartCommands::fresh` (a new conversation, the old one not resumed)
 // rather than failing. (The WSL check runs in the login shell, so it sees it.)
-fn claude_config_dir() -> Option<PathBuf> {
+pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         return Some(dir.into());
     }
@@ -473,7 +482,7 @@ fn claude_session_in(config_dir: &Path, session_id: &str) -> bool {
 
 /// Slack on "the record was written by a CLI started after Podium's spawn":
 /// the CLI stamps its own start, a little after the PTY child's.
-const LIVE_SESSION_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const LIVE_SESSION_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The `sessionId` Claude Code's live registry holds for CLI process `cli`:
 /// `<config_dir>/sessions/<pid>.json`, written while the CLI runs (and
@@ -721,16 +730,20 @@ const GO_AHEAD_DENY_RULES: &[&str] = &[
 /// What a spawned Claude Code agent's `--settings` carries: built on
 /// the same [`PEER_INBOUND_KEY`]/[`PEER_INBOUND_VALUE`] as
 /// [`peer_inbound_settings`], so the assistant and agents can never drift
-/// apart on it, plus the go-ahead rules above.
-fn agent_session_settings() -> String {
-    serde_json::json!({
+/// apart on it, plus the go-ahead rules above and, when given, the
+/// activity hooks ([`crate::activity::hooks::settings`]).
+fn agent_session_settings(hooks: Option<serde_json::Value>) -> String {
+    let mut settings = serde_json::json!({
         PEER_INBOUND_KEY: PEER_INBOUND_VALUE,
         "permissions": {
             "allow": GO_AHEAD_ALLOW_RULES,
             "deny": GO_AHEAD_DENY_RULES,
         },
-    })
-    .to_string()
+    });
+    if let Some(hooks) = hooks {
+        settings["hooks"] = hooks;
+    }
+    settings.to_string()
 }
 
 /// `claudeMdExcludes` globs keeping every instruction file out of a lean
@@ -768,16 +781,20 @@ fn subagent_allow_rules() -> Vec<String> {
 /// sessions), without `CLAUDE.md` files (the user's own and their imports,
 /// matched by path) and without auto-memory, which together are most of what
 /// the user's settings add to a first request. Their permission rules still
-/// apply.
+/// apply. `hooks` are the activity hooks, when given.
 fn subagent_session_settings(
     kind: SubagentKind,
     lean: bool,
     mcp: &McpConnectInfo,
     wsl: Option<&WslBackend>,
+    hooks: Option<serde_json::Value>,
 ) -> CoreResult<String> {
     let mut settings = serde_json::json!({
         "permissions": { "allow": subagent_allow_rules() },
     });
+    if let Some(hooks) = hooks {
+        settings["hooks"] = hooks;
+    }
     if lean {
         settings["disableAllHooks"] = serde_json::Value::Bool(true);
         settings["autoMemoryEnabled"] = serde_json::Value::Bool(false);
@@ -1963,6 +1980,9 @@ mod tests {
             for key in ["disableAllHooks", "autoMemoryEnabled", "claudeMdExcludes"] {
                 assert!(plain.get(key).is_none(), "{key}: {plain}");
             }
+            // Hooks are off, so Podium adds none of its own.
+            assert!(lean.get("hooks").is_none(), "{lean}");
+            assert_eq!(plain.get("hooks").is_some(), cfg!(unix), "{plain}");
         }
     }
 
@@ -2180,7 +2200,7 @@ mod tests {
     #[test]
     fn push_rules_deny_risky_pushes_and_allow_the_one_the_prompt_asks_for() {
         let settings: serde_json::Value =
-            serde_json::from_str(&agent_session_settings()).expect("valid json");
+            serde_json::from_str(&agent_session_settings(None)).expect("valid json");
         let rules = |kind: &str| -> Vec<String> {
             settings["permissions"][kind]
                 .as_array()
@@ -2335,7 +2355,7 @@ mod tests {
         let peer: serde_json::Value =
             serde_json::from_str(&peer_inbound_settings()).expect("valid json");
         let agent: serde_json::Value =
-            serde_json::from_str(&agent_session_settings()).expect("valid json");
+            serde_json::from_str(&agent_session_settings(None)).expect("valid json");
         assert_eq!(agent["crossSessionInbound"], peer["crossSessionInbound"]);
     }
 
@@ -2353,8 +2373,18 @@ mod tests {
             .iter()
             .position(|t| t == "--settings")
             .expect("--settings passed");
-        let parsed: serde_json::Value =
+        let mut parsed: serde_json::Value =
             serde_json::from_str(&tokens[settings + 1]).expect("valid json");
+        // The activity hooks ride along on Unix (their shape is covered in
+        // `activity::hooks`).
+        let hooks = parsed.as_object_mut().expect("object").remove("hooks");
+        assert_eq!(hooks.is_some(), cfg!(unix), "{hooks:?}");
+        assert_eq!(
+            crate::activity::hooks::Store::default()
+                .counts(process_id)
+                .is_some(),
+            cfg!(unix)
+        );
         // A relayed push go-ahead can only be honoured if a plain push is
         // already allowed; every deny rule rides along with it.
         assert_eq!(
@@ -2396,6 +2426,19 @@ mod tests {
             "the user's own --settings must not be duplicated: {tokens:?}"
         );
         assert!(!tokens.iter().any(|t| t == "-n"), "{tokens:?}");
+    }
+
+    /// Without Podium's own `--settings` (the user passed theirs) the agent
+    /// has no activity hooks, so no hook counts. (The WSL gate is not
+    /// covered: a WSL launch only plans on Windows, where hooks are off.)
+    #[test]
+    fn no_hook_counts_without_podium_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mcp = test_mcp(&dir);
+        let extra = vec!["--settings=/home/dev/mine.json".to_string()];
+        let (_, _, process_id) = plan(None, &extra, Some(&mcp));
+        let store = crate::activity::hooks::Store::default();
+        assert_eq!(store.counts(process_id), None);
     }
 
     /// `--settings=x` / `--name=x` are the same user choice as the two-word

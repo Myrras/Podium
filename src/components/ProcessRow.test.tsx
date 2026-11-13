@@ -9,18 +9,28 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-// Activity polling is timer-driven; tests set the value they need directly.
-let activity = "idle";
-vi.mock("../lib/useAgentActivity", () => ({
-  useAgentActivity: () => activity,
-  useAgentShells: () => 0,
-}));
-
 import type { ProcessInfo, ProcessKind } from "../ipc/types";
+import {
+  type ProcessActivity,
+  UNTRACKED_ACTIVITY,
+  useAgentActivityStore,
+} from "../state/agentActivityStore";
 import { useProcessStore } from "../state/processStore";
 import { ProcessRow } from "./ProcessRow";
 
 const initialProcess = useProcessStore.getState();
+const initialActivity = useAgentActivityStore.getState();
+
+// Activity polling is timer-driven; tests seed the details the row reads.
+function seedActivity(id: string, detail: Partial<ProcessActivity>) {
+  useAgentActivityStore.setState(
+    {
+      ...initialActivity,
+      details: { [id]: { ...UNTRACKED_ACTIVITY, ...detail } },
+    },
+    true,
+  );
+}
 
 const PROJECT = "proj-1";
 
@@ -42,7 +52,6 @@ function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
 describe("ProcessRow worktree badge", () => {
   beforeEach(() => {
     useProcessStore.setState(initialProcess, true);
-    activity = "idle";
   });
 
   it("shows a branch badge for a process running in a worktree", () => {
@@ -76,26 +85,28 @@ describe("ProcessRow session colour", () => {
     useProcessStore.setState(initialProcess, true);
   });
 
-  it("tints an agent row with its session colour", () => {
+  it("gives an agent row its session colour for the identity square", () => {
     seed();
     const p = {
       ...process("a1", "agent", { kind: "agent", adapter: "claude-code" }),
       color: "#3e63dd",
     };
     render(<ProcessRow process={p} />);
-    const row = screen.getByText("agent").closest('[data-session="true"]');
-    expect(row).not.toBeNull();
+    const row = screen.getByText("agent").closest('[role="button"]');
     expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
       "#3e63dd",
     );
   });
 
-  it("leaves a colourless process untinted", () => {
+  it("leaves a colourless process without a session colour", () => {
     seed();
     render(
       <ProcessRow process={process("t1", "term", { kind: "terminal" })} />,
     );
-    expect(screen.getByText("term").closest("[data-session]")).toBeNull();
+    const row = screen.getByText("term").closest('[role="button"]');
+    expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
+      "",
+    );
   });
 });
 
@@ -188,25 +199,94 @@ describe("ProcessRow lifecycle actions", () => {
   });
 });
 
-describe("ProcessRow activity", () => {
+describe("ProcessRow status pill", () => {
   beforeEach(() => {
     useProcessStore.setState(initialProcess, true);
-    activity = "idle";
+    useAgentActivityStore.setState(initialActivity, true);
   });
 
   const running = (kind: ProcessKind): ProcessInfo => ({
     ...process("p1", "shell", kind),
     status: { state: "running", pid: 42, since: "now" },
   });
+  const agent: ProcessKind = { kind: "agent", adapter: "claude-code" };
 
-  it("shows 'needs input' for a terminal waiting on input", () => {
-    activity = "waiting";
-    render(<ProcessRow process={running({ kind: "terminal" })} />);
-    expect(screen.getByText("needs input")).toBeInTheDocument();
+  it("shows a working agent's word, time and background work", () => {
+    seedActivity("p1", {
+      activity: "working",
+      reported: true,
+      sinceMs: Date.now() - 3 * 60_000,
+      subagents: 2,
+    });
+    render(<ProcessRow process={running(agent)} />);
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(screen.getByText("3m")).toBeInTheDocument();
+    expect(screen.getByTitle("2 sub-agents running")).toBeInTheDocument();
   });
 
-  it("shows no activity hint for an idle terminal", () => {
+  it("shows 'Needs you' for a terminal waiting on input", () => {
+    seedActivity("p1", { activity: "waiting" });
     render(<ProcessRow process={running({ kind: "terminal" })} />);
-    expect(screen.queryByText("idle")).not.toBeInTheDocument();
+    expect(screen.getByText("Needs you")).toBeInTheDocument();
+  });
+
+  it("shows 'Up' for a terminal that does not report its state", () => {
+    seedActivity("p1", { activity: "idle" });
+    render(<ProcessRow process={running({ kind: "terminal" })} />);
+    expect(screen.getByText("Up")).toBeInTheDocument();
+  });
+
+  it("shows the lifecycle word for a process that is not running", () => {
+    render(<ProcessRow process={process("s1", "dev", { kind: "service" })} />);
+    expect(screen.getByText("Not started")).toBeInTheDocument();
+  });
+
+  it("puts the old status line in the pill's tooltip", () => {
+    const p: ProcessInfo = {
+      ...process("s1", "dev", { kind: "service" }),
+      status: {
+        state: "exited",
+        code: 1,
+        crashed: true,
+        stopped: false,
+        at: "2026-01-01T00:00:00Z",
+      },
+    };
+    render(<ProcessRow process={p} />);
+    expect(screen.getByTitle("Crashed · code 1")).toHaveTextContent("Crashed");
+  });
+
+  it("shows the pid of a running process in the tooltip", () => {
+    seedActivity("p1", { activity: "working", reported: true });
+    render(<ProcessRow process={running(agent)} />);
+    expect(screen.getByTitle("Running · pid 42")).toHaveTextContent("Working");
+  });
+
+  it("explains what a waiting agent needs in the tooltip", () => {
+    seedActivity("p1", { activity: "waiting", waitingFor: "input needed" });
+    render(<ProcessRow process={running(agent)} />);
+    expect(screen.getByTitle("Needs you: input needed")).toHaveTextContent(
+      "Needs you",
+    );
+  });
+
+  it("dims an idle row's name", () => {
+    seedActivity("p1", { activity: "idle", reported: true });
+    render(<ProcessRow process={running(agent)} />);
+    expect(screen.getByText("Idle")).toBeInTheDocument();
+    expect(
+      screen.getByText("shell").closest('[data-quiet="true"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps the status word on a selected row", () => {
+    seed();
+    useProcessStore.setState({ activeProcessId: "p1" });
+    seedActivity("p1", { activity: "idle", reported: true });
+    render(<ProcessRow process={running(agent)} />);
+    expect(
+      screen.getByText("shell").closest('[data-selected="true"]'),
+    ).not.toBeNull();
+    expect(screen.getByText("Idle")).toBeInTheDocument();
   });
 });

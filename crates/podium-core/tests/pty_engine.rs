@@ -339,3 +339,195 @@ async fn output_activity_lists_running_processes_that_printed() {
     wait_for_exit(&orch, id).await;
     assert!(!orch.output_activity().contains_key(&id));
 }
+
+/// The reported state of `id` in the orchestrator's activity poll.
+#[cfg(unix)]
+fn reported_state(orch: &Orchestrator, id: ProcessId) -> Option<podium_core::ReportedState> {
+    orch.output_activity().get(&id).and_then(|a| a.state)
+}
+
+#[cfg(unix)]
+async fn wait_for_state(orch: &Orchestrator, id: ProcessId, want: podium_core::ReportedState) {
+    timeout(TEST_TIMEOUT, async {
+        while reported_state(orch, id) != Some(want) {
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for state {want:?}"));
+}
+
+// Unix-only: the foreground provider reads the PTY's foreground process
+// group, which Windows lacks.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_terminal_reports_its_state_through_output_activity() {
+    use podium_core::process::pty::INTERACTIVE_SHELL_COMMAND;
+    use podium_core::ReportedState::{Idle, Working};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Orchestrator::new();
+    let project_id = orch
+        .open_project(dir.path().to_path_buf())
+        .await
+        .expect("open project");
+    let mut shell = spec(INTERACTIVE_SHELL_COMMAND, dir.path());
+    shell.kind = ProcessKind::Terminal;
+    let id = orch.add_process(project_id, shell).await.expect("add");
+    orch.start_process(id).await.expect("start");
+
+    // Past the rc files once the shell ran a command (see the test below).
+    orch.write_stdin(id, b"echo podium-\"\"ready\n")
+        .await
+        .expect("write");
+    wait_for_output(&orch, id, "podium-ready").await;
+    wait_for_state(&orch, id, Idle).await;
+
+    orch.write_stdin(id, b"sleep 2\n").await.expect("write");
+    wait_for_state(&orch, id, Working).await;
+    wait_for_state(&orch, id, Idle).await;
+
+    orch.stop_process(id).await.expect("stop");
+    wait_for_exit(&orch, id).await;
+}
+
+const BUSY_POLL: Duration = Duration::from_millis(25);
+
+/// Spawn `spec` straight on a PTY, without the orchestrator, so the test can
+/// ask [`podium_core::activity::foreground::busy`] directly.
+#[cfg(unix)]
+fn spawn_pty(
+    spec: &ProcessSpec,
+) -> (
+    podium_core::process::pty::PtyProcess,
+    std::sync::Arc<std::sync::Mutex<podium_core::process::scrollback::ScrollbackBuffer>>,
+) {
+    use podium_core::process::{pty::PtyProcess, scrollback::ScrollbackBuffer};
+    use std::sync::{Arc, Mutex};
+
+    let scrollback = Arc::new(Mutex::new(ScrollbackBuffer::new()));
+    let (chunk_tx, _) = tokio::sync::broadcast::channel(64);
+    let pty = PtyProcess::spawn(
+        spec,
+        None,
+        None,
+        None,
+        Arc::clone(&scrollback),
+        chunk_tx,
+        Box::new(|_| {}),
+    )
+    .expect("spawn pty");
+    (pty, scrollback)
+}
+
+#[cfg(unix)]
+async fn wait_for_busy(pty: &podium_core::process::pty::PtyProcess, want: Option<bool>) {
+    use podium_core::activity::foreground::busy;
+    timeout(TEST_TIMEOUT, async {
+        while busy(pty) != want {
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for busy == {want:?}"));
+}
+
+// Unix-only: reads the PTY's foreground process group, which Windows lacks
+// (`busy` is always `None` there).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_terminal_is_busy_while_a_command_runs_in_its_foreground() {
+    use podium_core::activity::foreground::busy;
+    use podium_core::process::pty::INTERACTIVE_SHELL_COMMAND;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut shell = spec(INTERACTIVE_SHELL_COMMAND, dir.path());
+    shell.kind = ProcessKind::Terminal;
+    let (pty, scrollback) = spawn_pty(&shell);
+
+    // Wait for the interactive shell to run a command (the quotes keep the
+    // tty's echo of the input from matching), so rc-file commands are over.
+    pty.write(b"echo podium-\"\"ready\n").expect("write");
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let (bytes, _) = scrollback.lock().unwrap().snapshot();
+            if String::from_utf8_lossy(&bytes).contains("podium-ready") {
+                return;
+            }
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .expect("shell never ran a command");
+    wait_for_busy(&pty, Some(false)).await;
+
+    pty.write(b"sleep 2\n").expect("write");
+    wait_for_busy(&pty, Some(true)).await;
+    wait_for_busy(&pty, Some(false)).await;
+    pty.stop();
+
+    // A terminal started with its own command is never read as idle.
+    let mut command = spec("sleep 30", dir.path());
+    command.kind = ProcessKind::Terminal;
+    let (pty, _) = spawn_pty(&command);
+    assert_eq!(busy(&pty), None);
+    pty.stop();
+}
+
+#[cfg_attr(windows, ignore = "`cat` and the `sh` loop are POSIX commands")]
+#[tokio::test(flavor = "multi_thread")]
+async fn typed_echoes_are_no_burst_but_a_printing_loop_is() {
+    let burst = |orch: &Orchestrator, id| orch.output_activity().get(&id).map(|a| a.burst_ms);
+
+    // The tty echoes each key at once: two keys 350 ms apart are no work.
+    // Typing before the shell reaches `cat` can be swallowed: wait for it.
+    let (orch, id, _dir) = setup("printf ready; cat").await;
+    orch.start_process(id).await.expect("start");
+    wait_for_output(&orch, id, "ready").await;
+    orch.write_stdin(id, b"a").await.expect("write");
+    sleep(Duration::from_millis(350)).await;
+    orch.write_stdin(id, b"b").await.expect("write");
+    wait_for_output(&orch, id, "ab").await;
+    assert!(
+        burst(&orch, id).unwrap_or(0) < 300,
+        "{:?}",
+        burst(&orch, id)
+    );
+    orch.stop_process(id).await.expect("stop");
+
+    let (orch, id, _dir) = setup("while :; do printf .; sleep 0.1; done").await;
+    orch.start_process(id).await.expect("start");
+    timeout(TEST_TIMEOUT, async {
+        while burst(&orch, id).unwrap_or(0) < 300 {
+            sleep(BUSY_POLL).await;
+        }
+    })
+    .await
+    .expect("a loop printing every 100 ms never read as a burst");
+    orch.stop_process(id).await.expect("stop");
+}
+
+#[cfg_attr(windows, ignore = "SIGWINCH is POSIX")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repaint_after_a_resize_is_no_burst() {
+    let burst = |orch: &Orchestrator, id| orch.output_activity().get(&id).map(|a| a.burst_ms);
+    // Prints `x` on every SIGWINCH, as a TUI repaints (a shell `trap` waits
+    // for its foreground child, perl's `sleep` is cut short by the signal).
+    let (orch, id, _dir) =
+        setup(r#"perl -e '$|=1; $SIG{WINCH}=sub{print "x"}; print "ready"; sleep 1 while 1'"#)
+            .await;
+    orch.start_process(id).await.expect("start");
+    wait_for_output(&orch, id, "ready").await;
+
+    orch.resize(id, 100, 30).await.expect("resize");
+    wait_for_output(&orch, id, "readyx").await;
+    sleep(Duration::from_millis(350)).await;
+    orch.resize(id, 110, 30).await.expect("resize");
+    wait_for_output(&orch, id, "readyxx").await;
+    assert!(
+        burst(&orch, id).unwrap_or(0) < 300,
+        "{:?}",
+        burst(&orch, id)
+    );
+    orch.stop_process(id).await.expect("stop");
+}

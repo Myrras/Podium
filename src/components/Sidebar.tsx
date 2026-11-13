@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type {
   ProcessInfo,
@@ -40,10 +41,10 @@ import { ProcessRow } from "./ProcessRow";
 import { ScratchpadAgentModal } from "./ScratchpadAgentModal";
 import { GitButton } from "./GitButton";
 import { ScratchpadSubsection } from "./ScratchpadSubsection";
-import {
-  useSectionCollapsed,
-  useWaitingCount,
-} from "../lib/useSectionCollapsed";
+import { activityRollup } from "../lib/activityRollup";
+import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { useAgentActivityStore } from "../state/agentActivityStore";
+import { StatusPill } from "./StatusPill";
 import { SectionTitle } from "./SectionTitle";
 import { TerminalCommandsModal } from "./TerminalCommandsModal";
 import { TodoSubsection } from "./TodoSubsection";
@@ -66,6 +67,15 @@ import {
   TerminalIcon,
 } from "./icons";
 import styles from "./Sidebar.module.css";
+
+/** Working / needs-you counts over `processes`, from the activity store. */
+function useRollup(processes: ProcessInfo[]) {
+  // Only the two counts: a header re-renders when they change, not on any
+  // process change.
+  return useAgentActivityStore(
+    useShallow((s) => activityRollup(processes, s.details)),
+  );
+}
 
 interface SubsectionProps {
   /** Project root: the key its collapse state is persisted under. */
@@ -94,9 +104,7 @@ function Subsection({
   extra,
 }: SubsectionProps) {
   const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, section);
-  const waiting = useWaitingCount(
-    rows.filter((p) => p.status.state === "running").map((p) => p.id),
-  );
+  const { working, needs } = useRollup(rows);
   return (
     <div
       className={styles.subsection}
@@ -107,7 +115,8 @@ function Subsection({
           title={title}
           Icon={Icon}
           count={rows.length}
-          waiting={waiting}
+          working={working}
+          needs={needs}
           collapsed={collapsed}
           onToggle={() => setCollapsed(!collapsed)}
         />
@@ -213,6 +222,7 @@ function ProjectGroup({
   const hasWorktrees = useWorktreeStore(
     (s) => (s.worktreesByProject[project.id]?.length ?? 0) > 0,
   );
+  const { working, needs } = useRollup(processes);
   const hasServices = processes.some((p) => p.kind.kind === "service");
   // Only the subsections actually on screen count: Processes and Worktrees
   // render nothing when empty, a section switched off in the project's
@@ -598,6 +608,10 @@ function ProjectGroup({
           >
             <ErrorIcon size={13} />
           </span>
+        )}
+        {isCollapsed && needs > 0 && <StatusPill state="needs" count={needs} />}
+        {isCollapsed && working > 0 && (
+          <StatusPill state="working" count={working} />
         )}
         {/* Outside the hover strip, which clips; anchored to the header. */}
         {sectionsOpen && (

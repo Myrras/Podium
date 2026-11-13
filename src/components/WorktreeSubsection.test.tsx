@@ -28,6 +28,8 @@ import {
   worktreeRemove,
 } from "../ipc/commands";
 import { toastError } from "../state/toastStore";
+import { useAgentActivityStore } from "../state/agentActivityStore";
+import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useSettingsStore } from "../state/settingsStore";
 import { useWorktreeStore } from "../state/worktreeStore";
@@ -189,6 +191,41 @@ describe("WorktreeSubsection", () => {
       const spec = await openTerminalWithZsh(true);
       expect(spec.command).toBeUndefined();
     });
+  });
+
+  it("shows working and needs counts on a collapsed section", async () => {
+    worktreeListMock.mockResolvedValue([wt("fix-login")]);
+    const act = (activity: "working" | "waiting") => ({
+      activity,
+      reported: true,
+      waitingFor: null,
+      sinceMs: null,
+      subagents: 0,
+      shells: 0,
+    });
+    useAgentActivityStore.setState({
+      details: {
+        t1: act("working"),
+        t2: act("waiting"),
+        t3: act("waiting"),
+        t4: act("working"), // not in a worktree: not counted
+      },
+    });
+    renderSubsection([
+      terminal("t1", "a", "fix-login"),
+      terminal("t2", "b", "fix-login"),
+      terminal("t3", "c", "fix-login"),
+      terminal("t4", "d", null),
+    ]);
+    const toggle = await screen.findByRole("button", {
+      name: /^Worktrees/,
+    });
+    expect(screen.queryByRole("img", { name: /working|needs you/ })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("img", { name: "2 needs you" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "1 working" })).toBeVisible();
+    useLayoutStore.setState({ collapsedSections: {} });
   });
 
   it("opens the worktree in Warp", async () => {

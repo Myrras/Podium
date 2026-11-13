@@ -33,7 +33,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `process_git_branch`    | `{ processId }`                             | `string \| null`  |
 | `process_report_waiting` | `{ processId }` (agent showing a prompt)   | –                 |
 | `process_report_viewing` | `{ processId? }` (the agent open on screen; omitted = none; in memory only) | – |
-| `process_activity`      | –                                           | `Record<ProcessId, OutputActivity>` (`{ quietMs, burstMs }` per running process that printed) |
+| `process_activity`      | –                                           | `Record<ProcessId, OutputActivity>` (`{ quietMs, burstMs, state, waitingFor, stateMs, subagents, shells }` per running process that printed or reported; `state` is `"working" \| "waiting" \| "idle"` or null) |
 | `process_rename`        | `{ processId, name }`                       | `ProcessInfo`     |
 | `process_start`         | `{ processId }`                             | –                 |
 | `process_stop`          | `{ processId }`                             | –                 |

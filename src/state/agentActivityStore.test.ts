@@ -66,10 +66,29 @@ function proc(
 
 const RUNNING: ProcessStatus = { state: "running", pid: 1, since: "now" };
 const AGENT: ProcessKind = { kind: "agent", adapter: "claude-code" };
+/** Output timing alone: the process reported nothing itself. */
+function timing(quietMs: number, burstMs: number): OutputActivity {
+  return {
+    quietMs,
+    burstMs,
+    state: null,
+    waitingFor: null,
+    stateMs: null,
+    subagents: 0,
+    shells: 0,
+  };
+}
 /** A spinner that has been animating for a while: recent, sustained output. */
-const WORKING: OutputActivity = { quietMs: 100, burstMs: 1200 };
+const WORKING = timing(100, 1200);
 /** One redraw just now (a repaint after the pane was fitted): not work. */
-const REDRAW: OutputActivity = { quietMs: 50, burstMs: 0 };
+const REDRAW = timing(50, 0);
+/** A long-silent screen, with what the process reported itself on top. */
+function reported(
+  state: OutputActivity["state"],
+  rest: Partial<OutputActivity> = {},
+): OutputActivity {
+  return { ...timing(60_000, 0), state, stateMs: 0, ...rest };
+}
 
 function seed(processes: ProcessInfo[]) {
   useProcessStore.setState({ processes });
@@ -83,7 +102,11 @@ function tick(output: Record<string, OutputActivity> = {}) {
 describe("agentActivityStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAgentActivityStore.setState({ activity: {}, shells: {}, notified: {} });
+    useAgentActivityStore.setState({
+      activity: {},
+      details: {},
+      notified: {},
+    });
     useProcessStore.setState({ activeProcessId: null });
     useAssistantStore.setState({ subagents: [] });
     useLayoutStore.setState({
@@ -192,7 +215,7 @@ describe("agentActivityStore", () => {
 
   it("marks stale output as idle", () => {
     seed([proc("a1", AGENT, RUNNING)]);
-    tick({ a1: { quietMs: 10_000, burstMs: 5000 } });
+    tick({ a1: timing(10_000, 5000) });
     expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
   });
 
@@ -367,19 +390,150 @@ describe("agentActivityStore", () => {
     tick();
     // Idle agent, but work is still running behind its prompt.
     expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
-    expect(useAgentActivityStore.getState().shells.a1).toBe(2);
+    expect(useAgentActivityStore.getState().details.a1.shells).toBe(2);
   });
 
   it("clears the shell count once the footer stops reporting one", () => {
     viewport.mockReturnValue("⏵⏵ auto mode on · 1 shell · ↓ to manage");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
-    expect(useAgentActivityStore.getState().shells.a1).toBe(1);
+    expect(useAgentActivityStore.getState().details.a1.shells).toBe(1);
 
     viewport.mockReturnValue("⏵⏵ auto mode on (shift+tab to cycle)");
     tick();
-    expect(useAgentActivityStore.getState().shells.a1).toBeUndefined();
+    expect(useAgentActivityStore.getState().details.a1.shells).toBe(0);
   });
+  describe("reported state", () => {
+    const details = () => useAgentActivityStore.getState().details;
+
+    it("wins over the output-timing heuristic", () => {
+      seed([proc("a1", AGENT, RUNNING), proc("a2", AGENT, RUNNING)]);
+      tick({
+        // Thinking quietly: nothing printed for a minute, still working.
+        a1: reported("working"),
+        // A spinner still animating, but the agent says it is done.
+        a2: { ...WORKING, state: "idle", stateMs: 0 },
+      });
+      const { activity } = useAgentActivityStore.getState();
+      expect(activity).toEqual({ a1: "working", a2: "idle" });
+      expect(details().a1).toMatchObject({
+        activity: "working",
+        reported: true,
+      });
+    });
+
+    it("wins over the prompt on screen, also for the notification", () => {
+      // Scrollback that merely looks like a prompt; the agent is working.
+      viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+      seed([proc("a1", AGENT, RUNNING, "claude")]);
+      tick({ a1: reported("working") });
+      expect(useAgentActivityStore.getState().activity.a1).toBe("working");
+      expect(notifyAgentWaiting).not.toHaveBeenCalled();
+    });
+
+    it("pings once per reported waiting episode, without an opened terminal", () => {
+      seed([proc("a1", AGENT, RUNNING, "claude")]);
+      const waiting = reported("waiting", { waitingFor: "permission" });
+
+      tick({ a1: waiting });
+      expect(details().a1).toMatchObject({
+        activity: "waiting",
+        waitingFor: "permission",
+      });
+      expect(notifyAgentWaiting).toHaveBeenCalledWith("claude", true);
+      expect(processReportWaiting).toHaveBeenCalledWith("a1");
+
+      tick({ a1: waiting });
+      expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+
+      // Answered, then asking again: a new episode.
+      tick({ a1: reported("working") });
+      tick({ a1: waiting });
+      expect(notifyAgentWaiting).toHaveBeenCalledTimes(2);
+    });
+
+    it("falls back to the heuristics when nothing is reported", () => {
+      viewport.mockReturnValue("Continue? (y/n)");
+      seed([proc("a1", AGENT, RUNNING), proc("a2", AGENT, RUNNING)]);
+      tick({ a1: REDRAW, a2: WORKING });
+      expect(details().a1).toEqual({
+        activity: "waiting",
+        reported: false,
+        waitingFor: null,
+        sinceMs: null,
+        subagents: 0,
+        shells: 0,
+      });
+      expect(details().a2).toMatchObject({
+        activity: "working",
+        sinceMs: null,
+      });
+    });
+
+    it("reads a terminal reported working on an input prompt as waiting, once", () => {
+      viewport.mockReturnValue("$ sudo systemctl restart api\nPassword:");
+      seed([proc("t1", { kind: "terminal" }, RUNNING)]);
+      tick({ t1: reported("working") });
+      expect(details().t1).toMatchObject({ activity: "waiting" });
+      expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+      tick({ t1: reported("working") });
+      expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a terminal reported idle idle, even with a prompt on screen", () => {
+      viewport.mockReturnValue("Continue? [y/N]");
+      seed([proc("t1", { kind: "terminal" }, RUNNING)]);
+      tick({ t1: reported("idle") });
+      expect(details().t1.activity).toBe("idle");
+      expect(notifyAgentWaiting).not.toHaveBeenCalled();
+    });
+
+    it("prefers the backend's counts over the on-screen shell count", () => {
+      viewport.mockReturnValue("? for shortcuts · 2 shells");
+      seed([proc("a1", AGENT, RUNNING), proc("a2", AGENT, RUNNING)]);
+      tick({ a1: reported("idle", { subagents: 3, shells: 5 }) });
+      expect(details().a1).toMatchObject({ subagents: 3, shells: 5 });
+      // Nothing from the backend: the footer's count stands.
+      expect(details().a2).toMatchObject({ subagents: 0, shells: 2 });
+    });
+
+    it("turns the state's age into a start time that holds between polls", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1_000_000);
+        seed([proc("a1", AGENT, RUNNING)]);
+        tick({ a1: reported("working", { stateMs: 4000 }) });
+        expect(details().a1.sinceMs).toBe(996_000);
+        const first = details().a1;
+
+        // The next poll lands 30 ms late: same start, same object.
+        vi.setSystemTime(1_001_030);
+        tick({ a1: reported("working", { stateMs: 5000 }) });
+        expect(details().a1).toBe(first);
+
+        // A new state starts its own clock.
+        vi.setSystemTime(1_002_000);
+        tick({ a1: reported("idle", { stateMs: 200 }) });
+        expect(details().a1.sinceMs).toBe(1_001_800);
+
+        // Same state, but the backend says it began again (a new turn).
+        vi.setSystemTime(1_010_000);
+        tick({ a1: reported("idle", { stateMs: 100 }) });
+        expect(details().a1.sinceMs).toBe(1_009_900);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("drops a process that stopped", () => {
+      seed([proc("a1", AGENT, RUNNING)]);
+      tick({ a1: reported("working") });
+      seed([]);
+      tick();
+      expect(details()).toEqual({});
+    });
+  });
+
   describe("viewing", () => {
     beforeEach(() => {
       seed([
