@@ -30,16 +30,26 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 
 - `types.ts`: `RoomModel`, `DeskState` (`working | needs | idle | ended | crashed`),
   `Camera`, `Rect`, `Size`, popover and modal request types.
-- `geometry.ts`: pure numbers, no DOM: `roomSize`, `snap` and `hits` (40 px grid,
-  one cell apart), `layoutRooms`, `bounds`, `frame`, `zoomAt`, `toScreen`; zoom
+- `geometry.ts`: pure numbers, no DOM: `roomSize` (desk rows of fixed `DESK_H`),
+  `snap` and `hits` (40 px grid, one cell apart), `layoutRooms` (saved spots
+  first; overlapping rooms are pushed right or down, the one that did not grow
+  moves; spots are kept when a room shrinks), `bounds`, `frame`, `zoomAt`, `toScreen`; zoom
   0.3 to 2, far below 0.4.
 - `rooms.ts`: `deskState`, `useRooms`/`getRooms` (never write), `roomOf`,
   `useFloorData` (loads to-dos and scratchpads for every project and writes back
-  changed room positions; only `FloorMap` calls it).
+  changed room positions; only `FloorMap` calls it). `grown` tracks which rooms
+  grew at the latest size change, for `layoutRooms`.
 - `camera.ts`: `jumpTo("all" | projectId)` (animated), `zoomBy`, `showAgent`.
 - `startAgent.ts`: `startAgentIn` for the nameplate +.
+- `menus.ts`: right-click items (`processMenu`, `todoMenu`, `scratchpadMenu`) for
+  `ContextMenu`; used by desks, wall notes, notebooks, rack lights and the to-do
+  and scratchpad popover rows.
+- `terminalCommands.ts` (`useTerminalCommands`) and `terminals.ts` `runCommand`:
+  justfile recipes and saved commands, run in a new terminal.
 - `waypoints.ts`: edge markers for rooms that need you and are out of view.
-- `sprites.ts` + `Bot.tsx`: pixel art as SVG data URLs; only a working bot moves.
+- `sprites.ts` + `Bot.tsx`: pixel art as SVG data URLs, 8 bot heads; only a
+  working bot moves. `botVariant.ts` gives each agent in a room its own head. Idle
+  and ended bots are grey; the desk adds a floating Zzz for idle only.
 
 ## Components
 
@@ -49,15 +59,23 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 
 - The camera never goes through React state: `FloorMap` subscribes to the store
   and writes the world layer's `transform`, `--z` and `data-far` (z < 0.4;
-  labels hide with `:global([data-far])`). Only transform and opacity animate.
+  labels hide with `:global([data-far])`). Only transform and opacity animate;
+  `--z` is registered with `@property` so it animates with the layer, and
+  nameplates and desk marks counter-scale by `1 / --z`.
 - Pan starts from a pointerdown whose target is outside
   `button, [role="button"], a, input, textarea, select, [data-no-pan]`, after
   4 px. Every clickable thing on the map is a `<button>` or has `data-no-pan`.
-- Popovers anchor on `data-fixture="<projectId>:<todos|scratchpads|services|menu>"`;
+- Popovers anchor on `data-fixture="<projectId>:<todos|scratchpads|commands|services|menu>"`;
   `FloorPopovers` looks it up on each render and closes when it is gone, so
   fixtures stay mounted while open. One popover at a time.
-- A section hidden in `ProjectInfo.sections` hides its fixture. Services show
-  only when the project has any.
+- A section hidden in `ProjectInfo.sections` hides its fixture (Commands follows
+  `terminals`). Services show only when the project has any.
+- To-do and scratchpad popovers fill the `Popover` header and footer through
+  `PopoverSlot`. The Commands popover (`CommandsFixturePopover`) lists commands
+  and has Edit commands in the header.
+- Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
+  modal shows the state and Close terminal; the nameplate's terminal icon calls
+  `newTerminal`.
 
 ## Esc and terminal rules
 
@@ -76,6 +94,6 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 
 ## Not built
 
-Multi-select as assistant context, a terminal commands list, Open in Warp,
+Multi-select as assistant context, Open in Warp,
 section toggles in Floor mode, a Stopping light, keyboard travel between rooms,
 answer buttons in the modal.

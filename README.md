@@ -54,31 +54,43 @@ Project mode for that run and asks again next start. Switch any time in
 Settings > General > Appearance > View.
 
 - **Map.** Drag the floor to pan; Ctrl/Cmd + scroll, or Zoom in / Zoom out in the
-  header, to zoom (plain scroll does nothing). Drag a room by its nameplate (or
-  focus it and use the arrow keys): rooms snap to a grid and never touch.
-  Positions are saved; **Reset layout** puts every room back. The header's chips,
+  header (icon buttons), to zoom (plain scroll does nothing). Drag a room by its
+  nameplate (or focus it and use the arrow keys): rooms snap to a grid and never
+  touch. Rooms are sized to their desks; a room that grows pushes overlapping
+  neighbours right or down, and they stay there when it shrinks. Positions are
+  saved; **Reset layout** puts every room back. The header's chips,
   a click on a nameplate and **Fit all** move the camera to one project or to all
   of them; Esc shows everything.
-- **Desks.** A working agent types in a lit room; idle agents sit in the dark,
-  one that waits on you has an amber **?**, ended and crashed ones are grey
-  (crashed with a red **!**). Sub-agents stand in front of the desk as mini bots,
-  background shells as monitors behind it (three each, then +N). Terminals are
-  desks with a monitor and no bot. Zoomed far out, labels hide.
+- **Desks.** A working agent types in a lit room; an idle one is a grey bot with
+  a floating Zzz in a quiet room (flat background), one that waits on you has an
+  amber **?**, ended and crashed ones are grey without Zzz (crashed with a red
+  **!**). Each agent in a room has its own bot design (8 in all). Sub-agents
+  stand in front of the desk as mini bots, grey unless the agent is working;
+  background shells are monitors behind it (three each, then +N). Terminals are
+  desks with a monitor and no bot, grey and labelled "stopped" once they end.
+  The pinned desk has no lasting outline. Zoomed far out, labels hide. Right-click
+  a desk for Open, Stop, Resume session and the like.
 - **Fixtures.** The back wall of a room holds what the sidebar held: a
   **pinboard** (to-dos, notes in the owning agent's colour), a **shelf**
-  (scratchpads) and a **rack** (`podium.yml` services, one light each; a crash
-  adds a red **!**). A click opens a popover right there with the list, the item
-  with its editor, and the usual actions (start an agent, archive, reload
-  `podium.yml`). A section hidden for the project hides its fixture.
+  (scratchpads), **Commands** (a toolbox) and a **rack** (`podium.yml` services,
+  one light each; a crash adds a red **!**). A click opens a popover right there
+  with the list, the item with its editor, and the usual actions (start an
+  agent, archive, reload `podium.yml`). The popovers have one header bar,
+  compact rows with the owning agent's colour edge, and details in a footer.
+  **Commands** runs a justfile recipe or saved command in a new terminal; **Edit
+  commands** changes the saved ones. Right-click a pinboard note, a notebook, a
+  rack light or a popover row for its menu. A section hidden for the project
+  hides its fixture.
 - **Terminal.** A click on a desk or service opens its terminal in a modal over the
   floor. Esc goes to the terminal, so it does not close the modal: use the
-  close button or click beside it. Click the agent's name to rename it; Stop,
+  close button or click beside it. The modal shows the terminal's state, and
+  terminals have **Close terminal**. Click the agent's name to rename it; Stop,
   **Resume session** and **Clear the desk** are in the header, and **Next that needs
   you** steps through waiting agents. There are no answer buttons: type the answer.
 - **Nameplate.** **+** starts an agent: with the assistant on and its panel open
   it drafts a prompt there, otherwise (or with Cmd/Ctrl held) it opens the New
-  agent screen. **⋯** is the project menu: rename, colour, worktrees, New
-  terminal, Git board, Reload podium.yml, Remove project. **Add project...** is
+  agent screen. The terminal icon opens a new terminal. **⋯** is the project menu:
+  rename, colour, worktrees, Git board, Reload podium.yml, Remove project. **Add project...** is
   the last chip in the header.
 - **Waypoints.** A room that needs you while out of view gets a marker on the edge
   of the map with an amber **?** (waiting agents) or red **!** (crashed) count;

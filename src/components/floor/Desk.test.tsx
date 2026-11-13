@@ -176,7 +176,7 @@ describe("Desk", () => {
     expect(useFloorStore.getState().terminalId).toBe("p1");
   });
 
-  it("pins and opens on click, reports hover, outlines the active desk", () => {
+  it("pins and opens on click, reports hover, marks the active desk", () => {
     useProcessStore.setState({ activeProcessId: "p1" } as never);
     render(<Desk process={proc()} />);
     const btn = screen.getByRole("button");
