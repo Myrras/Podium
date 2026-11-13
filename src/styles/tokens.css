@@ -294,19 +294,31 @@
   --term-ansi-bright-white: #3c3836;
 }
 
-/* Glass dark: translucent islands over a vivid gradient canvas. Inherits the
-   dark palette from :root. The pane is a dark tint (not the mock's white 8%)
-   so body text keeps >=4.5:1 over the brightest canvas spot (the teal blob):
-   --text 6.8:1, --text-muted 5.2:1, --text on --row-selected 4.9:1.
-   Accent stays the dark theme's #4493f8: the mock's #2a6ae0 is ~3:1 as text. */
+/* Glass dark: translucent islands over a gradient canvas. Inherits the dark
+   palette (accent included) from :root. Shared recipe with the sibling apps:
+   canvas patches at 50% strength and a smoked pane, so text on a pane stays
+   >=4.5:1 over the brightest patch (teal): --text 13.7:1, --text-muted 9.8:1,
+   --accent 4.7:1, --text on --row-selected 8.9:1, --text-faint 7.0:1. */
 :root[data-theme="glass-dark"] {
   --canvas:
-    radial-gradient(55% 65% at 12% 18%, #2c5cff 0%, rgba(44, 92, 255, 0) 70%),
-    radial-gradient(45% 55% at 88% 22%, #9b4dff 0%, rgba(155, 77, 255, 0) 70%),
-    radial-gradient(55% 55% at 62% 100%, #0fb8a5 0%, rgba(15, 184, 165, 0) 70%),
+    radial-gradient(
+      55% 65% at 12% 18%,
+      rgba(44, 92, 255, 0.5) 0%,
+      rgba(44, 92, 255, 0) 70%
+    ),
+    radial-gradient(
+      45% 55% at 88% 22%,
+      rgba(155, 77, 255, 0.5) 0%,
+      rgba(155, 77, 255, 0) 70%
+    ),
+    radial-gradient(
+      55% 55% at 62% 100%,
+      rgba(15, 184, 165, 0.5) 0%,
+      rgba(15, 184, 165, 0) 70%
+    ),
     #060912;
   --bg: rgba(255, 255, 255, 0.06);
-  --surface: rgba(18, 22, 38, 0.6);
+  --surface: rgba(18, 22, 38, 0.75);
   --surface-2: rgba(255, 255, 255, 0.1);
   --surface-hover: rgba(255, 255, 255, 0.12);
   --border: rgba(255, 255, 255, 0.14);
@@ -325,7 +337,7 @@
   --glass-blur: 40px;
   --glass-sat: 180%;
   --glass-hi: rgba(255, 255, 255, 0.22);
-  --pop-surface: rgba(22, 26, 44, 0.78);
+  --pop-surface: rgba(22, 26, 44, 0.85);
 }
 
 /* Glass light: frosted white islands over a pastel canvas. Body text 13:1,
