@@ -66,6 +66,18 @@ export function TodoFixturePopover({
           Start agent
         </button>
       )}
+      <button
+        type="button"
+        onClick={() => {
+          if (!todo) return;
+          void useTodoStore
+            .getState()
+            .setTodoArchived(projectId, todo.id, true);
+          setPopoverItem(null);
+        }}
+      >
+        Archive this to-do
+      </button>
     </div>
   );
 
