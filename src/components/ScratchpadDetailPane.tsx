@@ -54,9 +54,15 @@ const AUTOSAVE_DELAY_MS = 600;
 export function ScratchpadDetailPane({
   projectId,
   scratchpadId,
+  onClose,
+  compact,
 }: {
   projectId: ProjectId;
   scratchpadId: ScratchpadId;
+  /** Replaces closing via the layout store (the Floor popover hosts the pane). */
+  onClose?: () => void;
+  /** Hides the table of contents and gives the pane a fixed height. */
+  compact?: boolean;
 }) {
   const scratchpad = useScratchpadStore((s) =>
     (s.scratchpadsByProject[projectId] ?? NO_SCRATCHPADS).find(
@@ -72,6 +78,7 @@ export function ScratchpadDetailPane({
   );
   const refresh = useScratchpadStore((s) => s.refresh);
   const clearOpenScratchpad = useLayoutStore((s) => s.clearOpenScratchpad);
+  const close = onClose ?? clearOpenScratchpad;
 
   const [title, setTitle] = useState(scratchpad?.title ?? "");
   const [content, setContent] = useState(scratchpad?.content ?? "");
@@ -156,8 +163,9 @@ export function ScratchpadDetailPane({
   // The open scratchpad vanished (removed, or archived here or by an agent):
   // close the pane.
   useEffect(() => {
-    if (scratchpad === undefined) clearOpenScratchpad();
-  }, [scratchpad, clearOpenScratchpad]);
+    if (scratchpad === undefined) close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scratchpad]);
 
   // Flush a pending debounced autosave on unmount (closing the pane, or
   // switching to another pane/process) instead of just cancelling it — the
@@ -301,7 +309,11 @@ export function ScratchpadDetailPane({
   };
 
   return (
-    <div className={styles.pane} data-fullscreen={fullscreen || undefined}>
+    <div
+      className={styles.pane}
+      data-fullscreen={fullscreen || undefined}
+      data-compact={compact || undefined}
+    >
       <header className={styles.header}>
         <ScratchpadIcon className={styles.kindIcon} />
         <input
@@ -343,7 +355,7 @@ export function ScratchpadDetailPane({
           className={styles.closeBtn}
           aria-label="Close scratchpad"
           title="Close"
-          onClick={clearOpenScratchpad}
+          onClick={close}
         >
           <CloseIcon />
         </button>
@@ -381,10 +393,12 @@ export function ScratchpadDetailPane({
             onEditorReady={setEditor}
           />
         </div>
-        <ScratchpadTOC
-          headings={headings}
-          onSelectHeading={handleSelectHeading}
-        />
+        {!compact && (
+          <ScratchpadTOC
+            headings={headings}
+            onSelectHeading={handleSelectHeading}
+          />
+        )}
       </div>
 
       <footer className={styles.footer}>

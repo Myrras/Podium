@@ -367,4 +367,23 @@ describe("ScratchpadSubsection", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("bare_hides_the_section_title_and_labels_the_add_button", () => {
+    seed([scratchpad("a", "Scratchpad A")]);
+    render(
+      <ScratchpadSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Scratchpads")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "New scratchpad" }),
+    ).toHaveTextContent("New scratchpad");
+    expect(screen.getByText("Scratchpad A")).toBeInTheDocument();
+  });
 });

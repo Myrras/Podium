@@ -40,6 +40,7 @@ import { ScratchpadArchiveModal } from "./ScratchpadArchiveModal";
 import { useSectionCollapsed } from "../lib/useSectionCollapsed";
 import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
+import bareStyles from "./ScratchpadSubsection.module.css";
 import styles from "./TodoSubsection.module.css";
 
 /** Stable empty list so the selector doesn't re-render on every store set. */
@@ -107,6 +108,8 @@ function ScratchpadRow({
 }
 
 interface ScratchpadSubsectionProps {
+  /** Floor popover: no collapsible title, always open, "New scratchpad" as a text button. */
+  bare?: boolean;
   projectId: ProjectId;
   /** Project root: the key its collapse state is persisted under. */
   projectRoot: string;
@@ -125,6 +128,7 @@ interface ScratchpadSubsectionProps {
 }
 
 export function ScratchpadSubsection({
+  bare,
   projectId,
   projectRoot,
   onOpenScratchpad,
@@ -235,19 +239,23 @@ export function ScratchpadSubsection({
   return (
     <div
       className={sidebarStyles.subsection}
-      data-collapsed={collapsed ? "true" : undefined}
+      data-collapsed={collapsed && !bare ? "true" : undefined}
     >
-      <div className={sidebarStyles.sectionHeader}>
-        <SectionTitle
-          title="Scratchpads"
-          Icon={ScratchpadIcon}
-          count={scratchpads.length}
-          collapsed={collapsed}
-          onToggle={() => setCollapsed(!collapsed)}
-        />
+      <div
+        className={`${sidebarStyles.sectionHeader} ${bare ? bareStyles.bareHeader : ""}`}
+      >
+        {!bare && (
+          <SectionTitle
+            title="Scratchpads"
+            Icon={ScratchpadIcon}
+            count={scratchpads.length}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed)}
+          />
+        )}
         <button
           type="button"
-          className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
+          className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
           aria-label="View archived scratchpads"
           title="Archived scratchpads"
           onClick={() => setArchiveOpen(true)}
@@ -265,9 +273,10 @@ export function ScratchpadSubsection({
           }}
         >
           <AddIcon size={13} />
+          {bare && "New scratchpad"}
         </button>
       </div>
-      {collapsed ? null : scratchpads.length > 0 ? (
+      {collapsed && !bare ? null : scratchpads.length > 0 ? (
         <div className={styles.rows}>
           {scratchpads.map((sp) => (
             <ScratchpadRow

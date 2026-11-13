@@ -14,6 +14,11 @@
   background: var(--bg);
 }
 
+/* Inside the Floor popover: no parent gives it a height. */
+.pane[data-compact]:not([data-fullscreen]) {
+  height: 420px;
+}
+
 /* Header mirrors the to-do/terminal panes: kind icon, title, close. */
 .header {
   display: flex;
