@@ -29,7 +29,7 @@ import type {
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
 import { themeAccentHex } from "../lib/color";
-import { newTerminal } from "../lib/terminals";
+import { newTerminal, runCommand } from "../lib/terminals";
 import { SECTIONS, sectionKey, useLayoutStore } from "../state/layoutStore";
 import type { Section } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
@@ -242,9 +242,6 @@ function ProjectGroup({
     (s) => s.setAllSectionsCollapsed,
   );
 
-  const addProcess = useProcessStore((s) => s.addProcess);
-  const startProcess = useProcessStore((s) => s.startProcess);
-
   const [editing, setEditing] = useState(false);
   // `undefined` = closed; `null` = open targeting the project root; a
   // `WorktreeInfo` = open targeting that worktree (from its row's Commands
@@ -359,21 +356,6 @@ function ProjectGroup({
   const toggleGroup = () => {
     setActiveProject(project.id);
     toggleProjectCollapsed(project.root);
-  };
-
-  // Quick command from the Commands block: a new terminal running it, named
-  // after the command's own name (a justfile recipe, or a user-set name).
-  // `cwd` is set when the Commands modal was opened targeting a worktree
-  // instead of the project root.
-  const runCommand = async (command: string, name: string, cwd?: string) => {
-    setActiveProject(project.id);
-    const info = await addProcess(project.id, {
-      name,
-      kind: "terminal",
-      command,
-      ...(cwd ? { cwd } : {}),
-    });
-    if (info) await startProcess(info.id);
   };
 
   const openInWarp = () => {
@@ -728,7 +710,9 @@ function ProjectGroup({
             root={project.root}
             worktree={commandsTarget ?? null}
             onClose={() => setCommandsTarget(undefined)}
-            onRun={(command, name, cwd) => void runCommand(command, name, cwd)}
+            onRun={(command, name, cwd) =>
+              void runCommand(project, command, name, cwd)
+            }
           />
           {project.sections.scratchpads && (
             <ScratchpadSubsection

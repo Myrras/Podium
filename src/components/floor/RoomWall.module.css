@@ -161,3 +161,35 @@
   transform: scale(calc(1 / var(--z, 1)));
   transform-origin: top right;
 }
+
+/* Command panel: a metal box with a handle and a row of keys. */
+.toolbox {
+  position: relative;
+  width: 36px;
+  height: 22px;
+  margin-top: 5px;
+  background: var(--floor-metal);
+  box-shadow: 0 0 0 3px var(--floor-wood-dark);
+}
+
+.toolbox::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: -8px;
+  width: 14px;
+  height: 5px;
+  border: 3px solid var(--floor-wood-dark);
+  border-bottom: none;
+}
+
+.toolbox::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 8px;
+  height: 6px;
+  background: var(--floor-screen);
+  box-shadow: inset 6px 0 0 -2px var(--floor-led);
+}

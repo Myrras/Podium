@@ -115,6 +115,25 @@ describe("RoomWall", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("shows a count-less Commands fixture only when terminals are on", () => {
+    seed([], 0);
+    const { unmount } = render(<RoomWall room={room()} />);
+    fireEvent.click(screen.getByLabelText("Commands of Alpha"));
+    expect(useFloorStore.getState().popover).toEqual({
+      projectId: "p1",
+      kind: "commands",
+      itemId: null,
+    });
+    expect(document.querySelector('[data-fixture="p1:commands"]')).toBeTruthy();
+    unmount();
+    const off = {
+      ...project,
+      sections: { todos: true, scratchpads: true, terminals: false },
+    } as unknown as ProjectInfo;
+    render(<RoomWall room={room({}, off)} />);
+    expect(screen.queryByLabelText("Commands of Alpha")).toBeNull();
+  });
+
   it("shows the rack with crashed light first and a bang", () => {
     seed([], 0);
     const exited = (crashed: boolean) =>

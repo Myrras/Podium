@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectInfo, WorktreeInfo } from "../ipc/types";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
-import { newTerminal } from "./terminals";
+import { newTerminal, runCommand } from "./terminals";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -40,5 +40,28 @@ describe("newTerminal", () => {
         cwd: ".podium/worktrees/fix",
       }),
     );
+  });
+});
+
+describe("runCommand", () => {
+  it("activates, adds a named terminal running the command and starts it", async () => {
+    await runCommand(project, "just build", "build");
+    expect(setActiveProject).toHaveBeenCalledWith("p1");
+    expect(addProcess).toHaveBeenCalledWith("p1", {
+      name: "build",
+      kind: "terminal",
+      command: "just build",
+    });
+    expect(startProcess).toHaveBeenCalledWith("t9");
+  });
+
+  it("passes cwd and skips start when nothing was added", async () => {
+    addProcess.mockResolvedValue(null);
+    await runCommand(project, "ls", "ls", ".podium/worktrees/w");
+    expect(addProcess).toHaveBeenCalledWith(
+      "p1",
+      expect.objectContaining({ cwd: ".podium/worktrees/w" }),
+    );
+    expect(startProcess).not.toHaveBeenCalled();
   });
 });

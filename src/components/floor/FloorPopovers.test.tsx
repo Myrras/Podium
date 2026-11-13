@@ -25,6 +25,9 @@ vi.mock("./ScratchpadFixturePopover", () => ({
 vi.mock("./ServicesFixturePopover", () => ({
   ServicesFixturePopover: stub("services"),
 }));
+vi.mock("./CommandsFixturePopover", () => ({
+  CommandsFixturePopover: stub("commands"),
+}));
 // Uncontrolled input: keeps its value unless the content remounts.
 vi.mock("./ProjectMenuPopover", () => ({
   ProjectMenuPopover: ({ projectId }: { projectId: string }) => (
@@ -64,6 +67,15 @@ describe("FloorPopovers", () => {
     render(<FloorPopovers />);
     expect(screen.getByTestId("services")).toHaveTextContent("p1/x/anchor");
     expect(screen.queryByTestId("todos")).toBeNull();
+  });
+
+  it("routes the commands kind", () => {
+    button.dataset.fixture = "p1:commands";
+    useFloorStore
+      .getState()
+      .openPopover({ projectId: "p1", kind: "commands", itemId: null });
+    render(<FloorPopovers />);
+    expect(screen.getByTestId("commands")).toHaveTextContent("p1/null/anchor");
   });
 
   it("closes when the anchor is missing", () => {
