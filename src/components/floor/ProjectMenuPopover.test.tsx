@@ -135,11 +135,8 @@ describe("ProjectMenuPopover", () => {
     expect(screen.queryByText("Git board")).toBeNull();
   });
 
-  it("hides New terminal when terminals are off", () => {
-    setup(null, {
-      ...project,
-      sections: { ...project.sections, terminals: false },
-    });
+  it("has no New terminal item", () => {
+    setup();
     expect(screen.queryByText("New terminal")).toBeNull();
   });
 
@@ -152,12 +149,6 @@ describe("ProjectMenuPopover", () => {
     fireEvent.click(screen.getByText("Git board"));
     expect(open).toHaveBeenCalledWith("p1");
     expect(useFloorStore.getState().popover).toBeNull();
-  });
-
-  it("opens a terminal at the project", () => {
-    setup();
-    fireEvent.click(screen.getByText("New terminal"));
-    expect(m.newTerminal).toHaveBeenCalledWith(project);
   });
 
   it("removes the project only after the inline confirm", () => {

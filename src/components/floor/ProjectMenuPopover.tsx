@@ -1,4 +1,4 @@
-/** The ⋯ menu of a room's nameplate: rename, colour, worktrees, terminal, board, reload, remove. */
+/** The ⋯ menu of a room's nameplate: rename, colour, worktrees, board, reload, remove. */
 import { useEffect, useRef, useState } from "react";
 
 import { toIpcError, worktreeRemove } from "../../ipc/commands";
@@ -220,18 +220,6 @@ export function ProjectMenuPopover({
               </button>
             ))}
           </>
-        )}
-        {project.sections.terminals && (
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              void newTerminal(project);
-              close();
-            }}
-          >
-            New terminal
-          </button>
         )}
         {project.sections.issues && (
           <button
