@@ -156,6 +156,6 @@
   top: -2px;
   padding: 0 3px;
   background: var(--danger);
-  color: #fff;
+  color: var(--accent-contrast);
   font: 700 10px/1.3 var(--font-pixel);
 }
