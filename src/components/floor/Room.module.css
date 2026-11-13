@@ -11,7 +11,8 @@
 }
 
 .room[data-lit="false"] {
-  background: var(--canvas);
+  /* Flat tint over the map; --canvas is a gradient on glass themes. */
+  background: color-mix(in srgb, var(--text) 4%, transparent);
   border-color: var(--border);
 }
 
