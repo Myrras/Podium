@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-13
+
 ### Added
 
 - One status pill per sidebar row and in the terminal header: Working (Running for terminals), Needs you, Idle, Up, Stopping, Crashed, Exited or Not started. The time in that state shows only when Podium knows it (states the process reports itself).
