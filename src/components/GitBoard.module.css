@@ -359,6 +359,10 @@
   transition: opacity var(--dur-1) var(--ease-out);
 }
 
+:global(:root[data-theme^="glass"]) .cardActions {
+  background: var(--pop-surface);
+}
+
 .card:hover .cardActions,
 .card:focus-within .cardActions {
   opacity: 1;

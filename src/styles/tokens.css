@@ -338,6 +338,13 @@
   --glass-sat: 180%;
   --glass-hi: rgba(255, 255, 255, 0.22);
   --pop-surface: rgba(22, 26, 44, 0.85);
+
+  /* Terminal: transparent so the island glass shows through (xterm needs
+     allowTransparency, see terminalTheme.ts). ANSI colours >=4.5:1 on the
+     worst-case island composite (teal canvas patch, #113e46). */
+  --term-bg: #00000000;
+  --term-ansi-black: #a0a3a8;
+  --term-ansi-bright-black: #9ea3ab;
 }
 
 /* Glass light: frosted white islands over a pastel canvas. Body text 13:1,
@@ -376,4 +383,18 @@
   --glass-sat: 160%;
   --glass-hi: rgba(255, 255, 255, 0.95);
   --pop-surface: rgba(255, 255, 255, 0.7);
+
+  /* Terminal: transparent over the frosted island. ANSI colours >=4.5:1 on
+     the worst-case composite (blue canvas patch, #d8e6ff). */
+  --term-bg: #00000000;
+  --term-ansi-red: #c5202c;
+  --term-ansi-blue: #0862cb;
+  --term-ansi-magenta: #784acd;
+  --term-ansi-cyan: #187076;
+  --term-ansi-white: #5f666f;
+  --term-ansi-bright-green: #187533;
+  --term-ansi-bright-blue: #1865ba;
+  --term-ansi-bright-magenta: #7453b1;
+  --term-ansi-bright-cyan: #256e80;
+  --term-ansi-bright-white: #5f656c;
 }
