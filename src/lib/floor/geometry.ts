@@ -18,8 +18,26 @@ const PUSH_ROUNDS = 200;
 const ROOM_CHROME = 2 + WALL_H + 16;
 const ROW_GAP = 8;
 
-export function roomSize(deskCount: number, hasServices: boolean): Size {
-  const min = hasServices ? 280 : 200;
+/**
+ * Width of each wall fixture (RoomWall.module.css `.fx`: padding 8 x2, border 2 x2, 11px label
+ * with a 2-digit count), measured in WebKit. shortcut: a 3-digit count is ~7px wider; measure
+ * the labels if that ever matters.
+ */
+export const FIXTURE_W = {
+  todos: 76,
+  scratchpads: 106,
+  commands: 82,
+  services: 84,
+};
+export type WallFixture = keyof typeof FIXTURE_W;
+
+// RoomWall.module.css .wall: padding 6 x2, gap 4; Room.module.css: border 1 x2.
+const wallWidth = (fixtures: WallFixture[]) =>
+  fixtures.reduce((w, f) => w + FIXTURE_W[f] + 4, 2 + 12 - 4);
+
+/** Room size; at least as wide as its wall `fixtures`, in the order they hang. */
+export function roomSize(deskCount: number, fixtures: WallFixture[]): Size {
+  const min = Math.max(200, Math.ceil(wallWidth(fixtures) / GRID) * GRID);
   if (deskCount <= 0) return { w: min, h: ROOM_CHROME };
   const cols = Math.min(deskCount, DESKS_PER_ROW);
   const rows = Math.ceil(deskCount / DESKS_PER_ROW);

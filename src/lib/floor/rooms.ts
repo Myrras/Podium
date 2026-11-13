@@ -18,7 +18,7 @@ import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import { pillState } from "../processStatus";
-import { layoutRooms, roomSize } from "./geometry";
+import { layoutRooms, roomSize, type WallFixture } from "./geometry";
 import type { DeskState, RoomModel, Size } from "./types";
 
 export function deskState(
@@ -81,11 +81,21 @@ function buildRooms(
     const terminals = project.sections.terminals ? kind("terminal") : [];
     const services = kind("service");
     const states = agents.map(state);
+    // The fixtures RoomWall hangs, so the room is wide enough for them.
+    const fixtures = (
+      [
+        project.sections.todos && "todos",
+        project.sections.scratchpads && "scratchpads",
+        project.sections.terminals && "commands",
+        services.length > 0 && "services",
+      ] as const
+    ).filter((f): f is WallFixture => f !== false);
     return {
       project,
       agents,
       terminals,
       services,
+      size: roomSize(agents.length + terminals.length, fixtures),
       needs: states.filter((s) => s === "needs").length,
       crashed:
         states.filter((s) => s === "crashed").length +
@@ -93,25 +103,18 @@ function buildRooms(
       lit: states.some((s) => s === "working" || s === "needs"),
     };
   });
-  const items = parts.map((r) => {
-    const desks = r.agents.length + r.terminals.length;
-    return {
-      key: r.project.root,
-      size: roomSize(desks, r.services.length > 0),
-      hasDesks: desks > 0,
-    };
-  });
+  const items = parts.map((r) => ({
+    key: r.project.root,
+    size: r.size,
+    hasDesks: r.agents.length + r.terminals.length > 0,
+  }));
   const grew = grown(items);
   const places = layoutRooms(
     items.map((i) => ({ ...i, grown: grew.has(i.key) })),
     saved,
   );
-  return parts.map((r) => {
+  return parts.map(({ size, ...r }) => {
     const [x, y] = places[r.project.root];
-    const size = roomSize(
-      r.agents.length + r.terminals.length,
-      r.services.length > 0,
-    );
     return { ...r, rect: { x, y, ...size } };
   });
 }
