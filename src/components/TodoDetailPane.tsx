@@ -32,9 +32,12 @@ const NO_TODOS: TodoInfo[] = [];
 export function TodoDetailPane({
   projectId,
   todoId,
+  onClose,
 }: {
   projectId: ProjectId;
   todoId: TodoId;
+  /** Replaces the sidebar's `clearOpenTodo` (Floor popover). */
+  onClose?: () => void;
 }) {
   const todo = useTodoStore((s) =>
     (s.todosByProject[projectId] ?? NO_TODOS).find((t) => t.id === todoId),
@@ -46,6 +49,7 @@ export function TodoDetailPane({
   const removeLink = useTodoStore((s) => s.removeLink);
   const setTodoDone = useTodoStore((s) => s.setTodoDone);
   const clearOpenTodo = useLayoutStore((s) => s.clearOpenTodo);
+  const close = onClose ?? clearOpenTodo;
 
   const [description, setDescription] = useState("");
   const [comment, setComment] = useState("");
@@ -91,8 +95,8 @@ export function TodoDetailPane({
 
   // The open to-do vanished (removed here or by an agent): close the pane.
   useEffect(() => {
-    if (todo === undefined) clearOpenTodo();
-  }, [todo, clearOpenTodo]);
+    if (todo === undefined) close();
+  }, [todo, close]);
 
   const dirty = description !== savedRef.current;
 
@@ -239,7 +243,7 @@ export function TodoDetailPane({
           className={styles.closeBtn}
           aria-label="Close to-do"
           title="Close"
-          onClick={clearOpenTodo}
+          onClick={close}
         >
           <CloseIcon />
         </button>

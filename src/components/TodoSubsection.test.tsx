@@ -494,4 +494,20 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(onOpenTodo).toHaveBeenCalledWith(PROJECT, "a");
     expect(screen.queryByText(/Start agent on/)).not.toBeInTheDocument();
   });
+
+  it("bare mode has no section title or collapse toggle", () => {
+    seed([todo("a", "Todo A")]);
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(titleOf("Todo A")).toBeInTheDocument();
+    expect(screen.queryByText("To-dos")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("New to-do")).toBeInTheDocument();
+  });
 });

@@ -164,6 +164,8 @@ interface TodoSubsectionProps {
   projectId: ProjectId;
   /** Project root: the key its collapse state is persisted under. */
   projectRoot: string;
+  /** Popover use: no section header or collapse, always open. */
+  bare?: boolean;
   /** Open the to-do detail dialog (hosted by the sidebar). */
   onOpenTodo: (projectId: ProjectId, todoId: TodoId) => void;
   /**
@@ -181,6 +183,7 @@ interface TodoSubsectionProps {
 export function TodoSubsection({
   projectId,
   projectRoot,
+  bare = false,
   onOpenTodo,
   onPickAgent,
 }: TodoSubsectionProps) {
@@ -312,24 +315,32 @@ export function TodoSubsection({
     anchorRef.current = null;
   };
 
-  const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, "todos");
+  const [storedCollapsed, setCollapsed] = useSectionCollapsed(
+    projectRoot,
+    "todos",
+  );
+  const collapsed = bare ? false : storedCollapsed;
 
   return (
     <div
       className={sidebarStyles.subsection}
       data-collapsed={collapsed ? "true" : undefined}
     >
-      <div className={sidebarStyles.sectionHeader}>
-        <SectionTitle
-          title="To-dos"
-          Icon={TodoIcon}
-          count={todos.length}
-          collapsed={collapsed}
-          onToggle={() => setCollapsed(!collapsed)}
-        />
+      <div
+        className={`${sidebarStyles.sectionHeader} ${bare ? styles.bareBar : ""}`}
+      >
+        {!bare && (
+          <SectionTitle
+            title="To-dos"
+            Icon={TodoIcon}
+            count={todos.length}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed)}
+          />
+        )}
         <button
           type="button"
-          className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
+          className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
           aria-label="View archived to-dos"
           title="Archived to-dos"
           onClick={() => {

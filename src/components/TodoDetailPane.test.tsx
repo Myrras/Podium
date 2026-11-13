@@ -339,4 +339,17 @@ describe("TodoDetailPane", () => {
       "https://gitlab.example.com/acme/web/-/issues/42",
     );
   });
+
+  it("calls onClose instead of clearing the open to-do", () => {
+    seed();
+    const onClose = vi.fn();
+    const clear = vi.fn();
+    useLayoutStore.setState({ clearOpenTodo: clear } as never);
+    render(
+      <TodoDetailPane projectId={PROJECT} todoId={TODO} onClose={onClose} />,
+    );
+    fireEvent.click(screen.getByLabelText("Close to-do"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
+  });
 });

@@ -218,3 +218,8 @@
   font-size: var(--fs-sm);
   padding: var(--sp-1) var(--sp-2);
 }
+
+/* Popover use: the header has no title, so push the buttons to the end. */
+.bareBar {
+  justify-content: flex-end;
+}
