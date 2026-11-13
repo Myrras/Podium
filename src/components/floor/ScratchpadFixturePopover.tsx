@@ -2,9 +2,11 @@
 import type { ProjectId } from "../../ipc/types";
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
+import { useScratchpadStore } from "../../state/scratchpadStore";
 import { Popover } from "../Popover";
 import { ScratchpadDetailPane } from "../ScratchpadDetailPane";
 import { ScratchpadSubsection } from "../ScratchpadSubsection";
+import styles from "./ScratchpadFixturePopover.module.css";
 
 export function ScratchpadFixturePopover({
   projectId,
@@ -17,6 +19,11 @@ export function ScratchpadFixturePopover({
 }) {
   const root = useProjectStore(
     (s) => s.projects.find((p) => p.id === projectId)?.root ?? "",
+  );
+  const title = useScratchpadStore((s) =>
+    itemId
+      ? s.scratchpadsByProject[projectId]?.find((p) => p.id === itemId)?.title
+      : undefined,
   );
   const { closePopover, setPopoverItem, setScratchpadAgentModal } =
     useFloorStore.getState();
@@ -31,13 +38,31 @@ export function ScratchpadFixturePopover({
       backLabel="Back to scratchpads"
     >
       {itemId ? (
-        <ScratchpadDetailPane
-          key={itemId}
-          compact
-          projectId={projectId}
-          scratchpadId={itemId}
-          onClose={() => setPopoverItem(null)}
-        />
+        <>
+          <ScratchpadDetailPane
+            key={itemId}
+            compact
+            projectId={projectId}
+            scratchpadId={itemId}
+            onClose={() => setPopoverItem(null)}
+          />
+          {title !== undefined && (
+            <div className={styles.agentRow}>
+              <button
+                type="button"
+                onClick={() =>
+                  setScratchpadAgentModal({
+                    projectId,
+                    scratchpadIds: [itemId],
+                    initialName: title,
+                  })
+                }
+              >
+                Start agent on this
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <ScratchpadSubsection
           bare

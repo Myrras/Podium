@@ -37,6 +37,7 @@ export function FloorPopovers() {
   const Content = CONTENT[popover.kind];
   return (
     <Content
+      key={`${popover.projectId}:${popover.kind}`}
       projectId={popover.projectId}
       itemId={popover.itemId}
       anchor={anchor}

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { createPortal } from "react-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { Popover, placePopover } from "./Popover";
@@ -65,6 +66,64 @@ describe("Popover", () => {
     document.removeEventListener("keydown", outer);
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("ignores Esc an inline editor already handled", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="t" onClose={onClose}>
+        <input
+          aria-label="edit"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") e.preventDefault();
+          }}
+        />
+      </Popover>,
+    );
+    fireEvent.keyDown(screen.getByLabelText("edit"), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("ignores Esc from a portalled child and lets it reach document", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="t" onClose={onClose}>
+        {createPortal(<button>in modal</button>, document.body)}
+      </Popover>,
+    );
+    const outer = vi.fn();
+    document.addEventListener("keydown", outer);
+    fireEvent.keyDown(screen.getByText("in modal"), { key: "Escape" });
+    document.removeEventListener("keydown", outer);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(outer).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes when the anchor is no longer in the document", () => {
+    const anchor = document.createElement("button");
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="t" onClose={onClose}>
+        x
+      </Popover>,
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps open on mousedown inside [data-popover-keep]", () => {
+    const { onClose } = setup();
+    const map = document.createElement("div");
+    map.setAttribute("data-popover-keep", "");
+    const inner = document.createElement("span");
+    map.append(inner);
+    document.body.append(map);
+    fireEvent.mouseDown(inner);
+    expect(onClose).not.toHaveBeenCalled();
+    map.remove();
   });
 
   it("closes on outside mousedown only", () => {

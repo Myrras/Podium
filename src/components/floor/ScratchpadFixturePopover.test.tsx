@@ -86,6 +86,19 @@ describe("ScratchpadFixturePopover", () => {
     expect(useFloorStore.getState().popover?.itemId).toBeNull();
   });
 
+  it("opened_item_start_agent_on_this_opens_the_modal", () => {
+    renderPopover("a");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start agent on this" }),
+    );
+    expect(useFloorStore.getState().scratchpadAgentModal).toEqual({
+      projectId: "p1",
+      scratchpadIds: ["a"],
+      initialName: "Notes A",
+    });
+  });
+
   it("start_agent_opens_the_scratchpad_agent_modal", () => {
     renderPopover(null);
 

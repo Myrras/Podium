@@ -395,7 +395,10 @@ export function TodoSubsection({
                 aria-label="New to-do text"
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Escape") cancel();
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancel();
+                  }
                 }}
                 onBlur={() => void submit()}
               />

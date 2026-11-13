@@ -91,6 +91,15 @@ describe("TodoFixturePopover", () => {
     expect(spawnAgent).toHaveBeenCalledWith(P, { todoIds: ["t1"] });
   });
 
+  it("item view: Archive this to-do archives it and returns to the list", () => {
+    const setTodoArchived = vi.fn(() => Promise.resolve(null));
+    useTodoStore.setState({ setTodoArchived } as never);
+    open("t1");
+    fireEvent.click(screen.getByRole("button", { name: "Archive this to-do" }));
+    expect(setTodoArchived).toHaveBeenCalledWith(P, "t1", true);
+    expect(useFloorStore.getState().popover?.itemId).toBeNull();
+  });
+
   it("item view: a live owner shows Open the agent", () => {
     const setActiveProcess = vi.fn();
     useProcessStore.setState({ setActiveProcess } as never);

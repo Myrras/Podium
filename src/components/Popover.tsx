@@ -56,6 +56,8 @@ export function Popover({
     let last = "";
     let raf = 0;
     const update = () => {
+      // Its fixture unmounted (e.g. the last service removed): close, do not jump to 0,0.
+      if (!anchor.isConnected) return onCloseRef.current();
       const r = anchor.getBoundingClientRect();
       const key = `${r.x},${r.y},${r.width},${r.height},${el.offsetWidth},${el.offsetHeight},${window.innerWidth},${window.innerHeight}`;
       if (key !== last) {
@@ -90,11 +92,12 @@ export function Popover({
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       const t = e.target as Element;
-      // Modals opened from inside a popover are portalled to body.
+      // Modals opened from inside a popover are portalled to body;
+      // [data-popover-keep] marks map pan/zoom surfaces.
       if (
         ref.current?.contains(t) ||
         anchor?.contains(t) ||
-        t.closest?.('[role="dialog"]')
+        t.closest?.('[role="dialog"], [data-popover-keep]')
       )
         return;
       onCloseRef.current();
@@ -113,7 +116,12 @@ export function Popover({
       tabIndex={-1}
       style={{ width, visibility: "hidden" }}
       onKeyDown={(e) => {
-        if (e.key === "Escape") {
+        // Skip Esc an inline editor already used, or that bubbled from a portalled modal.
+        if (
+          e.key === "Escape" &&
+          !e.defaultPrevented &&
+          ref.current?.contains(e.target as Node)
+        ) {
           e.stopPropagation();
           onClose();
         }

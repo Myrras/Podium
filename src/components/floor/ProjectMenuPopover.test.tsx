@@ -135,6 +135,14 @@ describe("ProjectMenuPopover", () => {
     expect(screen.queryByText("Git board")).toBeNull();
   });
 
+  it("hides New terminal when terminals are off", () => {
+    setup(null, {
+      ...project,
+      sections: { ...project.sections, terminals: false },
+    });
+    expect(screen.queryByText("New terminal")).toBeNull();
+  });
+
   it("runs terminal, board, reload", () => {
     const open = vi.fn();
     useLayoutStore.setState({ openBoardInWorkArea: open } as never);
