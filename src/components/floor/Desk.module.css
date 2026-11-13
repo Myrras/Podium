@@ -41,6 +41,11 @@
   background: color-mix(in srgb, var(--text-faint) 12%, transparent);
 }
 
+/* Only a working bot moves. */
+.desk:not([data-working]) * {
+  animation-play-state: paused;
+}
+
 .mark {
   position: absolute;
   top: -6px;
