@@ -98,4 +98,25 @@ describe("Popover", () => {
     fireEvent.click(screen.getByText("Back to To-dos"));
     expect(onBack).toHaveBeenCalled();
   });
+
+  it("focuses itself on open, so Esc works at once", () => {
+    const { onClose } = setup();
+    const root = screen.getByRole("group");
+    expect(document.activeElement).toBe(root);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns focus to the anchor on close", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const { unmount } = render(
+      <Popover anchor={anchor} title="t" onClose={() => {}}>
+        x
+      </Popover>,
+    );
+    expect(document.activeElement).not.toBe(anchor);
+    unmount();
+    expect(document.activeElement).toBe(anchor);
+  });
 });

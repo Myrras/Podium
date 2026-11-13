@@ -76,6 +76,17 @@ export function Popover({
     return () => cancelAnimationFrame(raf);
   }, [anchor]);
 
+  // Focus in, so Esc works right after the click on the fixture; hand it back on close.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!anchor || !el) return;
+    if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
+    return () => {
+      if (el.contains(document.activeElement) && anchor.isConnected)
+        anchor.focus?.({ preventScroll: true });
+    };
+  }, [anchor]);
+
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       const t = e.target as Element;
@@ -99,6 +110,7 @@ export function Popover({
       ref={ref}
       className={styles.popover}
       role="group"
+      tabIndex={-1}
       style={{ width, visibility: "hidden" }}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
