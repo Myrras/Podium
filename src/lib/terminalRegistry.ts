@@ -26,6 +26,7 @@ import {
 import type { ProcessId, TermEvent } from "../ipc/types";
 import { logWarning } from "./log";
 import { setSelectedText } from "./selection";
+import { isGlassTheme } from "./terminalTheme";
 import { base64ToBytes, encodeInput } from "./termProtocol";
 
 export interface TerminalOptions {
@@ -101,6 +102,7 @@ export function acquireTerminal(
 
   const terminal = new Terminal({
     allowProposedApi: true,
+    allowTransparency: isGlassTheme(),
     convertEol: false,
     cursorBlink: true,
     fontFamily: options.fontFamily,
@@ -287,7 +289,9 @@ export function disposeTerminal(processId: ProcessId): void {
 
 /** Apply a new theme to every live terminal (theme switch). */
 export function applyThemeToTerminals(theme: ITheme): void {
+  const glass = isGlassTheme();
   for (const entry of entries.values()) {
+    entry.terminal.options.allowTransparency = glass;
     entry.terminal.options.theme = theme;
   }
 }

@@ -233,3 +233,19 @@
   font-size: var(--fs-sm);
   color: var(--text-faint);
 }
+
+/* Glass: --bg is translucent; fullscreen needs a frosted fill over the UI. */
+:global(:root[data-theme^="glass"]) .pane[data-fullscreen] {
+  background: var(--pop-surface);
+}
+
+/* WebKit ignores var() inside backdrop-filter: literal values per theme. */
+:global(:root[data-theme="glass-dark"]) .pane[data-fullscreen] {
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(40px) saturate(180%);
+}
+
+:global(:root[data-theme="glass-light"]) .pane[data-fullscreen] {
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  backdrop-filter: blur(30px) saturate(160%);
+}

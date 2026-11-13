@@ -33,6 +33,12 @@ body {
   flex-direction: column;
 }
 
+/* Glass: the gradient canvas fills the window; html and #root stay
+   transparent so it shows behind the title bar and between the islands. */
+:root[data-theme^="glass"] body {
+  background: var(--canvas);
+}
+
 /* Custom title bar drag handle (Windows, where decorations are off). WebView2
    uses the CSS app-region for window dragging incl. touch/pen; interactive
    children opt back out with `app-region: no-drag`. No-op on macOS (the native
@@ -171,6 +177,12 @@ label {
   transition: background var(--dur-2) var(--ease-out);
 }
 
+/* Glass: --bg is translucent, so cut the thumb's inset with a clear border. */
+:root[data-theme^="glass"] ::-webkit-scrollbar-thumb {
+  border-color: transparent;
+  background-clip: padding-box;
+}
+
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-faint);
 }
@@ -255,4 +267,16 @@ html[data-reduce-motion="true"] *::after {
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
   scroll-behavior: auto !important;
+}
+
+/* Frosted glass. Literal values: WebKit (Safari, Tauri on macOS) treats any
+   var() inside backdrop-filter as `none`. Keep in sync with --glass-blur/-sat. */
+:root[data-theme="glass-dark"] .glass {
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(40px) saturate(180%);
+}
+
+:root[data-theme="glass-light"] .glass {
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  backdrop-filter: blur(30px) saturate(160%);
 }

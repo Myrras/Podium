@@ -4,7 +4,8 @@ import { create } from "zustand";
 
 import { prefersReducedMotion } from "../lib/motion";
 
-export type ThemeMode = "dark" | "light" | "retro";
+export type ThemeMode =
+  "dark" | "light" | "retro" | "glass-dark" | "glass-light";
 
 /** `document` augmented with the (still newish) View Transitions API. */
 type ViewTransitionDocument = Document & {
@@ -15,7 +16,14 @@ const STORAGE_KEY = "podium.theme";
 
 function initialTheme(): ThemeMode {
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "retro") return stored;
+  if (
+    stored === "light" ||
+    stored === "retro" ||
+    stored === "glass-dark" ||
+    stored === "glass-light"
+  ) {
+    return stored;
+  }
   return "dark";
 }
 

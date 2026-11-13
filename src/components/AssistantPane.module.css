@@ -1,5 +1,6 @@
 /* The assistant island: same surface treatment as the sidebar / work area. */
 .pane {
+  composes: glass from global;
   /* Width comes from the layout store (resizable); this is the fallback.
      The horizontal gap is the resize handle in App.tsx, not a margin. */
   width: 340px;
@@ -10,7 +11,9 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-md);
   overflow: hidden;
   animation: islandIn var(--dur-3) var(--ease-out);
 }
@@ -403,6 +406,7 @@
    automatic min-height to 0, so without it `.log` squeezes the tail to its
    border as soon as the transcript overflows — the queue vanishes. */
 .tail {
+  composes: glass from global;
   position: sticky;
   bottom: 0;
   flex-shrink: 0;
@@ -413,7 +417,7 @@
   gap: var(--sp-2);
   margin: 0 calc(-1 * var(--sp-3));
   padding: var(--sp-2) var(--sp-3) 0;
-  background: var(--surface);
+  background: var(--pop-surface);
   border-top: 1px solid var(--border);
 }
 
@@ -613,3 +617,5 @@
   font-size: var(--fs-md);
   font-weight: 600;
 }
+
+/* Glass: the tail is translucent, so blur the transcript scrolling under it. */

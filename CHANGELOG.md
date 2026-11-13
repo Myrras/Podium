@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- Glass dark and Glass light themes: translucent, blurred panels over a gradient backdrop. Pick them in Settings > General.
+
 ## [3.3.1] - 2026-11-13
 
 ### Added

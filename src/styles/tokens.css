@@ -2,6 +2,11 @@
  * Design tokens for Podium. Dark-theme-first: the defaults on :root are the
  * dark palette; `:root[data-theme="light"]` overrides them. Components only
  * ever reference these variables, never hard-coded colors.
+ *
+ * Glass themes (`glass-dark`, `glass-light`) make surfaces translucent over a
+ * gradient --canvas. The --glass-* and --pop-surface tokens are neutral here,
+ * so the other themes render unchanged; components add backdrop-filter only
+ * under `:root[data-theme^="glass"]`.
  */
 
 :root {
@@ -86,6 +91,14 @@
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
 
+  /* Glass. Neutral outside the glass themes. */
+  /* WebKit can't use these in backdrop-filter (var() => none); the literal
+     values live in the .glass class in global.css. Keep both in sync. */
+  --glass-blur: 0px;
+  --glass-sat: 100%;
+  --glass-hi: transparent; /* inset top highlight on islands and popovers */
+  --pop-surface: var(--surface); /* popover, menu, toast and modal fill */
+
   /*
    * Motion. The whole UI animates from this one scale — components reference
    * these tokens, never raw durations/curves, so timing stays coherent and a
@@ -140,7 +153,9 @@
   --term-ansi-bright-white: #ffffff;
 }
 
-:root[data-theme="light"] {
+/* Glass light reuses the light palette below and overrides it further down. */
+:root[data-theme="light"],
+:root[data-theme="glass-light"] {
   color-scheme: light;
 
   --canvas: #e7ebef; /* soft grey so white islands pop */
@@ -279,4 +294,109 @@
   --term-ansi-bright-magenta: #8f3f71;
   --term-ansi-bright-cyan: #427b58;
   --term-ansi-bright-white: #3c3836;
+}
+
+/* Glass dark: translucent islands over a gradient canvas. Inherits the dark
+   palette (accent included) from :root. Shared recipe with the sibling apps:
+   canvas patches at 50% strength and a smoked pane, so text on a pane stays
+   >=4.5:1 over the brightest patch (teal): --text 13.7:1, --text-muted 9.8:1,
+   --accent 4.7:1, --text on --row-selected 8.9:1, --text-faint 7.0:1. */
+:root[data-theme="glass-dark"] {
+  --canvas:
+    radial-gradient(
+      55% 65% at 12% 18%,
+      rgba(44, 92, 255, 0.5) 0%,
+      rgba(44, 92, 255, 0) 70%
+    ),
+    radial-gradient(
+      45% 55% at 88% 22%,
+      rgba(155, 77, 255, 0.5) 0%,
+      rgba(155, 77, 255, 0) 70%
+    ),
+    radial-gradient(
+      55% 55% at 62% 100%,
+      rgba(15, 184, 165, 0.5) 0%,
+      rgba(15, 184, 165, 0) 70%
+    ),
+    #060912;
+  --bg: rgba(255, 255, 255, 0.06);
+  --surface: rgba(18, 22, 38, 0.75);
+  --surface-2: rgba(255, 255, 255, 0.1);
+  --surface-hover: rgba(255, 255, 255, 0.12);
+  --border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.22);
+
+  --text: #f5f7fb;
+  --text-muted: rgba(240, 244, 255, 0.84);
+  --text-faint: rgba(240, 244, 255, 0.68);
+
+  --row-selected: rgba(255, 255, 255, 0.14);
+  --row-selected-ring: rgba(255, 255, 255, 0.22);
+
+  --shadow-md: 0 10px 40px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.45);
+
+  --glass-blur: 40px;
+  --glass-sat: 180%;
+  --glass-hi: rgba(255, 255, 255, 0.22);
+  --pop-surface: rgba(22, 26, 44, 0.85);
+
+  /* Terminal: transparent so the island glass shows through (xterm needs
+     allowTransparency, see terminalTheme.ts). ANSI colours >=4.5:1 on the
+     worst-case island composite (teal canvas patch, #113e46). */
+  --term-bg: #00000000;
+  --term-ansi-black: #a0a3a8;
+  --term-ansi-bright-black: #9ea3ab;
+}
+
+/* Glass light: frosted white islands over a pastel canvas. Body text 13:1,
+   --text-muted 6.3:1, --text-faint 4.3:1 at the brightest canvas spot. */
+:root[data-theme="glass-light"] {
+  --canvas:
+    radial-gradient(50% 60% at 10% 12%, #ffc9a8 0%, rgba(255, 201, 168, 0) 70%),
+    radial-gradient(50% 60% at 92% 18%, #a9c8ff 0%, rgba(169, 200, 255, 0) 70%),
+    radial-gradient(
+      60% 55% at 55% 100%,
+      #bfeedd 0%,
+      rgba(191, 238, 221, 0) 70%
+    ),
+    #eef1f6;
+  --bg: rgba(255, 255, 255, 0.45);
+  --surface: rgba(255, 255, 255, 0.55);
+  --surface-2: rgba(20, 30, 60, 0.07);
+  --surface-hover: rgba(20, 30, 60, 0.11);
+  --border: rgba(20, 30, 60, 0.09);
+  --border-strong: rgba(20, 30, 60, 0.16);
+
+  --text: #1d1d1f;
+  --text-muted: rgba(29, 29, 31, 0.74);
+  --text-faint: rgba(29, 29, 31, 0.62);
+
+  --accent: #0a66d6;
+  --accent-hover: #0a5cc0;
+
+  --row-selected: rgba(255, 255, 255, 0.78);
+  --row-selected-ring: rgba(20, 30, 60, 0.12);
+
+  --shadow-md: 0 10px 30px rgba(40, 50, 90, 0.12);
+  --shadow-lg: 0 30px 80px rgba(40, 50, 90, 0.25);
+
+  --glass-blur: 30px;
+  --glass-sat: 160%;
+  --glass-hi: rgba(255, 255, 255, 0.95);
+  --pop-surface: rgba(255, 255, 255, 0.7);
+
+  /* Terminal: transparent over the frosted island. ANSI colours >=4.5:1 on
+     the worst-case composite (blue canvas patch, #d8e6ff). */
+  --term-bg: #00000000;
+  --term-ansi-red: #c5202c;
+  --term-ansi-blue: #0862cb;
+  --term-ansi-magenta: #784acd;
+  --term-ansi-cyan: #187076;
+  --term-ansi-white: #5f666f;
+  --term-ansi-bright-green: #187533;
+  --term-ansi-bright-blue: #1865ba;
+  --term-ansi-bright-magenta: #7453b1;
+  --term-ansi-bright-cyan: #256e80;
+  --term-ansi-bright-white: #5f656c;
 }

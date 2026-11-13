@@ -168,6 +168,7 @@
 
 /* The main work island: rounded, bordered, elevated, like the sidebar. */
 .work {
+  composes: glass from global;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -176,7 +177,9 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-md);
   overflow: hidden;
   animation: islandIn var(--dur-3) var(--ease-out);
 }
@@ -195,4 +198,19 @@
 
 .powerBtn:hover svg {
   transform: none;
+}
+
+/* Glass: body paints the gradient canvas once; a per-element copy would not
+   line up between the title bar and the island area. */
+:global(:root[data-theme^="glass"]) .titlebar,
+:global(:root[data-theme^="glass"]) .body {
+  background: transparent;
+}
+
+/* backdrop-filter makes .work the containing block of position: fixed
+   children; drop it while the scratchpad is fullscreen so that pane covers
+   the window, not just the island. */
+:global(:root[data-theme^="glass"]) .work:has([data-fullscreen]) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }

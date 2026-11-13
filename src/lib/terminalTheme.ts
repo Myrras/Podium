@@ -7,6 +7,11 @@
 
 import type { ITheme } from "@xterm/xterm";
 
+/** Glass themes use a transparent `--term-bg`, which xterm only honours with `allowTransparency`. */
+export function isGlassTheme(): boolean {
+  return (document.documentElement.dataset.theme ?? "").startsWith("glass");
+}
+
 export function readTerminalTheme(): ITheme {
   const cs = getComputedStyle(document.documentElement);
   const v = (name: string) => cs.getPropertyValue(name).trim();
