@@ -472,6 +472,7 @@ Podium leans on direct manipulation, so a fair amount is not signposted.
 | `⌘,` / `Ctrl+,`            | anywhere             | Open Settings (macOS goes through the native menu item)           |
 | `Enter` / `Shift+Enter`    | assistant composer   | Send / newline                                                    |
 | `↑` / `↓`                  | assistant composer   | Shell-style recall of your previous messages                      |
+| `⌘Enter` / `Ctrl+Enter`     | New agent dialog     | Start the agent, also from the prompt field                       |
 | `Enter` / `Escape`         | any inline field     | Commit / cancel a rename, tag, to-do or title edit                |
 | `F5`, `⌘R` / `Ctrl+R`      | anywhere             | Deliberately swallowed — a reload would take your agents with it  |
 
