@@ -1,6 +1,6 @@
 /**
  * One status pill: a process's state word with its glyph, the time in that
- * state and, while working, the sub-agents and shells running behind it.
+ * state and the sub-agents and shells running behind it.
  * The count form (`count`) is glyph plus number, for roll-ups.
  */
 
@@ -123,7 +123,6 @@ export function StatusPill({
   }
 
   const since = formatSince(sinceMs, now);
-  const working = state === "working";
   return (
     <span className={className} data-tone={tone} title={detail}>
       <Glyph state={state} />
@@ -133,7 +132,7 @@ export function StatusPill({
           {since}
         </span>
       )}
-      {working && (subagents > 0 || shells > 0) && (
+      {(subagents > 0 || shells > 0) && (
         <span className={styles.bgGroup}>
           {subagents > 0 && (
             <Counter n={subagents} noun="sub-agent">

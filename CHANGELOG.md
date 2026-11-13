@@ -12,10 +12,10 @@ when it merges.
 
 ### Added
 
-- One status pill per sidebar row and in the terminal header: Working (Running for terminals), Needs you, Idle, Up, Stopping, Crashed, Exited or Not started, with the time in that state.
-- Claude Code agents now report their real state (working, needs you and why, idle) instead of Podium guessing from output. Windows, WSL and Auggie agents keep the old behaviour.
+- One status pill per sidebar row and in the terminal header: Working (Running for terminals), Needs you, Idle, Up, Stopping, Crashed, Exited or Not started. The time in that state shows only when Podium knows it (states the process reports itself).
+- Claude Code agents now report their real state (working, needs you and why, idle) instead of Podium guessing from output. Windows, WSL and Auggie agents keep the old guess from output and show no time.
 - Counters for running sub-agents and background shells on agent rows (macOS and Linux).
-- Terminals on macOS and Linux read Running while a command runs in the foreground.
+- Terminals on macOS and Linux read Running while a command runs in the foreground, and still read Needs you on a prompt such as `sudo` or `[y/N]`.
 - Collapsed projects and sections show how many rows are working and need you.
 - A refresh button in the sidebar's Worktrees header re-reads the worktree list, for worktrees created or removed outside Podium.
 

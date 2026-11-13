@@ -93,11 +93,12 @@ If you put another agent on a stopped agent's to-dos and then restart the
 stopped one too, it resumes its own conversation and may still think it is
 working on them.
 
-Every row, and the terminal's header, shows one **status pill** with the time
-in that state: **Working**, **Needs you**, **Idle**, **Up**, **Stopping**,
+Every row, and the terminal's header, shows one **status pill**: **Working**, **Needs you**, **Idle**, **Up**, **Stopping**,
 **Crashed**, **Exited** or **Not started**. It is never hidden; on hover the
-row's buttons replace the time. Counters show running **sub-agents** and
-**background shells**. Where it can, Podium reads the state from the agent
+row's buttons replace the time. The time in the state shows only when Podium
+knows it, which is for states the process reports itself. Counters show
+running **sub-agents** and **background shells** on any pill while above zero.
+An agent whose turn ended while a background shell still runs reads Working. Where it can, Podium reads the state from the agent
 itself rather than guessing from output:
 
 - **Claude Code agents** (macOS and Linux, native) report through Claude Code's
@@ -106,9 +107,10 @@ itself rather than guessing from output:
   settings; they are off if you pass your own `--settings`, for lean
   sub-agents, and on Windows and WSL.
 - **Terminals** (macOS and Linux, your default shell) read **Running** while a
-  command runs in the foreground and Idle at the prompt. Other terminals and
-  services just read **Up**, or **Needs you** when stalled on a prompt such as
-  `sudo`.
+  command runs in the foreground and Idle at the prompt. A terminal still
+  reads **Needs you** (and notifies) when stalled on a prompt such as `sudo` or
+  `[y/N]`. Other terminals and services just read **Up**, or **Needs you** on
+  such a prompt.
 - **Windows, WSL and Auggie agents** keep the old guess: sustained output in the
   last 2.5 s is working, a prompt on screen is needs input.
 

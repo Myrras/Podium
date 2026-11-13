@@ -19,7 +19,8 @@
  * guard remains the authority and surfaces as a toast if it fires anyway.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import {
   toIpcError,
@@ -98,14 +99,13 @@ export function WorktreeSubsection({
     "worktrees",
   );
   // Terminals nested under a worktree row hide with it when collapsed.
-  const details = useAgentActivityStore((s) => s.details);
-  const { working, needs } = useMemo(
-    () =>
+  const { working, needs } = useAgentActivityStore(
+    useShallow((s) =>
       activityRollup(
         terminals.filter((p) => p.worktree != null),
-        details,
+        s.details,
       ),
-    [terminals, details],
+    ),
   );
 
   if (worktrees.length === 0) return null;

@@ -21,7 +21,10 @@
  * A process can also report its own state (the backend's `state`: an agent's
  * Claude Code status, a terminal's foreground). When it does, that wins over
  * both heuristics below — output timing and the prompt on screen — and
- * "waiting" is the "needs input" episode; when it does not, nothing changes.
+ * "waiting" is the "needs input" episode. One exception: a terminal can only
+ * report working or idle, so for a non-agent a reported "working" with an
+ * input prompt on screen (`sudo`, `[y/N]`) reads "waiting" and is a prompt
+ * episode; a reported "idle" stays idle. Without a report nothing changes.
  *
  * Prompt detection is a frontend heuristic (see `detectInputPrompt`): neither
  * coding-agent CLIs nor ordinary commands emit structured PTY events, so it
@@ -94,6 +97,7 @@ export function isWorking(output: OutputActivity | undefined): boolean {
 
 function computeActivity(
   processId: ProcessId,
+  isAgent: boolean,
   output: OutputActivity | undefined,
 ): {
   activity: AgentActivity;
@@ -114,10 +118,21 @@ function computeActivity(
         : detectBackgroundShells(screen);
   const state = output?.state ?? null;
   if (state !== null) {
-    // What the process says wins over output timing and over the prompt
-    // regex; its "waiting" is the prompt episode.
-    const prompting = state === "waiting";
-    return { activity: state, prompting, shells, reported: true };
+    // What the process says wins over output timing and the prompt regex;
+    // its "waiting" is the prompt episode. A terminal can only report working
+    // or idle, so for non-agents a prompt on screen under "working" is
+    // waiting. A reported idle stays idle.
+    if (!isAgent && state === "working" && screen !== null) {
+      if (detectInputPrompt(screen)) {
+        return { activity: "waiting", prompting: true, shells, reported: true };
+      }
+    }
+    return {
+      activity: state,
+      prompting: state === "waiting",
+      shells,
+      reported: true,
+    };
   }
   const prompting = screen !== null && detectInputPrompt(screen);
   const activity = isWorking(output)
@@ -209,13 +224,6 @@ interface AgentActivityState {
   /** Latest activity per running-agent process id. */
   activity: Record<string, AgentActivity>;
   /**
-   * Background shells per running-agent process id — an agent reading "idle"
-   * may still have a build or test run going behind its prompt. Replaced
-   * wholesale every tick: consumers select a plain number out of it, so the
-   * map's identity churn never costs a re-render.
-   */
-  shells: Record<string, number>;
-  /**
    * Everything known per running process id (see `useProcessActivity`). An
    * entry keeps its identity while nothing in it changed, so a component
    * selecting one only re-renders on a real change.
@@ -238,7 +246,6 @@ interface AgentActivityState {
 
 export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   activity: {},
-  shells: {},
   details: {},
   notified: {},
   tick: (output) => {
@@ -256,7 +263,6 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
     const prevNotified = get().notified;
     const prevDetails = get().details;
     const next: Record<string, AgentActivity> = {};
-    const shells: Record<string, number> = {};
     const details: Record<string, ProcessActivity> = {};
     const notified: Record<string, true> = {};
     const now = Date.now();
@@ -271,9 +277,8 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
         prompting,
         shells: count,
         reported,
-      } = computeActivity(p.id, out);
+      } = computeActivity(p.id, p.kind.kind === "agent", out);
       next[p.id] = activity;
-      if (count > 0) shells[p.id] = count;
       if (prev[p.id] !== activity) changed = true;
 
       const before: ProcessActivity | undefined = prevDetails[p.id];
@@ -328,7 +333,6 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 
     set((s) => ({
       activity: changed ? next : s.activity,
-      shells,
       details: detailsChanged ? details : s.details,
       notified,
     }));

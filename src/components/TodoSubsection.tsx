@@ -79,6 +79,9 @@ function TodoRow({
 }: TodoRowProps) {
   const commentCount = todo.comments.length;
   const assigned = todo.assignedAgent;
+  const ownerTitle = assigned
+    ? `Owned by ${assigned.name}${assigned.active ? "" : " (stopped)"}`
+    : undefined;
 
   return (
     <div
@@ -101,11 +104,9 @@ function TodoRow({
           className={styles.owner}
           data-owned={assigned ? "true" : undefined}
           data-stopped={assigned && !assigned.active ? "true" : undefined}
-          title={
-            assigned
-              ? `Owned by ${assigned.name}${assigned.active ? "" : " (stopped)"}`
-              : undefined
-          }
+          role={ownerTitle ? "img" : undefined}
+          aria-label={ownerTitle}
+          title={ownerTitle}
         />
         <input
           type="checkbox"

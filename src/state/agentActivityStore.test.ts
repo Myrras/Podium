@@ -104,7 +104,6 @@ describe("agentActivityStore", () => {
     vi.clearAllMocks();
     useAgentActivityStore.setState({
       activity: {},
-      shells: {},
       details: {},
       notified: {},
     });
@@ -391,18 +390,18 @@ describe("agentActivityStore", () => {
     tick();
     // Idle agent, but work is still running behind its prompt.
     expect(useAgentActivityStore.getState().activity.a1).toBe("idle");
-    expect(useAgentActivityStore.getState().shells.a1).toBe(2);
+    expect(useAgentActivityStore.getState().details.a1.shells).toBe(2);
   });
 
   it("clears the shell count once the footer stops reporting one", () => {
     viewport.mockReturnValue("⏵⏵ auto mode on · 1 shell · ↓ to manage");
     seed([proc("a1", AGENT, RUNNING)]);
     tick();
-    expect(useAgentActivityStore.getState().shells.a1).toBe(1);
+    expect(useAgentActivityStore.getState().details.a1.shells).toBe(1);
 
     viewport.mockReturnValue("⏵⏵ auto mode on (shift+tab to cycle)");
     tick();
-    expect(useAgentActivityStore.getState().shells.a1).toBeUndefined();
+    expect(useAgentActivityStore.getState().details.a1.shells).toBe(0);
   });
   describe("reported state", () => {
     const details = () => useAgentActivityStore.getState().details;
@@ -471,12 +470,29 @@ describe("agentActivityStore", () => {
       });
     });
 
+    it("reads a terminal reported working on an input prompt as waiting, once", () => {
+      viewport.mockReturnValue("$ sudo systemctl restart api\nPassword:");
+      seed([proc("t1", { kind: "terminal" }, RUNNING)]);
+      tick({ t1: reported("working") });
+      expect(details().t1).toMatchObject({ activity: "waiting" });
+      expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+      tick({ t1: reported("working") });
+      expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a terminal reported idle idle, even with a prompt on screen", () => {
+      viewport.mockReturnValue("Continue? [y/N]");
+      seed([proc("t1", { kind: "terminal" }, RUNNING)]);
+      tick({ t1: reported("idle") });
+      expect(details().t1.activity).toBe("idle");
+      expect(notifyAgentWaiting).not.toHaveBeenCalled();
+    });
+
     it("prefers the backend's counts over the on-screen shell count", () => {
       viewport.mockReturnValue("? for shortcuts · 2 shells");
       seed([proc("a1", AGENT, RUNNING), proc("a2", AGENT, RUNNING)]);
       tick({ a1: reported("idle", { subagents: 3, shells: 5 }) });
       expect(details().a1).toMatchObject({ subagents: 3, shells: 5 });
-      expect(useAgentActivityStore.getState().shells.a1).toBe(5);
       // Nothing from the backend: the footer's count stands.
       expect(details().a2).toMatchObject({ subagents: 0, shells: 2 });
     });

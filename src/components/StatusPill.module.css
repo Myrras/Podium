@@ -34,6 +34,11 @@
   color: var(--needs-fg);
 }
 
+/* Full opacity: 0.85 drops the light theme's white-on-amber below 4.5:1. */
+.needs .time {
+  opacity: 1;
+}
+
 .crash {
   background: var(--danger-bg);
   color: var(--danger);
