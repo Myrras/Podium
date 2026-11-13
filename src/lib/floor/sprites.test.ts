@@ -33,4 +33,12 @@ describe("sprites", () => {
     expect(svg(v)).toContain(shade("#3fb950", 0.72));
     expect(botSheet("#3fb950")).toBe(v);
   });
+  it("draws 8 different designs, cached per colour and design", () => {
+    const all = Array.from({ length: 8 }, (_, v) => botSheet("#58a6ff", v));
+    expect(new Set(all).size).toBe(8);
+    expect(botSheet("#58a6ff", 3)).toBe(all[3]);
+    expect(botSheet("#58a6ff")).toBe(all[0]);
+    expect(botSheet("#3fb950", 3)).not.toBe(all[3]);
+    expect(svg(all[5])).toContain('width="128" height="16"');
+  });
 });

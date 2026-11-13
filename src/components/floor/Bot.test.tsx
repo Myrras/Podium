@@ -21,16 +21,33 @@ describe("Bot", () => {
     expect(pa).not.toBe(ph(b.firstElementChild!.firstElementChild!));
   });
 
-  it("greys ended bots and falls back without a colour", () => {
+  it("greys ended and idle bots and falls back without a colour", () => {
     const img = (c: Element) =>
       (c.firstElementChild!.firstElementChild as HTMLElement).style
         .backgroundImage;
     const ended = render(
       <Bot color="#58a6ff" state="ended" seed="s" />,
     ).container;
-    const none = render(<Bot color={null} state="idle" seed="s" />).container;
+    const idle = render(
+      <Bot color="#58a6ff" state="idle" seed="s" />,
+    ).container;
+    const none = render(
+      <Bot color={null} state="working" seed="s" />,
+    ).container;
     expect(img(ended)).toContain(encodeURIComponent("#8b949e"));
+    expect(img(idle)).toBe(img(ended));
     expect(img(none)).toContain(encodeURIComponent("#6e7681"));
+  });
+
+  it("draws the given design", () => {
+    const img = (variant?: number) =>
+      (
+        render(
+          <Bot color="#58a6ff" state="working" seed="s" variant={variant} />,
+        ).container.firstElementChild!.firstElementChild as HTMLElement
+      ).style.backgroundImage;
+    expect(img(4)).not.toBe(img());
+    expect(img(0)).toBe(img());
   });
 
   it("renders mini bot, monitor and terminal desk", () => {

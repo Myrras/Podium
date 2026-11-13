@@ -80,6 +80,73 @@ const FR: Patch[] = [
     [6, 10, "i"],
   ]),
 ];
+const run = (r: number, cs: number[], ch: string): Patch =>
+  cs.map((c) => [r, c, ch]);
+// Head details per bot design, drawn over every frame (so they win over frame patches). Leave the eye pixels alone so the frames still blink and sleep.
+const VARIANTS: Patch[] = [
+  // 0 classic: single antenna.
+  [],
+  // 1 twin antennas.
+  [
+    [0, 7, "."],
+    [1, 7, "."],
+    [0, 5, "a"],
+    [1, 5, "A"],
+    [0, 10, "a"],
+    [1, 10, "A"],
+  ],
+  // 2 side bolts for ears.
+  [
+    [4, 2, "B"],
+    [5, 2, "B"],
+    [6, 2, "B"],
+    [4, 13, "B"],
+    [5, 13, "B"],
+    [6, 13, "B"],
+  ],
+  // 3 visor bar above the eyes.
+  run(4, [4, 5, 6, 7, 8, 9, 10, 11], "q"),
+  // 4 top hat.
+  [
+    ...run(0, [5, 6, 7, 8, 9, 10], "A"),
+    ...run(1, [5, 6, 7, 8, 9, 10], "q"),
+    ...run(2, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12], "A"),
+  ],
+  // 5 spiky hair tuft.
+  [
+    [0, 7, "."],
+    [0, 6, "A"],
+    [0, 8, "A"],
+    [0, 10, "A"],
+    ...run(1, [5, 6, 7, 8, 9, 10], "A"),
+  ],
+  // 6 headset: band, ear cups, mic.
+  [
+    [0, 7, "."],
+    ...run(1, [4, 5, 6, 7, 8, 9, 10, 11], "A"),
+    [2, 3, "A"],
+    [2, 12, "A"],
+    [3, 2, "A"],
+    [4, 2, "A"],
+    [5, 2, "A"],
+    [3, 13, "A"],
+    [4, 13, "A"],
+    [5, 13, "A"],
+    [6, 2, "A"],
+    [7, 2, "a"],
+  ],
+  // 7 T-bar antenna and a smile.
+  [
+    [0, 5, "A"],
+    [0, 6, "A"],
+    [0, 8, "A"],
+    [0, 9, "A"],
+    [6, 7, "e"],
+    [6, 8, "e"],
+  ],
+];
+export const BOT_VARIANTS = VARIANTS.length;
+
 // 8x8 mini bot (a sub-agent) and 8x8 monitor (a background shell), two frames each; 16x16 monitor on a desk (a terminal).
 const MROWS = [
   "...a....",
@@ -195,15 +262,22 @@ const creature = (c: string) => ({
 const SCREEN = { m: "#57606a", M: "#6e7681", s: "#0d1117", g: "#56d364" };
 const DESK = { d: "#a67c52", D: "#7b5a3a" };
 
-export const botSheet = (color: string): string =>
-  sheet("b" + color, ROWS, FR, {
-    ...creature(color),
-    q: "#79c0ff",
-    i: "#6e7681",
-    l: "#aeb8c4",
-    g: "#ffffff",
-    ...DESK,
-  });
+export function botSheet(color: string, variant = 0): string {
+  const v = VARIANTS[variant] ? variant : 0;
+  return sheet(
+    `b${color}/${v}`,
+    ROWS,
+    FR.map((p) => p.concat(VARIANTS[v])),
+    {
+      ...creature(color),
+      q: "#79c0ff",
+      i: "#6e7681",
+      l: "#aeb8c4",
+      g: "#ffffff",
+      ...DESK,
+    },
+  );
+}
 export const miniSheet = (color: string): string =>
   sheet("m" + color, MROWS, MFR, creature(color));
 export const monitorSheet = (): string => sheet("mon", SROWS, SFR, SCREEN);

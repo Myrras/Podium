@@ -27,14 +27,19 @@ export function Bot({
   state,
   seed,
   size,
+  variant = 0,
 }: {
   color: string | null;
   state: DeskState;
   seed: string;
   size?: number;
+  variant?: number;
 }) {
+  // Idle looks like ended (grey, asleep); the desk adds the floating Z.
   const body =
-    state === "ended" || state === "crashed" ? GONE : (color ?? FAINT);
+    state === "ended" || state === "crashed" || state === "idle"
+      ? GONE
+      : (color ?? FAINT);
   return (
     <span
       className={styles.bot}
@@ -42,7 +47,7 @@ export function Bot({
       style={size ? ({ "--s": `${size}px` } as CSSProperties) : undefined}
       aria-hidden="true"
     >
-      <i style={frame(botSheet(body), seed)} />
+      <i style={frame(botSheet(body, variant), seed)} />
     </span>
   );
 }

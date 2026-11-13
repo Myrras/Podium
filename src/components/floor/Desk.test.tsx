@@ -103,6 +103,40 @@ describe("Desk", () => {
     expect(screen.getByText("crashed")).toBeTruthy();
   });
 
+  it("puts an idle bot to sleep: grey with floating Zs, ended shows no Z", () => {
+    seed({ activity: "idle" });
+    const a = render(<Desk process={proc()} />);
+    expect(a.container.querySelector("[class*=zzz]")?.textContent).toBe("zzZ");
+    const bot = a.container.querySelector(
+      "[data-state=idle] > i",
+    ) as HTMLElement;
+    expect(bot.style.backgroundImage).toContain(encodeURIComponent("#8b949e"));
+    a.unmount();
+    const b = render(
+      <Desk
+        process={proc({ status: { state: "exited", code: 0 } as never })}
+      />,
+    );
+    expect(b.getByText("ended")).toBeTruthy();
+    expect(b.container.querySelector("[class*=zzz]")).toBeNull();
+  });
+
+  it("gives agents in one project different bot designs", () => {
+    const procs = ["p1", "p2", "p3"].map((id) => proc({ id }));
+    useProcessStore.setState({
+      processes: [...procs, proc({ id: "other", projectId: "else" })],
+    } as never);
+    const imgs = procs.map((p) => {
+      const r = render(<Desk process={p} />);
+      const img = (r.container.querySelector("[data-state] > i") as HTMLElement)
+        .style.backgroundImage;
+      r.unmount();
+      return img;
+    });
+    expect(new Set(imgs).size).toBe(3);
+    useProcessStore.setState({ processes: [] } as never);
+  });
+
   it("renders a terminal desk without a bot", () => {
     render(<Desk process={proc({ kind: { kind: "terminal" } })} />);
     expect(screen.getByText("terminal")).toBeTruthy();
