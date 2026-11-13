@@ -333,6 +333,7 @@ function assignedTodo(
   id: string,
   text: string,
   color: string | null,
+  active = color !== null,
 ): TodoInfo {
   return {
     ...todo(id, text),
@@ -340,7 +341,7 @@ function assignedTodo(
       processId: "sess-1",
       name: "session",
       color,
-      active: color !== null,
+      active,
     },
   };
 }
@@ -413,6 +414,46 @@ describe("TodoSubsection assigned to-dos", () => {
     expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
       "var(--text-faint)",
     );
+    expect(row!.querySelector('[data-owned="true"]')).toHaveAttribute(
+      "title",
+      "Owned by session (stopped)",
+    );
+  });
+
+  it("shows a hollow square for a stopped owner that keeps its colour", () => {
+    seed([assignedTodo("a", "Todo A", "#3e63dd", false)]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    const row = screen.getByText("Todo A").closest('[data-assigned="true"]');
+    expect((row as HTMLElement).style.getPropertyValue("--session-color")).toBe(
+      "#3e63dd",
+    );
+    const square = row!.querySelector('[data-owned="true"]');
+    expect(square).toHaveAttribute("data-stopped", "true");
+    expect(square).toHaveAttribute("title", "Owned by session (stopped)");
+  });
+
+  it("shows a filled square for a live owner", () => {
+    seed([assignedTodo("a", "Todo A", "#3e63dd")]);
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    const square = screen
+      .getByText("Todo A")
+      .closest('[data-assigned="true"]')!
+      .querySelector('[data-owned="true"]');
+    expect(square).not.toHaveAttribute("data-stopped");
   });
 
   it("lets another agent take over a stopped owner's to-do", () => {

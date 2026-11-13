@@ -111,6 +111,13 @@
   background: var(--session-color);
 }
 
+/* Stopped owner: hollow square, same box size. */
+.owner[data-stopped="true"] {
+  background: transparent;
+  box-sizing: border-box;
+  border: 1.5px solid var(--session-color);
+}
+
 /* Bar under the list to hand every selected to-do to one agent. */
 .selectionBar {
   display: flex;
