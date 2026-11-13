@@ -1,8 +1,13 @@
+/* An inset rounded block. Selection carries no hue (the status pill is the
+   only colour), so it reads the same on every row. */
 .row {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  margin: 0 6px;
+  padding: 3px 6px 3px var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   font-size: var(--fs-md);
   color: var(--text);
   cursor: pointer;
@@ -15,42 +20,52 @@
 }
 
 .row[data-selected="true"] {
-  background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-/* An agent session wears its own colour (same tint + bar as the to-dos it
-   owns), so the user can match a session to the rows coloured for it.
-   --session-color is set inline from the process. */
-.row[data-session="true"] {
-  background: color-mix(in srgb, var(--session-color) 10%, transparent);
-  box-shadow: inset 2px 0 0 var(--session-color);
-}
-
-.row[data-session="true"]:hover {
-  background: color-mix(in srgb, var(--session-color) 16%, transparent);
-}
-
-/* When the session row is also selected, deepen its own tint rather than
-   switch to the generic accent (higher specificity wins). */
-.row[data-session="true"][data-selected="true"] {
-  background: color-mix(in srgb, var(--session-color) 20%, transparent);
-  box-shadow: inset 2px 0 0 var(--session-color);
+  background: var(--row-selected);
+  border-color: var(--row-selected-ring);
 }
 
 /* Picked as assistant context with Cmd/Ctrl+click — a bolder "checked" fill,
    the same convention as a multi-selected to-do row, and deliberately
-   distinct from merely being open. It outranks the session tint on purpose:
-   which rows the next message carries has to be readable at a glance. */
-.row[data-multiselect="true"],
-.row[data-session="true"][data-multiselect="true"] {
+   distinct from merely being open: which rows the next message carries has
+   to be readable at a glance. */
+.row[data-multiselect="true"] {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .row:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Identity: an agent's session-colour square, or a terminal/service glyph. */
+.slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.identity {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--session-color, var(--text-faint));
+}
+
+.row[data-quiet="true"] .name {
+  color: var(--text-muted);
+}
+
+.row[data-selected="true"] .name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.row[data-selected="true"] [data-tone="plain"] {
+  color: var(--text);
 }
 
 .name {
@@ -84,26 +99,9 @@
   color: var(--text-faint);
 }
 
-/* Agent activity hint (working…/idle/needs input) — quiet, right-aligned. */
-.activity {
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-  white-space: nowrap;
-}
-
-.activity[data-activity="waiting"] {
-  color: var(--accent);
-}
-
-/* Yield the space to the hover/selection actions so the row stays uncluttered. */
-.row:hover .activity,
-.row:focus-within .activity,
-.row[data-selected="true"] .activity {
-  display: none;
-}
-
-/* Actions appear on hover/selection to keep rows quiet. */
+/* Hover or keyboard focus brings the actions in; only the pill's elapsed
+   time yields its space, the status word stays. :has() keeps them while
+   focus is on one of the buttons. */
 .actions {
   display: none;
   align-items: center;
@@ -112,9 +110,15 @@
 }
 
 .row:hover .actions,
-.row:focus-within .actions,
-.row[data-selected="true"] .actions {
+.row:focus-visible .actions,
+.row:has(:focus-visible) .actions {
   display: flex;
+}
+
+.row:hover [data-pill-time],
+.row:focus-visible [data-pill-time],
+.row:has(:focus-visible) [data-pill-time] {
+  display: none;
 }
 
 .action {

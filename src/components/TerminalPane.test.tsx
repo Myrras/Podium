@@ -16,12 +16,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-// Activity polling is timer-driven and irrelevant to these assertions.
-vi.mock("../lib/useAgentActivity", () => ({
-  useAgentActivity: () => "idle",
-  useAgentShells: () => 0,
-}));
-
 // xterm needs a real canvas; the pane's header is what's under test.
 vi.mock("./TerminalView", () => ({
   TerminalView: () => <div data-testid="terminal-view" />,
@@ -30,10 +24,12 @@ vi.mock("./TerminalView", () => ({
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ProcessInfo, ProcessKind } from "../ipc/types";
+import { useAgentActivityStore } from "../state/agentActivityStore";
 import { useProcessStore } from "../state/processStore";
 import { TerminalPane } from "./TerminalPane";
 
 const initialProcess = useProcessStore.getState();
+const initialActivity = useAgentActivityStore.getState();
 
 function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
   return {
@@ -53,6 +49,7 @@ function process(id: string, name: string, kind: ProcessKind): ProcessInfo {
 describe("TerminalPane header actions", () => {
   beforeEach(() => {
     useProcessStore.setState(initialProcess, true);
+    useAgentActivityStore.setState(initialActivity, true);
     gitBranch = null;
   });
 
@@ -130,5 +127,53 @@ describe("TerminalPane header actions", () => {
     expect(
       screen.queryByRole("button", { name: "Stop Repo sweep" }),
     ).toBeNull();
+  });
+
+  describe("status pill", () => {
+    const agent = { kind: "agent", adapter: "claude-code" } as const;
+    const seed = (
+      id: string,
+      activity: "working" | "waiting",
+      waitingFor: string | null,
+    ) =>
+      useAgentActivityStore.setState({
+        activity: { [id]: activity },
+        details: {
+          [id]: {
+            activity,
+            reported: true,
+            waitingFor,
+            sinceMs: null,
+            subagents: 0,
+            shells: 0,
+          },
+        },
+      });
+
+    it("shows Working for a working agent", () => {
+      seed("a1", "working", null);
+      render(<TerminalPane process={process("a1", "claude", agent)} />);
+      expect(screen.getByText("Working")).toBeVisible();
+    });
+
+    it("shows Needs you with the reason", () => {
+      seed("a1", "waiting", "Allow edit to foo.ts?");
+      render(<TerminalPane process={process("a1", "claude", agent)} />);
+      expect(screen.getByText("Needs you")).toBeVisible();
+      expect(screen.getByText("Allow edit to foo.ts?")).toBeVisible();
+    });
+
+    it("shows Exited with the exit detail", () => {
+      const proc = process("s1", "dev", { kind: "service" });
+      proc.status = {
+        state: "exited",
+        code: 0,
+        crashed: false,
+        stopped: false,
+        at: "2024-04-03T12:05:00Z",
+      };
+      render(<TerminalPane process={proc} />);
+      expect(screen.getByText("Exited")).toBeVisible();
+    });
   });
 });
