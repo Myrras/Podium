@@ -42,16 +42,14 @@
   white-space: nowrap;
 }
 
-/* Agent working/idle hint, quieter than the status text. */
-.activityText {
+/* Why an agent waits, as Claude sends it. */
+.waitingFor {
   font-size: var(--fs-xs);
-  color: var(--text-faint);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* "needs input" draws the eye in the same blue as the status dot. */
-.activityText[data-activity="waiting"] {
-  color: var(--accent);
 }
 
 /* Git branch + worktree pill, pushed to the right edge of the header. */
