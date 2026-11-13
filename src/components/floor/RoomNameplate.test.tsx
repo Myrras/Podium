@@ -81,6 +81,11 @@ describe("RoomNameplate", () => {
     });
   });
 
+  it("keeps the full name on hover, also when ellipsised", () => {
+    render(<RoomNameplate room={a} />);
+    expect(screen.getByText("Proj a").title).toBe("Proj a");
+  });
+
   it("drags with snap, saves, and does not jump", () => {
     const { container } = render(
       <div data-room="a">

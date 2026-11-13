@@ -109,7 +109,9 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
         onKeyDown={onKey}
       >
         <ProjectBadge project={project} size={16} />
-        <span className={styles.name}>{project.name}</span>
+        <span className={styles.name} title={project.name}>
+          {project.name}
+        </span>
       </button>
       {room.needs > 0 && (
         <span className={styles.needs} aria-label={`${room.needs} need you`}>
