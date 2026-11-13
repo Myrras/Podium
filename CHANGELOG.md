@@ -12,7 +12,17 @@ when it merges.
 
 ### Added
 
+- One status pill per sidebar row and in the terminal header: Working (Running for terminals), Needs you, Idle, Up, Stopping, Crashed, Exited or Not started, with the time in that state.
+- Claude Code agents now report their real state (working, needs you and why, idle) instead of Podium guessing from output. Windows, WSL and Auggie agents keep the old behaviour.
+- Counters for running sub-agents and background shells on agent rows (macOS and Linux).
+- Terminals on macOS and Linux read Running while a command runs in the foreground.
+- Collapsed projects and sections show how many rows are working and need you.
 - A refresh button in the sidebar's Worktrees header re-reads the worktree list, for worktrees created or removed outside Podium.
+
+### Changed
+
+- Selecting a row raises it without a colour. Agent rows show an identity square instead of a tinted row, and a to-do shows its owner's square, hollow when that agent has stopped.
+- An agent keeps its colour after it stops and across restarts.
 
 ## [3.2.5] - 2026-10-29
 
