@@ -41,6 +41,7 @@ describe("Room", () => {
     expect(root.style.top).toBe("80px");
     expect(root.style.width).toBe("400px");
     expect(root.style.getPropertyValue("--pc")).toBe("#58a6ff");
+    expect(root.dataset.room).toBe("p1");
     expect(root.dataset.lit).toBe("true");
     expect(getByTestId("plate")).toBeTruthy();
     expect(getByTestId("wall")).toBeTruthy();

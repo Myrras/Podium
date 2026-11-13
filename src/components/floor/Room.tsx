@@ -21,6 +21,7 @@ export const Room = memo(function Room({ room }: { room: RoomModel }) {
     <section
       className={styles.room}
       style={style}
+      data-room={project.id}
       data-lit={room.lit}
       data-tinted={project.color ? "true" : "false"}
     >
