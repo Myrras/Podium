@@ -1,6 +1,20 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { proposeGrid, reparentTerminalElement } from "./terminalRegistry";
+import type { ProcessId } from "../ipc/types";
+import {
+  acquireTerminal,
+  applyThemeToTerminals,
+  disposeTerminal,
+  proposeGrid,
+  reparentTerminalElement,
+} from "./terminalRegistry";
+
+vi.mock("../ipc/commands", () => ({
+  processAttach: vi.fn(() => new Promise(() => {})),
+  processResize: vi.fn(),
+  processWrite: vi.fn(),
+  toIpcError: vi.fn(),
+}));
 
 // `fitTerminal` needs a real renderer (xterm cell metrics), so we test the
 // pure grid math it delegates to. The regression this guards: the proposal
@@ -84,5 +98,25 @@ describe("reparentTerminalElement", () => {
     reparentTerminalElement(el, host);
     expect(host.firstElementChild).toBe(el);
     expect(host.childElementCount).toBe(1);
+  });
+});
+
+describe("applyThemeToTerminals", () => {
+  it("enables allowTransparency only under glass themes", () => {
+    const id = "p-glass-test" as ProcessId;
+    const term = acquireTerminal(id, {
+      fontSize: 12,
+      fontFamily: "monospace",
+      theme: {},
+    });
+    const root = document.documentElement;
+    root.setAttribute("data-theme", "glass-dark");
+    applyThemeToTerminals({});
+    expect(term.options.allowTransparency).toBe(true);
+    root.setAttribute("data-theme", "dark");
+    applyThemeToTerminals({});
+    expect(term.options.allowTransparency).toBe(false);
+    root.removeAttribute("data-theme");
+    disposeTerminal(id);
   });
 });

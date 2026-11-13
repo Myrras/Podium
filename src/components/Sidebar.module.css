@@ -610,6 +610,6 @@
 :global(:root[data-theme^="glass"]) .projectActions {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  background: var(--pop-surface);
+  background: var(--surface-hover);
   mask-image: linear-gradient(to right, transparent, #000 var(--sp-4));
 }

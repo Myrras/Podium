@@ -27,6 +27,7 @@ describe("themeStore", () => {
     localStorage.setItem("podium.theme", "glass");
     const store = await loadStore();
     expect(store.getState().mode).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
   it("persists and applies a new theme", async () => {
