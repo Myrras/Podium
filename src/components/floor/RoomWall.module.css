@@ -48,8 +48,9 @@
   right: -5px;
   bottom: -5px;
   padding: 0 2px;
-  background: var(--text);
-  color: var(--bg);
+  /* Pixel-art tokens: --bg is translucent on glass themes. */
+  background: var(--floor-screen);
+  color: var(--floor-paper);
   font: 700 9px/1.3 var(--font-mono);
 }
 

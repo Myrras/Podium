@@ -114,9 +114,10 @@
   transform-origin: top right;
 }
 
+/* --bg is translucent on glass themes, so it cannot carry the glyph. */
 .ask {
-  background: var(--warning);
-  color: var(--bg);
+  background: var(--needs-bg);
+  color: var(--needs-fg);
 }
 
 .bang {
