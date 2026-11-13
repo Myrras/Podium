@@ -55,7 +55,7 @@ describe("layoutRooms", () => {
     });
     expect(out.a).toEqual([400, 80]);
   });
-  it("replaces invalid or colliding saved positions", () => {
+  it("pushes a colliding saved position aside and replaces invalid ones", () => {
     const out = layoutRooms(
       [
         { key: "a", size: s, hasDesks: true },
@@ -65,21 +65,78 @@ describe("layoutRooms", () => {
       { a: [0, 0], b: [40, 40], c: [Number.NaN, 0] },
     );
     expect(out.a).toEqual([0, 0]);
-    expect(out.b).toEqual([240, 0]);
-    expect(out.c).toEqual([480, 0]);
+    expect(out.b).toEqual([40, 160]); // down is the shorter way out
+    expect(out.c).toEqual([240, 0]);
   });
-  it("moves the room that grew, not its neighbour", () => {
-    const one = { w: 200, h: 400 };
-    const saved: Record<string, [number, number]> = { a: [0, 0], b: [240, 0] };
+  const tall = { w: 200, h: 400 };
+  it("keeps the room that grew and pushes its neighbour right", () => {
     const out = layoutRooms(
       [
         { key: "a", size: { w: 360, h: 400 }, hasDesks: true, grown: true },
-        { key: "b", size: one, hasDesks: true },
+        { key: "b", size: tall, hasDesks: true },
       ],
-      saved,
+      { a: [0, 0], b: [240, 0] },
     );
-    expect(out.b).toEqual([240, 0]);
-    expect(out.a).toEqual([480, 0]);
+    expect(out.a).toEqual([0, 0]);
+    expect(out.b).toEqual([400, 0]);
+  });
+  it("cascades a push into the next room", () => {
+    const out = layoutRooms(
+      [
+        { key: "a", size: { w: 360, h: 400 }, hasDesks: true, grown: true },
+        { key: "b", size: tall, hasDesks: true },
+        { key: "c", size: tall, hasDesks: true },
+      ],
+      { a: [0, 0], b: [240, 0], c: [480, 0] },
+    );
+    expect(out).toEqual({ a: [0, 0], b: [400, 0], c: [640, 0] });
+  });
+  it("pushes the room below down when a room grows in height", () => {
+    const out = layoutRooms(
+      [
+        { key: "a", size: { w: 200, h: 640 }, hasDesks: true, grown: true },
+        { key: "b", size: tall, hasDesks: true },
+      ],
+      { a: [0, 0], b: [0, 480] },
+    );
+    expect(out).toEqual({ a: [0, 0], b: [0, 680] });
+  });
+  it("moves the right/lower room when neither grew", () => {
+    const rooms = [
+      { key: "a", size: s, hasDesks: true },
+      { key: "b", size: s, hasDesks: true },
+    ];
+    expect(layoutRooms(rooms, { a: [200, 0], b: [0, 0] })).toEqual({
+      a: [240, 0],
+      b: [0, 0],
+    });
+    // Tie: the later one moves.
+    expect(layoutRooms(rooms, { a: [0, 40], b: [40, 0] })).toEqual({
+      a: [0, 40],
+      b: [240, 0],
+    });
+  });
+  it("first-fits rooms still overlapping after the push cap", () => {
+    // 40 rooms on one spot need more than the 200 push rounds (checked by hand).
+    const pile = Array.from({ length: 40 }, (_, i) => ({
+      key: `r${i}`,
+      size: s,
+      hasDesks: true,
+    }));
+    const out = layoutRooms(
+      pile,
+      Object.fromEntries(pile.map((p) => [p.key, [0, 0]])),
+    );
+    const rects = pile.map((p) => ({
+      x: out[p.key][0],
+      y: out[p.key][1],
+      ...s,
+    }));
+    expect(out.r0).toEqual([0, 0]);
+    rects.forEach((a, i) => {
+      expect(a.x % 40 === 0 && a.y % 40 === 0).toBe(true);
+      expect(hits(a, rects.slice(i + 1))).toBe(false);
+    });
   });
   it("places rooms with desks first, wraps rows and never gives up", () => {
     const rooms = [
