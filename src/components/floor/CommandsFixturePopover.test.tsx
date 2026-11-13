@@ -74,4 +74,90 @@ describe("CommandsFixturePopover", () => {
       ).toBeTruthy(),
     );
   });
+
+  describe("search", () => {
+    const search = () => screen.getByLabelText("Search commands");
+    const type = (v: string) =>
+      fireEvent.change(search(), { target: { value: v } });
+
+    it("focuses the field on open", async () => {
+      renderPopover();
+      await screen.findByText("Dev");
+      expect(document.activeElement).toBe(search());
+    });
+
+    it("filters by name and by command text, case-insensitively", async () => {
+      renderPopover();
+      await screen.findByText("Dev");
+      type("BUI");
+      expect(screen.queryByText("Dev")).toBeNull();
+      expect(screen.getByText("build")).toBeTruthy();
+      type("pnpm");
+      expect(screen.getByText("Dev")).toBeTruthy();
+      expect(screen.queryByText("build")).toBeNull();
+    });
+
+    it("shows a no-match message", async () => {
+      renderPopover();
+      await screen.findByText("Dev");
+      type("zzz");
+      expect(screen.getByText('No commands match "zzz".')).toBeTruthy();
+    });
+
+    it("moves with arrows (wrapping) and runs the highlighted row on Enter", async () => {
+      renderPopover();
+      await screen.findByText("Dev");
+      fireEvent.keyDown(search(), { key: "ArrowDown" });
+      fireEvent.keyDown(search(), { key: "ArrowDown" });
+      fireEvent.keyDown(search(), { key: "ArrowDown" }); // wraps to the first
+      fireEvent.keyDown(search(), { key: "ArrowUp" }); // wraps to the last
+      fireEvent.keyDown(search(), { key: "Enter" });
+      expect(run).toHaveBeenCalledTimes(1);
+      const rows = ["just build", "pnpm dev"];
+      expect(rows).toContain(run.mock.calls[0][1]);
+      expect(run.mock.calls[0][1]).toBe("pnpm dev");
+    });
+
+    it("runs the first match on Enter without a highlight", async () => {
+      renderPopover();
+      await screen.findByText("Dev");
+      type("dev");
+      fireEvent.keyDown(search(), { key: "Enter" });
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "p1" }),
+        "pnpm dev",
+        "Dev",
+      );
+    });
+
+    it("Esc clears the text first, then lets Esc close the popover", async () => {
+      const onKey = vi.fn();
+      document.addEventListener("keydown", onKey);
+      useFloorStore
+        .getState()
+        .openPopover({ projectId: "p1", kind: "commands", itemId: null });
+      renderPopover();
+      await screen.findByText("Dev");
+      type("dev");
+      fireEvent.keyDown(search(), { key: "Escape" });
+      expect((search() as HTMLInputElement).value).toBe("");
+      expect(onKey).not.toHaveBeenCalled();
+      expect(useFloorStore.getState().popover).not.toBeNull();
+      fireEvent.keyDown(search(), { key: "Escape" });
+      expect(useFloorStore.getState().popover).toBeNull();
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+
+  it("gives the name priority and the full text in the title", async () => {
+    renderPopover();
+    const name = await screen.findByText("Dev");
+    const cmd = screen.getByText("pnpm dev");
+    expect(name.className).toMatch(/name/);
+    expect(name.className).not.toMatch(/command/);
+    expect(cmd.className).toMatch(/command/);
+    const title = name.closest("button")?.getAttribute("title");
+    expect(title).toContain("Dev");
+    expect(title).toContain("pnpm dev");
+  });
 });

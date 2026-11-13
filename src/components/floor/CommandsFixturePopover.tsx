@@ -1,5 +1,6 @@
 /** The command panel's popover: pick a command to run it in a new terminal. */
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 
 import type { ProjectId } from "../../ipc/types";
 import { useTerminalCommands } from "../../lib/terminalCommands";
@@ -29,14 +30,65 @@ export function CommandsFixturePopover({
     { id: projectId, root: project?.root ?? "" },
     !!project,
   );
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? commands.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.command.toLowerCase().includes(q),
+      )
+    : commands;
+  const hasList = !!project && commands.length > 0;
+  const rowId = (i: number) => `${listId}-${i}`;
+
+  // After Popover's own focus-in (a layout effect), so the field wins.
+  useEffect(() => {
+    if (hasList) inputRef.current?.focus({ preventScroll: true });
+  }, [hasList]);
+
   if (!project) return null;
+
+  const run = (i: number) => {
+    const c = shown[i];
+    if (!c) return;
+    void runCommand(project, c.command, c.name);
+    closePopover();
+  };
+  const move = (i: number) => {
+    setActive(i);
+    document.getElementById(rowId(i))?.scrollIntoView?.({ block: "nearest" });
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape" && query) {
+      e.preventDefault();
+      e.stopPropagation();
+      setQuery("");
+      setActive(-1);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (shown.length === 0) return;
+      const d = e.key === "ArrowDown" ? 1 : -1;
+      move(
+        active < 0 && d < 0
+          ? shown.length - 1
+          : (active + d + shown.length) % shown.length,
+      );
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      run(active >= 0 ? active : 0);
+    }
+  };
 
   return (
     <>
       <Popover
         anchor={anchor}
         title="Commands"
-        width={380}
+        width={320}
         flush
         onClose={closePopover}
       >
@@ -51,31 +103,52 @@ export function CommandsFixturePopover({
             <EditIcon size={13} />
           </button>
         </PopoverSlot>
-        {commands.length === 0 ? (
+        {!hasList ? (
           <p className={styles.empty}>
             No commands yet. Add one with Edit commands.
           </p>
         ) : (
-          <ul className={styles.list}>
-            {commands.map(({ command, name, index }) => (
-              <li key={index === null ? command : `custom-${index}`}>
-                <button
-                  type="button"
-                  className={`ghost ${styles.row}`}
-                  title={`Run "${command}" in a new terminal`}
-                  onClick={() => {
-                    void runCommand(project, command, name);
-                    closePopover();
-                  }}
-                >
-                  <span className={styles.name}>{name}</span>
-                  {name !== command && (
-                    <span className={styles.command}>{command}</span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <input
+              ref={inputRef}
+              type="search"
+              className={styles.search}
+              placeholder="Search commands"
+              aria-label="Search commands"
+              aria-controls={listId}
+              aria-activedescendant={active >= 0 ? rowId(active) : undefined}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setActive(-1);
+              }}
+              onKeyDown={onKeyDown}
+            />
+            {shown.length === 0 ? (
+              <p className={styles.empty}>No commands match "{query}".</p>
+            ) : (
+              <ul id={listId} className={styles.list}>
+                {shown.map(({ command, name, index }, i) => (
+                  <li key={index === null ? command : `custom-${index}`}>
+                    <button
+                      type="button"
+                      id={rowId(i)}
+                      tabIndex={-1}
+                      data-active={i === active || undefined}
+                      className={`ghost ${styles.row}`}
+                      title={`Run in a new terminal: ${name}${name !== command ? ` · ${command}` : ""}`}
+                      onClick={() => run(i)}
+                    >
+                      <span className={styles.name}>{name}</span>
+                      {name !== command && (
+                        <span className={styles.command}>{command}</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </Popover>
       <TerminalCommandsModal
