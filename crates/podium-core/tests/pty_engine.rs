@@ -391,7 +391,6 @@ async fn a_shell_terminal_reports_its_state_through_output_activity() {
     wait_for_exit(&orch, id).await;
 }
 
-#[cfg(unix)]
 const BUSY_POLL: Duration = Duration::from_millis(25);
 
 /// Spawn `spec` straight on a PTY, without the orchestrator, so the test can
