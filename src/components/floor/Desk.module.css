@@ -109,7 +109,8 @@
   height: 20px;
   border-radius: 50%;
   font-weight: 700;
-  transform: scale(calc(1 / var(--z, 1)));
+  /* Scales with the desk, but never below 0.84 of its size on screen. */
+  transform: scale(max(1, calc(0.84 / var(--z, 1))));
   transform-origin: top right;
 }
 
