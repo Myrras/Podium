@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The process store pulls in the IPC layer; jsdom has no Tauri bridge.
 vi.mock("@tauri-apps/api/core", () => ({
@@ -36,6 +36,7 @@ import type {
   ProcessStatus,
 } from "../ipc/types";
 import { useAssistantStore } from "./assistantStore";
+import { useFloorStore } from "./floorStore";
 import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 import {
@@ -580,6 +581,41 @@ describe("agentActivityStore", () => {
       vi.mocked(document.hasFocus).mockReturnValue(true);
       useLayoutStore.setState({ openSubagent: "s1" });
       expect(viewedAgentId()).toBeNull();
+    });
+
+    describe("in Floor mode", () => {
+      beforeEach(() => {
+        vi.mocked(document.hasFocus).mockReturnValue(true);
+        useLayoutStore.setState({ mode: "floor" });
+        useFloorStore.getState().reset();
+      });
+      afterEach(() => useLayoutStore.setState({ mode: null }));
+
+      it("is the agent open in the terminal modal, not the pinned one", () => {
+        useProcessStore.setState({ activeProcessId: "a1" });
+        expect(viewedAgentId()).toBeNull();
+        useFloorStore.setState({ terminalId: "a1" });
+        expect(viewedAgentId()).toBe("a1");
+      });
+
+      it("ignores the work-area panes, which Floor mode does not show", () => {
+        useFloorStore.setState({ terminalId: "a1" });
+        useLayoutStore.setState({ openBoard: { projectId: "p" } });
+        expect(viewedAgentId()).toBe("a1");
+      });
+
+      it("is the open sub-agent before the modal's process", () => {
+        useFloorStore.setState({ terminalId: "a1" });
+        useLayoutStore.setState({ openSubagent: "s1" });
+        // Sub-agents are not in the process store, so no agent is reported.
+        expect(viewedAgentId()).toBeNull();
+      });
+
+      it("silences the ping for the agent open in the modal", () => {
+        useFloorStore.setState({ terminalId: "a1" });
+        tick({ a1: reported("waiting") });
+        expect(notifyAgentWaiting).not.toHaveBeenCalled();
+      });
     });
 
     it("reports a change to the backend once, not every tick", async () => {
