@@ -24,10 +24,14 @@ import {
   toggleSelectedItem,
   useSelectionStore,
 } from "../lib/selection";
+import { formatRelativeTime, formatUpdatedAt } from "../lib/dateFormat";
+import { scratchpadMenu } from "../lib/floor/menus";
 import { textPreview } from "../lib/textPreview";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
+import { ContextMenu } from "./ContextMenu";
+import type { MenuItem } from "./ContextMenu";
 import { CopyIdButton } from "./CopyIdButton";
 import {
   AddIcon,
@@ -38,9 +42,9 @@ import {
 } from "./icons";
 import { ScratchpadArchiveModal } from "./ScratchpadArchiveModal";
 import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { PopoverSlot } from "./Popover";
 import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
-import bareStyles from "./ScratchpadSubsection.module.css";
 import styles from "./TodoSubsection.module.css";
 
 /** Stable empty list so the selector doesn't re-render on every store set. */
@@ -57,6 +61,9 @@ interface ScratchpadRowProps {
   /** Always opens the agent picker for this one scratchpad. */
   onSpawn: () => void;
   onArchive: () => void;
+  /** Popover list: updated time, full-title tooltip, Start as the one action. */
+  bare?: boolean;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /** One scratchpad: a click-to-open title, and hover actions. */
@@ -67,21 +74,39 @@ function ScratchpadRow({
   onActivate,
   onSpawn,
   onArchive,
+  bare,
+  onContextMenu,
 }: ScratchpadRowProps) {
   return (
     <div
       className={styles.row}
       data-multiselect={multiSelected ? "true" : undefined}
       data-open={open ? "true" : undefined}
+      onContextMenu={onContextMenu}
     >
       <div className={styles.rowMain}>
         <button
           type="button"
           className={styles.textToggle}
-          title={`Open "${textPreview(scratchpad.title)}" — Cmd/Ctrl+click to select`}
+          title={
+            bare
+              ? scratchpad.title
+              : `Open "${textPreview(scratchpad.title)}" — Cmd/Ctrl+click to select`
+          }
           onClick={onActivate}
         >
           <span className={styles.text}>{scratchpad.title}</span>
+          {bare && (
+            <time
+              className={styles.meta}
+              dateTime={scratchpad.updatedAt}
+              title={`Updated ${formatUpdatedAt(scratchpad.updatedAt)}`}
+            >
+              {formatRelativeTime(scratchpad.updatedAt, undefined, {
+                compact: true,
+              })}
+            </time>
+          )}
         </button>
         <button
           type="button"
@@ -92,23 +117,28 @@ function ScratchpadRow({
         >
           <AgentIcon size={13} />
         </button>
-        <button
-          type="button"
-          className={styles.action}
-          aria-label={`Archive scratchpad "${scratchpad.title}"`}
-          title="Archive scratchpad"
-          onClick={onArchive}
-        >
-          <ArchiveIcon size={13} />
-        </button>
-        <CopyIdButton id={scratchpad.id} className={styles.action} />
+        {/* The popover keeps rows quiet: archive is in the right-click menu. */}
+        {!bare && (
+          <>
+            <button
+              type="button"
+              className={styles.action}
+              aria-label={`Archive scratchpad "${scratchpad.title}"`}
+              title="Archive scratchpad"
+              onClick={onArchive}
+            >
+              <ArchiveIcon size={13} />
+            </button>
+            <CopyIdButton id={scratchpad.id} className={styles.action} />
+          </>
+        )}
       </div>
     </div>
   );
 }
 
 interface ScratchpadSubsectionProps {
-  /** Floor popover: no collapsible title, always open, "New scratchpad" as a text button. */
+  /** Floor popover: no collapsible title, always open, actions in the popover header. */
   bare?: boolean;
   projectId: ProjectId;
   /** Project root: the key its collapse state is persisted under. */
@@ -150,6 +180,11 @@ export function ScratchpadSubsection({
       : null;
 
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    items: MenuItem[];
+  } | null>(null);
 
   // Multi-select state: the chosen ids and the anchor row for Shift+range.
   // Multi-select lives in the shared selection store — the assistant
@@ -236,15 +271,41 @@ export function ScratchpadSubsection({
     "scratchpads",
   );
 
+  const headerActions = (
+    <>
+      <button
+        type="button"
+        className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
+        aria-label="View archived scratchpads"
+        title="Archived scratchpads"
+        onClick={() => setArchiveOpen(true)}
+      >
+        <ArchiveIcon size={13} />
+      </button>
+      <button
+        type="button"
+        className={sidebarStyles.addBtn}
+        aria-label="New scratchpad"
+        title="New scratchpad"
+        onClick={() => {
+          setCollapsed(false);
+          void addAndOpen();
+        }}
+      >
+        <AddIcon size={13} />
+      </button>
+    </>
+  );
+
   return (
     <div
       className={sidebarStyles.subsection}
       data-collapsed={collapsed && !bare ? "true" : undefined}
     >
-      <div
-        className={`${sidebarStyles.sectionHeader} ${bare ? bareStyles.bareHeader : ""}`}
-      >
-        {!bare && (
+      {bare ? (
+        <PopoverSlot name="header">{headerActions}</PopoverSlot>
+      ) : (
+        <div className={sidebarStyles.sectionHeader}>
           <SectionTitle
             title="Scratchpads"
             Icon={ScratchpadIcon}
@@ -252,36 +313,29 @@ export function ScratchpadSubsection({
             collapsed={collapsed}
             onToggle={() => setCollapsed(!collapsed)}
           />
-        )}
-        <button
-          type="button"
-          className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
-          aria-label="View archived scratchpads"
-          title="Archived scratchpads"
-          onClick={() => setArchiveOpen(true)}
-        >
-          <ArchiveIcon size={13} />
-        </button>
-        <button
-          type="button"
-          className={sidebarStyles.addBtn}
-          aria-label="New scratchpad"
-          title="New scratchpad"
-          onClick={() => {
-            setCollapsed(false);
-            void addAndOpen();
-          }}
-        >
-          <AddIcon size={13} />
-          {bare && "New scratchpad"}
-        </button>
-      </div>
+          {headerActions}
+        </div>
+      )}
       {collapsed && !bare ? null : scratchpads.length > 0 ? (
-        <div className={styles.rows}>
+        <div className={`${styles.rows} ${bare ? styles.bare : ""}`}>
           {scratchpads.map((sp) => (
             <ScratchpadRow
               key={sp.id}
               scratchpad={sp}
+              bare={bare}
+              onContextMenu={
+                bare
+                  ? (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        items: scratchpadMenu(projectId, sp),
+                      });
+                    }
+                  : undefined
+              }
               multiSelected={selected.has(sp.id)}
               open={openScratchpadId === sp.id}
               onActivate={(e) => activateScratchpad(e, sp.id)}
@@ -293,7 +347,9 @@ export function ScratchpadSubsection({
           ))}
         </div>
       ) : (
-        <div className={sidebarStyles.placeholder}>No scratchpads yet.</div>
+        <div className={sidebarStyles.placeholder}>
+          {bare ? "No scratchpads yet. Add one with +." : "No scratchpads yet."}
+        </div>
       )}
       {/* Stays visible while collapsed: the selection outlives the fold, so
           its "Start agent" / Clear actions must too. */}
@@ -322,6 +378,7 @@ export function ScratchpadSubsection({
           </button>
         </div>
       )}
+      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
       <ScratchpadArchiveModal
         open={archiveOpen}
         projectId={projectId}

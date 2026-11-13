@@ -31,6 +31,8 @@ import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useTodoStore } from "../state/todoStore";
 import { ArchiveModal } from "./ArchiveModal";
+import { ContextMenu } from "./ContextMenu";
+import type { MenuItem } from "./ContextMenu";
 import { CopyIdButton } from "./CopyIdButton";
 import {
   AddIcon,
@@ -40,7 +42,9 @@ import {
   CommentIcon,
   TodoIcon,
 } from "./icons";
+import { todoMenu } from "../lib/floor/menus";
 import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { PopoverSlot } from "./Popover";
 import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
@@ -60,6 +64,9 @@ interface TodoRowProps {
   /** Plain click spawns the default agent; Cmd/Ctrl click opens the picker. */
   onSpawn: (e: React.MouseEvent) => void;
   onArchive: () => void;
+  /** Popover list: owner edge, full-title tooltip, Start as the one action. */
+  bare?: boolean;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /** Whether a running agent owns the to-do. A stopped owner keeps its link
@@ -76,6 +83,8 @@ function TodoRow({
   onActivate,
   onSpawn,
   onArchive,
+  bare,
+  onContextMenu,
 }: TodoRowProps) {
   const commentCount = todo.comments.length;
   const assigned = todo.assignedAgent;
@@ -90,6 +99,7 @@ function TodoRow({
       data-multiselect={multiSelected ? "true" : undefined}
       data-open={open ? "true" : undefined}
       data-assigned={assigned ? "true" : undefined}
+      onContextMenu={onContextMenu}
       style={
         // A stopped owner may have no colour: the square falls back to grey.
         assigned
@@ -118,7 +128,11 @@ function TodoRow({
         <button
           type="button"
           className={styles.textToggle}
-          title={`Open "${textPreview(todo.text)}" — Cmd/Ctrl+click to select`}
+          title={
+            bare
+              ? todo.text
+              : `Open "${textPreview(todo.text)}" — Cmd/Ctrl+click to select`
+          }
           onClick={onActivate}
         >
           <span className={styles.text}>{todo.text}</span>
@@ -145,16 +159,21 @@ function TodoRow({
             <AgentIcon size={13} />
           </button>
         )}
-        <button
-          type="button"
-          className={styles.action}
-          aria-label={`Archive to-do "${todo.text}"`}
-          title="Archive to-do"
-          onClick={onArchive}
-        >
-          <ArchiveIcon size={13} />
-        </button>
-        <CopyIdButton id={todo.id} className={styles.action} />
+        {/* The popover keeps rows quiet: archive is in the right-click menu. */}
+        {!bare && (
+          <>
+            <button
+              type="button"
+              className={styles.action}
+              aria-label={`Archive to-do "${todo.text}"`}
+              title="Archive to-do"
+              onClick={onArchive}
+            >
+              <ArchiveIcon size={13} />
+            </button>
+            <CopyIdButton id={todo.id} className={styles.action} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -199,6 +218,11 @@ export function TodoSubsection({
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    items: MenuItem[];
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Multi-select lives in the shared selection store — the assistant
@@ -321,15 +345,70 @@ export function TodoSubsection({
   );
   const collapsed = bare ? false : storedCollapsed;
 
+  const headerActions = (
+    <>
+      <button
+        type="button"
+        className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
+        aria-label="View archived to-dos"
+        title="Archived to-dos"
+        onClick={() => {
+          setActiveProject(projectId);
+          setArchiveOpen(true);
+        }}
+      >
+        <ArchiveIcon size={13} />
+      </button>
+      <button
+        type="button"
+        className={sidebarStyles.addBtn}
+        aria-label="New to-do"
+        title="New to-do"
+        onClick={() => {
+          setCollapsed(false);
+          setAdding(true);
+        }}
+      >
+        <AddIcon size={13} />
+      </button>
+    </>
+  );
+
+  const addForm = adding && (
+    <form
+      className={styles.addForm}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <input
+        ref={inputRef}
+        className={styles.addInput}
+        value={text}
+        placeholder="What needs doing?"
+        aria-label="New to-do text"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        onBlur={() => void submit()}
+      />
+    </form>
+  );
+
   return (
     <div
       className={sidebarStyles.subsection}
       data-collapsed={collapsed ? "true" : undefined}
     >
-      <div
-        className={`${sidebarStyles.sectionHeader} ${bare ? styles.bareBar : ""}`}
-      >
-        {!bare && (
+      {bare ? (
+        <PopoverSlot name="header">{headerActions}</PopoverSlot>
+      ) : (
+        <div className={sidebarStyles.sectionHeader}>
           <SectionTitle
             title="To-dos"
             Icon={TodoIcon}
@@ -337,38 +416,17 @@ export function TodoSubsection({
             collapsed={collapsed}
             onToggle={() => setCollapsed(!collapsed)}
           />
-        )}
-        <button
-          type="button"
-          className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
-          aria-label="View archived to-dos"
-          title="Archived to-dos"
-          onClick={() => {
-            setActiveProject(projectId);
-            setArchiveOpen(true);
-          }}
-        >
-          <ArchiveIcon size={13} />
-        </button>
-        <button
-          type="button"
-          className={sidebarStyles.addBtn}
-          aria-label="New to-do"
-          title="New to-do"
-          onClick={() => {
-            setCollapsed(false);
-            setAdding(true);
-          }}
-        >
-          <AddIcon size={13} />
-        </button>
-      </div>
+          {headerActions}
+        </div>
+      )}
       {collapsed ? null : todos.length > 0 || adding ? (
-        <div className={styles.rows}>
+        <div className={`${styles.rows} ${bare ? styles.bare : ""}`}>
+          {bare && addForm}
           {todos.map((todo) => (
             <TodoRow
               key={todo.id}
               todo={todo}
+              bare={bare}
               multiSelected={selected.has(todo.id)}
               open={openTodoId === todo.id}
               onToggleDone={() =>
@@ -377,36 +435,27 @@ export function TodoSubsection({
               onActivate={(e) => activateTodo(e, todo.id)}
               onSpawn={(e) => spawnOnTodo(e, todo)}
               onArchive={() => void setTodoArchived(projectId, todo.id, true)}
+              onContextMenu={
+                bare
+                  ? (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        items: todoMenu(projectId, todo),
+                      });
+                    }
+                  : undefined
+              }
             />
           ))}
-          {adding && (
-            <form
-              className={styles.addForm}
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submit();
-              }}
-            >
-              <input
-                ref={inputRef}
-                className={styles.addInput}
-                value={text}
-                placeholder="What needs doing?"
-                aria-label="New to-do text"
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    cancel();
-                  }
-                }}
-                onBlur={() => void submit()}
-              />
-            </form>
-          )}
+          {!bare && addForm}
         </div>
       ) : (
-        <div className={sidebarStyles.placeholder}>No to-dos yet.</div>
+        <div className={sidebarStyles.placeholder}>
+          {bare ? "No open to-dos. Add one with +." : "No to-dos yet."}
+        </div>
       )}
       {/* Stays visible while collapsed: the selection outlives the fold, so
           its "Start agent" / Clear actions must too. */}
@@ -435,6 +484,7 @@ export function TodoSubsection({
           </button>
         </div>
       )}
+      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
       <ArchiveModal
         open={archiveOpen}
         projectId={projectId}

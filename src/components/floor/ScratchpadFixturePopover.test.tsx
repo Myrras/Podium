@@ -13,7 +13,12 @@ vi.mock("../ScratchpadEditor", () => ({
 }));
 vi.mock("../ScratchpadToolbar", () => ({ ScratchpadToolbar: () => null }));
 
+vi.mock("../../lib/floor/menus", () => ({
+  scratchpadMenu: vi.fn(() => [{ label: "Menu item", onSelect: () => {} }]),
+}));
+
 import type { ScratchpadInfo } from "../../ipc/types";
+import { scratchpadMenu } from "../../lib/floor/menus";
 import { useFloorStore } from "../../state/floorStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { ScratchpadFixturePopover } from "./ScratchpadFixturePopover";
@@ -110,5 +115,64 @@ describe("ScratchpadFixturePopover", () => {
       scratchpadIds: ["a"],
       initialName: "Notes A",
     });
+  });
+
+  it("one header bar: title, count and the list actions", () => {
+    renderPopover(null);
+    const heading = screen.getByRole("heading");
+    expect(heading).toHaveTextContent("Scratchpads1");
+    const header = heading.parentElement as HTMLElement;
+    expect(header).toContainElement(
+      screen.getByRole("button", { name: "New scratchpad" }),
+    );
+    expect(header).toContainElement(
+      screen.getByRole("button", { name: "View archived scratchpads" }),
+    );
+  });
+
+  it("rows show the relative updated time", () => {
+    useScratchpadStore.setState({
+      scratchpadsByProject: {
+        p1: [{ ...sp("a", "Notes A"), updatedAt: new Date().toISOString() }],
+      },
+    });
+    renderPopover(null);
+    expect(screen.getByText("now").tagName).toBe("TIME");
+  });
+
+  it("empty list invites to add one", () => {
+    useScratchpadStore.setState({ scratchpadsByProject: { p1: [] } });
+    renderPopover(null);
+    expect(
+      screen.getByText("No scratchpads yet. Add one with +."),
+    ).toBeInTheDocument();
+  });
+
+  it("right-click on a row opens its menu", () => {
+    renderPopover(null);
+    const ev = fireEvent.contextMenu(screen.getByText("Notes A"));
+    expect(ev).toBe(false);
+    expect(scratchpadMenu).toHaveBeenLastCalledWith(
+      "p1",
+      expect.objectContaining({ id: "a" }),
+    );
+    expect(screen.getByRole("menuitem", { name: "Menu item" })).toBeVisible();
+  });
+
+  it("opened_item_title_in_header_actions_in_footer", () => {
+    renderPopover("a");
+    const header = document.querySelector("header") as HTMLElement;
+    expect(header).toContainElement(screen.getByLabelText("Scratchpad title"));
+    const footer = document.querySelector("footer") as HTMLElement;
+    for (const name of ["Start agent on this", "Full screen", "Archive"])
+      expect(footer).toContainElement(screen.getByRole("button", { name }));
+    expect(screen.queryByLabelText("Close scratchpad")).toBeNull();
+
+    // Full screen covers the popover, so the pane takes its own header back.
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    expect(screen.getByLabelText("Exit fullscreen")).toBeInTheDocument();
+    expect(header).not.toContainElement(
+      screen.getByLabelText("Scratchpad title"),
+    );
   });
 });
