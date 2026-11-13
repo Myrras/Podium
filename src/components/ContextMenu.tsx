@@ -1,10 +1,13 @@
-/** A right-click menu: portalled at a point, no backdrop, closes on Esc or an outside mousedown. */
+/** A right-click menu: portalled at a point, no backdrop, closes on Esc or an outside mousedown.
+ *  An item with `confirm` swaps the panel for a compact confirm view first. */
 
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
 import styles from "./ContextMenu.module.css";
+
+export type MenuConfirm = { title: string; body: string; action: string };
 
 export type MenuItem =
   | {
@@ -12,8 +15,11 @@ export type MenuItem =
       onSelect: () => void;
       danger?: boolean;
       disabled?: boolean;
+      confirm?: MenuConfirm;
     }
   | "separator";
+
+type Choice = Exclude<MenuItem, "separator">;
 
 const MARGIN = 6;
 
@@ -43,6 +49,8 @@ export function ContextMenu({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const [pending, setPending] = useState<Choice | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -64,8 +72,10 @@ export function ContextMenu({
     );
     el.style.left = `${p.left}px`;
     el.style.top = `${p.top}px`;
-    buttons()[0]?.focus({ preventScroll: true });
-  }, [x, y]);
+    (pending ? cancelRef.current : buttons()[0])?.focus({
+      preventScroll: true,
+    });
+  }, [x, y, pending]);
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -78,9 +88,11 @@ export function ContextMenu({
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
-      onClose();
+      if (pending) setPending(null);
+      else onClose();
       return;
     }
+    if (pending) return;
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
     const list = buttons();
@@ -94,30 +106,61 @@ export function ContextMenu({
     <div
       ref={ref}
       className={styles.menu}
-      role="menu"
+      role={pending ? "alertdialog" : "menu"}
+      aria-label={pending?.confirm?.title}
       data-popover-keep
       style={{ left: x, top: y }}
       onKeyDown={onKeyDown}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {items.map((item, i) =>
-        item === "separator" ? (
-          <div key={i} role="separator" className={styles.separator} />
-        ) : (
-          <button
-            key={i}
-            type="button"
-            role="menuitem"
-            disabled={item.disabled}
-            className={`${styles.item} ${item.danger ? styles.danger : ""}`}
-            onClick={() => {
-              onClose();
-              item.onSelect();
-            }}
-          >
-            {item.label}
-          </button>
-        ),
+      {pending?.confirm ? (
+        <div className={styles.confirm}>
+          <div className={styles.confirmTitle}>{pending.confirm.title}</div>
+          <div className={styles.confirmBody}>{pending.confirm.body}</div>
+          <div className={styles.confirmActions}>
+            <button
+              ref={cancelRef}
+              type="button"
+              onClick={() => setPending(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => {
+                onClose();
+                pending.onSelect();
+              }}
+            >
+              {pending.confirm.action}
+            </button>
+          </div>
+        </div>
+      ) : (
+        items.map((item, i) =>
+          item === "separator" ? (
+            <div key={i} role="separator" className={styles.separator} />
+          ) : (
+            <button
+              key={i}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              className={`${styles.item} ${item.danger ? styles.danger : ""}`}
+              onClick={() => {
+                if (item.confirm) {
+                  setPending(item);
+                  return;
+                }
+                onClose();
+                item.onSelect();
+              }}
+            >
+              {item.label}
+            </button>
+          ),
+        )
       )}
     </div>,
     document.body,

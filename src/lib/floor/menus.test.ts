@@ -232,3 +232,42 @@ describe("scratchpadMenu", () => {
     expect(pick(m, "Archive").danger).toBe(true);
   });
 });
+
+describe("confirm steps", () => {
+  it("carry the modal texts", () => {
+    expect(pick(menu("agent", running), "Stop").confirm).toEqual({
+      title: "Stop x?",
+      body: "The session ends. You can resume it later.",
+      action: "Stop",
+    });
+    expect(pick(menu("agent", exited), "Clear the desk").confirm).toEqual({
+      title: "Clear the desk?",
+      body: "The agent is removed from the floor.",
+      action: "Clear",
+    });
+    const stop = {
+      title: "Stop x?",
+      body: "The process stops. You can start it again later.",
+      action: "Stop",
+    };
+    expect(pick(menu("terminal", running), "Stop").confirm).toEqual(stop);
+    expect(pick(menu("service", running), "Stop").confirm).toEqual(stop);
+    expect(pick(menu("terminal", running), "Close terminal").confirm).toEqual({
+      title: "Close x?",
+      body: "The terminal and its output are removed.",
+      action: "Close",
+    });
+  });
+
+  it("leaves archive unconfirmed", () => {
+    expect(
+      pick(todoMenu(P, {} as TodoInfo), "Archive").confirm,
+    ).toBeUndefined();
+    expect(
+      pick(
+        scratchpadMenu(P, { id: "s", title: "t" } as ScratchpadInfo),
+        "Archive",
+      ).confirm,
+    ).toBeUndefined();
+  });
+});

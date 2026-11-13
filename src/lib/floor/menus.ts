@@ -32,12 +32,23 @@ export function processMenu(
   const ended = state === "exited" || state === "crashed";
   const running = process.status.state === "running";
   const open: MenuItem = { label: "Open", onSelect: () => openProcess(id) };
+  const name = process.name;
 
   if (kind === "agent") {
     return [
       open,
       ...(isActive(process.status)
-        ? [{ label: "Stop", onSelect: () => void ps().stopProcess(id) }]
+        ? [
+            {
+              label: "Stop",
+              confirm: {
+                title: `Stop ${name}?`,
+                body: "The session ends. You can resume it later.",
+                action: "Stop",
+              },
+              onSelect: () => void ps().stopProcess(id),
+            },
+          ]
         : []),
       ...(ended
         ? [
@@ -49,6 +60,11 @@ export function processMenu(
             {
               label: "Clear the desk",
               danger: true,
+              confirm: {
+                title: "Clear the desk?",
+                body: "The agent is removed from the floor.",
+                action: "Clear",
+              },
               onSelect: () => void ps().removeProcess(id),
             },
           ]
@@ -59,7 +75,15 @@ export function processMenu(
   const items: MenuItem[] = [open];
   if (running) {
     items.push(
-      { label: "Stop", onSelect: () => void ps().stopProcess(id) },
+      {
+        label: "Stop",
+        confirm: {
+          title: `Stop ${name}?`,
+          body: "The process stops. You can start it again later.",
+          action: "Stop",
+        },
+        onSelect: () => void ps().stopProcess(id),
+      },
       { label: "Restart", onSelect: () => void ps().restartProcess(id) },
     );
   } else if (!isActive(process.status)) {
@@ -70,6 +94,11 @@ export function processMenu(
     items.push("separator", {
       label: "Close terminal",
       danger: true,
+      confirm: {
+        title: `Close ${name}?`,
+        body: "The terminal and its output are removed.",
+        action: "Close",
+      },
       onSelect: () => {
         void (async () => {
           if (running) await ps().stopProcess(id);

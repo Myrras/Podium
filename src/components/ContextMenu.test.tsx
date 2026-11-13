@@ -91,3 +91,54 @@ describe("ContextMenu", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe("ContextMenu confirm", () => {
+  function setupConfirm() {
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    const items: MenuItem[] = [
+      {
+        label: "Stop",
+        onSelect,
+        confirm: { title: "Stop x?", body: "It ends.", action: "Stop now" },
+      },
+    ];
+    render(<ContextMenu x={10} y={10} items={items} onClose={onClose} />);
+    fireEvent.click(screen.getByText("Stop"));
+    return { onSelect, onClose };
+  }
+
+  it("shows the confirm view without running the item", () => {
+    const { onSelect, onClose } = setupConfirm();
+    expect(screen.getByText("Stop x?")).toBeInTheDocument();
+    expect(screen.getByText("It ends.")).toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("focuses Cancel", () => {
+    setupConfirm();
+    expect(screen.getByText("Cancel")).toHaveFocus();
+  });
+
+  it("Cancel returns to the list", () => {
+    setupConfirm();
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.getByRole("menuitem", { name: "Stop" })).toBeInTheDocument();
+  });
+
+  it("first Esc returns to the list, second closes", () => {
+    const { onClose } = setupConfirm();
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("the action selects and closes", () => {
+    const { onSelect, onClose } = setupConfirm();
+    fireEvent.click(screen.getByText("Stop now"));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
