@@ -422,25 +422,6 @@
   font-weight: 400;
 }
 
-/* A collapsed subsection with a hidden row waiting on the user: the same blue
- * pulsing dot a row shows for "needs input", so it is not lost behind the
- * count. Opacity-only animation, neutralised by the reduced-motion guard. */
-.sectionWaiting {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--accent);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
-  animation: sectionWaitingPulse 0.9s var(--ease-in-out) infinite;
-}
-
-@keyframes sectionWaitingPulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
 .panelIcon {
   color: var(--text-faint);
   flex-shrink: 0;
