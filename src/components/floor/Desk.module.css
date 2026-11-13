@@ -85,6 +85,11 @@
   gap: 2px;
 }
 
+.minis[data-dim] {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+
 .more {
   font-size: 11px;
   color: var(--text-muted);

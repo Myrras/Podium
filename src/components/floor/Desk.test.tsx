@@ -65,11 +65,32 @@ describe("Desk", () => {
     expect(b.getByRole("button")).not.toHaveAttribute("data-working");
   });
 
-  it("marks needs with ? and crashed with !, without mini bots when idle", () => {
+  it("dims mini bots on an idle desk, not on a working one", () => {
     seed({ activity: "waiting", subagents: 2 });
     const a = render(<Desk process={proc()} />);
+    const idle = a.container.querySelector("[class*=minis]");
+    expect(idle?.children).toHaveLength(2);
+    expect(idle).toHaveAttribute("data-dim");
+    a.unmount();
+    seed({ activity: "working", subagents: 2 });
+    const b = render(<Desk process={proc()} />);
+    expect(b.container.querySelector("[class*=minis]")).not.toHaveAttribute(
+      "data-dim",
+    );
+  });
+
+  it("caps mini bots at 3 plus a +N counter", () => {
+    seed({ activity: "waiting", subagents: 5 });
+    const { container } = render(<Desk process={proc()} />);
+    const minis = container.querySelector("[class*=minis]");
+    expect(minis?.querySelectorAll(":scope > :not(b)")).toHaveLength(3);
+    expect(screen.getByText("+2")).toBeTruthy();
+  });
+
+  it("marks needs with ? and crashed with !", () => {
+    seed({ activity: "waiting" });
+    const a = render(<Desk process={proc()} />);
     expect(a.container.textContent).toContain("?");
-    expect(a.container.querySelector("[class*=minis]")).toBeNull();
     a.unmount();
     const b = render(
       <Desk

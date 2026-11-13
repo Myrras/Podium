@@ -14,16 +14,18 @@ const MAX = 3;
 function Row({
   n,
   className,
+  dim,
   item,
 }: {
   n: number;
   className: string;
+  dim?: boolean;
   item: (i: number) => ReactElement;
 }) {
   if (n <= 0) return null;
   const shown = Math.min(n, MAX);
   return (
-    <span className={className}>
+    <span className={className} data-dim={dim || undefined}>
       {Array.from({ length: shown }, (_, i) => item(i))}
       {n > MAX && <b className={styles.more}>+{n - MAX}</b>}
     </span>
@@ -102,10 +104,11 @@ export function Desk({ process }: { process: ProcessInfo }) {
           </span>
         )}
       </span>
-      {working && (
+      {!terminal && (
         <Row
           n={act.subagents}
           className={styles.minis}
+          dim={!working}
           item={(i) => (
             <MiniBot
               key={i}
