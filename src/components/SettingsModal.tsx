@@ -76,6 +76,24 @@ const THEMES: {
     label: "Retro",
     swatches: ["#f2e5bc", "#458588", "#3c3836"],
   },
+  {
+    mode: "glass-dark",
+    label: "Glass dark",
+    swatches: [
+      "linear-gradient(135deg, #2c5cff, #9b4dff)",
+      "#2a6ae0",
+      "#f5f7fb",
+    ],
+  },
+  {
+    mode: "glass-light",
+    label: "Glass light",
+    swatches: [
+      "linear-gradient(135deg, #ffc9a8, #a9c8ff)",
+      "#0a66d6",
+      "#1d1d1f",
+    ],
+  },
 ];
 
 const FONT_SIZE_MIN = 10;

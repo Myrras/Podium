@@ -4,7 +4,9 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-md);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -305,10 +307,12 @@
   gap: var(--sp-1);
   min-width: 140px;
   padding: var(--sp-2);
-  background: var(--surface-raised, var(--surface));
+  background: var(--surface-raised, var(--pop-surface));
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-md);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-md);
 }
 
 .sectionsItem {
@@ -589,4 +593,23 @@
   cursor: pointer;
   border: 0;
   padding: 0;
+}
+
+:global(:root[data-theme^="glass"]) .sidebar {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+}
+
+:global(:root[data-theme^="glass"]) .sectionsPopover {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+}
+
+/* Glass: a translucent fade cannot mask the name, so blur it instead; the
+   mask keeps the soft leading edge. */
+:global(:root[data-theme^="glass"]) .projectActions {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  background: var(--pop-surface);
+  mask-image: linear-gradient(to right, transparent, #000 var(--sp-4));
 }

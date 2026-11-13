@@ -10,7 +10,9 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-md);
   overflow: hidden;
   animation: islandIn var(--dur-3) var(--ease-out);
 }
@@ -413,7 +415,7 @@
   gap: var(--sp-2);
   margin: 0 calc(-1 * var(--sp-3));
   padding: var(--sp-2) var(--sp-3) 0;
-  background: var(--surface);
+  background: var(--pop-surface);
   border-top: 1px solid var(--border);
 }
 
@@ -612,4 +614,15 @@
   color: var(--text-muted);
   font-size: var(--fs-md);
   font-weight: 600;
+}
+
+:global(:root[data-theme^="glass"]) .pane {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+}
+
+/* Glass: the tail is translucent, so blur the transcript scrolling under it. */
+:global(:root[data-theme^="glass"]) .tail {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
 }
