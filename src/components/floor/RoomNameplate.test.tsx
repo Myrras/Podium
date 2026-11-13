@@ -82,10 +82,19 @@ describe("RoomNameplate", () => {
   });
 
   it("drags with snap, saves, and does not jump", () => {
-    render(<RoomNameplate room={a} />);
+    const { container } = render(
+      <div data-room="a">
+        <div>
+          <RoomNameplate room={a} />
+        </div>
+      </div>,
+    );
+    const roomEl = container.firstElementChild as HTMLElement;
     drag(130);
+    expect(roomEl.style.transform).toBe("translate(120px, 0px)");
     fireEvent.pointerUp(grip(), { pointerId: 1 });
     fireEvent.click(grip());
+    expect(roomEl.style.transform).toBe("");
     expect(useLayoutStore.getState().floorPositions["/r/a"]).toEqual([120, 0]);
     expect(jumpTo).not.toHaveBeenCalled();
   });

@@ -39,9 +39,9 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
         .filter((r) => r.project.id !== project.id)
         .map((r) => r.rect),
     );
-  // The room element is the nameplate's parent; it moves while dragging.
+  // The room's positioned root moves while dragging.
   const shift = (x: number, y: number) => {
-    const el = root.current?.parentElement;
+    const el = root.current?.closest<HTMLElement>("[data-room]");
     if (el)
       el.style.transform =
         x === rect.x && y === rect.y
