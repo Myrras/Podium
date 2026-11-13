@@ -178,15 +178,28 @@ export type ProcessStatus =
 export type RestartPolicy = "never" | "on-crash" | "always";
 
 /** Managed process snapshot (`podium_core::ProcessInfo`). */
+/** What a process reports it is doing (`podium_core::ReportedState`). */
+export type ReportedState = "working" | "waiting" | "idle";
+
 /**
  * How recently and how steadily a running process has been printing (see
- * `processActivity`). Ages in milliseconds, so there is no clock to align.
+ * `processActivity`), plus what the process itself reported. Ages in
+ * milliseconds, so there is no clock to align.
  */
 export interface OutputActivity {
   /** Ms since the last chunk of output. */
   quietMs: number;
   /** Ms the latest burst of output lasted, first chunk to last. */
   burstMs: number;
+  /** What the process reports it is doing; `null` when it reports nothing. */
+  state: ReportedState | null;
+  /** What a waiting process is waiting for, when it says. */
+  waitingFor: string | null;
+  /** Ms spent in `state`; `null` exactly when `state` is. */
+  stateMs: number | null;
+  /** Sub-agents and background shells an agent has running. */
+  subagents: number;
+  shells: number;
 }
 
 export interface ProcessInfo {

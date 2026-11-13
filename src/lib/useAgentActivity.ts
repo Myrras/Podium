@@ -11,10 +11,12 @@
 import type { ProcessId } from "../ipc/types";
 import {
   type AgentActivity,
+  type ProcessActivity,
+  UNTRACKED_ACTIVITY,
   useAgentActivityStore,
 } from "../state/agentActivityStore";
 
-export type { AgentActivity };
+export type { AgentActivity, ProcessActivity };
 
 /** The current activity for `processId` (defaults to "idle" when untracked). */
 export function useAgentActivity(processId: ProcessId): AgentActivity {
@@ -27,4 +29,15 @@ export function useAgentActivity(processId: ProcessId): AgentActivity {
  */
 export function useAgentShells(processId: ProcessId): number {
   return useAgentActivityStore((s) => s.shells[processId] ?? 0);
+}
+
+/**
+ * Everything known about `processId`'s activity: the state, whether the
+ * process reported it itself, what it waits for, since when, and the work
+ * running behind it. Untracked processes read as plain "idle".
+ */
+export function useProcessActivity(processId: ProcessId): ProcessActivity {
+  return useAgentActivityStore(
+    (s) => s.details[processId] ?? UNTRACKED_ACTIVITY,
+  );
 }

@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::activity::ReportedState;
+
 /// Default byte cap: 2 MiB of raw output per process.
 pub const DEFAULT_CAP_BYTES: usize = 2 * 1024 * 1024;
 
@@ -17,7 +19,10 @@ pub const BURST_GAP: Duration = Duration::from_secs(1);
 /// UI's "working…" indicator: a lone redraw is one short burst, sustained
 /// output (a spinner, streamed text) is a burst that keeps growing. Ages
 /// rather than timestamps, so the frontend has no clock to align.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+///
+/// The scrollback fills the output timing; the rest is what the process
+/// itself reported ([`crate::activity`]), which wins over the timing guess.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputActivity {
     /// Milliseconds since the last chunk of output.
@@ -25,6 +30,15 @@ pub struct OutputActivity {
     /// Milliseconds the latest burst lasted: from its first chunk (the first
     /// after a gap of at least [`BURST_GAP`]) to its last.
     pub burst_ms: u64,
+    /// What the process reports it is doing; `None` when it reports nothing.
+    pub state: Option<ReportedState>,
+    /// What a waiting process is waiting for, when it says.
+    pub waiting_for: Option<String>,
+    /// Milliseconds spent in `state`; `None` exactly when `state` is.
+    pub state_ms: Option<u64>,
+    /// Sub-agents and background shells an agent has running.
+    pub subagents: u32,
+    pub shells: u32,
 }
 
 /// Ring buffer of output chunks with a monotonically increasing sequence
@@ -110,6 +124,7 @@ impl ScrollbackBuffer {
         Some(OutputActivity {
             quiet_ms: ms(now.saturating_duration_since(last)),
             burst_ms: ms(last.saturating_duration_since(start)),
+            ..OutputActivity::default()
         })
     }
 
@@ -195,7 +210,8 @@ mod tests {
             a,
             OutputActivity {
                 quiet_ms: 50,
-                burst_ms: 200
+                burst_ms: 200,
+                ..OutputActivity::default()
             }
         );
 
@@ -209,7 +225,8 @@ mod tests {
             a,
             OutputActivity {
                 quiet_ms: 10,
-                burst_ms: 0
+                burst_ms: 0,
+                ..OutputActivity::default()
             }
         );
     }

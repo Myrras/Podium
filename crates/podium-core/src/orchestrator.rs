@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::activity::{self, claude_status, foreground, hooks, Reported};
 use crate::agent::session_memory::{self, RememberedSession, SessionMemoryStore};
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{
@@ -356,6 +357,11 @@ pub struct Orchestrator {
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
     subagent_driver: AtomicBool,
+    /// What the agents' hooks reported ([`Self::hooks`]).
+    hooks: hooks::Store,
+    /// When each process's reported state last changed, as of the latest
+    /// [`Self::output_activity`] poll.
+    reported_seen: Mutex<activity::Seen>,
 }
 
 impl Default for Orchestrator {
@@ -389,7 +395,14 @@ impl Orchestrator {
             session_memory: SessionMemoryStore::new(),
             subagent_config: SubagentConfig::default(),
             subagent_driver: AtomicBool::new(false),
+            hooks: hooks::Store::default(),
+            reported_seen: Mutex::default(),
         }
+    }
+
+    /// The store the agents' hooks report their sub-agent and shell counts to.
+    pub fn hooks(&self) -> &hooks::Store {
+        &self.hooks
     }
 
     /// Replace the agent adapter registry (tests inject fakes).
@@ -1195,23 +1208,36 @@ impl Orchestrator {
     /// How recently and how steadily each running process has been printing,
     /// keyed by process id — what the UI polls for its "working…" indicator.
     /// Read off the scrollback, so it covers processes whose terminal was
-    /// never opened; a process that never printed is left out.
+    /// never opened; a process that never printed is left out unless it
+    /// reports a state.
+    ///
+    /// Each entry also carries what the process itself reported
+    /// ([`crate::activity`]): an agent's Claude Code status and hook counts,
+    /// a terminal's foreground. Those reads touch files and the PTY, so they
+    /// run after the lock is released, on the caller's thread.
     pub fn output_activity(&self) -> HashMap<ProcessId, OutputActivity> {
         let now = Instant::now();
-        let inner = self.inner.lock().expect(LOCK_POISONED);
-        inner
-            .processes
-            .iter()
-            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
-            .filter_map(|(id, p)| {
-                let activity = p
-                    .scrollback
-                    .lock()
-                    .expect(LOCK_POISONED)
-                    .output_activity(now)?;
-                Some((*id, activity))
+        let probes: Vec<ActivityProbe> = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            inner
+                .processes
+                .iter()
+                .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+                .map(|(id, p)| activity_probe(&inner, *id, p, now))
+                .collect()
+        };
+        let config_dir = activity::claude_config_dir();
+        let polled = probes
+            .into_iter()
+            .map(|probe| activity::Polled {
+                reported: probe.report(config_dir.as_deref(), &self.hooks),
+                id: probe.id,
+                output: probe.output,
+                started: probe.started,
             })
-            .collect()
+            .collect();
+        let mut seen = self.reported_seen.lock().expect(LOCK_POISONED);
+        activity::merge(polled, &mut seen, now, std::time::SystemTime::now())
     }
 
     /// The UI saw an input prompt on this agent's screen (a permission
@@ -5130,6 +5156,73 @@ fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
             session_id,
             resumed: false,
         }
+    }
+}
+
+/// What [`Orchestrator::output_activity`] needs to know of a running process,
+/// taken under the lock so the providers can be asked outside it.
+struct ActivityProbe {
+    id: ProcessId,
+    /// Its output timing; `None` while it never printed.
+    output: Option<OutputActivity>,
+    started: Instant,
+    kind: ProcessKind,
+    pty: Option<Arc<PtyProcess>>,
+    cwd: PathBuf,
+    started_wall: Option<std::time::SystemTime>,
+    /// Whether Claude Code's own status can be read: an agent on that
+    /// adapter, on the native backend (in WSL its files live in the distro).
+    claude: bool,
+}
+
+fn activity_probe(inner: &Inner, id: ProcessId, p: &ManagedProcess, now: Instant) -> ActivityProbe {
+    ActivityProbe {
+        id,
+        output: p
+            .scrollback
+            .lock()
+            .expect(LOCK_POISONED)
+            .output_activity(now),
+        started: p.started_at.unwrap_or(now),
+        kind: p.spec.kind.clone(),
+        pty: p.pty.clone(),
+        cwd: p.spec.cwd.clone(),
+        started_wall: p.started_wall,
+        claude: matches!(&p.spec.kind, ProcessKind::Agent { adapter } if adapter == crate::agent::CLAUDE_CODE.id)
+            && project_backend(inner, p.project_id).is_none(),
+    }
+}
+
+impl ActivityProbe {
+    /// Ask the providers for this process's kind. Reads files and the PTY:
+    /// call it outside the lock.
+    fn report(&self, config_dir: Option<&Path>, hooks: &hooks::Store) -> Reported {
+        match self.kind {
+            ProcessKind::Agent { .. } => {
+                Reported::agent(self.claude_status(config_dir), hooks.counts(self.id))
+            }
+            ProcessKind::Terminal => {
+                Reported::terminal(self.pty.as_deref().and_then(foreground::busy))
+            }
+            ProcessKind::Service => Reported::default(),
+        }
+    }
+
+    /// Claude Code's status for this agent, found by the session name Podium
+    /// stamped on it at launch: `podium-<tag>`, the tag being the first 8
+    /// characters of its process id (see `CliAdapter::build_launch`).
+    fn claude_status(&self, config_dir: Option<&Path>) -> Option<claude_status::ClaudeStatus> {
+        if !self.claude {
+            return None;
+        }
+        let tag = crate::agent::peer_tag(&self.id.to_string());
+        claude_status::read(&claude_status::Probe {
+            config_dir: config_dir?,
+            session_name: &crate::agent::peer_session_name(&tag),
+            pty_pid: self.pty.as_ref().map(|pty| pty.pid()),
+            cwd: &self.cwd,
+            started: self.started_wall?,
+        })
     }
 }
 

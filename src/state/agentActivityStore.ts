@@ -18,6 +18,11 @@
  * yields an agent's background-shell count, so "idle" can be qualified with
  * the work still running behind the prompt.
  *
+ * A process can also report its own state (the backend's `state`: an agent's
+ * Claude Code status, a terminal's foreground). When it does, that wins over
+ * both heuristics below — output timing and the prompt on screen — and
+ * "waiting" is the "needs input" episode; when it does not, nothing changes.
+ *
  * Prompt detection is a frontend heuristic (see `detectInputPrompt`): neither
  * coding-agent CLIs nor ordinary commands emit structured PTY events, so it
  * reads what is drawn on the terminal. Unlike "working", it only covers
@@ -55,6 +60,29 @@ const MIN_BURST_MS = 300;
 /** Poll cadence for the monitor loop. */
 const POLL_INTERVAL_MS = 1000;
 
+/** One running process's activity, with what the backend knows beyond it. */
+export interface ProcessActivity {
+  activity: AgentActivity;
+  /** The process reported `activity` itself, rather than Podium guessing it. */
+  reported: boolean;
+  /** What a waiting process is waiting for, when it says. */
+  waitingFor: string | null;
+  /** Epoch ms at which `activity` began; `null` when unknown (not reported). */
+  sinceMs: number | null;
+  subagents: number;
+  shells: number;
+}
+
+/** What a process the monitor does not track reads as. */
+export const UNTRACKED_ACTIVITY: ProcessActivity = {
+  activity: "idle",
+  reported: false,
+  waitingFor: null,
+  sinceMs: null,
+  subagents: 0,
+  shells: 0,
+};
+
 /** Whether the backend's output timing reads as recent, sustained output. */
 export function isWorking(output: OutputActivity | undefined): boolean {
   return (
@@ -72,14 +100,64 @@ function computeActivity(
   /** Whether the screen shows an input prompt right now, regardless of
    * recent output — one prompt on screen = one notification episode. */
   prompting: boolean;
-  /** Background shells the agent reports on screen (0 when none). */
+  /** Background shells: the backend's count, else the one on screen. */
   shells: number;
+  /** The process reported `activity` itself. */
+  reported: boolean;
 } {
   const screen = readViewportText(processId);
+  const shells =
+    output !== undefined && output.shells > 0
+      ? output.shells
+      : screen === null
+        ? 0
+        : detectBackgroundShells(screen);
+  const state = output?.state ?? null;
+  if (state !== null) {
+    // What the process says wins over output timing and over the prompt
+    // regex; its "waiting" is the prompt episode.
+    const prompting = state === "waiting";
+    return { activity: state, prompting, shells, reported: true };
+  }
   const prompting = screen !== null && detectInputPrompt(screen);
-  const shells = screen === null ? 0 : detectBackgroundShells(screen);
-  if (isWorking(output)) return { activity: "working", prompting, shells };
-  return { activity: prompting ? "waiting" : "idle", prompting, shells };
+  const activity = isWorking(output)
+    ? "working"
+    : prompting
+      ? "waiting"
+      : "idle";
+  return { activity, prompting, shells, reported: false };
+}
+
+/**
+ * Epoch ms at which a reported state began. The backend sends an age, so
+ * `now - age` wobbles by each poll's latency: a start that moved by less than
+ * a poll keeps its previous value, and a clock counting from it never jumps.
+ */
+function stableSince(
+  prev: ProcessActivity | undefined,
+  activity: AgentActivity,
+  stateMs: number | null,
+  now: number,
+): number | null {
+  if (stateMs === null) return null;
+  const since = now - stateMs;
+  const same =
+    prev?.reported === true &&
+    prev.activity === activity &&
+    prev.sinceMs !== null &&
+    Math.abs(since - prev.sinceMs) < POLL_INTERVAL_MS;
+  return same ? prev.sinceMs : since;
+}
+
+function sameActivity(a: ProcessActivity, b: ProcessActivity): boolean {
+  return (
+    a.activity === b.activity &&
+    a.reported === b.reported &&
+    a.waitingFor === b.waitingFor &&
+    a.sinceMs === b.sinceMs &&
+    a.subagents === b.subagents &&
+    a.shells === b.shells
+  );
 }
 
 /**
@@ -138,6 +216,12 @@ interface AgentActivityState {
    */
   shells: Record<string, number>;
   /**
+   * Everything known per running process id (see `useProcessActivity`). An
+   * entry keeps its identity while nothing in it changed, so a component
+   * selecting one only re-renders on a real change.
+   */
+  details: Record<string, ProcessActivity>;
+  /**
    * Agents already alerted (pinged, or seen by the user) for the prompt
    * currently on their screen. Kept out of `activity` (which drives UI) —
    * this only gates the notification. The flag lives as long as the prompt
@@ -155,6 +239,7 @@ interface AgentActivityState {
 export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   activity: {},
   shells: {},
+  details: {},
   notified: {},
   tick: (output) => {
     // The assistant's sub-agents are running agents too, but never in the
@@ -169,21 +254,45 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
     ];
     const prev = get().activity;
     const prevNotified = get().notified;
+    const prevDetails = get().details;
     const next: Record<string, AgentActivity> = {};
     const shells: Record<string, number> = {};
+    const details: Record<string, ProcessActivity> = {};
     const notified: Record<string, true> = {};
+    const now = Date.now();
     let changed = false;
+    let detailsChanged = false;
 
     for (const p of processes) {
       if (p.status.state !== "running") continue;
+      const out: OutputActivity | undefined = output[p.id];
       const {
         activity,
         prompting,
         shells: count,
-      } = computeActivity(p.id, output[p.id]);
+        reported,
+      } = computeActivity(p.id, out);
       next[p.id] = activity;
       if (count > 0) shells[p.id] = count;
       if (prev[p.id] !== activity) changed = true;
+
+      const before: ProcessActivity | undefined = prevDetails[p.id];
+      const detail: ProcessActivity = {
+        activity,
+        reported,
+        waitingFor: out?.waitingFor ?? null,
+        sinceMs: reported
+          ? stableSince(before, activity, out?.stateMs ?? null, now)
+          : null,
+        subagents: out?.subagents ?? 0,
+        shells: count,
+      };
+      if (before !== undefined && sameActivity(before, detail)) {
+        details[p.id] = before;
+      } else {
+        details[p.id] = detail;
+        detailsChanged = true;
+      }
 
       if (!prompting) {
         // No prompt on screen: the episode (if any) is over; the flag drops
@@ -206,17 +315,21 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
         notified[p.id] = true;
       }
     }
-    // Processes that stopped/were removed drop out of both maps.
+    // Processes that stopped/were removed drop out of the maps.
     for (const id of Object.keys(prev)) {
       if (!(id in next)) {
         changed = true;
         break;
       }
     }
+    if (Object.keys(prevDetails).some((id) => !(id in details))) {
+      detailsChanged = true;
+    }
 
     set((s) => ({
       activity: changed ? next : s.activity,
       shells,
+      details: detailsChanged ? details : s.details,
       notified,
     }));
   },
