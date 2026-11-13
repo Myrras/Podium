@@ -229,6 +229,17 @@ describe("TodoDetailPane", () => {
     });
   });
 
+  it("cancels a comment edit on Escape and marks the key handled", () => {
+    const { editComment } = seed({ comments: [comment()] });
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    fireEvent.click(screen.getByLabelText("Edit comment"));
+    const box = screen.getByRole("textbox", { name: "Edit comment" });
+    expect(fireEvent.keyDown(box, { key: "Escape" })).toBe(false);
+    expect(screen.queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(editComment).not.toHaveBeenCalled();
+  });
+
   it("cancels a title edit on Escape without saving", () => {
     const { updateTodo } = seed();
     render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);

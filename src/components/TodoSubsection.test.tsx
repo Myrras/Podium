@@ -510,4 +510,21 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(screen.queryByText("To-dos")).not.toBeInTheDocument();
     expect(screen.getByLabelText("New to-do")).toBeInTheDocument();
   });
+
+  it("Esc cancels adding and marks the key handled, so a popover stays open", () => {
+    seed([todo("a", "Todo A")]);
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(false);
+    expect(screen.queryByLabelText("New to-do text")).toBeNull();
+  });
 });

@@ -370,6 +370,7 @@ export function TodoDetailPane({
                             e.preventDefault();
                             void saveEdit();
                           } else if (e.key === "Escape") {
+                            e.preventDefault();
                             cancelEdit();
                           }
                         }}
