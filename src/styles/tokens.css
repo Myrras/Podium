@@ -151,6 +151,15 @@
   --term-ansi-bright-magenta: #d2a8ff;
   --term-ansi-bright-cyan: #56d4dd;
   --term-ansi-bright-white: #ffffff;
+
+  /* Floor mode furniture: the same in every theme (no theme overrides). */
+  --floor-wood: #a67c52;
+  --floor-wood-dark: #7b5a3a;
+  --floor-paper: #eef1f4;
+  --floor-metal: #57606a;
+  --floor-screen: #0d1117;
+  --floor-slot: #21262d;
+  --floor-led: #56d364;
 }
 
 /* Glass light reuses the light palette below and overrides it further down. */

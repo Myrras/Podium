@@ -184,6 +184,11 @@
   animation: islandIn var(--dur-3) var(--ease-out);
 }
 
+/* The Floor island in Floor mode: the same look as the work island. */
+.floor {
+  composes: work;
+}
+
 @keyframes islandIn {
   from {
     opacity: 0;

@@ -82,7 +82,7 @@ beforeEach(() => {
   assistant.subagents = [];
   assistant.setResult = true;
   useAssistantStore.setState({ subagents: [], enabled: true });
-  useLayoutStore.setState({ openSubagent: null });
+  useLayoutStore.setState({ openSubagent: null, mode: null, openBoard: null });
   invoke.mockClear();
   useToastStore.setState({ toasts: [] });
 });
@@ -285,5 +285,34 @@ describe("App — assistant sub-agents", () => {
       payload: { projectId: "internal", processId: "sub-1", status },
     });
     expect(useAssistantStore.getState().subagents[0].status).toEqual(status);
+  });
+});
+
+describe("App — Floor mode", () => {
+  it("renders Project mode while no mode is chosen", () => {
+    render(<App />);
+    expect(screen.getByText("Welcome to Podium")).toBeInTheDocument();
+    expect(screen.getByLabelText("Resize sidebar")).toBeInTheDocument();
+  });
+
+  it("replaces sidebar and work area with the Floor, keeping the assistant", () => {
+    useLayoutStore.setState({ mode: "floor", assistantOpen: true });
+    render(<App />);
+    expect(screen.queryByText("Welcome to Podium")).toBeNull();
+    expect(screen.queryByLabelText("Resize sidebar")).toBeNull();
+    expect(screen.getByRole("main")).toBeInTheDocument();
+    expect(screen.getByLabelText("Personal assistant")).toBeInTheDocument();
+  });
+
+  it("keeps the app-level subscriptions in Floor mode", async () => {
+    useLayoutStore.setState({ mode: "floor" });
+    render(<App />);
+    await waitFor(() =>
+      expect(vi.mocked(listen)).toHaveBeenCalledWith(
+        "project:closed",
+        expect.any(Function),
+      ),
+    );
+    expect(invoke).toHaveBeenCalledWith("assistant_subagents_list");
   });
 });
