@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   FIT_PAD,
+  FIXTURE_W,
+  type WallFixture,
   NAMEPLATE_H,
   ZOOM_MAX,
   ZOOM_MIN,
@@ -17,16 +19,29 @@ import {
 const r = (x: number, y: number, w = 200, h = 120) => ({ x, y, w, h });
 
 describe("roomSize", () => {
+  const three: WallFixture[] = ["todos", "scratchpads", "commands"];
   it("is a bare wall without desks", () => {
-    expect(roomSize(0, false)).toEqual({ w: 200, h: 98 });
-    expect(roomSize(0, true)).toEqual({ w: 280, h: 98 });
+    expect(roomSize(0, [])).toEqual({ w: 200, h: 98 });
+    expect(roomSize(0, ["services"])).toEqual({ w: 200, h: 98 });
   });
   it("sizes by columns and rows", () => {
-    expect(roomSize(1, false)).toEqual({ w: 200, h: 270 });
-    expect(roomSize(2, false)).toEqual({ w: 360, h: 270 });
-    expect(roomSize(4, false)).toEqual({ w: 680, h: 270 });
-    expect(roomSize(5, false)).toEqual({ w: 680, h: 450 });
-    expect(roomSize(1, true).w).toBe(280);
+    expect(roomSize(1, [])).toEqual({ w: 200, h: 270 });
+    expect(roomSize(2, [])).toEqual({ w: 360, h: 270 });
+    expect(roomSize(4, [])).toEqual({ w: 680, h: 270 });
+    expect(roomSize(5, [])).toEqual({ w: 680, h: 450 });
+  });
+  it("fits its wall fixtures, padding and gaps included", () => {
+    // 2 border + 12 padding + 76 + 106 + 82 + 2 gaps of 4 = 286, on the grid.
+    expect(roomSize(1, three).w).toBe(320);
+    expect(roomSize(0, [...three, "services"]).w).toBe(400);
+    for (let n = 1; n <= 4; n++) {
+      const fx = [...three, "services"].slice(0, n) as WallFixture[];
+      const need =
+        14 + fx.reduce((w, f) => w + FIXTURE_W[f], 0) + 4 * (fx.length - 1);
+      expect(roomSize(1, fx).w).toBeGreaterThanOrEqual(need);
+    }
+    // Desks still win when they need more.
+    expect(roomSize(4, three).w).toBe(680);
   });
 });
 

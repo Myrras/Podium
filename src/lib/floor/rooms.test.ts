@@ -121,6 +121,28 @@ describe("rooms", () => {
     expect(r1.rect.x % 40).toBe(0);
   });
 
+  it("is wide enough for the wall fixtures it shows", () => {
+    useProjectStore.setState({
+      projects: [
+        project("w1"),
+        project("w2", {
+          sections: { todos: true, scratchpads: false, terminals: false },
+        } as never),
+      ],
+    });
+    useProcessStore.setState({
+      processes: [
+        proc("wa", "w1", "agent"),
+        proc("ws", "w1", "service"),
+        proc("wb", "w2", "agent"),
+      ],
+    });
+    const [all, todosOnly] = getRooms();
+    // To-dos, Scratchpads, Commands and Services: 374 px of wall.
+    expect(all.rect.w).toBe(400);
+    expect(todosOnly.rect.w).toBe(200);
+  });
+
   it("never writes positions and finds a room by process", () => {
     seed();
     const rooms = getRooms();
@@ -132,14 +154,14 @@ describe("rooms", () => {
   it("pushes the neighbour aside when a room outgrows its spot", () => {
     useProjectStore.setState({ projects: [project("ga"), project("gb")] });
     useLayoutStore.setState({
-      floorPositions: { "/fake/ga": [0, 0], "/fake/gb": [240, 0] },
+      floorPositions: { "/fake/ga": [0, 0], "/fake/gb": [360, 0] },
     });
     const a1 = proc("ga1", "ga", "agent");
     const b1 = proc("gb1", "gb", "agent");
     useProcessStore.setState({ processes: [a1, b1] });
     expect(getRooms().map((r) => [r.rect.x, r.rect.y])).toEqual([
       [0, 0],
-      [240, 0],
+      [360, 0],
     ]);
     useProcessStore.setState({
       processes: [a1, b1, proc("ga2", "ga", "agent")],
