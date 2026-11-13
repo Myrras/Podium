@@ -92,7 +92,7 @@ export function FloorHeader() {
         )}
         {working > 0 && <span>{working} working</span>}
       </div>
-      <div className={styles.buttons}>
+      <div className={styles.buttons} data-popover-keep>
         <button type="button" onClick={() => zoomBy(0.8)}>
           Zoom out
         </button>
