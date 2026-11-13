@@ -151,6 +151,12 @@ export function NewAgentModal({
           e.preventDefault();
           void handleStart();
         }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            if (canStart) void handleStart();
+          }
+        }}
       >
         <div className={styles.field}>
           <label htmlFor="agent-adapter">Adapter</label>

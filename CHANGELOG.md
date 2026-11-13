@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Added
+
+- Cmd/Ctrl+Enter starts the agent from the New agent and scratchpad agent dialogs, also from the prompt field.
+
 ## [3.3.0] - 2026-11-13
 
 ### Added

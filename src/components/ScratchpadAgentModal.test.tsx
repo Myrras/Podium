@@ -198,6 +198,26 @@ describe("ScratchpadAgentModal", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  it("starts the agent with Cmd+Enter in the instructions field", async () => {
+    const { spawnAgent } = seedSpawn();
+    render(
+      <ScratchpadAgentModal
+        open
+        projectId={PROJECT}
+        scratchpadIds={["sp-1"]}
+        onClose={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Start agent" })).toBeEnabled(),
+    );
+    fireEvent.keyDown(
+      screen.getByLabelText("Additional instructions (optional)"),
+      { key: "Enter", metaKey: true },
+    );
+    await waitFor(() => expect(spawnAgent).toHaveBeenCalledTimes(1));
+  });
+
   it("prefills the name field from initialName", async () => {
     seedSpawn();
     render(

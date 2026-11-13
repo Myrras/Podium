@@ -191,3 +191,44 @@ describe("NewAgentModal worktree checkbox", () => {
     );
   });
 });
+
+describe("NewAgentModal keyboard shortcut", () => {
+  beforeEach(() => {
+    useProcessStore.setState(initialProcess, true);
+    adaptersListMock.mockResolvedValue(ADAPTERS);
+    agentSettingsGetMock.mockResolvedValue(SETTINGS);
+  });
+
+  async function renderAndFocusPrompt() {
+    const { spawnAgent } = seedSpawn();
+    render(
+      <NewAgentModal open projectId={PROJECT} onClose={() => undefined} />,
+    );
+    await screen.findByText("Claude Code");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Start agent" })).toBeEnabled(),
+    );
+    return {
+      spawnAgent,
+      prompt: screen.getByLabelText("Initial prompt (optional)"),
+    };
+  }
+
+  it("starts the agent with Cmd+Enter in the prompt", async () => {
+    const { spawnAgent, prompt } = await renderAndFocusPrompt();
+    fireEvent.keyDown(prompt, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(spawnAgent).toHaveBeenCalledTimes(1));
+  });
+
+  it("starts the agent with Ctrl+Enter in the prompt", async () => {
+    const { spawnAgent, prompt } = await renderAndFocusPrompt();
+    fireEvent.keyDown(prompt, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(spawnAgent).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not start the agent on plain Enter in the prompt", async () => {
+    const { spawnAgent, prompt } = await renderAndFocusPrompt();
+    fireEvent.keyDown(prompt, { key: "Enter" });
+    expect(spawnAgent).not.toHaveBeenCalled();
+  });
+});
