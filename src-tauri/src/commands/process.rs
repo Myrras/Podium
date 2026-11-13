@@ -40,7 +40,7 @@ const BATCH_MAX_BYTES: usize = 64 * 1024;
 /// WSL backend (where the wrapper is bash): replace the wrapper
 /// `$SHELL -lc` with an interactive shell so the user gets prompts, job
 /// control, etc.
-const UNIX_TERMINAL_COMMAND: &str = "exec \"$SHELL\" -i";
+const UNIX_TERMINAL_COMMAND: &str = podium_core::process::pty::INTERACTIVE_SHELL_COMMAND;
 /// Native Windows: the wrapper is `cmd /C <command>`, so launching PowerShell
 /// hands the user an interactive shell inside the ConPTY.
 #[cfg(windows)]
