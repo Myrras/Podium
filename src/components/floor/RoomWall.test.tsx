@@ -11,10 +11,17 @@ import type { RoomModel } from "../../lib/floor/types";
 import { useFloorStore } from "../../state/floorStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
+import { todoMenu, scratchpadMenu, processMenu } from "../../lib/floor/menus";
 import { RoomWall } from "./RoomWall";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+
+vi.mock("../../lib/floor/menus", () => ({
+  todoMenu: vi.fn(() => [{ label: "todo-item", onSelect: vi.fn() }]),
+  scratchpadMenu: vi.fn(() => [{ label: "pad-item", onSelect: vi.fn() }]),
+  processMenu: vi.fn(() => [{ label: "proc-item", onSelect: vi.fn() }]),
+}));
 
 const project = {
   id: "p1",
@@ -134,5 +141,39 @@ describe("RoomWall", () => {
     seed([], 0);
     render(<RoomWall room={room()} />);
     expect(screen.queryByLabelText(/Services of/)).toBeNull();
+  });
+
+  it("opens the to-do menu on right-click of a note", () => {
+    const t = todo("t1");
+    seed([t], 0);
+    const { container } = render(<RoomWall room={room()} />);
+    fireEvent.contextMenu(container.querySelector("[data-note]")!);
+    expect(todoMenu).toHaveBeenCalledWith("p1", t);
+    expect(screen.getByText("todo-item")).toBeTruthy();
+    expect(useFloorStore.getState().popover).toBeNull();
+  });
+
+  it("opens the scratchpad menu on right-click of a notebook", () => {
+    seed([], 1);
+    const { container } = render(<RoomWall room={room()} />);
+    fireEvent.contextMenu(container.querySelector("[data-book]")!);
+    expect(scratchpadMenu).toHaveBeenCalledWith("p1", { id: "s0" });
+    expect(screen.getByText("pad-item")).toBeTruthy();
+  });
+
+  it("opens the process menu on right-click of a light", () => {
+    seed([], 0);
+    const sv = service("a", { state: "notStarted" });
+    const { container } = render(<RoomWall room={room({ services: [sv] })} />);
+    fireEvent.contextMenu(container.querySelector("[data-light]")!);
+    expect(processMenu).toHaveBeenCalledWith(sv, expect.anything());
+    expect(screen.getByText("proc-item")).toBeTruthy();
+  });
+
+  it("ignores right-click elsewhere on a fixture", () => {
+    seed([todo("t1")], 0);
+    render(<RoomWall room={room()} />);
+    fireEvent.contextMenu(screen.getByLabelText("To-dos of Alpha, 1"));
+    expect(screen.queryByText("todo-item")).toBeNull();
   });
 });
