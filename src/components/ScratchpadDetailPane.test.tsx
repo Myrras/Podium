@@ -586,4 +586,24 @@ describe("ScratchpadDetailPane", () => {
     // Still conflicted — the second autosave must not have silently succeeded.
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
+
+  it("compact_hides_toc_and_close_calls_onClose", () => {
+    seed();
+    const onClose = vi.fn();
+    const clear = vi.fn();
+    useLayoutStore.setState({ clearOpenScratchpad: clear });
+    render(
+      <ScratchpadDetailPane
+        compact
+        projectId={PROJECT}
+        scratchpadId={SCRATCHPAD}
+        onClose={onClose}
+      />,
+    );
+
+    expect(screen.queryByLabelText("On this page")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close scratchpad" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
+  });
 });
