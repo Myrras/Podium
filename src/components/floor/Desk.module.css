@@ -8,7 +8,7 @@
   padding: 8px 4px;
   background: none;
   border: 0;
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
   color: var(--text);
   font: inherit;
   cursor: pointer;
@@ -24,7 +24,7 @@
   display: grid;
   place-items: center;
   padding: 6px;
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
 }
 
 .desk[data-state="working"] .pad {
@@ -57,12 +57,12 @@
 
 .ask {
   background: var(--warning);
-  color: var(--bg, #000);
+  color: var(--bg);
 }
 
 .bang {
   background: var(--danger);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 .shells {
