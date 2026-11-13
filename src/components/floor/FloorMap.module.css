@@ -15,6 +15,13 @@
   background-position: var(--gx, 0) var(--gy, 0);
 }
 
+/* Registered so --z can transition with the layer's scale: nameplates and desk marks then shrink with the map instead of jumping. */
+@property --z {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
 .layer {
   position: absolute;
   top: 0;
@@ -24,5 +31,7 @@
 }
 
 .layer[data-animate] {
-  transition: transform var(--dur-4) var(--ease-out);
+  transition:
+    transform var(--dur-4) var(--ease-out),
+    --z var(--dur-4) var(--ease-out);
 }

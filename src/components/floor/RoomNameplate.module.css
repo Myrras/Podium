@@ -1,9 +1,14 @@
+/* Fixed 12px layout, counter-scaled to keep its screen size: changing the font-size per zoom step reflowed it. Pinned at the corner that touches the room. */
 .plate {
   display: flex;
+  width: max-content;
   align-items: center;
   gap: 0.5em;
-  font-size: calc(12px / var(--z, 1));
+  font-size: 12px;
+  white-space: nowrap;
   color: var(--text);
+  transform: scale(calc(1 / var(--z, 1)));
+  transform-origin: bottom left;
 }
 
 .grip {
@@ -30,6 +35,9 @@
 }
 
 .name {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 600;
 }
 
@@ -60,8 +68,4 @@
 .btn:hover {
   background: var(--surface-hover);
   color: var(--text);
-}
-
-:global([data-far]) .name {
-  visibility: hidden;
 }
