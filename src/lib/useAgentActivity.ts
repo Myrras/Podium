@@ -1,6 +1,5 @@
 /**
- * Read one agent's activity ("working" / "waiting" / "idle") and its
- * background-shell count for rendering.
+ * Read one agent's activity ("working" / "waiting" / "idle") for rendering.
  *
  * The state is derived centrally by the activity monitor (see
  * `agentActivityStore`); this hook just subscribes to a single process's slot,
@@ -11,10 +10,12 @@
 import type { ProcessId } from "../ipc/types";
 import {
   type AgentActivity,
+  type ProcessActivity,
+  UNTRACKED_ACTIVITY,
   useAgentActivityStore,
 } from "../state/agentActivityStore";
 
-export type { AgentActivity };
+export type { AgentActivity, ProcessActivity };
 
 /** The current activity for `processId` (defaults to "idle" when untracked). */
 export function useAgentActivity(processId: ProcessId): AgentActivity {
@@ -22,9 +23,12 @@ export function useAgentActivity(processId: ProcessId): AgentActivity {
 }
 
 /**
- * How many background shells `processId` currently reports (0 when none or
- * untracked). Lets an "idle" agent still show that work is running behind it.
+ * Everything known about `processId`'s activity: the state, whether the
+ * process reported it itself, what it waits for, since when, and the work
+ * running behind it. Untracked processes read as plain "idle".
  */
-export function useAgentShells(processId: ProcessId): number {
-  return useAgentActivityStore((s) => s.shells[processId] ?? 0);
+export function useProcessActivity(processId: ProcessId): ProcessActivity {
+  return useAgentActivityStore(
+    (s) => s.details[processId] ?? UNTRACKED_ACTIVITY,
+  );
 }

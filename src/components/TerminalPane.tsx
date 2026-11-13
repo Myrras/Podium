@@ -4,11 +4,11 @@ import { useEffect, useState } from "react";
 
 import { processGitBranch } from "../ipc/commands";
 import type { ProcessId, ProcessInfo } from "../ipc/types";
-import { activityLabel, isActive, statusLabel } from "../lib/processStatus";
-import { useAgentActivity, useAgentShells } from "../lib/useAgentActivity";
+import { isActive, pillState, statusLabel } from "../lib/processStatus";
+import { useProcessActivity } from "../lib/useAgentActivity";
 import { useAssistantStore } from "../state/assistantStore";
 import { useProcessStore } from "../state/processStore";
-import { StatusDot } from "./StatusDot";
+import { StatusPill } from "./StatusPill";
 import { TerminalView } from "./TerminalView";
 import {
   BranchIcon,
@@ -32,11 +32,10 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
 
   const active = isActive(process.status);
   const isAgent = process.kind.kind === "agent";
-  const running = process.status.state === "running";
-  const activity = useAgentActivity(process.id);
-  const shells = useAgentShells(process.id);
-  // Non-agents only surface "needs input" (see ProcessRow).
-  const showActivity = isAgent || activity === "waiting";
+  // Also covers an assistant sub-agent: the monitor tracks those in `details`.
+  const activity = useProcessActivity(process.id);
+  const state = pillState(process.status, process.kind.kind, activity);
+
   // One of the assistant's sub-agents: stopped through its own path (the
   // assistant is told), and only while it still holds or waits for a slot.
   const subagent = process.subagent;
@@ -71,16 +70,19 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
         <TerminalIcon className={styles.kindIcon} />
         <span className={styles.name}>{process.name}</span>
         <span className={styles.status}>
-          <StatusDot
-            status={process.status}
-            activity={showActivity ? activity : undefined}
+          <StatusPill
+            state={state}
+            kind={process.kind.kind}
+            sinceMs={activity.sinceMs}
+            subagents={activity.subagents}
+            shells={activity.shells}
           />
           <span className={styles.statusText}>
             {statusLabel(process.status)}
           </span>
-          {showActivity && running && (
-            <span className={styles.activityText} data-activity={activity}>
-              {activityLabel(activity, shells)}
+          {state === "needs" && activity.waitingFor && (
+            <span className={styles.waitingFor} title={activity.waitingFor}>
+              {activity.waitingFor}
             </span>
           )}
         </span>

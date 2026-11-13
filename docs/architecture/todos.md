@@ -24,16 +24,16 @@ items drop out of the active list and show in the Archive modal.
 An **assigned** to-do carries its owning agent's session colour. Each agent
 gets a subtle colour at spawn from an 8-hue palette, avoiding colours other
 live agents hold. It rides on `AssignedAgent`, and is also surfaced on
-`ProcessInfo.color`. The to-do row **and the agent's own sidebar row** are
-tinted the same colour so the two can be matched at a glance. The to-do's
-spawn button is hidden and it drops out of multi-select, because one session
-owns it.
+`ProcessInfo.color`. Rows are not tinted: the agent's sidebar row and the
+to-do both show an **identity square** in that colour, so the two can be
+matched at a glance. The to-do's spawn button is hidden and it drops out of
+multi-select, because one session owns it.
 
-An agent that **exits** keeps its to-do/scratchpad links (only removing the
-process drops them) but loses its colour. `spec.color` is cleared in the exit
-handler and kept as `last_color`, and the to-do row is tinted neutral grey. The
-next start (`do_start`) takes `last_color` back if no live agent holds it, else
-picks one the way a spawn does (`pick_session_color`).
+An agent keeps its colour for life, across exit and restart. An agent that
+**exits** also keeps its to-do/scratchpad links (only removing the process
+drops them); its square turns **hollow** on both the agent row and the
+to-do, which marks the owner as stopped. The square carries `role="img"` and
+an `aria-label` equal to its title ("Owned by <name>", plus " (stopped)").
 
 A link to an exited agent no longer counts as **owning**.
 `AssignedAgent.active` (`ManagedProcess::is_active`, also in the `list_todos`

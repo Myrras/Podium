@@ -13,35 +13,75 @@ double-mounts and keeps scrollback across tab switches. The registry owns
 attach/re-attach (including the `lagged` recovery) and re-themes live
 terminals on theme change.
 
-## Activity indicator
+## Activity
 
-The **activity indicator** is derived once a second by `agentActivityStore`'s
-monitor. It has two states, "working…" and "needs input".
+`agentActivityStore`'s monitor derives each running process's state once a
+second. The core reports what a process says about itself; the store falls
+back to guessing when it says nothing.
 
-### Working
+### Reported state (core)
 
-"Working…" (pulsing dot) comes from the backend: `process_activity` reports,
-per running process, how long ago it last printed and how long that burst of
-output has lasted, read off the core's scrollback
-(`ScrollbackBuffer::output_activity`, bursts split by a 1s gap). So it covers
-agents whose terminal was never opened here.
+`podium-core/src/activity/` gathers one `Reported` per running process, and
+`process_activity` sends it merged into `OutputActivity` (`state`,
+`waitingFor`, `stateMs`, `subagents`, `shells`, next to `quietMs`/`burstMs`).
+`state` is `working`, `waiting` or `idle`, or null. Providers:
 
-A process reads as working when it printed within the last 2.5s **and** the
-burst has lasted ≥300ms: a lone redraw (Claude Code repainting after the pane
-is fitted, a prompt being drawn) is a burst of ~0ms, while a spinner keeps one
-growing. The previous signal was the frontend's own stream timestamp, which
-did not exist for an unopened terminal and which the attach snapshot and the
-resize repaint both bumped. So every open showed "working…" for a few
-seconds.
+| Provider                | Covers                       | Source                                                                                                                         |
+| ----------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `claude_status`         | Claude Code agents, native   | Claude Code's own `<claude config dir>/sessions/<pid>.json` (`status`: busy, shell, waiting, idle), found by the `podium-<tag>` session name. The config dir is learned from any hook event's `transcript_path` (`SessionStart` fires at launch) (a shell profile may set `CLAUDE_CONFIG_DIR` per repo), else the global one. Undocumented Claude Code internals |
+| `hooks`                 | sub-agent and shell counts   | event files from Podium's hooks, drained on each poll (see [Agent hooks](processes-and-agents.md#agent-hooks))                |
+| `foreground` (Unix)     | terminals, default shell only | working while the PTY's foreground process group is not the shell; none for a terminal started with its own command           |
 
-### Needs input
+`stateMs` is time in the current state: Claude Code's own timestamp when it
+records one, else since the poll that first saw the state. Windows, WSL and
+Auggie agents report nothing.
 
-A quiet screen showing a permission/confirmation prompt or a credential
-request (`sudo` password, ssh passphrase) reads as **"needs input"** instead.
-That half still reads the xterm viewport, so it needs an opened terminal. It
-is derived for **every** running process, not just agents, so a terminal
-stalled on `sudo` surfaces the same way. Non-agents only show that state
-("working…"/"idle" is noise for a plain shell).
+### Fallback (store)
+
+With `state` null the store keeps the old heuristics: working when the PTY
+printed within 2.5 s and the burst lasted at least 300 ms (a lone redraw is
+~0 ms, a spinner keeps growing), and **needs input** when a quiet screen
+shows a permission prompt or credential request (`detectInputPrompt`, needs an
+opened terminal). A reported state wins over both; a reported `waiting` is the
+needs-input episode. Exception for non-agent processes: the core can only
+report `working` or `idle` for a terminal, so a reported `working` with an
+input prompt on screen (`sudo`, `[y/N]`) reads `waiting` and counts as a
+prompt episode (one notification). A reported `idle` stays idle. Background shells fall back to the screen read
+(`detectBackgroundShells`) when the core counts none.
+
+Output within `ECHO_WINDOW` (100 ms) of a stimulus is its echo or repaint, so
+it neither starts nor extends a burst nor resets the quiet time
+(`ScrollbackBuffer::note_stimulus`). A stimulus is a resize to a new size, or a
+stdin write that is not a pointer-motion report (`ESC[<35;`) or the terminal's
+own reply to a query (CSI ending in `R`, `c`, `n`, `y` or `t`; OSC `ESC ]`;
+DCS `ESC P`), so keys, pastes, clicks and the wheel count. Once a burst is
+sustained (at least 300 ms, last chunk within 1 s) nothing is taken for an echo,
+so continuous input never hides a working process.
+
+### Store contract
+
+`ProcessActivity` (`activity`, `reported`, `waitingFor`, `sinceMs`,
+`subagents`, `shells`) is kept per process in `details`.
+`useProcessActivity(id)` reads one slot, so a component re-renders only when
+its process changes; an untracked process reads `UNTRACKED_ACTIVITY` (idle,
+not reported). `useAgentActivity` is the narrow read. Sidebar and worktree headers select
+only their working/needs counts (`activityRollup` through zustand's
+`useShallow`), so a header re-renders only when its counts change.
+
+### Status pill
+
+`pillState` (`src/lib/processStatus.ts`) maps lifecycle plus activity to one
+pill, shown on each sidebar row and in the terminal pane header, never
+hidden: Working (Running for a terminal or service), Needs you, Idle, Up,
+Stopping, Crashed, Exited, Not started. A running terminal or service reads Up
+until it reports a state. The pill carries the elapsed time and counters for
+running sub-agents and background shells; on row hover the buttons replace the
+elapsed time. Collapsed projects and sections roll up counts of working and
+needs-you (`activityRollup.ts`).
+
+Rows: selection is a raised block without a hue. An agent row shows an
+identity square in its session colour instead of a tinted row; a to-do shows
+its owner's square, hollow when that agent has stopped.
 
 ### Sub-agents in the monitor
 

@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::activity::{self, claude_status, foreground, hooks, Reported};
 use crate::agent::session_memory::{self, RememberedSession, SessionMemoryStore};
 use crate::agent::settings::{self, AgentSettings, AgentSettingsStore, MergeMode};
 use crate::agent::{
@@ -169,6 +170,9 @@ struct ManagedProcess {
     /// that a blocked agent's question was answered, so its next stall is a
     /// new question. `None` until something is typed.
     last_input: Option<Instant>,
+    /// The size the UI last gave the current PTY ([`Orchestrator::resize`]);
+    /// `None` until it gives one.
+    pty_size: Option<(u16, u16)>,
     /// Whether the user has this agent open on screen right now
     /// ([`Orchestrator::set_viewing`]). In memory only, and at most one
     /// process has it.
@@ -187,9 +191,6 @@ struct ManagedProcess {
     /// CLI session it is on (see [`AgentSession`]). `None` for everything
     /// else.
     session: Option<AgentSession>,
-    /// The colour an exited agent gave up, which its next start takes back
-    /// unless another live agent holds it by then.
-    last_color: Option<String>,
 }
 
 /// An agent's CLI session: the commands a restart picks from
@@ -281,6 +282,9 @@ struct Inner {
     /// Where the exit handler hands a sub-agent's exit to the sub-agent
     /// driver ([`run_subagent_driver`]); set when the driver starts.
     subagent_exits: Option<tokio::sync::mpsc::UnboundedSender<ProcessId>>,
+    /// What the agents' hooks reported. Here so [`do_start`] can reset it;
+    /// an `Arc` so [`Orchestrator::output_activity`] reads it outside the lock.
+    hooks: Arc<hooks::Store>,
 }
 
 /// The personal assistant's own scope: the Podium-internal "project" its
@@ -356,6 +360,9 @@ pub struct Orchestrator {
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
     subagent_driver: AtomicBool,
+    /// When each process's reported state last changed, as of the latest
+    /// [`Self::output_activity`] poll.
+    reported_seen: Mutex<activity::Seen>,
 }
 
 impl Default for Orchestrator {
@@ -389,6 +396,7 @@ impl Orchestrator {
             session_memory: SessionMemoryStore::new(),
             subagent_config: SubagentConfig::default(),
             subagent_driver: AtomicBool::new(false),
+            reported_seen: Mutex::default(),
         }
     }
 
@@ -1195,23 +1203,37 @@ impl Orchestrator {
     /// How recently and how steadily each running process has been printing,
     /// keyed by process id — what the UI polls for its "working…" indicator.
     /// Read off the scrollback, so it covers processes whose terminal was
-    /// never opened; a process that never printed is left out.
+    /// never opened; a process that never printed is left out unless it
+    /// reports a state.
+    ///
+    /// Each entry also carries what the process itself reported
+    /// ([`crate::activity`]): an agent's Claude Code status and hook counts,
+    /// a terminal's foreground. Those reads touch files and the PTY, so they
+    /// run after the lock is released, on the caller's thread.
     pub fn output_activity(&self) -> HashMap<ProcessId, OutputActivity> {
         let now = Instant::now();
-        let inner = self.inner.lock().expect(LOCK_POISONED);
-        inner
-            .processes
-            .iter()
-            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
-            .filter_map(|(id, p)| {
-                let activity = p
-                    .scrollback
-                    .lock()
-                    .expect(LOCK_POISONED)
-                    .output_activity(now)?;
-                Some((*id, activity))
+        let (probes, hooks): (Vec<ActivityProbe>, _) = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let probes = inner
+                .processes
+                .iter()
+                .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
+                .map(|(id, p)| activity_probe(&inner, *id, p, now))
+                .collect();
+            (probes, Arc::clone(&inner.hooks))
+        };
+        let config_dir = crate::agent::claude_config_dir();
+        let polled = probes
+            .into_iter()
+            .map(|probe| activity::Polled {
+                reported: probe.report(config_dir.as_deref(), &hooks),
+                id: probe.id,
+                output: probe.output,
+                started: probe.started,
             })
-            .collect()
+            .collect();
+        let mut seen = self.reported_seen.lock().expect(LOCK_POISONED);
+        activity::merge(polled, &mut seen, now, std::time::SystemTime::now())
     }
 
     /// The UI saw an input prompt on this agent's screen (a permission
@@ -2817,7 +2839,7 @@ impl Orchestrator {
                 .filter(|p| p.project_id == project_id)
                 .map(|p| p.spec.name.clone())
                 .collect();
-            let color = pick_session_color(&inner, project_id, None);
+            let color = pick_session_color(&inner, project_id);
             (root, wsl, agents, names, color)
         };
         // Adapter precedence: an explicit choice, then the project's pinned
@@ -3806,7 +3828,18 @@ impl Orchestrator {
     }
 
     pub async fn write_stdin(&self, id: ProcessId, bytes: &[u8]) -> CoreResult<()> {
-        self.running_pty(id)?.write(bytes)?;
+        let (pty, scrollback) = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            let pty = proc.pty.clone().ok_or(CoreError::ProcessNotRunning)?;
+            (pty, Arc::clone(&proc.scrollback))
+        };
+        // Noted before the PTY sees the input, so a fast echo cannot slip in
+        // ahead and read as work.
+        if is_stimulus(bytes) {
+            scrollback.lock().expect(LOCK_POISONED).note_stimulus();
+        }
+        pty.write(bytes)?;
         if is_user_input(bytes) {
             if let Some(p) = self
                 .inner
@@ -3827,7 +3860,22 @@ impl Orchestrator {
     }
 
     pub async fn resize(&self, id: ProcessId, cols: u16, rows: u16) -> CoreResult<()> {
-        self.running_pty(id)?.resize(cols, rows)
+        let (pty, scrollback, changed) = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner
+                .processes
+                .get_mut(&id)
+                .ok_or(CoreError::ProcessNotFound)?;
+            let pty = proc.pty.clone().ok_or(CoreError::ProcessNotRunning)?;
+            // The UI resizes on every fit; only a new size makes a repaint.
+            let changed = proc.pty_size.replace((cols, rows)) != Some((cols, rows));
+            (pty, Arc::clone(&proc.scrollback), changed)
+        };
+        // Before the resize, so its repaint is not read as work.
+        if changed {
+            scrollback.lock().expect(LOCK_POISONED).note_stimulus();
+        }
+        pty.resize(cols, rows)
     }
 
     fn running_pty(&self, id: ProcessId) -> CoreResult<Arc<PtyProcess>> {
@@ -4602,12 +4650,12 @@ const SESSION_COLORS: [&str; 8] = [
     "#ffb224", // amber
 ];
 
-/// Pick a session colour not currently used by another live agent in the
-/// project — `preferred` when it is free; once the palette is exhausted,
-/// cycle by the used count.
+/// Pick a session colour not currently used by a live agent in the project
+/// (exited agents keep theirs but reserve nothing); once the palette is
+/// exhausted, cycle by the used count.
 // ponytail: two concurrent spawns could momentarily pick the same colour —
 // cosmetic only, and the max is 8 agents = palette size, so it's rare.
-fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&str>) -> String {
+fn pick_session_color(inner: &Inner, project_id: ProjectId) -> String {
     let used: HashSet<&str> = inner
         .processes
         .values()
@@ -4618,9 +4666,9 @@ fn pick_session_color(inner: &Inner, project_id: ProjectId, preferred: Option<&s
         })
         .filter_map(|p| p.spec.color.as_deref())
         .collect();
-    preferred
-        .into_iter()
-        .chain(SESSION_COLORS.iter().copied())
+    SESSION_COLORS
+        .iter()
+        .copied()
         .find(|c| !used.contains(c))
         .unwrap_or(SESSION_COLORS[used.len() % SESSION_COLORS.len()])
         .to_string()
@@ -4662,7 +4710,7 @@ struct Removed {
 /// Take process `id` out of the registry: its to-do/scratchpad links go
 /// (cleared while it is still in the map — clearing needs its project id),
 /// a pending supervised restart is cancelled and a live PTY stopped. Its
-/// colour (or the `last_color` an exited agent kept) goes with it. `None`
+/// colour goes with it. `None`
 /// when there is no such process (clearing then found nothing either).
 fn take_process(inner: &mut Inner, id: ProcessId) -> Option<Removed> {
     let cleared = clear_agent_assignments(inner, id);
@@ -4950,6 +4998,25 @@ fn is_user_input(bytes: &[u8]) -> bool {
     }
 }
 
+/// Whether a stdin write is the user acting (a key, a paste, a click, the
+/// wheel), so the output answering it is no work of the process's own. Not:
+/// a bare pointer-motion report (Claude Code turns on any-motion tracking,
+/// so moving the mouse would hide its work), and the terminal's own replies
+/// to queries (cursor position `R`, device attributes `c`, status `n`, mode
+/// `y`, window `t`, and OSC/DCS strings), which arrive without the user.
+// Not `is_user_input`: that drops every short escape sequence, arrows and
+// mouse clicks included.
+fn is_stimulus(bytes: &[u8]) -> bool {
+    let reply = match bytes {
+        [0x1b, b']' | b'P', ..] => true,
+        [0x1b, b'[', .., last] => {
+            bytes.starts_with(b"\x1b[<35;") || matches!(last, b'R' | b'c' | b'n' | b'y' | b't')
+        }
+        _ => false,
+    };
+    !bytes.is_empty() && !reply
+}
+
 /// Longest escape sequence the terminal itself sends back (a cursor-position
 /// report is about a dozen bytes).
 const MAX_TERMINAL_REPLY_BYTES: usize = 16;
@@ -4980,13 +5047,13 @@ fn insert_process(
             started_wall: None,
             waiting_since: None,
             last_input: None,
+            pty_size: None,
             viewing: false,
             spawn_args: None,
             spawn_worktree: false,
             spawn_worktree_name: None,
             seq,
             session: None,
-            last_color: None,
         },
     );
 }
@@ -5027,22 +5094,7 @@ fn do_start(
             "this sub-agent has already ended".to_string(),
         ));
     }
-    // An agent that lost its colour on exit takes it back if no live agent
-    // holds it now, else gets a new one picked exactly as at spawn.
-    let new_color = match guard.processes.get(&id) {
-        Some(p)
-            if p.spec.color.is_none()
-                && !p.is_active()
-                && matches!(p.spec.kind, ProcessKind::Agent { .. }) =>
-        {
-            Some(pick_session_color(
-                &guard,
-                p.project_id,
-                p.last_color.as_deref(),
-            ))
-        }
-        _ => None,
-    };
+    let hooks = Arc::clone(&guard.hooks);
     let proc = guard
         .processes
         .get_mut(&id)
@@ -5050,6 +5102,8 @@ fn do_start(
     if proc.is_active() {
         return Err(CoreError::ProcessAlreadyRunning);
     }
+    // Every run counts its sub-agents and shells from zero.
+    hooks.reset(id);
     if manual {
         proc.restart.cancel();
         proc.restart.reset();
@@ -5082,6 +5136,7 @@ fn do_start(
     };
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
+    proc.pty_size = None;
     proc.started_at = Some(Instant::now());
     proc.started_wall = Some(std::time::SystemTime::now());
     // Only now that the launch is running does its session become current.
@@ -5089,10 +5144,6 @@ fn do_start(
         session.resume_failed &= r.session_id == session.id;
         session.id = r.session_id;
         session.resumed = r.resumed;
-    }
-    let recolored = new_color.is_some();
-    if recolored {
-        proc.spec.color = new_color;
     }
     // Publish while still holding the lock: the exit callback also takes
     // the lock, so an instantly-exiting child's Exited event can never be
@@ -5102,9 +5153,7 @@ fn do_start(
         process_id: id,
         status,
     });
-    if recolored {
-        publish_color_change(&guard, events, id, project_id);
-    }
+    publish_assignment_change(&guard, events, id, project_id);
     Ok(())
 }
 
@@ -5130,6 +5179,80 @@ fn restart_launch(session: &AgentSession, stored: bool) -> Relaunch {
             session_id,
             resumed: false,
         }
+    }
+}
+
+/// What [`Orchestrator::output_activity`] needs to know of a running process,
+/// taken under the lock so the providers can be asked outside it.
+struct ActivityProbe {
+    id: ProcessId,
+    /// Its output timing; `None` while it never printed.
+    output: Option<OutputActivity>,
+    started: Instant,
+    kind: ProcessKind,
+    pty: Option<Arc<PtyProcess>>,
+    cwd: PathBuf,
+    started_wall: Option<std::time::SystemTime>,
+    /// Whether Claude Code's own status can be read: an agent on that
+    /// adapter, on Unix, on the native backend (in WSL its files live in the
+    /// distro).
+    claude: bool,
+}
+
+fn activity_probe(inner: &Inner, id: ProcessId, p: &ManagedProcess, now: Instant) -> ActivityProbe {
+    ActivityProbe {
+        id,
+        output: p
+            .scrollback
+            .lock()
+            .expect(LOCK_POISONED)
+            .output_activity(now),
+        started: p.started_at.unwrap_or(now),
+        kind: p.spec.kind.clone(),
+        pty: p.pty.clone(),
+        cwd: p.spec.cwd.clone(),
+        started_wall: p.started_wall,
+        // Off on Windows: untested there, and not offered.
+        claude: cfg!(unix)
+            && matches!(&p.spec.kind, ProcessKind::Agent { adapter } if adapter == crate::agent::CLAUDE_CODE.id)
+            && project_backend(inner, p.project_id).is_none(),
+    }
+}
+
+impl ActivityProbe {
+    /// Ask the providers for this process's kind. Reads files and the PTY:
+    /// call it outside the lock.
+    fn report(&self, config_dir: Option<&Path>, hooks: &hooks::Store) -> Reported {
+        match self.kind {
+            ProcessKind::Agent { .. } => {
+                // Counts first: draining the events is what learns the agent's
+                // own config dir, which a shell profile may have changed.
+                let counts = hooks.counts(self.id);
+                let own = hooks.config_dir(self.id);
+                Reported::agent(self.claude_status(own.as_deref().or(config_dir)), counts)
+            }
+            ProcessKind::Terminal => {
+                Reported::terminal(self.pty.as_deref().and_then(foreground::busy))
+            }
+            ProcessKind::Service => Reported::default(),
+        }
+    }
+
+    /// Claude Code's status for this agent, found by the session name Podium
+    /// stamped on it at launch: `podium-<tag>`, the tag being the first 8
+    /// characters of its process id (see `CliAdapter::build_launch`).
+    fn claude_status(&self, config_dir: Option<&Path>) -> Option<claude_status::ClaudeStatus> {
+        if !self.claude {
+            return None;
+        }
+        let tag = crate::agent::peer_tag(&self.id.to_string());
+        claude_status::read(&claude_status::Probe {
+            config_dir: config_dir?,
+            session_name: &crate::agent::peer_session_name(&tag),
+            pty_pid: self.pty.as_ref().map(|pty| pty.pid()),
+            cwd: &self.cwd,
+            started: self.started_wall?,
+        })
     }
 }
 
@@ -5243,14 +5366,20 @@ fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration
     session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
 }
 
-/// Tell the UI an agent's colour changed: its own row (`ProcessUpdated`
-/// re-lists processes) and the to-dos/scratchpads it owns, which carry the
-/// colour on their assignment.
-fn publish_color_change(inner: &Inner, events: &EventBus, id: ProcessId, project_id: ProjectId) {
-    events.publish(PodiumEvent::ProcessUpdated {
-        project_id,
-        process_id: id,
-    });
+/// Tell the UI the to-dos/scratchpads an agent owns changed state: their
+/// assignment carries `active`, which flips when the agent exits or starts.
+fn publish_assignment_change(
+    inner: &Inner,
+    events: &EventBus,
+    id: ProcessId,
+    project_id: ProjectId,
+) {
+    if !matches!(
+        inner.processes.get(&id).map(|p| &p.spec.kind),
+        Some(ProcessKind::Agent { .. })
+    ) {
+        return;
+    }
     if inner.todo_assignments.values().any(|p| *p == id) {
         events.publish(PodiumEvent::TodosChanged { project_id });
     }
@@ -5331,23 +5460,13 @@ fn make_exit_handler(
             } else {
                 None
             };
-            // An exited agent that is not being restarted keeps its
-            // to-dos/scratchpads (a restart picks the work back up) but loses
-            // its colour, so the UI shows it as no longer live. The next
-            // start takes it back if it is still free.
-            let decolored = restart.is_none()
-                && matches!(p.spec.kind, ProcessKind::Agent { .. })
-                && p.spec.color.is_some();
-            if decolored {
-                p.last_color = p.spec.color.take();
-            }
             events.publish(PodiumEvent::ProcessStatusChanged {
                 project_id,
                 process_id: id,
                 status,
             });
-            if decolored {
-                publish_color_change(&guard, &events, id, project_id);
+            if restart.is_none() {
+                publish_assignment_change(&guard, &events, id, project_id);
             }
             // A sub-agent's exit decides its phase and frees its slot: the
             // driver acts on it, on the runtime rather than this wait thread.
@@ -6079,6 +6198,36 @@ mod tests {
         orch.remove_process(agent).await.unwrap();
 
         assert_eq!(orch.viewing(), None);
+    }
+
+    #[test]
+    fn only_the_user_acting_is_a_stimulus() {
+        // Keys, a paste, the wheel, a click and its release.
+        for yes in [
+            &b"a"[..],
+            b"\r",
+            b"\x1b[A",
+            b"\x1b[200~fictitious paste\x1b[201~",
+            b"\x1b[<64;10;10M",
+            b"\x1b[<0;10;10M",
+            b"\x1b[<0;10;10m",
+        ] {
+            assert!(is_stimulus(yes), "{yes:?}");
+        }
+        // Pointer motion, and the terminal answering a query.
+        for no in [
+            &b""[..],
+            b"\x1b[<35;10;10M",
+            b"\x1b[12;40R",
+            b"\x1b[?62;c",
+            b"\x1b[0n",
+            b"\x1b[?2004;1$y",
+            b"\x1b[8;24;80t",
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\",
+            b"\x1bP>|xterm.js\x1b\\",
+        ] {
+            assert!(!is_stimulus(no), "{no:?}");
+        }
     }
 
     #[test]
@@ -7364,6 +7513,105 @@ mod tests {
             stopped,
             at: Utc::now() - chrono::Duration::from_std(ago).unwrap(),
         }
+    }
+
+    /// Give process `id` the session colour `color` (fictitious).
+    fn set_color(orch: &Orchestrator, id: ProcessId, color: &str) {
+        let mut inner = orch.inner.lock().unwrap();
+        inner.processes.get_mut(&id).unwrap().spec.color = Some(color.to_string());
+    }
+
+    #[tokio::test]
+    async fn an_exited_agent_keeps_its_colour_and_reserves_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let gone = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(1), false),
+        )
+        .await;
+        set_color(&orch, gone, SESSION_COLORS[0]);
+
+        assert_eq!(
+            orch.process_info(gone).unwrap().color.as_deref(),
+            Some(SESSION_COLORS[0])
+        );
+        let inner = orch.inner.lock().unwrap();
+        assert_eq!(pick_session_color(&inner, project), SESSION_COLORS[0]);
+    }
+
+    #[tokio::test]
+    async fn a_live_agent_reserves_its_colour_from_new_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let live = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Running {
+                pid: 1,
+                since: Utc::now(),
+            },
+        )
+        .await;
+        set_color(&orch, live, SESSION_COLORS[0]);
+
+        let inner = orch.inner.lock().unwrap();
+        assert_eq!(pick_session_color(&inner, project), SESSION_COLORS[1]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell")]
+    async fn a_restart_reuses_the_agents_own_colour() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let exited = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            exited_ago(Duration::from_secs(1), false),
+        )
+        .await;
+        set_color(&orch, exited, SESSION_COLORS[0]);
+        // A live agent took the same colour in the meantime.
+        let other = process_in(
+            &orch,
+            project,
+            dir.path(),
+            agent_kind(),
+            ProcessStatus::Running {
+                pid: 1,
+                since: Utc::now(),
+            },
+        )
+        .await;
+        set_color(&orch, other, SESSION_COLORS[0]);
+
+        let todo = orch.add_todo(project, "Fictional task", None).unwrap();
+        orch.assign_todo(project, todo.id, exited).unwrap();
+        let mut rx = orch.subscribe_events();
+
+        orch.start_process(exited).await.unwrap();
+
+        assert_eq!(
+            orch.process_info(exited).unwrap().color.as_deref(),
+            Some(SESSION_COLORS[0])
+        );
+        let mut todos_changed = false;
+        while let Ok(event) = rx.try_recv() {
+            todos_changed |=
+                matches!(event, PodiumEvent::TodosChanged { project_id } if project_id == project);
+        }
+        assert!(todos_changed, "the owner's to-dos are re-listed on restart");
+        orch.shutdown().await;
     }
 
     const WINDOW: Duration = Duration::from_secs(5 * 60);
@@ -8672,6 +8920,101 @@ mod tests {
         assert!(!ws.join(".claude").exists());
         assert!(!ws.join(".mcp.json").exists());
         assert!(!ws.join("CLAUDE.md").exists());
+        orch.shutdown().await;
+    }
+
+    /// A group kill fires no stop hook, so a start must not inherit the last
+    /// run's hook counts or its unread events.
+    // Unix-only: the hooks (and so their directory) exist only there.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_resets_the_hook_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = orch
+            .add_process(
+                project_id,
+                ProcessSpec {
+                    name: "fictitious".to_string(),
+                    command: "sleep 30".to_string(),
+                    cwd: dir.path().to_path_buf(),
+                    env: Vec::new(),
+                    kind: ProcessKind::Service,
+                    restart_policy: RestartPolicy::Never,
+                    color: None,
+                },
+            )
+            .await
+            .unwrap();
+        hooks::settings(id, dir.path()).expect("hooks on unix");
+        let events = dir.path().join("hooks").join(id.to_string());
+        std::fs::write(
+            events.join("1-1.json"),
+            r#"{"hook_event_name":"SubagentStart","agent_id":"sub-1"}"#,
+        )
+        .unwrap();
+        let store = Arc::clone(&orch.inner.lock().unwrap().hooks);
+        assert_eq!(store.counts(id).unwrap().subagents, 1);
+        std::fs::write(events.join(".2.tmp"), "{").unwrap();
+
+        orch.start_process(id).await.unwrap();
+        assert_eq!(std::fs::read_dir(&events).unwrap().count(), 0);
+        assert_eq!(store.counts(id), Some(hooks::Counts::default()));
+        orch.shutdown().await;
+    }
+
+    /// A shell profile can point an agent at another Claude config dir: its
+    /// `SessionStart` event says which, and the status is read from there.
+    #[cfg_attr(windows, ignore = "the hooks and Claude Code's status are Unix-only")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_hooks_name_the_config_dir_the_status_is_read_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project_id = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut spec = spec_of(agent_kind(), dir.path());
+        spec.command = "sleep 30".to_string();
+        let id = orch.add_process(project_id, spec).await.unwrap();
+        hooks::settings(id, dir.path()).expect("hooks on unix");
+        orch.start_process(id).await.unwrap();
+
+        let events = dir.path().join("hooks").join(id.to_string());
+        let transcript = other.path().join("projects/-p/0.jsonl");
+        std::fs::write(
+            events.join("1-1.json"),
+            serde_json::json!({
+                "hook_event_name": "SessionStart",
+                "source": "startup",
+                "transcript_path": transcript,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let cwd = orch.inner.lock().unwrap().processes[&id].spec.cwd.clone();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let sessions = other.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("1.json"),
+            serde_json::json!({
+                "pid": 1,
+                "name": crate::agent::peer_session_name(&crate::agent::peer_tag(&id.to_string())),
+                "cwd": cwd,
+                "startedAt": started_at,
+                "status": "idle",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            orch.output_activity()[&id].state,
+            Some(crate::activity::ReportedState::Idle)
+        );
         orch.shutdown().await;
     }
 }

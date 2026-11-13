@@ -3458,7 +3458,7 @@ async fn a_restarted_agent_takes_its_old_colour_back_while_it_is_free() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_one() {
+async fn a_stopped_agent_keeps_its_colour_and_a_restart_reuses_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let adapter = Arc::new(ResumableAdapter {
         stored: std::sync::Mutex::new(None),
@@ -3505,13 +3505,13 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
     assert!(todo_owner(&orch).expect("owned").active);
 
-    // Stopped: the colour goes from the agent and its to-do, the link stays.
+    // Stopped: the agent and its to-do keep the colour, the link stays.
     orch.stop_process(agent).await.expect("stop");
     wait_for_exit(&orch, agent).await;
-    assert_eq!(process(&orch).color, None);
+    assert_eq!(process(&orch).color, Some(first.clone()));
     let owner = todo_owner(&orch).expect("the to-do is still linked");
     assert_eq!(owner.process_id, agent);
-    assert_eq!(owner.color, None);
+    assert_eq!(owner.color, Some(first.clone()));
     assert!(!owner.active, "a stopped agent no longer owns the to-do");
     // …and the MCP listing says so, so an agent reading it knows too.
     let listed = PodiumTools::new(Arc::clone(&orch))
@@ -3525,8 +3525,8 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
     let listed = first_text(&listed);
     assert!(listed.contains("\"active\": false"), "{listed:?}");
 
-    // A second live agent takes the first colour, so the restart has to pick
-    // a new one — the same way a spawn does.
+    // A second agent spawns meanwhile: the stopped one reserves no colour, so
+    // it takes the first colour too, and the restart still reuses it.
     orch.spawn_agent(
         project_id,
         Some("resumable".to_string()),
@@ -3552,12 +3552,8 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
         "spec.command is never swapped: {}",
         restarted.command
     );
-    let second = restarted.color.expect("a restarted agent gets a colour");
-    assert_ne!(second, first, "the old colour is held by another agent");
-    assert_eq!(
-        todo_owner(&orch).and_then(|a| a.color),
-        Some(second.clone())
-    );
+    assert_eq!(restarted.color, Some(first.clone()));
+    assert_eq!(todo_owner(&orch).and_then(|a| a.color), Some(first.clone()));
 
     // Once the CLI stored that new session, the next restart resumes it —
     // the fresh restart did not make the agent non-resumable.
@@ -3567,8 +3563,7 @@ async fn a_stopped_agent_loses_its_colour_and_a_restart_resumes_it_with_a_new_on
         flag == "--resume" && id == fresh_id
     })
     .await;
-    // Nobody else holds its colour now, so it keeps it across the restart.
-    assert_eq!(process(&orch).color, Some(second));
+    assert_eq!(process(&orch).color, Some(first));
 
     // The transcript is gone again: the choice is made per start, so the
     // next restart is fresh (on yet another id) rather than a `--resume`

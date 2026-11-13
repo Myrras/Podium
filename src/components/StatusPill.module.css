@@ -1,0 +1,136 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 var(--sp-2) 0 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.time {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+/* The inset ring keeps the capsule's edge on a selected row's lighter fill. */
+.work,
+.crash {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 40%, transparent);
+}
+
+.work {
+  background: var(--work-bg);
+  color: var(--work-fg);
+}
+
+.needs {
+  background: var(--needs-bg);
+  color: var(--needs-fg);
+}
+
+/* Full opacity: 0.85 drops the light theme's white-on-amber below 4.5:1. */
+.needs .time {
+  opacity: 1;
+}
+
+.crash {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.plain {
+  padding: 0 2px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Sub-agents and shells still running behind a Working pill. */
+.bgGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+
+.bg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.bg svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* Only the bars move. The reduced-motion guard in global.css ends the
+   animation at once, so each bar rests at its own --rest height. */
+.bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+}
+
+.bars i {
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: 50% 100%;
+  transform: scaleY(var(--rest));
+  animation: beat var(--dur-beat) var(--ease-in-out) infinite;
+}
+
+.bars i:nth-child(1) {
+  --rest: 0.5;
+  animation-delay: calc(var(--dur-beat) * -2 / 3);
+}
+
+.bars i:nth-child(2) {
+  --rest: 1;
+  animation-delay: calc(var(--dur-beat) / -3);
+}
+
+.bars i:nth-child(3) {
+  --rest: 0.7;
+}
+
+@keyframes beat {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.needsDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ring {
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 50%;
+}
+
+.upDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}

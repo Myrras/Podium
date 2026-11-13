@@ -76,12 +76,12 @@ on, a request to work inside a **git worktree**, and per-spawn CLI args
 (`["--model", "opus"]` picks the model for that agent alone).
 
 Every agent gets a **session colour** from an 8-hue palette, avoiding colours
-live agents already hold. Its sidebar row and the to-dos it owns are tinted
-the same colour, so you can see at a glance who is on what. A stopped agent
-loses its colour (its to-dos stay linked, tinted grey, but you can start
-another agent on them, which takes them over); restarting it gives it its
-colour back (or a new one if another agent took it meanwhile) and, for
-Claude Code, **resumes its conversation** instead of starting an empty one
+live agents already hold. Its sidebar row shows it as an identity square, and a
+to-do it owns shows the same square, so you can see at a glance who is on what.
+The agent keeps its colour after it stops and across restarts (a stopped agent
+holds none back, so a new one may share it). A stopped agent's to-dos stay
+linked with a hollow square, and you can start another agent on them, which
+takes them over; restarting it, for Claude Code, **resumes its conversation** instead of starting an empty one
 (if Claude Code no longer has that conversation, or resuming it fails
 straight away, the agent starts a fresh one from its original prompt). After
 a `/clear` it resumes the conversation from after the clear, once Claude
@@ -91,12 +91,31 @@ ended itself with `/exit`; otherwise, on Windows or WSL, or when reading
 which session the agent is on takes over 200 ms, it is the one from before.
 If you put another agent on a stopped agent's to-dos and then restart the
 stopped one too, it resumes its own conversation and may still think it is
-working on them. The row also
-shows an activity state: **working…** (sustained output in the last 2.5 s —
-a single redraw does not count, and it works whether or not you ever opened
-the terminal), **idle**, or **needs input** — the last one is read off the
-terminal screen for *every* process, so a terminal stalled on a `sudo`
-prompt surfaces the same way.
+working on them.
+
+Every row, and the terminal's header, shows one **status pill**: **Working**, **Needs you**, **Idle**, **Up**, **Stopping**,
+**Crashed**, **Exited** or **Not started**. It is never hidden; on hover the
+row's buttons replace the time. The time in the state shows only when Podium
+knows it, which is for states the process reports itself. Counters show
+running **sub-agents** and **background shells** on any pill while above zero.
+An agent whose turn ended while a background shell still runs reads Working. Where it can, Podium reads the state from the agent
+itself rather than guessing from output:
+
+- **Claude Code agents** (macOS and Linux, native) report through Claude Code's
+  own session file, so Working, Needs you (with what it waits for) and Idle are
+  exact. Sub-agent and shell counts come from hooks Podium adds to the agent's
+  settings; they are off if you pass your own `--settings`, for lean
+  sub-agents, and on Windows and WSL.
+- **Terminals** (macOS and Linux, your default shell) read **Running** while a
+  command runs in the foreground and Idle at the prompt. A terminal still
+  reads **Needs you** (and notifies) when stalled on a prompt such as `sudo` or
+  `[y/N]`. Other terminals and services just read **Up**, or **Needs you** on
+  such a prompt.
+- **Windows, WSL and Auggie agents** keep the old guess: sustained output in the
+  last 2.5 s is working, a prompt on screen is needs input.
+
+Selecting a row raises it without a colour. A collapsed project or section
+shows how many of its rows are working and need you.
 
 An agent that finished, crashed or was stopped **leaves the list by itself**
 5 minutes after it exited — its row, its terminal (an open one closes) and
@@ -488,8 +507,8 @@ last) line, so a multi-line draft still navigates normally.
 - **Click** a subsection title (To-dos, Agents, Terminals, …) to collapse it to
   one line with a count; the collapse/expand-all button in the project header
   does every subsection of that project at once. Remembered across restarts.
-  A collapsed Agents, Processes, Terminals or Worktrees header shows a pulsing
-  blue dot when a row it hides needs your input, and a multi-select of to-dos
+  A collapsed project or section header shows how many of its hidden rows are
+  working and need you, and a multi-select of to-dos
   or scratchpads keeps its "Start agent" bar while its section is folded.
 - **⌘/Ctrl+click** a to-do or scratchpad title, or an agent/process row, to
   add it to a multi-select; **Shift+click** to extend the range over a list.

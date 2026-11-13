@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod activity;
 pub mod agent;
 pub mod assignment;
 pub mod assistant;
@@ -31,6 +32,7 @@ pub mod todo;
 pub mod triage;
 pub mod worktree;
 
+pub use activity::ReportedState;
 pub use agent::cleanup::AgentCleanupConfig;
 pub use agent::settings::{AdapterOverride, AgentSettings, MergeMode};
 pub use agent::{
