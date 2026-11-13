@@ -297,7 +297,8 @@
 /* Glass dark: translucent islands over a vivid gradient canvas. Inherits the
    dark palette from :root. The pane is a dark tint (not the mock's white 8%)
    so body text keeps >=4.5:1 over the brightest canvas spot (the teal blob):
-   --text 6.8:1, --text-muted 5.2:1, --text on --row-selected 4.9:1. */
+   --text 6.8:1, --text-muted 5.2:1, --text on --row-selected 4.9:1.
+   Accent stays the dark theme's #4493f8: the mock's #2a6ae0 is ~3:1 as text. */
 :root[data-theme="glass-dark"] {
   --canvas:
     radial-gradient(55% 65% at 12% 18%, #2c5cff 0%, rgba(44, 92, 255, 0) 70%),
@@ -314,10 +315,6 @@
   --text: #f5f7fb;
   --text-muted: rgba(240, 244, 255, 0.84);
   --text-faint: rgba(240, 244, 255, 0.68);
-
-  --accent: #2a6ae0;
-  --accent-hover: #2460cc;
-  --accent-contrast: #ffffff;
 
   --row-selected: rgba(255, 255, 255, 0.14);
   --row-selected-ring: rgba(255, 255, 255, 0.22);

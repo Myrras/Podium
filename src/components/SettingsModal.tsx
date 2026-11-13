@@ -81,7 +81,7 @@ const THEMES: {
     label: "Glass dark",
     swatches: [
       "linear-gradient(135deg, #2c5cff, #9b4dff)",
-      "#2a6ae0",
+      "#4493f8",
       "#f5f7fb",
     ],
   },
