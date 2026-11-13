@@ -1,0 +1,13 @@
+.badge {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-contrast);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  user-select: none;
+}

@@ -97,21 +97,7 @@
 
 /* Square initials badge for a project (from podium.yml or derived). */
 .projectBadge {
-  position: relative;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  background: var(--accent);
-  border-radius: var(--radius-sm);
-  color: var(--accent-contrast);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  user-select: none;
 }
 
 /* podium.yml problem indicator; the message rides in the title tooltip. */
