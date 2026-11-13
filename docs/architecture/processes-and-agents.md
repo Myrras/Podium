@@ -38,6 +38,31 @@ Adding an agent CLI = new module + registry entry; no IPC or frontend change.
 Max **8 active agents per project** (recursion guard — agents can spawn agents
 over MCP).
 
+### Agent hooks
+
+`activity/hooks.rs` adds four Claude Code command hooks (`SubagentStart`,
+`SubagentStop`, `Stop`, `PostToolUse` on `Bash`) to the `--settings` Podium
+already passes, to count running sub-agents and background shells. Each hook
+writes one event file (`<secs>-<pid>.json`, temp name then rename) into
+`<mcp config dir>/hooks/<process id>/` (dir 0700, files 0600). `Store::counts`
+drains and deletes them on every activity poll. `PostToolUse` saves only a
+payload that starts a background shell (`"backgroundTaskId"`).
+
+Injected only on native Unix. Off when the user passes their own `--settings`,
+for a lean sub-agent, on Windows and for the WSL backend; those agents have no
+counts.
+
+Cleanup: an agent missing from 60 poll rounds in a row (stopped or removed)
+loses its state and directory. Rounds, not time, so a paused UI sweeps
+nothing. A restart starts from zero and its hook recreates the directory. The
+per-start wipe of the mcp config dir clears the rest.
+
+### Session colour
+
+An agent keeps its session colour for its whole life: after exit and across
+restarts. An exited agent reserves nothing: a new agent picks among colours
+held by live agents only, so it may share one with a stopped agent.
+
 ## Agent session memory
 
 Session memory (`agent/session_memory.rs`, setting `remember_sessions` in
