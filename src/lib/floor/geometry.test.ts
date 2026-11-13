@@ -68,6 +68,19 @@ describe("layoutRooms", () => {
     expect(out.b).toEqual([240, 0]);
     expect(out.c).toEqual([480, 0]);
   });
+  it("moves the room that grew, not its neighbour", () => {
+    const one = { w: 200, h: 400 };
+    const saved: Record<string, [number, number]> = { a: [0, 0], b: [240, 0] };
+    const out = layoutRooms(
+      [
+        { key: "a", size: { w: 360, h: 400 }, hasDesks: true, grown: true },
+        { key: "b", size: one, hasDesks: true },
+      ],
+      saved,
+    );
+    expect(out.b).toEqual([240, 0]);
+    expect(out.a).toEqual([480, 0]);
+  });
   it("places rooms with desks first, wraps rows and never gives up", () => {
     const rooms = [
       { key: "empty", size: s, hasDesks: false },
