@@ -10,6 +10,7 @@
 }
 
 .toast {
+  composes: glass from global;
   display: flex;
   align-items: flex-start;
   gap: var(--sp-2);
@@ -110,9 +111,4 @@
     transform: translateX(110%);
     opacity: 0;
   }
-}
-
-:global(:root[data-theme^="glass"]) .toast {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
 }

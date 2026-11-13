@@ -82,7 +82,7 @@ const THEMES: {
     swatches: [
       "linear-gradient(135deg, #2c5cff, #9b4dff)",
       "#4493f8",
-      "#f5f7fb",
+      "#121626",
     ],
   },
   {

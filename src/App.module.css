@@ -168,6 +168,7 @@
 
 /* The main work island: rounded, bordered, elevated, like the sidebar. */
 .work {
+  composes: glass from global;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -204,11 +205,6 @@
 :global(:root[data-theme^="glass"]) .titlebar,
 :global(:root[data-theme^="glass"]) .body {
   background: transparent;
-}
-
-:global(:root[data-theme^="glass"]) .work {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
 }
 
 /* backdrop-filter makes .work the containing block of position: fixed

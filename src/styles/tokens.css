@@ -92,6 +92,8 @@
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
 
   /* Glass. Neutral outside the glass themes. */
+  /* WebKit can't use these in backdrop-filter (var() => none); the literal
+     values live in the .glass class in global.css. Keep both in sync. */
   --glass-blur: 0px;
   --glass-sat: 100%;
   --glass-hi: transparent; /* inset top highlight on islands and popovers */

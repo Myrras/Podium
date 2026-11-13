@@ -1035,7 +1035,7 @@ describe("AssistantPane", () => {
       });
       const { container } = render(<AssistantPane />);
 
-      const tail = container.querySelector(`.${styles.tail}`);
+      const tail = container.querySelector(`.${styles.tail.split(" ")[0]}`);
       const busyRow = screen.getByRole("status");
       const waiting = screen.getByText("queued while busy");
 

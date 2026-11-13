@@ -1,5 +1,6 @@
 /* A floating island: rounded, bordered, elevated; clips its sections. */
 .sidebar {
+  composes: glass from global;
   height: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -216,6 +217,7 @@
 }
 
 .projectActions {
+  composes: glass from global;
   position: absolute;
   right: 0;
   top: 50%;
@@ -297,6 +299,7 @@
 }
 
 .sectionsPopover {
+  composes: glass from global;
   position: absolute;
   top: 100%;
   right: var(--sp-3);
@@ -595,21 +598,9 @@
   padding: 0;
 }
 
-:global(:root[data-theme^="glass"]) .sidebar {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-}
-
-:global(:root[data-theme^="glass"]) .sectionsPopover {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-}
-
 /* Glass: a translucent fade cannot mask the name, so blur it instead; the
    mask keeps the soft leading edge. */
 :global(:root[data-theme^="glass"]) .projectActions {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   background: var(--surface-hover);
   mask-image: linear-gradient(to right, transparent, #000 var(--sp-4));
 }

@@ -17,6 +17,7 @@
 }
 
 .card {
+  composes: glass from global;
   background: var(--pop-surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
@@ -106,9 +107,4 @@
 
 :global(:root[data-theme="glass-light"]) .overlay {
   background: rgba(40, 50, 90, 0.2);
-}
-
-:global(:root[data-theme^="glass"]) .card {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
 }
