@@ -19,6 +19,11 @@ pub const BURST_GAP: Duration = Duration::from_secs(1);
 /// (an echo, a repaint), not work. Claude Code answers within 8 to 33 ms.
 pub const ECHO_WINDOW: Duration = Duration::from_millis(100);
 
+/// A burst this long is work in progress, and output inside it is never
+/// taken for an echo: key repeat, wheel scrolling or a drag-resize would
+/// otherwise hide a working process. Mirrors the frontend's `MIN_BURST_MS`.
+pub const SUSTAINED_BURST: Duration = Duration::from_millis(300);
+
 /// How recently, and for how long, a process has been printing. Backs the
 /// UI's "working…" indicator: a lone redraw is one short burst, sustained
 /// output (a spinner, streamed text) is a burst that keeps growing. Ages
@@ -102,9 +107,17 @@ impl ScrollbackBuffer {
 
     /// [`Self::append`] with an explicit clock, so burst timing is testable.
     fn append_at(&mut self, bytes: &[u8], now: Instant) -> u64 {
-        let echo = self
-            .stimulus_at
-            .is_some_and(|at| now.saturating_duration_since(at) <= ECHO_WINDOW);
+        let sustained = self
+            .counted_at
+            .zip(self.burst_started_at)
+            .is_some_and(|(last, start)| {
+                now.saturating_duration_since(last) <= BURST_GAP
+                    && last.saturating_duration_since(start) >= SUSTAINED_BURST
+            });
+        let echo = !sustained
+            && self
+                .stimulus_at
+                .is_some_and(|at| now.saturating_duration_since(at) <= ECHO_WINDOW);
         if !echo {
             if self
                 .counted_at
@@ -310,7 +323,40 @@ mod tests {
     }
 
     #[test]
-    fn typing_while_it_works_does_not_break_the_burst() {
+    fn continuous_input_does_not_hide_a_sustained_burst() {
+        let t0 = Instant::now();
+        let mut buf = ScrollbackBuffer::new();
+        // A chunk every 100 ms; from 400 ms on (burst sustained), a stimulus
+        // every 30 ms (key repeat, wheel, drag-resize). Every chunk counts.
+        for tick in 0..=300 {
+            let elapsed = tick * 10;
+            let now = t0 + ms(elapsed);
+            if elapsed >= 400 && elapsed % 30 == 0 {
+                buf.note_stimulus_at(now);
+            }
+            if elapsed % 100 == 0 {
+                buf.append_at(b".", now);
+                assert_eq!(buf.output_activity(now).unwrap().burst_ms, elapsed);
+            }
+        }
+    }
+
+    #[test]
+    fn continuous_echoes_on_an_idle_process_never_build_a_burst() {
+        let t0 = Instant::now();
+        let mut buf = ScrollbackBuffer::new();
+        buf.append_at(b"prompt", t0);
+        // A stimulus every 30 ms for 3 s, each echoed 12 ms later.
+        for i in 0..100 {
+            let key = t0 + ms(2000 + i * 30);
+            buf.note_stimulus_at(key);
+            buf.append_at(b"k", key + ms(12));
+            assert_eq!(buf.output_activity(key + ms(12)).unwrap().burst_ms, 0);
+        }
+    }
+
+    #[test]
+    fn output_between_keys_typed_every_250_ms_still_builds_a_burst() {
         let t0 = Instant::now();
         let mut buf = ScrollbackBuffer::new();
         let mut last_burst = 0;

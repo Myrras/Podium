@@ -280,9 +280,11 @@ struct Task {
 
 impl Agent {
     fn apply(&mut self, event: Event) {
+        // A relative path would make Podium look under its own cwd.
         let projects = event
             .transcript_path
             .as_deref()
+            .filter(|p| p.is_absolute())
             .and_then(|p| p.parent()?.parent());
         if let Some(projects) = projects.filter(|p| p.file_name().is_some_and(|n| n == "projects"))
         {
@@ -489,19 +491,34 @@ mod tests {
 
     #[test]
     fn the_transcript_path_names_the_config_dir() {
-        let session_start = |path: &str| {
+        let session_start = |path: &Path| {
             event(serde_json::json!({
                 "hook_event_name": "SessionStart",
                 "source": "startup",
                 "transcript_path": path,
             }))
         };
-        let mut a = Agent::default();
-        a.apply(session_start("/fictitious/alt/projects/-p/0.jsonl"));
-        assert_eq!(a.config_dir, Some(PathBuf::from("/fictitious/alt")));
-        let mut b = Agent::default();
-        b.apply(session_start("/fictitious/alt/elsewhere/-p/0.jsonl"));
-        assert_eq!(b.config_dir, None, "not under projects/");
+        let config_dir = |path: &Path| {
+            let mut agent = Agent::default();
+            agent.apply(session_start(path));
+            agent.config_dir
+        };
+        // Absolute on every platform.
+        let alt = std::env::temp_dir().join("fictitious-alt");
+        assert_eq!(
+            config_dir(&alt.join("projects/-p/0.jsonl")),
+            Some(alt.clone())
+        );
+        assert_eq!(
+            config_dir(&alt.join("elsewhere/-p/0.jsonl")),
+            None,
+            "not under projects/"
+        );
+        assert_eq!(
+            config_dir(Path::new("projects/-p/0.jsonl")),
+            None,
+            "relative"
+        );
     }
 
     #[test]
@@ -605,12 +622,17 @@ mod tests {
             "1-2.json",
             r#"{"hook_event_name":"SubagentStart","agent_id":"sub-2"}"#,
         );
+        let alt = root.path().join("alt");
         write(
             "1-3.json",
-            r#"{"hook_event_name":"SessionStart","transcript_path":"/fictitious/alt/projects/-p/0.jsonl"}"#,
+            &serde_json::json!({
+                "hook_event_name": "SessionStart",
+                "transcript_path": alt.join("projects/-p/0.jsonl"),
+            })
+            .to_string(),
         );
         assert_eq!(store.counts(id).unwrap().subagents, 2);
-        assert_eq!(store.config_dir(id), Some(PathBuf::from("/fictitious/alt")));
+        assert_eq!(store.config_dir(id), Some(alt));
         // Left over from the killed run: an unread event and a half write.
         write(
             "2-1.json",

@@ -187,7 +187,7 @@ export type ReportedState = "working" | "waiting" | "idle";
  * milliseconds, so there is no clock to align.
  */
 export interface OutputActivity {
-  /** Ms since the last chunk of output. */
+  /** Ms since the last chunk of output that was not an echo of the user's input or a resize. */
   quietMs: number;
   /** Ms the latest burst of output lasted, first chunk to last. */
   burstMs: number;

@@ -475,8 +475,7 @@ async fn a_shell_terminal_is_busy_while_a_command_runs_in_its_foreground() {
     pty.stop();
 }
 
-// Unix-only: `cat` and the `sh` loop are POSIX commands.
-#[cfg(unix)]
+#[cfg_attr(windows, ignore = "`cat` and the `sh` loop are POSIX commands")]
 #[tokio::test(flavor = "multi_thread")]
 async fn typed_echoes_are_no_burst_but_a_printing_loop_is() {
     let burst = |orch: &Orchestrator, id| orch.output_activity().get(&id).map(|a| a.burst_ms);
@@ -506,5 +505,30 @@ async fn typed_echoes_are_no_burst_but_a_printing_loop_is() {
     })
     .await
     .expect("a loop printing every 100 ms never read as a burst");
+    orch.stop_process(id).await.expect("stop");
+}
+
+#[cfg_attr(windows, ignore = "SIGWINCH is POSIX")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repaint_after_a_resize_is_no_burst() {
+    let burst = |orch: &Orchestrator, id| orch.output_activity().get(&id).map(|a| a.burst_ms);
+    // Prints `x` on every SIGWINCH, as a TUI repaints (a shell `trap` waits
+    // for its foreground child, perl's `sleep` is cut short by the signal).
+    let (orch, id, _dir) =
+        setup(r#"perl -e '$|=1; $SIG{WINCH}=sub{print "x"}; print "ready"; sleep 1 while 1'"#)
+            .await;
+    orch.start_process(id).await.expect("start");
+    wait_for_output(&orch, id, "ready").await;
+
+    orch.resize(id, 100, 30).await.expect("resize");
+    wait_for_output(&orch, id, "readyx").await;
+    sleep(Duration::from_millis(350)).await;
+    orch.resize(id, 110, 30).await.expect("resize");
+    wait_for_output(&orch, id, "readyxx").await;
+    assert!(
+        burst(&orch, id).unwrap_or(0) < 300,
+        "{:?}",
+        burst(&orch, id)
+    );
     orch.stop_process(id).await.expect("stop");
 }

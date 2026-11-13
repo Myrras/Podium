@@ -28,7 +28,7 @@ back to guessing when it says nothing.
 
 | Provider                | Covers                       | Source                                                                                                                         |
 | ----------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `claude_status`         | Claude Code agents, native   | Claude Code's own `<claude config dir>/sessions/<pid>.json` (`status`: busy, shell, waiting, idle), found by the `podium-<tag>` session name. The config dir is learned from the `SessionStart` hook's `transcript_path` (a shell profile may set `CLAUDE_CONFIG_DIR` per repo), else the global one. Undocumented Claude Code internals |
+| `claude_status`         | Claude Code agents, native   | Claude Code's own `<claude config dir>/sessions/<pid>.json` (`status`: busy, shell, waiting, idle), found by the `podium-<tag>` session name. The config dir is learned from any hook event's `transcript_path` (`SessionStart` fires at launch) (a shell profile may set `CLAUDE_CONFIG_DIR` per repo), else the global one. Undocumented Claude Code internals |
 | `hooks`                 | sub-agent and shell counts   | event files from Podium's hooks, drained on each poll (see [Agent hooks](processes-and-agents.md#agent-hooks))                |
 | `foreground` (Unix)     | terminals, default shell only | working while the PTY's foreground process group is not the shell; none for a terminal started with its own command           |
 
@@ -49,9 +49,14 @@ input prompt on screen (`sudo`, `[y/N]`) reads `waiting` and counts as a
 prompt episode (one notification). A reported `idle` stays idle. Background shells fall back to the screen read
 (`detectBackgroundShells`) when the core counts none.
 
-Output within `ECHO_WINDOW` (100 ms) of a keystroke or resize (pointer motion
-excluded) is its echo or repaint, so it neither starts nor extends a burst nor
-resets the quiet time (`ScrollbackBuffer::note_stimulus`).
+Output within `ECHO_WINDOW` (100 ms) of a stimulus is its echo or repaint, so
+it neither starts nor extends a burst nor resets the quiet time
+(`ScrollbackBuffer::note_stimulus`). A stimulus is a resize to a new size, or a
+stdin write that is not a pointer-motion report (`ESC[<35;`) or the terminal's
+own reply to a query (CSI ending in `R`, `c`, `n`, `y` or `t`; OSC `ESC ]`;
+DCS `ESC P`), so keys, pastes, clicks and the wheel count. Once a burst is
+sustained (at least 300 ms, last chunk within 1 s) nothing is taken for an echo,
+so continuous input never hides a working process.
 
 ### Store contract
 

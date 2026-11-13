@@ -170,6 +170,9 @@ struct ManagedProcess {
     /// that a blocked agent's question was answered, so its next stall is a
     /// new question. `None` until something is typed.
     last_input: Option<Instant>,
+    /// The size the UI last gave the current PTY ([`Orchestrator::resize`]);
+    /// `None` until it gives one.
+    pty_size: Option<(u16, u16)>,
     /// Whether the user has this agent open on screen right now
     /// ([`Orchestrator::set_viewing`]). In memory only, and at most one
     /// process has it.
@@ -3825,9 +3828,16 @@ impl Orchestrator {
     }
 
     pub async fn write_stdin(&self, id: ProcessId, bytes: &[u8]) -> CoreResult<()> {
-        let pty = self.running_pty(id)?;
+        let (pty, scrollback) = {
+            let inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner.processes.get(&id).ok_or(CoreError::ProcessNotFound)?;
+            let pty = proc.pty.clone().ok_or(CoreError::ProcessNotRunning)?;
+            (pty, Arc::clone(&proc.scrollback))
+        };
+        // Noted before the PTY sees the input, so a fast echo cannot slip in
+        // ahead and read as work.
         if is_stimulus(bytes) {
-            self.note_stimulus(id);
+            scrollback.lock().expect(LOCK_POISONED).note_stimulus();
         }
         pty.write(bytes)?;
         if is_user_input(bytes) {
@@ -3850,25 +3860,22 @@ impl Orchestrator {
     }
 
     pub async fn resize(&self, id: ProcessId, cols: u16, rows: u16) -> CoreResult<()> {
-        let pty = self.running_pty(id)?;
-        self.note_stimulus(id);
-        pty.resize(cols, rows)
-    }
-
-    /// The process's next output answers the user (an echo, a repaint), so
-    /// the activity fallback ignores it. Noted before the PTY sees the input,
-    /// so a fast echo cannot slip in ahead.
-    fn note_stimulus(&self, id: ProcessId) {
-        let scrollback = self
-            .inner
-            .lock()
-            .expect(LOCK_POISONED)
-            .processes
-            .get(&id)
-            .map(|p| Arc::clone(&p.scrollback));
-        if let Some(scrollback) = scrollback {
+        let (pty, scrollback, changed) = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let proc = inner
+                .processes
+                .get_mut(&id)
+                .ok_or(CoreError::ProcessNotFound)?;
+            let pty = proc.pty.clone().ok_or(CoreError::ProcessNotRunning)?;
+            // The UI resizes on every fit; only a new size makes a repaint.
+            let changed = proc.pty_size.replace((cols, rows)) != Some((cols, rows));
+            (pty, Arc::clone(&proc.scrollback), changed)
+        };
+        // Before the resize, so its repaint is not read as work.
+        if changed {
             scrollback.lock().expect(LOCK_POISONED).note_stimulus();
         }
+        pty.resize(cols, rows)
     }
 
     fn running_pty(&self, id: ProcessId) -> CoreResult<Arc<PtyProcess>> {
@@ -4991,11 +4998,23 @@ fn is_user_input(bytes: &[u8]) -> bool {
     }
 }
 
-/// Whether a stdin write makes the process answer with output that is no
-/// work of its own. A bare pointer-motion report is not: Claude Code turns on
-/// any-motion mouse tracking, and moving the mouse would hide its work.
+/// Whether a stdin write is the user acting (a key, a paste, a click, the
+/// wheel), so the output answering it is no work of the process's own. Not:
+/// a bare pointer-motion report (Claude Code turns on any-motion tracking,
+/// so moving the mouse would hide its work), and the terminal's own replies
+/// to queries (cursor position `R`, device attributes `c`, status `n`, mode
+/// `y`, window `t`, and OSC/DCS strings), which arrive without the user.
+// Not `is_user_input`: that drops every short escape sequence, arrows and
+// mouse clicks included.
 fn is_stimulus(bytes: &[u8]) -> bool {
-    !bytes.is_empty() && !bytes.starts_with(b"\x1b[<35;")
+    let reply = match bytes {
+        [0x1b, b']' | b'P', ..] => true,
+        [0x1b, b'[', .., last] => {
+            bytes.starts_with(b"\x1b[<35;") || matches!(last, b'R' | b'c' | b'n' | b'y' | b't')
+        }
+        _ => false,
+    };
+    !bytes.is_empty() && !reply
 }
 
 /// Longest escape sequence the terminal itself sends back (a cursor-position
@@ -5028,6 +5047,7 @@ fn insert_process(
             started_wall: None,
             waiting_since: None,
             last_input: None,
+            pty_size: None,
             viewing: false,
             spawn_args: None,
             spawn_worktree: false,
@@ -5116,6 +5136,7 @@ fn do_start(
     };
     proc.status = status.clone();
     proc.pty = Some(Arc::new(pty));
+    proc.pty_size = None;
     proc.started_at = Some(Instant::now());
     proc.started_wall = Some(std::time::SystemTime::now());
     // Only now that the launch is running does its session become current.
@@ -6180,18 +6201,33 @@ mod tests {
     }
 
     #[test]
-    fn pointer_motion_is_no_stimulus() {
+    fn only_the_user_acting_is_a_stimulus() {
+        // Keys, a paste, the wheel, a click and its release.
         for yes in [
             &b"a"[..],
             b"\r",
             b"\x1b[A",
+            b"\x1b[200~fictitious paste\x1b[201~",
             b"\x1b[<64;10;10M",
             b"\x1b[<0;10;10M",
+            b"\x1b[<0;10;10m",
         ] {
             assert!(is_stimulus(yes), "{yes:?}");
         }
-        assert!(!is_stimulus(b"\x1b[<35;10;10M"));
-        assert!(!is_stimulus(b""));
+        // Pointer motion, and the terminal answering a query.
+        for no in [
+            &b""[..],
+            b"\x1b[<35;10;10M",
+            b"\x1b[12;40R",
+            b"\x1b[?62;c",
+            b"\x1b[0n",
+            b"\x1b[?2004;1$y",
+            b"\x1b[8;24;80t",
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\",
+            b"\x1bP>|xterm.js\x1b\\",
+        ] {
+            assert!(!is_stimulus(no), "{no:?}");
+        }
     }
 
     #[test]
@@ -8930,8 +8966,7 @@ mod tests {
 
     /// A shell profile can point an agent at another Claude config dir: its
     /// `SessionStart` event says which, and the status is read from there.
-    // Unix-only: the hooks and Claude Code's status exist only there.
-    #[cfg(unix)]
+    #[cfg_attr(windows, ignore = "the hooks and Claude Code's status are Unix-only")]
     #[tokio::test(flavor = "multi_thread")]
     async fn the_hooks_name_the_config_dir_the_status_is_read_from() {
         let dir = tempfile::tempdir().unwrap();
