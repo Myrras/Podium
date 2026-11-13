@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { createPortal } from "react-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { Popover, placePopover } from "./Popover";
+import { Popover, PopoverSlot, placePopover } from "./Popover";
 
 const vp = { w: 1000, h: 800 };
 const size = { w: 200, h: 100 };
@@ -177,5 +177,50 @@ describe("Popover", () => {
     expect(document.activeElement).not.toBe(anchor);
     unmount();
     expect(document.activeElement).toBe(anchor);
+  });
+
+  it("shows the count after the title", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    render(
+      <Popover anchor={anchor} title="To-dos" count={5} onClose={() => {}}>
+        x
+      </Popover>,
+    );
+    expect(screen.getByRole("heading")).toHaveTextContent("To-dos5");
+  });
+
+  it("PopoverSlot renders into the header and footer", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    render(
+      <Popover anchor={anchor} title="t" onClose={() => {}}>
+        <PopoverSlot name="header">
+          <button>New</button>
+        </PopoverSlot>
+        <PopoverSlot name="footer">
+          <button>Archive</button>
+        </PopoverSlot>
+      </Popover>,
+    );
+    expect(document.querySelector("header")).toContainElement(
+      screen.getByText("New"),
+    );
+    expect(document.querySelector("footer")).toContainElement(
+      screen.getByText("Archive"),
+    );
+  });
+
+  it("PopoverSlot renders in place outside a Popover", () => {
+    render(
+      <div data-testid="host">
+        <PopoverSlot name="header">
+          <button>New</button>
+        </PopoverSlot>
+      </div>,
+    );
+    expect(screen.getByTestId("host")).toContainElement(
+      screen.getByText("New"),
+    );
   });
 });

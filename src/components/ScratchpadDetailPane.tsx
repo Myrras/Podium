@@ -22,9 +22,10 @@
 
 import type { Editor } from "@tiptap/react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import type { ProjectId, ScratchpadId, ScratchpadInfo } from "../ipc/types";
-import { formatUpdatedAt } from "../lib/dateFormat";
+import { formatRelativeTime, formatUpdatedAt } from "../lib/dateFormat";
 import {
   type Heading,
   scrollToHeading,
@@ -40,6 +41,7 @@ import {
   ExpandIcon,
   ScratchpadIcon,
 } from "./icons";
+import { PopoverSlot, useInPopover } from "./Popover";
 import styles from "./ScratchpadDetailPane.module.css";
 import { ScratchpadEditor } from "./ScratchpadEditor";
 import { ScratchpadTOC } from "./ScratchpadTOC";
@@ -56,6 +58,7 @@ export function ScratchpadDetailPane({
   scratchpadId,
   onClose,
   compact,
+  footerActions,
 }: {
   projectId: ProjectId;
   scratchpadId: ScratchpadId;
@@ -63,6 +66,8 @@ export function ScratchpadDetailPane({
   onClose?: () => void;
   /** Hides the table of contents and gives the pane a fixed height. */
   compact?: boolean;
+  /** In a Floor popover: actions placed before Full screen and Archive in its footer. */
+  footerActions?: ReactNode;
 }) {
   const scratchpad = useScratchpadStore((s) =>
     (s.scratchpadsByProject[projectId] ?? NO_SCRATCHPADS).find(
@@ -87,6 +92,9 @@ export function ScratchpadDetailPane({
   const [conflict, setConflict] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  // In a Floor popover the title moves into its header and the actions into
+  // its footer; fullscreen covers the popover, so it keeps the full header.
+  const docked = useInPopover() && !fullscreen;
   // "On this page" outline of the current document's H2/H3 headings — keyed
   // off the live `editor` instance, so it starts empty until the editor is
   // ready and resets automatically on every remount (App keys this pane by
@@ -308,58 +316,97 @@ export function ScratchpadDetailPane({
     })();
   };
 
+  const titleInput = (
+    <input
+      className={styles.titleInput}
+      value={title}
+      aria-label="Scratchpad title"
+      onChange={(e) => setTitle(e.target.value)}
+      onBlur={commitTitle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitTitle();
+        }
+      }}
+    />
+  );
+  const titleRow = docked ? (
+    <>
+      {titleInput}
+      <CopyIdButton id={scratchpadId} className={styles.closeBtn} />
+    </>
+  ) : (
+    titleInput
+  );
+
   return (
     <div
       className={styles.pane}
       data-fullscreen={fullscreen || undefined}
       data-compact={compact || undefined}
+      data-docked={docked || undefined}
     >
-      <header className={styles.header}>
-        <ScratchpadIcon className={styles.kindIcon} />
-        <input
-          className={styles.titleInput}
-          value={title}
-          aria-label="Scratchpad title"
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commitTitle();
+      {docked ? (
+        <>
+          <PopoverSlot name="header">{titleRow}</PopoverSlot>
+          <PopoverSlot name="footer">
+            {footerActions}
+            <button type="button" onClick={() => setFullscreen(true)}>
+              Full screen
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void setScratchpadArchived(projectId, scratchpadId, true)
+              }
+            >
+              Archive
+            </button>
+            <span
+              className={styles.dockedMeta}
+              title={`Updated ${formatUpdatedAt(scratchpad.updatedAt)} by ${scratchpad.updatedBy}`}
+            >
+              Updated {formatRelativeTime(scratchpad.updatedAt)}
+            </span>
+          </PopoverSlot>
+        </>
+      ) : (
+        <header className={styles.header}>
+          <ScratchpadIcon className={styles.kindIcon} />
+          {titleRow}
+          <button
+            type="button"
+            className={styles.expandBtn}
+            aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+            title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+            onClick={() => setFullscreen((f) => !f)}
+          >
+            {fullscreen ? <CollapseIcon /> : <ExpandIcon />}
+          </button>
+          <CopyIdButton id={scratchpadId} className={styles.closeBtn} />
+          <button
+            type="button"
+            className={styles.closeBtn}
+            aria-label="Archive scratchpad"
+            title="Archive"
+            onClick={() =>
+              void setScratchpadArchived(projectId, scratchpadId, true)
             }
-          }}
-        />
-        <button
-          type="button"
-          className={styles.expandBtn}
-          aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          onClick={() => setFullscreen((f) => !f)}
-        >
-          {fullscreen ? <CollapseIcon /> : <ExpandIcon />}
-        </button>
-        <CopyIdButton id={scratchpadId} className={styles.closeBtn} />
-        <button
-          type="button"
-          className={styles.closeBtn}
-          aria-label="Archive scratchpad"
-          title="Archive"
-          onClick={() =>
-            void setScratchpadArchived(projectId, scratchpadId, true)
-          }
-        >
-          <ArchiveIcon />
-        </button>
-        <button
-          type="button"
-          className={styles.closeBtn}
-          aria-label="Close scratchpad"
-          title="Close"
-          onClick={close}
-        >
-          <CloseIcon />
-        </button>
-      </header>
+          >
+            <ArchiveIcon />
+          </button>
+          <button
+            type="button"
+            className={styles.closeBtn}
+            aria-label="Close scratchpad"
+            title="Close"
+            onClick={close}
+          >
+            <CloseIcon />
+          </button>
+        </header>
+      )}
 
       <TagChip
         tags={scratchpad.tags}
@@ -401,10 +448,12 @@ export function ScratchpadDetailPane({
         )}
       </div>
 
-      <footer className={styles.footer}>
-        Updated {formatUpdatedAt(scratchpad.updatedAt)} · by{" "}
-        {scratchpad.updatedBy} · V{scratchpad.version}
-      </footer>
+      {!docked && (
+        <footer className={styles.footer}>
+          Updated {formatUpdatedAt(scratchpad.updatedAt)} · by{" "}
+          {scratchpad.updatedBy} · V{scratchpad.version}
+        </footer>
+      )}
     </div>
   );
 }

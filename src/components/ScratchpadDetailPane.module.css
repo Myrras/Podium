@@ -231,6 +231,22 @@
   pointer-events: none;
 }
 
+/* In a Floor popover: the popover's --sp-3 inset around the editor. */
+.pane[data-docked] .editorArea {
+  padding: var(--sp-3);
+}
+
+/* Last-edit time, quiet at the end of the popover footer. */
+.dockedMeta {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
 .footer {
   flex-shrink: 0;
   padding: var(--sp-2) var(--sp-3);

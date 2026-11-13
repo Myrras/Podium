@@ -24,26 +24,89 @@
   transform: none;
 }
 
+/* One bar: back, title and count, the content's actions (slot), ×.
+   --sp-3 is the one horizontal inset shared by header, rows and footer. */
 .header {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
+  min-height: 40px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
   border-bottom: 1px solid var(--border);
 }
 
+/* The back button sits in the inset, so the item title starts near the edge. */
+.header:has(.back) {
+  padding-left: var(--sp-1);
+}
+
 .title {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
-  font-size: inherit;
+  font-size: var(--fs-md);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.count {
+  margin-left: var(--sp-2);
+  font-weight: 400;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filled by PopoverSlot: list actions, or an opened item's title row. */
+.slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+}
+
+/* Header buttons are quiet icon squares. */
+.header button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.header button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.back svg {
+  transform: rotate(180deg);
+}
+
 .body {
   overflow: auto;
   padding: var(--sp-3);
+}
+
+.body[data-flush] {
+  padding: 0;
+}
+
+/* Filled by PopoverSlot; one hairline divides it from the body. */
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.footer:empty {
+  display: none;
 }

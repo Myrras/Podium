@@ -1,15 +1,46 @@
 /** A popover anchored under an element: portalled, follows it, no backdrop. */
 
-import { useEffect, useLayoutEffect, useRef } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { Rect, Size } from "../lib/floor/types";
-import { CloseIcon } from "./icons";
+import { CaretIcon, CloseIcon } from "./icons";
 import styles from "./Popover.module.css";
 
 const GAP = 8;
 const MARGIN = 6;
+
+type Slots = { header: HTMLElement | null; footer: HTMLElement | null };
+const SlotContext = createContext<Slots | null>(null);
+
+/** Whether the caller sits inside a Popover (its header/footer slots exist). */
+export const useInPopover = () => useContext(SlotContext) !== null;
+
+/**
+ * Renders children into the enclosing Popover's header (left of ×) or footer,
+ * so a child keeps its own state while its controls sit in the chrome.
+ * Outside a Popover the children render in place.
+ */
+export function PopoverSlot({
+  name,
+  children,
+}: {
+  name: keyof Slots;
+  children: ReactNode;
+}) {
+  const slots = useContext(SlotContext);
+  if (!slots) return <>{children}</>;
+  const el = slots[name];
+  return el ? createPortal(children, el) : null;
+}
 
 /** Centred, GAP under the anchor; above it when below does not fit; MARGIN inside the window. */
 export function placePopover(
@@ -31,21 +62,30 @@ export function placePopover(
 export function Popover({
   anchor,
   title,
+  count,
   onClose,
   onBack,
   backLabel,
   width = 360,
+  flush = false,
   children,
 }: {
   anchor: HTMLElement | null;
-  title: ReactNode;
+  /** Omit when a child fills the header slot (an opened item's own title). */
+  title?: ReactNode;
+  /** Shown muted after the title. */
+  count?: number;
   onClose: () => void;
   onBack?: () => void;
   backLabel?: string;
   width?: number;
+  /** No body padding: the content brings its own (full-width rows). */
+  flush?: boolean;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [header, setHeader] = useState<HTMLElement | null>(null);
+  const [footer, setFooter] = useState<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -129,21 +169,35 @@ export function Popover({
     >
       <header className={styles.header}>
         {onBack && (
-          <button type="button" className="ghost" onClick={onBack}>
-            {backLabel ?? "Back"}
+          <button
+            type="button"
+            className={styles.back}
+            title={backLabel ?? "Back"}
+            onClick={onBack}
+          >
+            <CaretIcon />
+            <span className="visually-hidden">{backLabel ?? "Back"}</span>
           </button>
         )}
-        <h2 className={styles.title}>{title}</h2>
-        <button
-          type="button"
-          className="ghost"
-          aria-label="Close"
-          onClick={onClose}
-        >
+        {title !== undefined && (
+          <h2 className={styles.title}>
+            {title}
+            {count !== undefined && (
+              <span className={styles.count}>{count}</span>
+            )}
+          </h2>
+        )}
+        <div ref={setHeader} className={styles.slot} />
+        <button type="button" aria-label="Close" onClick={onClose}>
           <CloseIcon />
         </button>
       </header>
-      <div className={styles.body}>{children}</div>
+      <SlotContext.Provider value={{ header, footer }}>
+        <div className={styles.body} data-flush={flush || undefined}>
+          {children}
+        </div>
+      </SlotContext.Provider>
+      <footer ref={setFooter} className={styles.footer} />
     </div>,
     document.body,
   );

@@ -6,7 +6,6 @@ import { useScratchpadStore } from "../../state/scratchpadStore";
 import { Popover } from "../Popover";
 import { ScratchpadDetailPane } from "../ScratchpadDetailPane";
 import { ScratchpadSubsection } from "../ScratchpadSubsection";
-import styles from "./ScratchpadFixturePopover.module.css";
 
 export function ScratchpadFixturePopover({
   projectId,
@@ -20,6 +19,9 @@ export function ScratchpadFixturePopover({
   const root = useProjectStore(
     (s) => s.projects.find((p) => p.id === projectId)?.root ?? "",
   );
+  const count = useScratchpadStore(
+    (s) => s.scratchpadsByProject[projectId]?.length ?? 0,
+  );
   const title = useScratchpadStore((s) =>
     itemId
       ? s.scratchpadsByProject[projectId]?.find((p) => p.id === itemId)?.title
@@ -31,23 +33,23 @@ export function ScratchpadFixturePopover({
   return (
     <Popover
       anchor={anchor}
-      title="Scratchpads"
-      width={itemId ? 560 : 360}
+      title={itemId ? undefined : "Scratchpads"}
+      count={itemId ? undefined : count}
+      width={itemId ? 520 : 380}
+      flush
       onClose={closePopover}
       onBack={itemId ? () => setPopoverItem(null) : undefined}
       backLabel="Back to scratchpads"
     >
       {itemId ? (
-        <>
-          <ScratchpadDetailPane
-            key={itemId}
-            compact
-            projectId={projectId}
-            scratchpadId={itemId}
-            onClose={() => setPopoverItem(null)}
-          />
-          {title !== undefined && (
-            <div className={styles.agentRow}>
+        <ScratchpadDetailPane
+          key={itemId}
+          compact
+          projectId={projectId}
+          scratchpadId={itemId}
+          onClose={() => setPopoverItem(null)}
+          footerActions={
+            title !== undefined && (
               <button
                 type="button"
                 onClick={() =>
@@ -60,9 +62,9 @@ export function ScratchpadFixturePopover({
               >
                 Start agent on this
               </button>
-            </div>
-          )}
-        </>
+            )
+          }
+        />
       ) : (
         <ScratchpadSubsection
           bare

@@ -8,7 +8,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
+vi.mock("../../lib/floor/menus", () => ({
+  todoMenu: vi.fn(() => [{ label: "Menu item", onSelect: () => {} }]),
+}));
+
 import type { TodoInfo } from "../../ipc/types";
+import { todoMenu } from "../../lib/floor/menus";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { useTodoStore } from "../../state/todoStore";
@@ -124,5 +129,127 @@ describe("TodoFixturePopover", () => {
     expect(setActiveProcess).toHaveBeenCalledWith("p9");
     expect(useFloorStore.getState().terminalId).toBe("p9");
     expect(useFloorStore.getState().popover).toBeNull();
+  });
+
+  it("one header bar: title, open count and the list actions", () => {
+    useTodoStore.setState({
+      todosByProject: {
+        [P]: [
+          todo("t1", "Fix the lamp"),
+          { ...todo("t2", "Water the fern"), done: true },
+        ],
+      },
+    } as never);
+    open(null);
+    const header = screen.getByRole("heading", { name: /To-dos/ })
+      .parentElement as HTMLElement;
+    expect(header.tagName).toBe("HEADER");
+    expect(screen.getByRole("heading")).toHaveTextContent("To-dos1");
+    expect(header).toContainElement(screen.getByLabelText("New to-do"));
+    expect(header).toContainElement(
+      screen.getByLabelText("View archived to-dos"),
+    );
+    expect(document.querySelector('[class*="bareBar"]')).toBeNull();
+  });
+
+  it("the add input is the first row of the list", () => {
+    useTodoStore.setState({
+      todosByProject: { [P]: [todo("t1", "Fix the lamp")] },
+    } as never);
+    open(null);
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    expect(
+      input.compareDocumentPosition(screen.getByText("Fix the lamp")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("rows carry the owner colour: solid, hollow once stopped, none when free", () => {
+    const owned = (active: boolean, color: string | null) => ({
+      processId: "p9",
+      name: "Agent A",
+      color,
+      active,
+    });
+    useTodoStore.setState({
+      todosByProject: {
+        [P]: [
+          { ...todo("t1", "Live"), assignedAgent: owned(true, "#ff0000") },
+          { ...todo("t2", "Stopped"), assignedAgent: owned(false, null) },
+          todo("t3", "Free"),
+        ],
+      },
+    } as never);
+    open(null);
+    const live = screen.getByRole("img", { name: "Owned by Agent A" });
+    expect(live).toHaveAttribute("data-owned", "true");
+    expect(live).not.toHaveAttribute("data-stopped");
+    expect(
+      live
+        .closest<HTMLElement>("[data-assigned]")
+        ?.style.getPropertyValue("--session-color"),
+    ).toBe("#ff0000");
+    expect(
+      screen.getByRole("img", { name: "Owned by Agent A (stopped)" }),
+    ).toHaveAttribute("data-stopped", "true");
+    // Free to-do: no owner mark.
+    expect(screen.getAllByRole("img")).toHaveLength(2);
+    expect(document.querySelectorAll("[data-assigned]")).toHaveLength(2);
+    expect(screen.getByText("Free").closest("button")).toHaveAttribute(
+      "title",
+      "Free",
+    );
+  });
+
+  it("empty list invites to add one", () => {
+    useTodoStore.setState({ todosByProject: { [P]: [] } } as never);
+    open(null);
+    expect(
+      screen.getByText("No open to-dos. Add one with +."),
+    ).toBeInTheDocument();
+  });
+
+  it("right-click on a row opens its menu, one at a time", () => {
+    useTodoStore.setState({
+      todosByProject: {
+        [P]: [todo("t1", "Fix the lamp"), todo("t2", "Water the fern")],
+      },
+    } as never);
+    open(null);
+    const ev = fireEvent.contextMenu(screen.getByText("Fix the lamp"), {
+      clientX: 40,
+      clientY: 50,
+    });
+    expect(ev).toBe(false);
+    expect(todoMenu).toHaveBeenLastCalledWith(
+      P,
+      expect.objectContaining({ id: "t1" }),
+    );
+    expect(screen.getByRole("menuitem", { name: "Menu item" })).toBeVisible();
+    fireEvent.contextMenu(screen.getByText("Water the fern"));
+    expect(todoMenu).toHaveBeenLastCalledWith(
+      P,
+      expect.objectContaining({ id: "t2" }),
+    );
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    expect(useFloorStore.getState().popover).not.toBeNull();
+  });
+
+  it("item view: back and the title in the header, actions in the footer", () => {
+    open("t1");
+    const header = document.querySelector("header") as HTMLElement;
+    expect(header).toContainElement(
+      screen.getByRole("button", { name: "Back to to-dos" }),
+    );
+    expect(header).toHaveTextContent("Fix the lamp");
+    expect(screen.queryByLabelText("Close to-do")).toBeNull();
+    const footer = document.querySelector("footer") as HTMLElement;
+    expect(footer).toContainElement(
+      screen.getByRole("button", { name: "Start agent" }),
+    );
+    expect(footer).toContainElement(
+      screen.getByRole("button", { name: "Archive this to-do" }),
+    );
   });
 });

@@ -25,6 +25,7 @@ import {
   TodoIcon,
 } from "./icons";
 import { Markdown } from "./Markdown";
+import { PopoverSlot, useInPopover } from "./Popover";
 import styles from "./TodoDetailPane.module.css";
 
 const NO_TODOS: TodoInfo[] = [];
@@ -50,6 +51,9 @@ export function TodoDetailPane({
   const setTodoDone = useTodoStore((s) => s.setTodoDone);
   const clearOpenTodo = useLayoutStore((s) => s.clearOpenTodo);
   const close = onClose ?? clearOpenTodo;
+  // In a Floor popover the title row moves into the popover's header, whose
+  // back and × replace the pane's own close.
+  const docked = useInPopover();
 
   const [description, setDescription] = useState("");
   const [comment, setComment] = useState("");
@@ -187,67 +191,78 @@ export function TodoDetailPane({
     setConfirmDeleteId(null);
   };
 
-  return (
-    <div className={styles.pane}>
-      <header className={styles.header}>
-        <TodoIcon className={styles.kindIcon} />
+  const titleRow = (
+    <>
+      <input
+        type="checkbox"
+        className={styles.checkbox}
+        data-docked={docked || undefined}
+        checked={todo.done}
+        aria-label={`Mark "${todo.text}" as ${todo.done ? "not done" : "done"}`}
+        onChange={() => void setTodoDone(projectId, todoId, !todo.done)}
+      />
+      {editingTitle ? (
         <input
-          type="checkbox"
-          className={styles.checkbox}
-          checked={todo.done}
-          aria-label={`Mark "${todo.text}" as ${todo.done ? "not done" : "done"}`}
-          onChange={() => void setTodoDone(projectId, todoId, !todo.done)}
+          ref={titleInputRef}
+          className={styles.nameInput}
+          value={titleDraft}
+          aria-label="Edit title"
+          onChange={(e) => setTitleDraft(e.target.value)}
+          onBlur={commitTitle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitTitle();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditingTitle(false);
+            }
+          }}
         />
-        {editingTitle ? (
-          <input
-            ref={titleInputRef}
-            className={styles.nameInput}
-            value={titleDraft}
-            aria-label="Edit title"
-            onChange={(e) => setTitleDraft(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitTitle();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                setEditingTitle(false);
-              }
-            }}
-          />
-        ) : (
-          <span
-            className={styles.name}
-            data-done={todo.done ? "true" : undefined}
-            title={textPreview(todo.text)}
-            onDoubleClick={startTitleEdit}
-          >
-            {todo.text}
-          </span>
-        )}
-        {!editingTitle && (
-          <button
-            type="button"
-            className={styles.iconBtn}
-            aria-label="Edit title"
-            title="Edit title"
-            onClick={startTitleEdit}
-          >
-            <EditIcon size={12} />
-          </button>
-        )}
-        <CopyIdButton id={todoId} className={styles.iconBtn} />
+      ) : (
+        <span
+          className={styles.name}
+          data-done={todo.done ? "true" : undefined}
+          title={textPreview(todo.text)}
+          onDoubleClick={startTitleEdit}
+        >
+          {todo.text}
+        </span>
+      )}
+      {!editingTitle && (
         <button
           type="button"
-          className={styles.closeBtn}
-          aria-label="Close to-do"
-          title="Close"
-          onClick={close}
+          className={styles.iconBtn}
+          aria-label="Edit title"
+          title="Edit title"
+          onClick={startTitleEdit}
         >
-          <CloseIcon />
+          <EditIcon size={12} />
         </button>
-      </header>
+      )}
+      <CopyIdButton id={todoId} className={styles.iconBtn} />
+    </>
+  );
+
+  return (
+    <div className={styles.pane} data-docked={docked || undefined}>
+      {docked ? (
+        <PopoverSlot name="header">{titleRow}</PopoverSlot>
+      ) : (
+        <header className={styles.header}>
+          <TodoIcon className={styles.kindIcon} />
+          {titleRow}
+          <button
+            type="button"
+            className={styles.closeBtn}
+            aria-label="Close to-do"
+            title="Close"
+            onClick={close}
+          >
+            <CloseIcon />
+          </button>
+        </header>
+      )}
 
       <div className={styles.body}>
         {todo.links.length > 0 && (

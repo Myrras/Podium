@@ -368,7 +368,7 @@ describe("ScratchpadSubsection", () => {
     });
   });
 
-  it("bare_hides_the_section_title_and_labels_the_add_button", () => {
+  it("bare_hides_the_section_title_and_keeps_the_add_button", () => {
     seed([scratchpad("a", "Scratchpad A")]);
     render(
       <ScratchpadSubsection
@@ -383,7 +383,7 @@ describe("ScratchpadSubsection", () => {
     expect(screen.queryByText("Scratchpads")).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "New scratchpad" }),
-    ).toHaveTextContent("New scratchpad");
+    ).toBeInTheDocument();
     expect(screen.getByText("Scratchpad A")).toBeInTheDocument();
   });
 });
