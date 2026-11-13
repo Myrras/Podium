@@ -1,4 +1,10 @@
+import { useState } from "react";
+
+import type { MenuItem } from "../ContextMenu";
+import { ContextMenu } from "../ContextMenu";
 import type { ProcessInfo } from "../../ipc/types";
+import { processMenu, scratchpadMenu, todoMenu } from "../../lib/floor/menus";
+import { useProcessActivity } from "../../lib/useAgentActivity";
 import type { RoomModel } from "../../lib/floor/types";
 import { useFloorStore } from "../../state/floorStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
@@ -17,6 +23,24 @@ function lightOf(p: ProcessInfo): "up" | "crashed" | "exited" | "off" {
 const more = (n: number, max: number) =>
   n > max ? <em className={styles.more}>+{n - max}</em> : null;
 
+type OpenMenu = (e: React.MouseEvent, items: MenuItem[]) => void;
+
+function Light({
+  service,
+  onMenu,
+}: {
+  service: ProcessInfo;
+  onMenu: OpenMenu;
+}) {
+  const activity = useProcessActivity(service.id);
+  return (
+    <i
+      data-light={lightOf(service)}
+      onContextMenu={(e) => onMenu(e, processMenu(service, activity))}
+    />
+  );
+}
+
 export function RoomWall({ room }: { room: RoomModel }) {
   const { project, services } = room;
   const openPopover = useFloorStore((s) => s.openPopover);
@@ -26,11 +50,21 @@ export function RoomWall({ room }: { room: RoomModel }) {
     (s) => s.scratchpadsByProject[project.id] ?? NO_ITEMS,
   );
   const openTodos = todos.filter((t) => !t.done);
-  const lights = services.map(lightOf);
-  const sorted = [...lights].sort(
-    (a, b) => Number(b === "crashed") - Number(a === "crashed"),
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    items: MenuItem[];
+  } | null>(null);
+  const onMenu: OpenMenu = (e, items) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, items });
+  };
+  const isCrashed = (p: ProcessInfo) => lightOf(p) === "crashed";
+  const sorted = [...services].sort(
+    (a, b) => Number(isCrashed(b)) - Number(isCrashed(a)),
   );
-  const crashed = lights.includes("crashed");
+  const crashed = services.some(isCrashed);
 
   const fixture = (
     kind: "todos" | "scratchpads" | "services",
@@ -67,6 +101,7 @@ export function RoomWall({ room }: { room: RoomModel }) {
                 <i
                   key={t.id}
                   data-note=""
+                  onContextMenu={(e) => onMenu(e, todoMenu(project.id, t))}
                   data-hollow={!!a && !a.active}
                   style={
                     a?.color
@@ -86,7 +121,11 @@ export function RoomWall({ room }: { room: RoomModel }) {
           pads.length,
           <span className={styles.books}>
             {pads.slice(0, 4).map((p) => (
-              <i key={p.id} />
+              <i
+                key={p.id}
+                data-book=""
+                onContextMenu={(e) => onMenu(e, scratchpadMenu(project.id, p))}
+              />
             ))}
             {more(pads.length, 4)}
           </span>,
@@ -98,8 +137,8 @@ export function RoomWall({ room }: { room: RoomModel }) {
           services.length,
           <>
             <span className={styles.rack}>
-              {sorted.slice(0, 3).map((l, i) => (
-                <i key={i} data-light={l} />
+              {sorted.slice(0, 3).map((sv) => (
+                <Light key={sv.id} service={sv} onMenu={onMenu} />
               ))}
               {more(services.length, 3)}
             </span>
@@ -110,6 +149,7 @@ export function RoomWall({ room }: { room: RoomModel }) {
             )}
           </>,
         )}
+      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
     </div>
   );
 }
