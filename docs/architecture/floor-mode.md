@@ -43,7 +43,8 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 - `startAgent.ts`: `startAgentIn` for the nameplate +.
 - `menus.ts`: right-click items (`processMenu`, `todoMenu`, `scratchpadMenu`) for
   `ContextMenu`; used by desks, wall notes, notebooks, rack lights and the to-do
-  and scratchpad popover rows.
+  and scratchpad popover rows. Items that stop or remove something set `confirm`
+  on `MenuItem` (`ContextMenu.tsx`) and ask inside the menu.
 - `terminalCommands.ts` (`useTerminalCommands`) and `terminals.ts` `runCommand`:
   justfile recipes and saved commands, run in a new terminal.
 - `waypoints.ts`: edge markers for rooms that need you and are out of view.
@@ -72,7 +73,7 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `terminals`). Services show only when the project has any.
 - To-do and scratchpad popovers fill the `Popover` header and footer through
   `PopoverSlot`. The Commands popover (`CommandsFixturePopover`) lists commands
-  and has Edit commands in the header.
+  with a search field (arrow keys, Enter) and has Edit commands in the header.
 - Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
   modal shows the state and Close terminal (after a confirmation); the nameplate's terminal icon calls
   `newTerminal`.

@@ -69,7 +69,8 @@ Settings > General > Appearance > View.
   background shells are monitors behind it (three each, then +N). Terminals are
   desks with a monitor and no bot, grey and labelled "stopped" once they end.
   The pinned desk has no lasting outline. Zoomed far out, labels hide. Right-click
-  a desk for Open, Stop, Resume session and the like.
+  a desk for Open, Stop, Resume session and the like; items that stop or remove
+  something (Stop, Close terminal, Clear the desk) ask for confirmation inside the menu.
 - **Fixtures.** The back wall of a room holds what the sidebar held: a
   **pinboard** (to-dos, notes in the owning agent's colour), a **shelf**
   (scratchpads), **Commands** (a toolbox) and a **rack** (`podium.yml` services,
@@ -77,7 +78,8 @@ Settings > General > Appearance > View.
   with the list, the item with its editor, and the usual actions (start an
   agent, archive, reload `podium.yml`). The popovers have one header bar,
   compact rows with the owning agent's colour edge, and details in a footer.
-  **Commands** runs a justfile recipe or saved command in a new terminal; **Edit
+  **Commands** runs a justfile recipe or saved command in a new terminal (search
+  field, arrow keys and Enter); **Edit
   commands** changes the saved ones. Right-click a pinboard note, a notebook, a
   rack light or a popover row for its menu. A section hidden for the project
   hides its fixture.
