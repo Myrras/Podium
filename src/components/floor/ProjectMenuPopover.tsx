@@ -221,16 +221,18 @@ export function ProjectMenuPopover({
             ))}
           </>
         )}
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => {
-            void newTerminal(project);
-            close();
-          }}
-        >
-          New terminal
-        </button>
+        {project.sections.terminals && (
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              void newTerminal(project);
+              close();
+            }}
+          >
+            New terminal
+          </button>
+        )}
         {project.sections.issues && (
           <button
             type="button"
