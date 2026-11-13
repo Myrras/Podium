@@ -1,0 +1,64 @@
+/* Modal's backdrop (colour per theme), without its Esc handler or scaled card. */
+.overlay {
+  composes: overlay from "../Modal.module.css";
+  animation: fade var(--dur-3) var(--ease-out);
+}
+
+/* A definite height: TerminalPane's .pane is flex: 1; min-height: 0. */
+.card {
+  composes: glass from global;
+  width: min(1100px, 100vw - 64px);
+  height: min(720px, 100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--pop-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-lg);
+  animation: rise var(--dur-3) var(--ease-out);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.nameInput {
+  min-width: 0;
+  width: 240px;
+  font-weight: 600;
+}
+
+.end {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
