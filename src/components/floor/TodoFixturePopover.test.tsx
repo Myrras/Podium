@@ -77,4 +77,43 @@ describe("TodoFixturePopover", () => {
     fireEvent.click(start);
     expect(spawnAgent).toHaveBeenCalledWith(P, { todoIds: ["t1"] });
   });
+
+  it("item view: Start agent follows the list's rule", () => {
+    open("t1");
+    const start = screen.getByRole("button", { name: "Start agent" });
+    fireEvent.click(start, { ctrlKey: true });
+    expect(useFloorStore.getState().agentModal).toEqual({
+      projectId: P,
+      todoIds: ["t1"],
+      initialName: "Fix the lamp",
+    });
+    fireEvent.click(start);
+    expect(spawnAgent).toHaveBeenCalledWith(P, { todoIds: ["t1"] });
+  });
+
+  it("item view: a live owner shows Open the agent", () => {
+    const setActiveProcess = vi.fn();
+    useProcessStore.setState({ setActiveProcess } as never);
+    useTodoStore.setState({
+      todosByProject: {
+        [P]: [
+          {
+            ...todo("t1", "Fix the lamp"),
+            assignedAgent: {
+              processId: "p9",
+              name: "A",
+              color: null,
+              active: true,
+            },
+          },
+        ],
+      },
+    } as never);
+    open("t1");
+    expect(screen.queryByRole("button", { name: "Start agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open the agent" }));
+    expect(setActiveProcess).toHaveBeenCalledWith("p9");
+    expect(useFloorStore.getState().terminalId).toBe("p9");
+    expect(useFloorStore.getState().popover).toBeNull();
+  });
 });

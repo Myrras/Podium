@@ -1,7 +1,9 @@
 /** Pinboard popover: the project's to-do list; a to-do opens inside it. */
 import type { ProjectId, TodoId } from "../../ipc/types";
 import { useFloorStore } from "../../state/floorStore";
+import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
+import { useTodoStore } from "../../state/todoStore";
 import { Popover } from "../Popover";
 import { TodoDetailPane } from "../TodoDetailPane";
 import { TodoSubsection } from "../TodoSubsection";
@@ -19,8 +21,53 @@ export function TodoFixturePopover({
   const root = useProjectStore(
     (s) => s.projects.find((p) => p.id === projectId)?.root ?? "",
   );
-  const { closePopover, setPopoverItem, setAgentModal } =
+  const todo = useTodoStore((s) =>
+    itemId
+      ? s.todosByProject[projectId]?.find((t) => t.id === itemId)
+      : undefined,
+  );
+  const { closePopover, setPopoverItem, setAgentModal, openTerminal } =
     useFloorStore.getState();
+
+  // Same rule as the list's Start: plain click starts the default agent,
+  // Cmd/Ctrl-click opens the New agent screen. (No shared helper exists.)
+  const agent = todo?.assignedAgent;
+  const AgentRow = () => (
+    <div className={styles.agentRow}>
+      {agent && agent.active !== false ? (
+        <button
+          type="button"
+          onClick={() => {
+            useProcessStore.getState().setActiveProcess(agent.processId);
+            openTerminal(agent.processId);
+          }}
+        >
+          Open the agent
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => {
+            if (!todo) return;
+            useProjectStore.getState().setActiveProject(projectId);
+            if (e.metaKey || e.ctrlKey) {
+              setAgentModal({
+                projectId,
+                todoIds: [todo.id],
+                initialName: todo.text,
+              });
+            } else {
+              void useProcessStore
+                .getState()
+                .spawnAgent(projectId, { todoIds: [todo.id] });
+            }
+          }}
+        >
+          Start agent
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <Popover
@@ -40,6 +87,7 @@ export function TodoFixturePopover({
             todoId={itemId as TodoId}
             onClose={() => setPopoverItem(null)}
           />
+          {todo && <AgentRow />}
         </div>
       ) : (
         <TodoSubsection

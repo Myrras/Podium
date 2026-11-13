@@ -5,3 +5,10 @@
   min-height: 0;
   overflow: auto;
 }
+
+.agentRow {
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
