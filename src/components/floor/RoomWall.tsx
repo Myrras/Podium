@@ -67,9 +67,9 @@ export function RoomWall({ room }: { room: RoomModel }) {
   const crashed = services.some(isCrashed);
 
   const fixture = (
-    kind: "todos" | "scratchpads" | "services",
+    kind: "todos" | "scratchpads" | "services" | "commands",
     title: string,
-    n: number,
+    n: number | null,
     art: React.ReactNode,
   ) => (
     <button
@@ -77,12 +77,12 @@ export function RoomWall({ room }: { room: RoomModel }) {
       className={styles.fx}
       data-fixture={`${project.id}:${kind}`}
       data-on={open?.projectId === project.id && open.kind === kind}
-      aria-label={`${title} of ${project.name}, ${n}`}
+      aria-label={`${title} of ${project.name}${n === null ? "" : `, ${n}`}`}
       onClick={() => openPopover({ projectId: project.id, kind, itemId: null })}
     >
       {art}
       <span className={styles.label}>
-        {title} <b>{n}</b>
+        {title} {n !== null && <b>{n}</b>}
       </span>
     </button>
   );
@@ -129,6 +129,13 @@ export function RoomWall({ room }: { room: RoomModel }) {
             ))}
             {more(pads.length, 4)}
           </span>,
+        )}
+      {project.sections.terminals &&
+        fixture(
+          "commands",
+          "Commands",
+          null,
+          <span className={styles.toolbox} aria-hidden="true" />,
         )}
       {services.length > 0 &&
         fixture(

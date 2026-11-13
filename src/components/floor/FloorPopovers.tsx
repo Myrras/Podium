@@ -4,6 +4,7 @@ import { useEffect } from "react";
 
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
+import { CommandsFixturePopover } from "./CommandsFixturePopover";
 import { ProjectMenuPopover } from "./ProjectMenuPopover";
 import { ScratchpadFixturePopover } from "./ScratchpadFixturePopover";
 import { ServicesFixturePopover } from "./ServicesFixturePopover";
@@ -13,6 +14,7 @@ const CONTENT = {
   todos: TodoFixturePopover,
   scratchpads: ScratchpadFixturePopover,
   services: ServicesFixturePopover,
+  commands: CommandsFixturePopover,
   menu: ProjectMenuPopover,
 };
 

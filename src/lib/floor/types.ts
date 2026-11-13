@@ -8,7 +8,8 @@ import type {
 
 export type FloorMode = "project" | "floor";
 export type DeskState = "working" | "needs" | "idle" | "ended" | "crashed";
-export type FixtureKind = "todos" | "scratchpads" | "services" | "menu";
+export type FixtureKind =
+  "todos" | "scratchpads" | "services" | "commands" | "menu";
 export interface Rect {
   x: number;
   y: number;

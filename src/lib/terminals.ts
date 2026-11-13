@@ -26,3 +26,24 @@ export async function newTerminal(
   });
   if (info) await startProcess(info.id);
 }
+
+/**
+ * Run a quick command in a new terminal named `name`; `cwd` is relative to the
+ * project root (omit for the root). Acting on a project activates it.
+ */
+export async function runCommand(
+  project: Pick<ProjectInfo, "id">,
+  command: string,
+  name: string,
+  cwd?: string,
+): Promise<void> {
+  useProjectStore.getState().setActiveProject(project.id);
+  const { addProcess, startProcess } = useProcessStore.getState();
+  const info = await addProcess(project.id, {
+    name,
+    kind: "terminal",
+    command,
+    ...(cwd ? { cwd } : {}),
+  });
+  if (info) await startProcess(info.id);
+}
