@@ -48,13 +48,17 @@ writes one event file (`<secs>-<pid>.json`, temp name then rename) into
 drains and deletes them on every activity poll. `PostToolUse` saves only a
 payload that starts a background shell (`"backgroundTaskId"`).
 
+An agent whose turn ended while a background shell still runs reads Working,
+not Idle.
+
 Injected only on native Unix. Off when the user passes their own `--settings`,
 for a lean sub-agent, on Windows and for the WSL backend; those agents have no
 counts.
 
 Cleanup: an agent missing from 60 poll rounds in a row (stopped or removed)
 loses its state and directory. Rounds, not time, so a paused UI sweeps
-nothing. A restart starts from zero and its hook recreates the directory. The
+nothing. Counts are reset when an agent starts, so a restart starts from zero
+and its hook recreates the directory. The
 per-start wipe of the mcp config dir clears the rest.
 
 ### Session colour

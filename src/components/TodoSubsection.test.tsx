@@ -378,8 +378,8 @@ describe("TodoSubsection assigned to-dos", () => {
     );
     const square = row!.querySelector('[data-owned="true"]');
     expect(square).toHaveAttribute("title", "Owned by session");
-    // No tint: the row itself sets no background of its own via inline style.
-    expect((row as HTMLElement).style.background).toBe("");
+    expect(square).toHaveAttribute("role", "img");
+    expect(square).toHaveAttribute("aria-label", "Owned by session");
   });
 
   it("leaves the owner slot empty on an unowned row", () => {

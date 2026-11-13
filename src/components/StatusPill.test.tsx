@@ -36,13 +36,19 @@ describe("StatusPill", () => {
     );
   });
 
-  it("hides zero counters and counters outside Working", () => {
+  it("hides zero counters", () => {
+    render(<StatusPill state="working" subagents={0} shells={0} />);
+    expect(screen.queryByTitle(/running$/)).toBeNull();
+  });
+
+  it("shows counters above zero on Needs you and Idle pills too", () => {
     const { rerender } = render(
-      <StatusPill state="working" subagents={0} shells={0} />,
+      <StatusPill state="needs" subagents={2} shells={1} />,
     );
-    expect(screen.queryByTitle(/running$/)).toBeNull();
-    rerender(<StatusPill state="idle" subagents={2} shells={1} />);
-    expect(screen.queryByTitle(/running$/)).toBeNull();
+    expect(screen.getByTitle("2 sub-agents running")).toBeInTheDocument();
+    rerender(<StatusPill state="idle" subagents={0} shells={1} />);
+    expect(screen.getByTitle("1 background shell running")).toBeInTheDocument();
+    expect(screen.queryByTitle(/sub-agent/)).toBeNull();
   });
 
   it("shows the detail as the pill's tooltip, after the word", () => {

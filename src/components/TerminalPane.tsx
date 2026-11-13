@@ -81,7 +81,9 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
             {statusLabel(process.status)}
           </span>
           {state === "needs" && activity.waitingFor && (
-            <span className={styles.waitingFor}>{activity.waitingFor}</span>
+            <span className={styles.waitingFor} title={activity.waitingFor}>
+              {activity.waitingFor}
+            </span>
           )}
         </span>
         {/* Git branch + worktree, shown top-right where agent controls would

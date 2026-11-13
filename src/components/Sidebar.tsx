@@ -15,7 +15,8 @@
  * header's own actions (rename / reload / remove) are hidden the same way.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type {
   ProcessInfo,
@@ -69,10 +70,10 @@ import styles from "./Sidebar.module.css";
 
 /** Working / needs-you counts over `processes`, from the activity store. */
 function useRollup(processes: ProcessInfo[]) {
-  const details = useAgentActivityStore((s) => s.details);
-  return useMemo(
-    () => activityRollup(processes, details),
-    [processes, details],
+  // Only the two counts: a header re-renders when they change, not on any
+  // process change.
+  return useAgentActivityStore(
+    useShallow((s) => activityRollup(processes, s.details)),
   );
 }
 

@@ -43,7 +43,10 @@ printed within 2.5 s and the burst lasted at least 300 ms (a lone redraw is
 ~0 ms, a spinner keeps growing), and **needs input** when a quiet screen
 shows a permission prompt or credential request (`detectInputPrompt`, needs an
 opened terminal). A reported state wins over both; a reported `waiting` is the
-needs-input episode. Background shells fall back to the screen read
+needs-input episode. Exception for non-agent processes: the core can only
+report `working` or `idle` for a terminal, so a reported `working` with an
+input prompt on screen (`sudo`, `[y/N]`) reads `waiting` and counts as a
+prompt episode (one notification). A reported `idle` stays idle. Background shells fall back to the screen read
 (`detectBackgroundShells`) when the core counts none.
 
 ### Store contract
@@ -52,7 +55,9 @@ needs-input episode. Background shells fall back to the screen read
 `subagents`, `shells`) is kept per process in `details`.
 `useProcessActivity(id)` reads one slot, so a component re-renders only when
 its process changes; an untracked process reads `UNTRACKED_ACTIVITY` (idle,
-not reported). `useAgentActivity` and `useAgentShells` are the narrow reads.
+not reported). `useAgentActivity` is the narrow read. Sidebar and worktree headers select
+only their working/needs counts (`activityRollup` through zustand's
+`useShallow`), so a header re-renders only when its counts change.
 
 ### Status pill
 
