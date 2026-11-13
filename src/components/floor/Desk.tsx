@@ -1,5 +1,7 @@
 import { type ReactElement, useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { ProcessInfo } from "../../ipc/types";
+import { botVariants } from "../../lib/floor/botVariant";
 import { deskState } from "../../lib/floor/rooms";
 import { formatSince } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
@@ -35,6 +37,16 @@ function Row({
 export function Desk({ process }: { process: ProcessInfo }) {
   const act = useProcessActivity(process.id);
   const active = useProcessStore((s) => s.activeProcessId === process.id);
+  const roomIds = useProcessStore(
+    useShallow((s) =>
+      s.processes
+        .filter(
+          (p) => p.kind.kind === "agent" && p.projectId === process.projectId,
+        )
+        .map((p) => p.id),
+    ),
+  );
+  const variant = botVariants(roomIds).get(process.id) ?? 0;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (act.sinceMs === null) return;
@@ -91,7 +103,19 @@ export function Desk({ process }: { process: ProcessInfo }) {
         {terminal ? (
           <TerminalDeskArt />
         ) : (
-          <Bot color={process.color} state={state} seed={process.id} />
+          <Bot
+            color={process.color}
+            state={state}
+            seed={process.id}
+            variant={variant}
+          />
+        )}
+        {state === "idle" && !terminal && (
+          <span className={styles.zzz} aria-hidden="true">
+            <i>z</i>
+            <i>z</i>
+            <i>Z</i>
+          </span>
         )}
         {state === "needs" && !terminal && (
           <span className={`${styles.mark} ${styles.ask}`} aria-hidden="true">
