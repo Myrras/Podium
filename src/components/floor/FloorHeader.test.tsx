@@ -51,6 +51,10 @@ describe("FloorHeader", () => {
     fireEvent.click(screen.getByText("Reset layout"));
     expect(reset).toHaveBeenCalled();
     expect(jumpTo).toHaveBeenLastCalledWith("all");
+    for (const name of ["Zoom out", "Zoom in", "Fit all", "Reset layout"])
+      expect(
+        screen.getByText(name).closest("[data-popover-keep]"),
+      ).not.toBeNull();
     fireEvent.click(screen.getByText("Add project…"));
     expect(open).toHaveBeenCalled();
   });

@@ -69,16 +69,22 @@ export function FloorStatusBar() {
   const hover = useFloorStore((s) => s.hoverDesk);
   const focus = useFloorStore((s) => s.focus);
   const active = useProcessStore((s) => s.activeProcessId);
+  const room = focus && focus !== "all" ? focus : null;
+  // Hovered desk, else the pinned desk unless one room is in focus and the desk is elsewhere.
   const process = useProcessStore((s) => {
-    const id = hover ?? active;
-    return id ? s.processes.find((p) => p.id === id) : undefined;
+    const find = (id: string | null) =>
+      id ? s.processes.find((p) => p.id === id) : undefined;
+    const pinned = find(active);
+    return (
+      find(hover) ?? (room && pinned?.projectId !== room ? undefined : pinned)
+    );
   });
   return (
     <div className={styles.bar} role="status">
       {process ? (
         <AgentDetails process={process} />
-      ) : focus && focus !== "all" ? (
-        <RoomCounts projectId={focus} />
+      ) : room ? (
+        <RoomCounts projectId={room} />
       ) : (
         HINT
       )}

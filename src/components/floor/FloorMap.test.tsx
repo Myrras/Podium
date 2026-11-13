@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => undefined)),
 }));
 
-const rooms = [
+const allRooms = [
   {
     project: { id: "p1", name: "Alpha" },
     rect: { x: 0, y: 0, w: 200, h: 120 },
@@ -18,6 +18,7 @@ const rooms = [
     rect: { x: 400, y: 0, w: 200, h: 120 },
   },
 ] as unknown as RoomModel[];
+let rooms = allRooms;
 const useFloorData = vi.fn();
 vi.mock("../../lib/floor/rooms", () => ({
   useRooms: () => rooms,
@@ -47,6 +48,7 @@ window.PointerEvent ??= class extends MouseEvent {} as typeof PointerEvent;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rooms = allRooms;
   useFloorStore.getState().reset();
 });
 
@@ -106,10 +108,10 @@ describe("FloorMap", () => {
     render(<FloorMap />);
 
     fireEvent.pointerDown(map(), { clientX: 0, clientY: 0, button: 0 });
-    fireEvent.pointerMove(map(), { clientX: 2, clientY: 2 });
+    fireEvent.pointerMove(map(), { clientX: 2, clientY: 2, buttons: 1 });
     expect(useFloorStore.getState().camera).toEqual({ x: 5, y: 5, z: 1 });
 
-    fireEvent.pointerMove(map(), { clientX: 30, clientY: -10 });
+    fireEvent.pointerMove(map(), { clientX: 30, clientY: -10, buttons: 1 });
     expect(useFloorStore.getState()).toMatchObject({
       camera: { x: 35, y: -5, z: 1 },
       focus: null,
@@ -122,8 +124,42 @@ describe("FloorMap", () => {
       clientY: 0,
       button: 0,
     });
-    fireEvent.pointerMove(map(), { clientX: 50, clientY: 50 });
+    fireEvent.pointerMove(map(), { clientX: 50, clientY: 50, buttons: 1 });
     expect(useFloorStore.getState().camera).toEqual({ x: 35, y: -5, z: 1 });
+  });
+
+  it("ends a pan whose release it missed", () => {
+    render(<FloorMap />);
+    fireEvent.pointerDown(map(), { clientX: 0, clientY: 0, button: 0 });
+    fireEvent.pointerMove(map(), { clientX: 20, clientY: 0, buttons: 1 });
+    fireEvent.pointerMove(map(), { clientX: 60, clientY: 0, buttons: 0 });
+    fireEvent.pointerMove(map(), { clientX: 90, clientY: 0, buttons: 1 });
+    expect(useFloorStore.getState().camera.x).toBe(20);
+  });
+
+  it("keeps a popover open while panning, closes it on a background click", () => {
+    const popover = {
+      projectId: "p1" as never,
+      kind: "todos" as const,
+      itemId: null,
+    };
+    render(<FloorMap />);
+    expect(map().hasAttribute("data-popover-keep")).toBe(true);
+    useFloorStore.getState().openPopover(popover);
+
+    fireEvent.pointerDown(map(), { clientX: 0, clientY: 0, button: 0 });
+    fireEvent.pointerMove(map(), { clientX: 30, clientY: 0, buttons: 1 });
+    fireEvent.pointerUp(map());
+    expect(useFloorStore.getState().popover).toEqual(popover);
+
+    fireEvent.pointerDown(screen.getAllByRole("button")[0], { button: 0 });
+    fireEvent.pointerUp(map());
+    expect(useFloorStore.getState().popover).toEqual(popover);
+
+    fireEvent.pointerDown(map(), { clientX: 0, clientY: 0, button: 0 });
+    fireEvent.pointerMove(map(), { clientX: 2, clientY: 1, buttons: 1 });
+    fireEvent.pointerUp(map());
+    expect(useFloorStore.getState().popover).toBeNull();
   });
 
   it("shows everything on Esc unless a popover or terminal is open", () => {
@@ -167,6 +203,7 @@ describe("FloorMap", () => {
       expect(useFloorStore.getState().viewport).toEqual({ w: 800, h: 600 });
       expect(jumpTo).toHaveBeenCalledWith("all");
 
+      expect(jumpTo).toHaveBeenCalledTimes(1);
       jumpTo.mockClear();
       useFloorStore.setState({ focus: null });
       act(() => resize(900, 600));
@@ -175,6 +212,31 @@ describe("FloorMap", () => {
       useFloorStore.setState({ focus: "p2" as never });
       act(() => resize(1000, 600));
       expect(jumpTo).toHaveBeenCalledWith("p2");
+    });
+
+    it("fits all once the rooms arrive after the viewport", () => {
+      rooms = [];
+      const { rerender } = render(<FloorMap />);
+      act(() => resize(800, 600));
+      expect(jumpTo).not.toHaveBeenCalled();
+
+      rooms = allRooms;
+      rerender(<FloorMap />);
+      expect(jumpTo).toHaveBeenCalledWith("all");
+      jumpTo.mockClear();
+      rooms = [...allRooms];
+      rerender(<FloorMap />);
+      expect(jumpTo).not.toHaveBeenCalled();
+    });
+
+    it("does not fit when the camera moved before the rooms arrived", () => {
+      rooms = [];
+      const { rerender } = render(<FloorMap />);
+      act(() => resize(800, 600));
+      act(() => useFloorStore.getState().setCamera({ x: 9, y: 9, z: 1 }));
+      rooms = allRooms;
+      rerender(<FloorMap />);
+      expect(jumpTo).not.toHaveBeenCalled();
     });
   });
 });

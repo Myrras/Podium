@@ -85,6 +85,17 @@ describe("FloorStatusBar", () => {
       "Working for 1m 05s · Todo t1 · worktree feat-x · 2 sub-agents · 1 background shell",
     );
     act(() => useFloorStore.getState().setHoverDesk("zz"));
+    expect(screen.getByRole("status").textContent).toMatch(/^Working/);
+  });
+
+  it("with a room in focus, shows the pinned desk only when it is in that room", () => {
+    useProcessStore.setState({ activeProcessId: "a1" });
+    useFloorStore.setState({ focus: "p2" });
+    render(<FloorStatusBar />);
     expect(screen.getByRole("status").textContent).toMatch(/Drag the floor/);
+    act(() => useFloorStore.setState({ focus: "p1" }));
+    expect(screen.getByRole("status").textContent).toMatch(/^Working/);
+    act(() => useFloorStore.setState({ focus: "all" }));
+    expect(screen.getByRole("status").textContent).toMatch(/^Working/);
   });
 });

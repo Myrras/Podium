@@ -19,7 +19,7 @@ import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import { pillState } from "../processStatus";
 import { layoutRooms, roomSize } from "./geometry";
-import type { DeskState, RoomModel } from "./types";
+import type { DeskState, RoomModel, Size } from "./types";
 
 export function deskState(
   process: ProcessInfo,
@@ -44,7 +44,19 @@ const stateOf =
   (details: Record<string, ProcessActivity>) => (p: ProcessInfo) =>
     deskState(p, details[p.id] ?? UNTRACKED_ACTIVITY);
 
-/** Pure room model; `state` gives each process's desk state. */
+/** Last size per room key and whether it grew at its last change; sticky so every caller agrees. */
+const lastSize = new Map<string, { size: Size; grown: boolean }>();
+
+function grew(key: string, size: Size): boolean {
+  const last = lastSize.get(key);
+  if (last && last.size.w === size.w && last.size.h === size.h)
+    return last.grown;
+  const grown = !!last && (size.w > last.size.w || size.h > last.size.h);
+  lastSize.set(key, { size, grown });
+  return grown;
+}
+
+/** Room model; `state` gives each process's desk state. */
 function buildRooms(
   projects: ProjectInfo[],
   processes: ProcessInfo[],
@@ -73,10 +85,12 @@ function buildRooms(
   const places = layoutRooms(
     parts.map((r) => {
       const desks = r.agents.length + r.terminals.length;
+      const size = roomSize(desks, r.services.length > 0);
       return {
         key: r.project.root,
-        size: roomSize(desks, r.services.length > 0),
+        size,
         hasDesks: desks > 0,
+        grown: grew(r.project.root, size),
       };
     }),
     saved,

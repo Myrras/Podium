@@ -80,12 +80,23 @@ export function FloorMap() {
       if (w === was.w && h === was.h) return;
       setViewport({ w, h });
       if (!w || !h) return;
-      if (!was.w || !was.h) jumpTo("all");
-      else if (focus) jumpTo(focus);
+      if (was.w && was.h && focus) jumpTo(focus);
     });
     observer.observe(viewportRef.current!);
     return () => observer.disconnect();
   }, []);
+
+  // Fit all once, as soon as both the viewport and the rooms are known, unless the camera moved first.
+  const hasViewport = useFloorStore(
+    (s) => s.viewport.w > 0 && s.viewport.h > 0,
+  );
+  const startCamera = useRef(useFloorStore.getState().camera);
+  const fitted = useRef(false);
+  useEffect(() => {
+    if (fitted.current || !hasViewport || rooms.length === 0) return;
+    fitted.current = true;
+    if (useFloorStore.getState().camera === startCamera.current) jumpTo("all");
+  }, [hasViewport, rooms.length]);
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || (e.target as Element).closest(NO_PAN)) return;
@@ -101,6 +112,11 @@ export function FloorMap() {
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     const p = pan.current;
     if (!p || p.id !== e.pointerId) return;
+    // Released outside the viewport before capture: no pointerup reached us.
+    if (e.buttons === 0) {
+      pan.current = null;
+      return;
+    }
     const dx = e.clientX - p.x;
     const dy = e.clientY - p.y;
     if (!p.moving) {
@@ -115,9 +131,12 @@ export function FloorMap() {
   };
 
   const onPointerEnd = (e: PointerEvent<HTMLDivElement>) => {
-    if (pan.current?.id !== e.pointerId) return;
+    const p = pan.current;
+    if (!p || p.id !== e.pointerId) return;
     pan.current = null;
     e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (!p.moving && e.type === "pointerup")
+      useFloorStore.getState().closePopover();
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -132,6 +151,7 @@ export function FloorMap() {
       role="region"
       aria-label="Floor map"
       tabIndex={-1}
+      data-popover-keep
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}

@@ -43,7 +43,7 @@ export function hits(rect: Rect, others: Rect[]): boolean {
 }
 
 export function layoutRooms(
-  rooms: { key: string; size: Size; hasDesks: boolean }[],
+  rooms: { key: string; size: Size; hasDesks: boolean; grown?: boolean }[],
   saved: Record<string, [number, number]>,
 ): Record<string, [number, number]> {
   const out: Record<string, [number, number]> = {};
@@ -56,17 +56,22 @@ export function layoutRooms(
   const ordered = [...rooms].sort(
     (a, b) => Number(b.hasDesks) - Number(a.hasDesks),
   );
-  for (const { key, size, hasDesks: _ } of ordered) {
-    const s = saved[key];
-    if (
-      Array.isArray(s) &&
-      s.length === 2 &&
-      s.every(Number.isFinite) &&
-      !hits({ x: s[0], y: s[1], ...size }, placed)
-    ) {
-      put(size, s[0], s[1], key);
-      continue;
+  // Saved places first, grown rooms last: a room that outgrew its spot moves, not its neighbour.
+  for (const grown of [false, true]) {
+    for (const room of ordered) {
+      const s = saved[room.key];
+      if (
+        Boolean(room.grown) === grown &&
+        Array.isArray(s) &&
+        s.length === 2 &&
+        s.every(Number.isFinite) &&
+        !hits({ x: s[0], y: s[1], ...room.size }, placed)
+      )
+        put(room.size, s[0], s[1], room.key);
     }
+  }
+  for (const { key, size } of ordered) {
+    if (key in out) continue;
     // Terminates: past the lowest placed room, row y is always free. A room wider than the
     // world still gets x = 0 (shortcut: no horizontal wrap for it).
     search: for (let y = 0; ; y += GRID) {

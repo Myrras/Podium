@@ -129,6 +129,29 @@ describe("rooms", () => {
     expect(roomOf("nope", rooms)).toBeNull();
   });
 
+  it("moves a room that outgrows its spot, not its neighbour", () => {
+    useProjectStore.setState({ projects: [project("ga"), project("gb")] });
+    useLayoutStore.setState({
+      floorPositions: { "/fake/ga": [0, 0], "/fake/gb": [240, 0] },
+    });
+    const a1 = proc("ga1", "ga", "agent");
+    const b1 = proc("gb1", "gb", "agent");
+    useProcessStore.setState({ processes: [a1, b1] });
+    expect(getRooms().map((r) => [r.rect.x, r.rect.y])).toEqual([
+      [0, 0],
+      [240, 0],
+    ]);
+    useProcessStore.setState({
+      processes: [a1, b1, proc("ga2", "ga", "agent")],
+    });
+    // Every later call agrees, not only the first one after the change.
+    for (let i = 0; i < 2; i++) {
+      const [a, b] = getRooms();
+      expect(a.rect).toMatchObject({ x: 480, y: 0, w: 360 });
+      expect(b.rect).toMatchObject({ x: 240, y: 0 });
+    }
+  });
+
   it("useRooms keeps its identity while only activity time ticks", () => {
     seed();
     const { result } = renderHook(() => useRooms());
