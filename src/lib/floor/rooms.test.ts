@@ -155,7 +155,7 @@ describe("rooms", () => {
   it("forgets an older growth when another room grows", () => {
     useProjectStore.setState({ projects: [project("ha"), project("hb")] });
     useLayoutStore.setState({
-      floorPositions: { "/fake/ha": [360, 0], "/fake/hb": [0, 400] },
+      floorPositions: { "/fake/ha": [360, 0], "/fake/hb": [0, 280] },
     });
     const a = (n: number) => proc(`ha${n}`, "ha", "agent");
     const b = (n: number) => proc(`hb${n}`, "hb", "agent");
@@ -166,7 +166,7 @@ describe("rooms", () => {
     useProcessStore.setState({ processes: [a(1), a(2), b(1), b(2), b(3)] });
     // hb grew into ha: ha moves even though hb lies further right/down.
     const [ha, hb] = getRooms();
-    expect(hb.rect).toMatchObject({ x: 0, y: 400, w: 520 });
+    expect(hb.rect).toMatchObject({ x: 0, y: 280, w: 520 });
     expect(ha.rect).toMatchObject({ x: 560, y: 0 });
   });
 
