@@ -56,10 +56,19 @@ function current(id: ProcessId): ProcessInfo | undefined {
 }
 
 /**
- * Close agent / Close terminal: stop if active now, remove, and hide its
- * modal. A failed stop keeps it. Calls the IPC directly: the store's stop
- * swallows the error, and a successful stop still reads as active
- * (`stopping`) until the process exits.
+ * Stop, as confirmed in a menu or the terminal modal: only while running now.
+ * Stopping one that ended or is already stopping errors.
+ */
+export function stopIfRunning(id: ProcessId): void {
+  if (current(id)?.status.state === "running")
+    void useProcessStore.getState().stopProcess(id);
+}
+
+/**
+ * Close agent / Close terminal: stop if active now, remove, then hide its
+ * modal. A failed stop keeps the process and the modal (with a toast). Calls
+ * the IPC directly: the store's stop swallows the error, and a successful
+ * stop still reads as active (`stopping`) until the process exits.
  */
 export function closeProcess(id: ProcessId): void {
   void (async () => {
@@ -78,9 +87,9 @@ export function closeProcess(id: ProcessId): void {
       }
     }
     await useProcessStore.getState().removeProcess(id);
+    const floor = useFloorStore.getState();
+    if (floor.terminalId === id) floor.closeTerminal();
   })();
-  const floor = useFloorStore.getState();
-  if (floor.terminalId === id) floor.closeTerminal();
 }
 
 /**
@@ -103,10 +112,7 @@ export function processMenu(
       ? {
           label: "Stop",
           confirm: stopConfirm(process),
-          // Only a running one: stopping one that is already stopping errors.
-          onSelect: () => {
-            if (status()?.state === "running") void ps().stopProcess(id);
-          },
+          onSelect: () => stopIfRunning(id),
         }
       : {
           label: kind === "agent" ? "Resume" : "Start",

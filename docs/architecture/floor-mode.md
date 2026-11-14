@@ -114,9 +114,12 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `leading`, `trailing`, `onRename` and `hideActions` props (the modal draws no
   bar of its own). Stop is an icon at the far left.
 - Agent actions map to existing commands: Resume = `startProcess`, Stop
-  = `stopProcess`. Close agent/terminal (`closeProcess`) reads the current
-  process when it runs, calls `processStop` while it is active, keeps it (toast)
-  when the stop fails, and otherwise calls `removeProcess`. × hides
+  = `stopProcess`. Stop (`stopIfRunning`, shared by the menus and the modal)
+  re-reads the status when confirmed and stops only a running process. Close
+  agent/terminal (`closeProcess`) reads the current process when it runs, calls
+  `processStop` while it is active, keeps the process and its modal (toast)
+  when the stop fails, and otherwise calls `removeProcess` and then hides the
+  modal. × hides
   the modal and keeps the process running; `Next: <name>` opens the next
   waiting agent. Stop, Close terminal and Close agent ask first in a confirm
   dialog inside the card (Esc only cancels it).

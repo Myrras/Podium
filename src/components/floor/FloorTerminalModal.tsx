@@ -24,6 +24,7 @@ import {
   closeProcess,
   openProcess,
   stopConfirm,
+  stopIfRunning,
 } from "../../lib/floor/menus";
 import {
   CircleStopIcon,
@@ -72,7 +73,6 @@ export function FloorTerminalModal() {
   );
   const renameProcess = useProcessStore((s) => s.renameProcess);
   const startProcess = useProcessStore((s) => s.startProcess);
-  const stopProcess = useProcessStore((s) => s.stopProcess);
   const restartProcess = useProcessStore((s) => s.restartProcess);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   // A question about one process never carries over to the next one shown.
@@ -173,7 +173,7 @@ export function FloorTerminalModal() {
           onClick={() =>
             setConfirm({
               ...stopConfirm(p),
-              run: () => void stopProcess(p.id),
+              run: () => stopIfRunning(p.id),
             })
           }
         >

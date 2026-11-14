@@ -134,8 +134,12 @@ describe("processMenu", () => {
   it("agent: Close stops first when running, and closes its modal", async () => {
     useFloorStore.getState().openTerminal("p1");
     pick(menu("agent", running), "Close agent").onSelect();
-    expect(useFloorStore.getState().terminalId).toBeNull();
-    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+    // The modal stays until the stop and remove are done.
+    expect(useFloorStore.getState().terminalId).toBe("p1");
+    await vi.waitFor(() =>
+      expect(useFloorStore.getState().terminalId).toBeNull(),
+    );
+    expect(removeProcess).toHaveBeenCalledWith("p1");
     expect(stopCalls()).toEqual([["process_stop", { processId: "p1" }]]);
     expect(stoppedBeforeRemove()).toBe(true);
   });
@@ -160,11 +164,22 @@ describe("processMenu", () => {
         ? Promise.reject({ kind: "other", message: "nope" })
         : Promise.resolve([]),
     );
+    useFloorStore.getState().openTerminal("p1");
     pick(menu("terminal", running), "Close terminal").onSelect();
     await vi.waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("Could not stop process", "nope"),
     );
     expect(removeProcess).not.toHaveBeenCalled();
+    expect(useFloorStore.getState().terminalId).toBe("p1");
+  });
+  it("Close of a stopped process removes it, then closes its modal", async () => {
+    useFloorStore.getState().openTerminal("p1");
+    pick(menu("terminal", exited), "Close terminal").onSelect();
+    await vi.waitFor(() =>
+      expect(useFloorStore.getState().terminalId).toBeNull(),
+    );
+    expect(removeProcess).toHaveBeenCalledWith("p1");
+    expect(stopCalls()).toEqual([]);
   });
   it("Close still removes one that ended before the stop landed", async () => {
     vi.mocked(invoke).mockImplementation((cmd) =>
@@ -224,8 +239,12 @@ describe("processMenu", () => {
   it("terminal: Close stops first when running, and closes its modal", async () => {
     useFloorStore.getState().openTerminal("p1");
     pick(menu("terminal", running), "Close terminal").onSelect();
-    expect(useFloorStore.getState().terminalId).toBeNull();
-    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+    // The modal stays until the stop and remove are done.
+    expect(useFloorStore.getState().terminalId).toBe("p1");
+    await vi.waitFor(() =>
+      expect(useFloorStore.getState().terminalId).toBeNull(),
+    );
+    expect(removeProcess).toHaveBeenCalledWith("p1");
     expect(stopCalls()).toEqual([["process_stop", { processId: "p1" }]]);
     expect(stoppedBeforeRemove()).toBe(true);
   });

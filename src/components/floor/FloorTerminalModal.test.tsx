@@ -221,6 +221,38 @@ describe("FloorTerminalModal", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
+  it("does not stop an agent that exited while the Stop confirm was open", () => {
+    render(<FloorTerminalModal />);
+    open("a1");
+    fireEvent.click(screen.getByRole("button", { name: "Stop Fix login" }));
+    act(() =>
+      useProcessStore.setState({
+        processes: [proc("a1", "Fix login", EXITED)],
+      }),
+    );
+    fireEvent.click(
+      within(confirmDialog()).getByRole("button", { name: "Stop" }),
+    );
+    expect(stopProcess).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps the modal open when Close cannot stop the process", async () => {
+    vi.mocked(invoke).mockImplementationOnce(() =>
+      Promise.reject({ kind: "other", message: "nope" }),
+    );
+    render(<FloorTerminalModal />);
+    open("a1");
+    fireEvent.click(screen.getByRole("button", { name: "Close agent" }));
+    fireEvent.click(
+      within(confirmDialog()).getByRole("button", { name: "Close" }),
+    );
+    await act(async () => {});
+    expect(removeProcess).not.toHaveBeenCalled();
+    expect(useFloorStore.getState().terminalId).toBe("a1");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
   it("cancels the confirm on Esc without closing the modal", () => {
     const outer = vi.fn();
     document.addEventListener("keydown", outer);
