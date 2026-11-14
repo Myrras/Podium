@@ -21,12 +21,12 @@ import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
 import { closeConfirm, closeProcess, stopConfirm } from "../../lib/floor/menus";
 import {
+  CircleStopIcon,
   CloseIcon,
   DeleteIcon,
   NextIcon,
   RestartIcon,
   RunIcon,
-  StopIcon,
 } from "../icons";
 import { TerminalPane } from "../TerminalPane";
 import styles from "./FloorTerminalModal.module.css";
@@ -171,7 +171,7 @@ export function FloorTerminalModal() {
             })
           }
         >
-          <StopIcon />
+          <CircleStopIcon />
         </IconButton>
       ) : (
         <IconButton

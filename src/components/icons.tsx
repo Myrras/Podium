@@ -46,6 +46,7 @@ import {
   Rows3,
   Play,
   Square,
+  CircleStop,
   RotateCw,
   Plus,
   Folder,
@@ -126,6 +127,8 @@ export const MinusIcon = icon(Minus, { size: 15 });
 export const CloseIcon = icon(X);
 export const RunIcon = icon(Play);
 export const StopIcon = icon(Square);
+// The floor modal's Stop: next to the header text a hollow square read as a checkbox.
+export const CircleStopIcon = icon(CircleStop);
 export const RestartIcon = icon(RotateCw);
 export const CheckIcon = icon(Check);
 export const CopyIcon = icon(Copy);
