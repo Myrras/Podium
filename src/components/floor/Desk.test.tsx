@@ -190,4 +190,38 @@ describe("Desk", () => {
     expect(useProcessStore.getState().activeProcessId).toBe("p1");
     expect(useFloorStore.getState().terminalId).toBe("p1");
   });
+
+  it("sets a title with the full name and state, plus sprite counts", () => {
+    seed({
+      activity: "working",
+      sinceMs: Date.now() - 4 * 60_000,
+      subagents: 3,
+      shells: 1,
+    });
+    const a = render(<Desk process={proc({ name: "harbor-api" })} />);
+    expect(a.getByRole("button")).toHaveAttribute(
+      "title",
+      "harbor-api, working 4m",
+    );
+    expect(a.getByTitle("3 sub-agents")).toBeTruthy();
+    expect(a.getByTitle("1 background shell")).toBeTruthy();
+    a.unmount();
+    const t = render(
+      <Desk
+        process={proc({ name: "shell", kind: { kind: "terminal" } as never })}
+      />,
+    );
+    expect(t.getByRole("button")).toHaveAttribute("title", "shell, terminal");
+    t.unmount();
+    const s2 = render(
+      <Desk
+        process={proc({
+          name: "build",
+          kind: { kind: "terminal" } as never,
+          status: { state: "exited", code: 0 } as never,
+        })}
+      />,
+    );
+    expect(s2.getByRole("button")).toHaveAttribute("title", "build, stopped");
+  });
 });

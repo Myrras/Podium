@@ -20,17 +20,19 @@ function Row({
   n,
   className,
   dim,
+  title,
   item,
 }: {
   n: number;
   className: string;
   dim?: boolean;
+  title: string;
   item: (i: number) => ReactElement;
 }) {
   if (n <= 0) return null;
   const shown = Math.min(n, MAX);
   return (
-    <span className={className} data-dim={dim || undefined}>
+    <span className={className} data-dim={dim || undefined} title={title}>
       {Array.from({ length: shown }, (_, i) => item(i))}
       {n > MAX && <b className={styles.more}>+{n - MAX}</b>}
     </span>
@@ -98,6 +100,7 @@ export function Desk({ process }: { process: ProcessInfo }) {
           } as React.CSSProperties
         }
         aria-label={`${process.name}, ${label}`}
+        title={`${process.name}, ${label}`}
         onClick={open}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -111,6 +114,7 @@ export function Desk({ process }: { process: ProcessInfo }) {
         {!terminal && (
           <Row
             n={act.shells}
+            title={`${act.shells} background ${act.shells === 1 ? "shell" : "shells"}`}
             className={styles.shells}
             item={(i) => <Monitor key={i} seed={`${process.id}m${i}`} />}
           />
@@ -150,6 +154,7 @@ export function Desk({ process }: { process: ProcessInfo }) {
         {!terminal && (
           <Row
             n={act.subagents}
+            title={`${act.subagents} ${act.subagents === 1 ? "sub-agent" : "sub-agents"}`}
             className={styles.minis}
             dim={!working}
             item={(i) => (
