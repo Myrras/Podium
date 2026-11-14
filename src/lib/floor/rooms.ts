@@ -41,9 +41,26 @@ export function deskState(
   }
 }
 
-const stateOf =
-  (details: Record<string, ProcessActivity>) => (p: ProcessInfo) =>
-    deskState(p, details[p.id] ?? UNTRACKED_ACTIVITY);
+/** The desk states and their key, kept per processes and activity object: one pass per change, shared by every subscriber. */
+let states: {
+  processes: ProcessInfo[];
+  details: Record<string, ProcessActivity>;
+  list: DeskState[];
+  key: string;
+} | null = null;
+
+function deskStates(
+  processes: ProcessInfo[],
+  details: Record<string, ProcessActivity>,
+) {
+  if (states?.processes === processes && states.details === details)
+    return states;
+  const list = processes.map((p) =>
+    deskState(p, details[p.id] ?? UNTRACKED_ACTIVITY),
+  );
+  states = { processes, details, list, key: list.join() };
+  return states;
+}
 
 /** Last size per room key, and the keys that grew at the latest size change of any room. */
 const lastSize = new Map<string, Size>();
@@ -155,13 +172,15 @@ export function getRooms(): RoomModel[] {
   const processes = useProcessStore.getState().processes;
   const saved = useLayoutStore.getState().floorPositions;
   // Activity ticks every second: depend on the desk states only.
-  const list = processes.map(stateOf(useAgentActivityStore.getState().details));
-  const states = list.join();
+  const { list, key } = deskStates(
+    processes,
+    useAgentActivityStore.getState().details,
+  );
   if (
     cache?.projects === projects &&
     cache.processes === processes &&
     cache.saved === saved &&
-    cache.states === states
+    cache.states === key
   )
     return cache.rooms;
   const byId = new Map(processes.map((p, i) => [p.id, list[i]]));
@@ -180,7 +199,7 @@ export function getRooms(): RoomModel[] {
     projects,
     processes,
     saved,
-    states,
+    states: key,
     rooms: same ? cache!.rooms : rooms,
   };
   return cache.rooms;
@@ -191,7 +210,10 @@ export const subscribeRooms = (onChange: () => void) => {
   const off = [
     useProjectStore.subscribe(onChange),
     useProcessStore.subscribe(onChange),
-    useLayoutStore.subscribe(onChange),
+    // The rooms read only floorPositions from the layout store.
+    useLayoutStore.subscribe((s, prev) => {
+      if (s.floorPositions !== prev.floorPositions) onChange();
+    }),
     useAgentActivityStore.subscribe(onChange),
   ];
   return () => off.forEach((f) => f());

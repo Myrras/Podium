@@ -10,11 +10,24 @@ import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import { useWorktreeStore } from "../../state/worktreeStore";
-import { deskState, getRooms, roomOf, useFloorData, useRooms } from "./rooms";
+import { pillState } from "../processStatus";
+import {
+  deskState,
+  getRooms,
+  roomOf,
+  subscribeRooms,
+  useFloorData,
+  useRooms,
+} from "./rooms";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("../../ipc/commands", () => ({ toIpcError: vi.fn() }));
 vi.mock("../terminalRegistry", () => ({ disposeTerminal: vi.fn() }));
+// Counts desk-state work; behaves as the real one.
+vi.mock("../processStatus", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../processStatus")>();
+  return { ...real, pillState: vi.fn(real.pillState) };
+});
 
 const project = (id: string, over: Partial<ProjectInfo> = {}): ProjectInfo =>
   ({
@@ -338,5 +351,36 @@ describe("useFloorData", () => {
     );
     expect(trees.mock.calls).toEqual([["p2"]]);
     expect(todo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("desk-state work", () => {
+  beforeEach(() => {
+    useProjectStore.setState({ projects: [project("p")] });
+    useProcessStore.setState({
+      processes: [proc("a1", "p", "agent"), proc("a2", "p", "agent")],
+    });
+  });
+
+  it("maps the desk states once per store change, not once per subscriber", () => {
+    for (let i = 0; i < 3; i++) renderHook(() => useRooms());
+    vi.mocked(pillState).mockClear();
+    act(() =>
+      useAgentActivityStore.setState({ details: { a1: act1("working") } }),
+    );
+    expect(pillState).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a layout store change outside floorPositions", () => {
+    renderHook(() => useRooms());
+    const onChange = vi.fn();
+    const off = subscribeRooms(onChange);
+    vi.mocked(pillState).mockClear();
+    act(() => useLayoutStore.setState({ mode: "floor" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(pillState).not.toHaveBeenCalled();
+    act(() => useLayoutStore.getState().setFloorPosition("/fake/p", [400, 0]));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    off();
   });
 });

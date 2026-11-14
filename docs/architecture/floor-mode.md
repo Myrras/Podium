@@ -45,7 +45,10 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   positions in one `setFloorPositions`; only `FloorMap` calls it).
   `getRooms` caches by input (projects, processes, positions, desk states), so
   the layout runs once per change for every caller; an unchanged room keeps its
-  object so `memo(Room)` skips it. `useRooms` is `useSyncExternalStore` over it.
+  object so `memo(Room)` skips it. The desk states are mapped once per
+  processes or activity object, not per subscriber. `useRooms` is
+  `useSyncExternalStore` over `subscribeRooms`, which skips layout-store
+  changes that leave `floorPositions` alone.
   `grown` tracks which rooms grew at the latest size change, for `layoutRooms`.
 - `camera.ts`: `jumpTo("all" | projectId)` (animated), `zoomBy`, `showAgent`.
 - `startAgent.ts`: `startAgentIn` for the nameplate +.
