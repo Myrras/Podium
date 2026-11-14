@@ -40,11 +40,23 @@ describe("Floor", () => {
     expect(screen.queryByText(/Board of/)).toBeNull();
   });
 
-  it("shows the Git board in place of the map when one is open", () => {
-    useLayoutStore.setState({ openBoard: { projectId: "proj-1" } });
+  it("shows the Git board in place of the map when one is opened", () => {
     render(<Floor />);
+    act(() => useLayoutStore.setState({ openBoard: { projectId: "proj-1" } }));
     expect(screen.getByText("Board of proj-1")).toBeInTheDocument();
     expect(screen.queryByText("Map")).toBeNull();
+  });
+
+  it("starts on the map, dropping a board or sub-agent left open in Project mode", () => {
+    useLayoutStore.setState({
+      openBoard: { projectId: "proj-1" },
+      openSubagent: "sub-1",
+    });
+    render(<Floor />);
+    expect(screen.getByText("Map")).toBeInTheDocument();
+    expect(screen.queryByText(/Board of/)).toBeNull();
+    expect(startAutoRefresh).not.toHaveBeenCalled();
+    expect(useLayoutStore.getState().openSubagent).toBeNull();
   });
 
   it("keeps the open board refreshing and stops when it closes", () => {

@@ -3,7 +3,7 @@
  * place of the sidebar and work area; App keeps every subscription mounted.
  */
 
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 
 import type { ProjectId } from "../../ipc/types";
 import { useFloorStore } from "../../state/floorStore";
@@ -32,6 +32,16 @@ export function Floor() {
   const openBoard = useLayoutStore((s) => s.openBoard);
 
   useEffect(() => () => useFloorStore.getState().reset(), []);
+  // A board or sub-agent left open in Project mode must not open over a fresh
+  // floor: cleared before the first paint, with nothing mounted until then.
+  const [ready, setReady] = useState(false);
+  useLayoutEffect(() => {
+    const layout = useLayoutStore.getState();
+    layout.clearOpenBoard();
+    layout.clearOpenSubagent();
+    setReady(true);
+  }, []);
+  if (!ready) return null;
 
   return (
     <>
