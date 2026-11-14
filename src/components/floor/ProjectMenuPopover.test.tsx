@@ -228,6 +228,15 @@ describe("ProjectMenuPopover", () => {
     expect(useWorktreeStore.getState().worktreesByProject.p1).toEqual([used]);
   });
 
+  it("worktree view: no terminal action when terminals are off", () => {
+    setup("wt-a", {
+      ...project,
+      sections: { ...project.sections, terminals: false },
+    });
+    expect(screen.queryByText("Open a terminal here")).toBeNull();
+    expect(screen.getByText("Remove worktree")).toBeTruthy();
+  });
+
   it("worktree view: dirty asks inline and retries with force", async () => {
     m.worktreeRemove
       .mockRejectedValueOnce({ kind: "worktreeDirty", message: "dirty" })

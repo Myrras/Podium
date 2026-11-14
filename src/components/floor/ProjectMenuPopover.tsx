@@ -130,16 +130,19 @@ export function ProjectMenuPopover({
               Open the agent
             </button>
           )}
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              void newTerminal(project, wt);
-              close();
-            }}
-          >
-            Open a terminal here
-          </button>
+          {/* With terminals off the terminal would get no desk and never show. */}
+          {project.sections.terminals && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                void newTerminal(project, wt);
+                close();
+              }}
+            >
+              Open a terminal here
+            </button>
+          )}
           {!wt.inUse &&
             (dirty === wt.name ? (
               <div className={styles.confirm}>
