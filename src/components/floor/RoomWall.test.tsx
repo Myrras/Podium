@@ -188,6 +188,18 @@ describe("RoomWall", () => {
     expect(screen.getByText("!")).toBeTruthy();
   });
 
+  it("lights stopping and never-started services off, running ones up", () => {
+    seed([], 0);
+    const services = [
+      service("a", { state: "stopping" }),
+      service("b", { state: "notStarted" }),
+      service("c", { state: "running", pid: 1, since: "" }),
+    ];
+    const { container } = render(<RoomWall room={room({ services })} />);
+    const lights = [...container.querySelectorAll<HTMLElement>("[data-light]")];
+    expect(lights.map((l) => l.dataset.light)).toEqual(["off", "off", "up"]);
+  });
+
   it("has no rack without services", () => {
     seed([], 0);
     render(<RoomWall room={room()} />);

@@ -4,7 +4,7 @@ import { todoAgentAction } from "../../lib/floor/menus";
 import type { PickAgent } from "../../lib/todoAgent";
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
-import { useTodoStore } from "../../state/todoStore";
+import { openTodos, useTodoStore } from "../../state/todoStore";
 import { followCamera } from "../../lib/floor/follow";
 import { Popover, PopoverSlot } from "../Popover";
 import { TodoDetailPane } from "../TodoDetailPane";
@@ -30,7 +30,7 @@ export function TodoFixturePopover({
   );
   // Same number as the pinboard's label: open to-dos.
   const openCount = useTodoStore(
-    (s) => s.todosByProject[projectId]?.filter((t) => !t.done).length ?? 0,
+    (s) => openTodos(s.todosByProject[projectId]).length,
   );
   const { closePopover, setPopoverItem, setAgentModal } =
     useFloorStore.getState();

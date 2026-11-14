@@ -1,23 +1,28 @@
 import type { MenuItem } from "../ContextMenu";
 import type { ProcessInfo } from "../../ipc/types";
 import { processMenu, scratchpadMenu, todoMenu } from "../../lib/floor/menus";
+import { type PillState, pillState } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
 import { followCamera } from "../../lib/floor/follow";
 import { useContextMenu } from "../../lib/useContextMenu";
 import type { RoomModel } from "../../lib/floor/types";
+import { UNTRACKED_ACTIVITY } from "../../state/agentActivityStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
-import { useTodoStore } from "../../state/todoStore";
+import { openTodos, useTodoStore } from "../../state/todoStore";
 import styles from "./RoomWall.module.css";
 
 const NO_ITEMS: never[] = [];
 
-function lightOf(p: ProcessInfo): "up" | "crashed" | "exited" | "off" {
-  const s = p.status;
-  if (s.state === "running") return "up";
-  if (s.state === "exited") return s.crashed ? "crashed" : "exited";
-  return "off";
-}
+// A service's rack light, from its pill: any running pill is "up".
+const LIGHT: Partial<Record<PillState, "crashed" | "exited" | "off">> = {
+  crashed: "crashed",
+  exited: "exited",
+  stopping: "off",
+  notStarted: "off",
+};
+const lightOf = (p: ProcessInfo) =>
+  LIGHT[pillState(p.status, "service", UNTRACKED_ACTIVITY)] ?? "up";
 
 const more = (n: number, max: number) =>
   n > max ? <em className={styles.more}>+{n - max}</em> : null;
@@ -51,7 +56,7 @@ export function RoomWall({ room }: { room: RoomModel }) {
   const pads = useScratchpadStore(
     (s) => s.scratchpadsByProject[project.id] ?? NO_ITEMS,
   );
-  const openTodos = todos.filter((t) => !t.done);
+  const notes = openTodos(todos);
   const { open: onMenu, element: menu } = useContextMenu(followCamera);
   const isCrashed = (p: ProcessInfo) => lightOf(p) === "crashed";
   const sorted = [...services].sort(
@@ -86,9 +91,9 @@ export function RoomWall({ room }: { room: RoomModel }) {
         fixture(
           "todos",
           "To-dos",
-          openTodos.length,
+          notes.length,
           <span className={styles.board}>
-            {openTodos.slice(0, 8).map((t) => {
+            {notes.slice(0, 8).map((t) => {
               const a = t.assignedAgent;
               return (
                 <i
@@ -104,7 +109,7 @@ export function RoomWall({ room }: { room: RoomModel }) {
                 />
               );
             })}
-            {more(openTodos.length, 8)}
+            {more(notes.length, 8)}
           </span>,
         )}
       {project.sections.scratchpads &&

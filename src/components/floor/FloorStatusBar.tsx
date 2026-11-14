@@ -7,7 +7,7 @@ import { deskState, useRooms } from "../../lib/floor/rooms";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
-import { useTodoStore } from "../../state/todoStore";
+import { openTodos, useTodoStore } from "../../state/todoStore";
 import styles from "./FloorStatusBar.module.css";
 
 const HINT =
@@ -55,8 +55,8 @@ function AgentDetails({ process }: { process: ProcessInfo }) {
 
 function RoomCounts({ projectId }: { projectId: string }) {
   const room = useRooms().find((r) => r.project.id === projectId);
-  const openTodos = useTodoStore(
-    (s) => s.todosByProject[projectId]?.filter((t) => !t.done).length ?? 0,
+  const open = useTodoStore(
+    (s) => openTodos(s.todosByProject[projectId]).length,
   );
   const scratchpads = useScratchpadStore(
     (s) => s.scratchpadsByProject[projectId]?.length ?? 0,
@@ -66,7 +66,7 @@ function RoomCounts({ projectId }: { projectId: string }) {
     <>
       {[
         plural(room.agents.length, "agent"),
-        plural(openTodos, "open to-do"),
+        plural(open, "open to-do"),
         plural(scratchpads, "scratchpad"),
         plural(room.services.length, "service"),
       ].join(" · ")}
