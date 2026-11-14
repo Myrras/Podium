@@ -19,7 +19,12 @@ import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
-import { closeConfirm, closeProcess, stopConfirm } from "../../lib/floor/menus";
+import {
+  closeConfirm,
+  closeProcess,
+  openProcess,
+  stopConfirm,
+} from "../../lib/floor/menus";
 import {
   CircleStopIcon,
   CloseIcon,
@@ -311,9 +316,7 @@ function ConfirmDialog({
 /** "Next that needs you": the next waiting agent after this one, wrapping round. */
 function NextNeedsYou({ currentId }: { currentId: string }) {
   const processes = useProcessStore((s) => s.processes);
-  const setActiveProcess = useProcessStore((s) => s.setActiveProcess);
   const details = useAgentActivityStore((s) => s.details);
-  const openTerminal = useFloorStore((s) => s.openTerminal);
 
   const at = processes.findIndex((p) => p.id === currentId);
   const ordered = [...processes.slice(at + 1), ...processes.slice(0, at + 1)];
@@ -331,10 +334,7 @@ function NextNeedsYou({ currentId }: { currentId: string }) {
       type="button"
       className={styles.next}
       title={`Next that needs you: ${next.name}`}
-      onClick={() => {
-        openTerminal(next.id);
-        setActiveProcess(next.id);
-      }}
+      onClick={() => openProcess(next.id)}
     >
       <NextIcon />
       <span className={styles.nextLabel}>Next: {next.name}</span>

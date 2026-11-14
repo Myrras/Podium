@@ -13,7 +13,7 @@ import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import type { ProcessActivity } from "../../state/agentActivityStore";
 import { isActive, pillState } from "../processStatus";
-import { startAgentOnTodo } from "../todoAgent";
+import { type PickAgent, startAgentOnTodo } from "../todoAgent";
 import type { PillState } from "../processStatus";
 
 const ENDED = new Set<PillState>(["notStarted", "exited", "crashed"]);
@@ -97,18 +97,32 @@ export function processMenu(
   return items;
 }
 
-export function todoMenu(projectId: ProjectId, todo: TodoInfo): MenuItem[] {
+/** A to-do's agent action, for its menu and the to-do popover footer: open its live agent, or start one. */
+export function todoAgentAction(
+  projectId: ProjectId,
+  todo: TodoInfo,
+): {
+  label: "Open the agent" | "Start agent";
+  run: (
+    click?: { metaKey: boolean; ctrlKey: boolean },
+    pick?: PickAgent,
+  ) => void;
+} {
   const agent = todo.assignedAgent;
-  const agentItem: MenuItem =
-    agent && agent.active !== false
-      ? {
-          label: "Open the agent",
-          onSelect: () => openProcess(agent.processId),
-        }
-      : {
-          label: "Start agent",
-          onSelect: () => startAgentOnTodo(projectId, todo),
-        };
+  return agent && agent.active !== false
+    ? { label: "Open the agent", run: () => openProcess(agent.processId) }
+    : {
+        label: "Start agent",
+        run: (click, pick) => startAgentOnTodo(projectId, todo, click, pick),
+      };
+}
+
+export function todoMenu(projectId: ProjectId, todo: TodoInfo): MenuItem[] {
+  const agent = todoAgentAction(projectId, todo);
+  const agentItem: MenuItem = {
+    label: agent.label,
+    onSelect: () => agent.run(),
+  };
   return [
     {
       label: "Open",

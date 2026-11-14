@@ -15,7 +15,8 @@ import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { Desk } from "./Desk";
 
-vi.mock("../../lib/floor/menus", () => ({
+vi.mock("../../lib/floor/menus", async (orig) => ({
+  ...(await orig<typeof import("../../lib/floor/menus")>()),
   processMenu: vi.fn(() => [{ label: "Mock item", onSelect: vi.fn() }]),
 }));
 

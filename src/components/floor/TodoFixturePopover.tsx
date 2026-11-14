@@ -1,8 +1,8 @@
 /** Pinboard popover: the project's to-do list; a to-do opens inside it. */
 import type { ProjectId, TodoId } from "../../ipc/types";
-import { type PickAgent, startAgentOnTodo } from "../../lib/todoAgent";
+import { todoAgentAction } from "../../lib/floor/menus";
+import type { PickAgent } from "../../lib/todoAgent";
 import { useFloorStore } from "../../state/floorStore";
-import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useTodoStore } from "../../state/todoStore";
 import { Popover, PopoverSlot } from "../Popover";
@@ -31,32 +31,17 @@ export function TodoFixturePopover({
   const openCount = useTodoStore(
     (s) => s.todosByProject[projectId]?.filter((t) => !t.done).length ?? 0,
   );
-  const { closePopover, setPopoverItem, setAgentModal, openTerminal } =
+  const { closePopover, setPopoverItem, setAgentModal } =
     useFloorStore.getState();
 
   const pickAgent: PickAgent = (pid, todoIds, initialName) =>
     setAgentModal({ projectId: pid, todoIds, initialName });
-  const agent = todo?.assignedAgent;
+  const agent = todo && todoAgentAction(projectId, todo);
   const footerActions = (
     <>
-      {agent && agent.active !== false ? (
-        <button
-          type="button"
-          onClick={() => {
-            useProcessStore.getState().setActiveProcess(agent.processId);
-            openTerminal(agent.processId);
-          }}
-        >
-          Open the agent
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={(e) => {
-            if (todo) startAgentOnTodo(projectId, todo, e, pickAgent);
-          }}
-        >
-          Start agent
+      {agent && (
+        <button type="button" onClick={(e) => agent.run(e, pickAgent)}>
+          {agent.label}
         </button>
       )}
       <button

@@ -20,7 +20,13 @@ import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
-import { processMenu, scratchpadMenu, todoMenu } from "./menus";
+import {
+  openProcess,
+  processMenu,
+  scratchpadMenu,
+  todoAgentAction,
+  todoMenu,
+} from "./menus";
 
 const P = "proj-1";
 const running: ProcessStatus = { state: "running", pid: 7, since: "now" };
@@ -213,6 +219,19 @@ describe("todoMenu", () => {
     expect(labels(todoMenu(P, todo({ assignedAgent: off })))[1]).toBe(
       "Start agent",
     );
+  });
+  it("todoAgentAction: Cmd/Ctrl-click with a picker asks instead of spawning", () => {
+    const ask = vi.fn();
+    const a = todoAgentAction(P, todo());
+    expect(a.label).toBe("Start agent");
+    a.run({ metaKey: true, ctrlKey: false }, ask);
+    expect(ask).toHaveBeenCalledWith(P, ["t1"], todo().text);
+    expect(spawnAgent).not.toHaveBeenCalled();
+  });
+  it("openProcess pins the process and opens its terminal", () => {
+    openProcess("p3");
+    expect(setActiveProcess).toHaveBeenCalledWith("p3");
+    expect(useFloorStore.getState().terminalId).toBe("p3");
   });
   it("done flips the label and the action; Open and Archive call the stores", () => {
     pick(todoMenu(P, todo()), "Mark done").onSelect();

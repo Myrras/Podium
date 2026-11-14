@@ -8,7 +8,8 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-vi.mock("../../lib/floor/menus", () => ({
+vi.mock("../../lib/floor/menus", async (orig) => ({
+  ...(await orig<typeof import("../../lib/floor/menus")>()),
   todoMenu: vi.fn(() => [{ label: "Menu item", onSelect: () => {} }]),
 }));
 

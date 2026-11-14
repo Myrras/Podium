@@ -6,7 +6,7 @@ import { useProcessActivity } from "../../lib/useAgentActivity";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { DESK_H } from "../../lib/floor/geometry";
-import { processMenu } from "../../lib/floor/menus";
+import { openProcess, processMenu } from "../../lib/floor/menus";
 import { ContextMenu } from "../ContextMenu";
 import { Bot, MiniBot, Monitor, TerminalDeskArt } from "./Bot";
 import styles from "./Desk.module.css";
@@ -72,10 +72,6 @@ export function Desk({
   // Counts are 0 for Windows, WSL and Auggie agents: nothing to show.
   const working = !terminal && state === "working";
 
-  const open = () => {
-    useProcessStore.getState().setActiveProcess(process.id);
-    useFloorStore.getState().openTerminal(process.id);
-  };
   const hover = (id: string | null) => () =>
     useFloorStore.getState().setHoverDesk(id);
 
@@ -96,7 +92,7 @@ export function Desk({
         }
         aria-label={`${process.name}, ${label}`}
         title={`${process.name}, ${label}`}
-        onClick={open}
+        onClick={() => openProcess(process.id)}
         onContextMenu={(e) => {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY });
