@@ -16,6 +16,7 @@ import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
+import { useWorktreeStore } from "../../state/worktreeStore";
 import { pillState } from "../processStatus";
 import { layoutRooms, roomSize, type WallFixture } from "./geometry";
 import type { DeskState, RoomModel, Size } from "./types";
@@ -208,13 +209,14 @@ export function roomOf(
   );
 }
 
-/** Loads to-dos and scratchpads of every project and saves room places; FloorMap calls it. */
+/** Loads to-dos, scratchpads and worktrees of every project and saves room places; FloorMap calls it. */
 export function useFloorData(): void {
   const ids = useProjectStore((s) => s.projects.map((p) => p.id).join("\n"));
   useEffect(() => {
     for (const id of ids ? (ids.split("\n") as ProjectId[]) : []) {
       void useTodoStore.getState().refresh(id);
       void useScratchpadStore.getState().refresh(id);
+      void useWorktreeStore.getState().refresh(id);
     }
   }, [ids]);
 

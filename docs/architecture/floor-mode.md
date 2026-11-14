@@ -37,7 +37,7 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   moves; spots are kept when a room shrinks), `bounds`, `frame`, `zoomAt`, `toScreen`; zoom
   0.3 to 2, far below 0.4.
 - `rooms.ts`: `deskState`, `useRooms`/`getRooms` (never write), `roomOf`,
-  `useFloorData` (loads to-dos and scratchpads for every project and writes back
+  `useFloorData` (loads to-dos, scratchpads and worktrees for every project and writes back
   changed room positions in one `setFloorPositions`; only `FloorMap` calls it).
   `getRooms` caches by input (projects, processes, positions, desk states), so
   the layout runs once per change for every caller; an unchanged room keeps its

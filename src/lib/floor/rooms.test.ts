@@ -9,6 +9,7 @@ import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
+import { useWorktreeStore } from "../../state/worktreeStore";
 import { deskState, getRooms, roomOf, useFloorData, useRooms } from "./rooms";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
@@ -266,6 +267,8 @@ describe("useFloorData", () => {
     const pad = vi.fn().mockResolvedValue(undefined);
     useTodoStore.setState({ refresh: todo });
     useScratchpadStore.setState({ refresh: pad });
+    const trees = vi.fn().mockResolvedValue(undefined);
+    useWorktreeStore.setState({ refresh: trees });
     useProjectStore.setState({ projects: [project("p1"), project("p2")] });
     const setFloorPositions = useLayoutStore.getState().setFloorPositions;
     const write = vi.fn(setFloorPositions);
@@ -275,6 +278,7 @@ describe("useFloorData", () => {
     useLayoutStore.setState({ setFloorPositions });
     expect(todo).toHaveBeenCalledTimes(2);
     expect(pad).toHaveBeenCalledWith("p2");
+    expect(trees.mock.calls).toEqual([["p1"], ["p2"]]);
     const saved = useLayoutStore.getState().floorPositions;
     expect(Object.keys(saved).sort()).toEqual(["/fake/p1", "/fake/p2"]);
     expect(saved["/fake/p1"]).toEqual([
