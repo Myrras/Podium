@@ -30,6 +30,12 @@
   will-change: transform;
 }
 
+/*
+ * Exception to "animate only transform/opacity": --z animates so nameplates and
+ * desk marks stay in step with the map during a jump. Cost: a few dozen
+ * counter-scaled elements recalculate style each frame of one --dur-4 jump; a pan
+ * or wheel zoom does not animate.
+ */
 .layer[data-animate] {
   transition:
     transform var(--dur-4) var(--ease-out),
