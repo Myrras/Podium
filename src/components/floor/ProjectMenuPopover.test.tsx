@@ -141,6 +141,21 @@ describe("ProjectMenuPopover", () => {
     expect(m.color).toHaveBeenLastCalledWith("p1", null);
   });
 
+  it("shows the current colour after No colour and commits picking the old one again", () => {
+    setup();
+    const swatch = () =>
+      screen.getByLabelText("Project colour") as HTMLInputElement;
+    expect(swatch().value).toBe("#112233");
+    fireEvent.click(screen.getByText("No colour"));
+    act(() =>
+      useProjectStore.setState({ projects: [{ ...project, color: null }] }),
+    );
+    // jsdom has no --accent: the theme accent resolves to black.
+    expect(swatch().value).toBe("#000000");
+    fireEvent.change(swatch(), { target: { value: "#112233" } });
+    expect(m.color).toHaveBeenLastCalledWith("p1", "#112233");
+  });
+
   it("lists worktrees as Free or with the agent name and opens one", () => {
     setup();
     expect(screen.getByText("Free")).toBeTruthy();

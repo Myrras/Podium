@@ -59,7 +59,9 @@ export function ProjectMenuPopover({
   useEffect(() => () => renameRef.current(), []);
 
   // Commit on the native `change` event: React's onChange fires on every drag tick.
+  // The input is keyed by `shown`, so it remounts with the current colour (e.g. after No colour).
   const color = project?.color ?? null;
+  const shown = color ?? themeAccentHex(themeMode);
   useEffect(() => {
     const el = colorRef.current;
     if (!el) return;
@@ -68,7 +70,7 @@ export function ProjectMenuPopover({
     };
     el.addEventListener("change", commit);
     return () => el.removeEventListener("change", commit);
-  }, [projectId, color, setProjectColor, itemId]);
+  }, [projectId, color, shown, setProjectColor, itemId]);
 
   if (!project) return null;
   const close = closePopover;
@@ -202,11 +204,12 @@ export function ProjectMenuPopover({
           <label className={styles.row}>
             <span>Colour</span>
             <input
+              key={shown}
               ref={colorRef}
               type="color"
               className={styles.colorInput}
               aria-label="Project colour"
-              defaultValue={project.color ?? themeAccentHex(themeMode)}
+              defaultValue={shown}
             />
           </label>
           {project.color && (
