@@ -169,6 +169,17 @@ describe("ProjectMenuPopover", () => {
     expect(m.color).toHaveBeenLastCalledWith("p1", "#112233");
   });
 
+  it("commits a colour after the open worktree disappears", () => {
+    setup("wt-a");
+    act(() =>
+      useWorktreeStore.setState({ worktreesByProject: { p1: [used] } }),
+    );
+    const el = screen.getByLabelText("Project colour") as HTMLInputElement;
+    fireEvent.change(el, { target: { value: "#445566" } });
+    expect(m.color).toHaveBeenCalledTimes(1);
+    expect(m.color).toHaveBeenCalledWith("p1", "#445566");
+  });
+
   it("lists worktrees as Free or with the agent name and opens one", () => {
     setup();
     expect(screen.getByText("Free")).toBeTruthy();

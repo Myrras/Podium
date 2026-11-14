@@ -1,5 +1,5 @@
 /** The ⋯ menu of a room's nameplate: rename, colour, worktrees, board, reload, remove. */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ProjectId, WorktreeInfo } from "../../ipc/types";
 import { themeAccentHex } from "../../lib/color";
@@ -43,7 +43,6 @@ export function ProjectMenuPopover({
   // Closing the popover answers "keep", so removeWorktree never hangs.
   useEffect(() => () => pendingAnswer.current?.(false), []);
   const [removing, setRemoving] = useState(false);
-  const colorRef = useRef<HTMLInputElement>(null);
   // An edited name not yet saved; Esc closes the popover without a blur, so unmount saves it.
   const pendingName = useRef<string | null>(null);
   const rename = () => {
@@ -60,17 +59,24 @@ export function ProjectMenuPopover({
 
   // Commit on the native `change` event: React's onChange fires on every drag tick.
   // The input is keyed by `shown`, so it remounts with the current colour (e.g. after No colour).
+  // A callback ref gives every input instance exactly one listener, also one
+  // that mounts while nothing else changed (e.g. its open worktree vanished).
   const color = project?.color ?? null;
   const shown = color ?? themeAccentHex(themeMode);
-  useEffect(() => {
-    const el = colorRef.current;
-    if (!el) return;
-    const commit = () => {
-      if (el.value !== color) void setProjectColor(projectId, el.value);
-    };
-    el.addEventListener("change", commit);
-    return () => el.removeEventListener("change", commit);
-  }, [projectId, color, shown, setProjectColor, itemId]);
+  const colorNow = useRef(color);
+  colorNow.current = color;
+  const colorInput = useCallback(
+    (el: HTMLInputElement | null) => {
+      if (!el) return;
+      const commit = () => {
+        if (el.value !== colorNow.current)
+          void setProjectColor(projectId, el.value);
+      };
+      el.addEventListener("change", commit);
+      return () => el.removeEventListener("change", commit);
+    },
+    [projectId, setProjectColor],
+  );
 
   if (!project) return null;
   const close = closePopover;
@@ -204,7 +210,7 @@ export function ProjectMenuPopover({
             <span>Colour</span>
             <input
               key={shown}
-              ref={colorRef}
+              ref={colorInput}
               type="color"
               className={styles.colorInput}
               aria-label="Project colour"
