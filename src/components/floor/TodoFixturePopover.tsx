@@ -1,5 +1,6 @@
 /** Pinboard popover: the project's to-do list; a to-do opens inside it. */
 import type { ProjectId, TodoId } from "../../ipc/types";
+import { type PickAgent, startAgentOnTodo } from "../../lib/todoAgent";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
@@ -33,8 +34,8 @@ export function TodoFixturePopover({
   const { closePopover, setPopoverItem, setAgentModal, openTerminal } =
     useFloorStore.getState();
 
-  // Same rule as the list's Start: plain click starts the default agent,
-  // Cmd/Ctrl-click opens the New agent screen. (No shared helper exists.)
+  const pickAgent: PickAgent = (pid, todoIds, initialName) =>
+    setAgentModal({ projectId: pid, todoIds, initialName });
   const agent = todo?.assignedAgent;
   const footerActions = (
     <>
@@ -52,19 +53,7 @@ export function TodoFixturePopover({
         <button
           type="button"
           onClick={(e) => {
-            if (!todo) return;
-            useProjectStore.getState().setActiveProject(projectId);
-            if (e.metaKey || e.ctrlKey) {
-              setAgentModal({
-                projectId,
-                todoIds: [todo.id],
-                initialName: todo.text,
-              });
-            } else {
-              void useProcessStore
-                .getState()
-                .spawnAgent(projectId, { todoIds: [todo.id] });
-            }
+            if (todo) startAgentOnTodo(projectId, todo, e, pickAgent);
           }}
         >
           Start agent
@@ -113,9 +102,7 @@ export function TodoFixturePopover({
           projectId={projectId}
           projectRoot={root}
           onOpenTodo={(_, todoId) => setPopoverItem(todoId)}
-          onPickAgent={(pid, todoIds, initialName) =>
-            setAgentModal({ projectId: pid, todoIds, initialName })
-          }
+          onPickAgent={pickAgent}
         />
       )}
     </Popover>

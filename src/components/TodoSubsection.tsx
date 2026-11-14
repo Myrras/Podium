@@ -26,6 +26,7 @@ import {
   useSelectionStore,
 } from "../lib/selection";
 import { textPreview } from "../lib/textPreview";
+import { startAgentOnTodo } from "../lib/todoAgent";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
@@ -278,16 +279,8 @@ export function TodoSubsection({
     setText("");
   };
 
-  // Plain click spawns the default agent immediately; Cmd/Ctrl+click opens the
-  // picker so the user can choose which agent runs the to-do.
-  const spawnOnTodo = (e: React.MouseEvent, todo: TodoInfo) => {
-    setActiveProject(projectId);
-    if (e.metaKey || e.ctrlKey) {
-      onPickAgent(projectId, [todo.id], todo.text);
-      return;
-    }
-    void spawnAgent(projectId, { todoIds: [todo.id] });
-  };
+  const spawnOnTodo = (e: React.MouseEvent, todo: TodoInfo) =>
+    startAgentOnTodo(projectId, todo, e, onPickAgent);
 
   // A row's title click: Cmd/Ctrl toggles selection, Shift extends a range
   // from the anchor, a plain click opens the to-do to read/edit it. A plain

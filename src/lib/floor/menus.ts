@@ -9,11 +9,11 @@ import type {
 } from "../../ipc/types";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
-import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import type { ProcessActivity } from "../../state/agentActivityStore";
 import { isActive, pillState } from "../processStatus";
+import { startAgentOnTodo } from "../todoAgent";
 import type { PillState } from "../processStatus";
 
 const ENDED = new Set<PillState>(["notStarted", "exited", "crashed"]);
@@ -107,12 +107,7 @@ export function todoMenu(projectId: ProjectId, todo: TodoInfo): MenuItem[] {
         }
       : {
           label: "Start agent",
-          onSelect: () => {
-            useProjectStore.getState().setActiveProject(projectId);
-            void useProcessStore
-              .getState()
-              .spawnAgent(projectId, { todoIds: [todo.id] });
-          },
+          onSelect: () => startAgentOnTodo(projectId, todo),
         };
   return [
     {
