@@ -41,6 +41,22 @@ export function ProjectMenuPopover({
   const [dirty, setDirty] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const colorRef = useRef<HTMLInputElement>(null);
+  // An edited name not yet saved; Esc closes the popover without a blur, so unmount saves it.
+  const pendingName = useRef<string | null>(null);
+  const rename = () => {
+    const next = pendingName.current;
+    pendingName.current = null;
+    const current = useProjectStore
+      .getState()
+      .projects.find((p) => p.id === projectId);
+    if (next === null || !current) return;
+    const trimmed = next.trim();
+    if (trimmed === current.name) return;
+    void renameProject(projectId, trimmed.length > 0 ? trimmed : null);
+  };
+  const renameRef = useRef(rename);
+  renameRef.current = rename;
+  useEffect(() => () => renameRef.current(), []);
 
   // Commit on the native `change` event: React's onChange fires on every drag tick.
   const color = project?.color ?? null;
@@ -155,11 +171,6 @@ export function ProjectMenuPopover({
     );
   }
 
-  const rename = () => {
-    const next = draft.trim();
-    if (next === project.name) return;
-    void renameProject(projectId, next.length > 0 ? next : null);
-  };
   const agentOf = (w: WorktreeInfo) =>
     processes.find(
       (p) =>
@@ -177,7 +188,10 @@ export function ProjectMenuPopover({
             type="text"
             aria-label="Project name"
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              pendingName.current = e.target.value;
+            }}
             onBlur={rename}
             onKeyDown={(e) => {
               if (e.key === "Enter") e.currentTarget.blur();

@@ -110,6 +110,26 @@ describe("ProjectMenuPopover", () => {
     expect(m.rename).toHaveBeenLastCalledWith("p1", null);
   });
 
+  it("saves an unblurred name when Esc closes the popover", () => {
+    const { unmount } = setup();
+    const input = screen.getByLabelText("Project name");
+    fireEvent.change(input, { target: { value: "Gamma" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(useFloorStore.getState().popover).toBeNull();
+    unmount();
+    expect(m.rename).toHaveBeenCalledTimes(1);
+    expect(m.rename).toHaveBeenCalledWith("p1", "Gamma");
+  });
+
+  it("does not rename on unmount when the name is unchanged or already saved", () => {
+    const { unmount } = setup();
+    const input = screen.getByLabelText("Project name");
+    fireEvent.change(input, { target: { value: "Beta" } });
+    fireEvent.blur(input);
+    unmount();
+    expect(m.rename).toHaveBeenCalledTimes(1);
+  });
+
   it("commits the colour on the native change event only", () => {
     setup();
     const el = screen.getByLabelText("Project colour") as HTMLInputElement;

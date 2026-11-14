@@ -300,6 +300,52 @@ describe("ScratchpadDetailPane", () => {
     );
   });
 
+  it("saves an unblurred title edit on unmount, then the pending content with its timestamp", async () => {
+    vi.useFakeTimers();
+    const { updateTitle, updateContent } = seed();
+    updateTitle.mockResolvedValueOnce(
+      scratchpad({ title: "Renamed", updatedAt: "2024-04-03T12:05:00Z" }),
+    );
+    const { unmount } = render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    fireEvent.change(screen.getByLabelText("Scratchpad title"), {
+      target: { value: " Renamed " },
+    });
+    fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+      target: { value: "notes" },
+    });
+
+    // Esc closes the Floor popover: the pane unmounts without a blur.
+    unmount();
+    await act(async () => {});
+
+    expect(updateTitle).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "Renamed",
+      "2024-04-03T12:00:00Z",
+    );
+    expect(updateContent).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "notes",
+      "2024-04-03T12:05:00Z",
+    );
+  });
+
+  it("does not save the title again on unmount once it was committed", () => {
+    const { updateTitle } = seed();
+    const { unmount } = render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.blur(input);
+    unmount();
+    expect(updateTitle).toHaveBeenCalledTimes(1);
+  });
+
   it("archives via the archive button", () => {
     const { setScratchpadArchived } = seed();
     render(
