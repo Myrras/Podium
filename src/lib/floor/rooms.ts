@@ -1,5 +1,4 @@
-import { useEffect, useMemo } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { useEffect, useSyncExternalStore } from "react";
 
 import type {
   ProcessId,
@@ -119,28 +118,81 @@ function buildRooms(
   });
 }
 
-export function useRooms(): RoomModel[] {
-  const projects = useProjectStore((s) => s.projects);
-  const processes = useProcessStore((s) => s.processes);
-  const saved = useLayoutStore((s) => s.floorPositions);
+const sameList = (a: ProcessInfo[], b: ProcessInfo[]) =>
+  a.length === b.length && a.every((p, i) => p === b[i]);
+
+const sameRoom = (a: RoomModel, b: RoomModel) =>
+  a.project === b.project &&
+  a.needs === b.needs &&
+  a.crashed === b.crashed &&
+  a.lit === b.lit &&
+  a.rect.x === b.rect.x &&
+  a.rect.y === b.rect.y &&
+  a.rect.w === b.rect.w &&
+  a.rect.h === b.rect.h &&
+  sameList(a.agents, b.agents) &&
+  sameList(a.terminals, b.terminals) &&
+  sameList(a.services, b.services);
+
+/** The last inputs and result; every caller shares it, so the layout runs once per change. */
+let cache: {
+  projects: ProjectInfo[];
+  processes: ProcessInfo[];
+  saved: Record<string, [number, number]>;
+  states: string;
+  rooms: RoomModel[];
+} | null = null;
+
+/** The rooms of the current stores, outside React; unchanged inputs return the same array. */
+export function getRooms(): RoomModel[] {
+  const projects = useProjectStore.getState().projects;
+  const processes = useProcessStore.getState().processes;
+  const saved = useLayoutStore.getState().floorPositions;
   // Activity ticks every second: depend on the desk states only.
-  const states = useAgentActivityStore(
-    useShallow((s) => processes.map(stateOf(s.details))),
-  );
-  return useMemo(() => {
-    const byId = new Map(processes.map((p, i) => [p.id, states[i]]));
-    return buildRooms(projects, processes, saved, (p) => byId.get(p.id)!);
-  }, [projects, processes, saved, states]);
+  const list = processes.map(stateOf(useAgentActivityStore.getState().details));
+  const states = list.join();
+  if (
+    cache?.projects === projects &&
+    cache.processes === processes &&
+    cache.saved === saved &&
+    cache.states === states
+  )
+    return cache.rooms;
+  const byId = new Map(processes.map((p, i) => [p.id, list[i]]));
+  const prev = new Map(cache?.rooms.map((r) => [r.project.id, r]));
+  // Keep an unchanged room's object, so memo(Room) skips it.
+  const rooms = buildRooms(projects, processes, saved, (p) =>
+    byId.get(p.id)!,
+  ).map((r) => {
+    const old = prev.get(r.project.id);
+    return old && sameRoom(old, r) ? old : r;
+  });
+  const same =
+    cache?.rooms.length === rooms.length &&
+    rooms.every((r, i) => r === cache!.rooms[i]);
+  cache = {
+    projects,
+    processes,
+    saved,
+    states,
+    rooms: same ? cache!.rooms : rooms,
+  };
+  return cache.rooms;
 }
 
-/** The same data as `useRooms`, outside React. */
-export function getRooms(): RoomModel[] {
-  return buildRooms(
-    useProjectStore.getState().projects,
-    useProcessStore.getState().processes,
-    useLayoutStore.getState().floorPositions,
-    stateOf(useAgentActivityStore.getState().details),
-  );
+const subscribe = (onChange: () => void) => {
+  const off = [
+    useProjectStore.subscribe(onChange),
+    useProcessStore.subscribe(onChange),
+    useLayoutStore.subscribe(onChange),
+    useAgentActivityStore.subscribe(onChange),
+  ];
+  return () => off.forEach((f) => f());
+};
+
+/** `getRooms` in React; re-renders only when the rooms change. */
+export function useRooms(): RoomModel[] {
+  return useSyncExternalStore(subscribe, getRooms);
 }
 
 export function roomOf(
@@ -168,11 +220,13 @@ export function useFloorData(): void {
 
   const rooms = useRooms();
   useEffect(() => {
-    const { floorPositions, setFloorPosition } = useLayoutStore.getState();
+    const { floorPositions, setFloorPositions } = useLayoutStore.getState();
+    const moved: Record<string, [number, number]> = {};
     for (const { project, rect } of rooms) {
       const at = floorPositions[project.root];
       if (!at || at[0] !== rect.x || at[1] !== rect.y)
-        setFloorPosition(project.root, [rect.x, rect.y]);
+        moved[project.root] = [rect.x, rect.y];
     }
+    if (Object.keys(moved).length > 0) setFloorPositions(moved);
   }, [rooms]);
 }

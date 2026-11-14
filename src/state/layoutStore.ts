@@ -205,6 +205,8 @@ export interface LayoutState extends LayoutPersisted {
   setMode: (mode: FloorMode) => void;
   /** Store a room's position on the floor (persisted). */
   setFloorPosition: (root: string, xy: [number, number]) => void;
+  /** Store several room positions in one write (persisted); others stay. */
+  setFloorPositions: (positions: Record<string, [number, number]>) => void;
   /** Forget every room position, so all rooms return to their default place. */
   resetFloorPositions: () => void;
   /** Show or hide the assistant chat panel (persisted). */
@@ -303,6 +305,11 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     },
     setFloorPosition: (root, xy) => {
       const floorPositions = { ...get().floorPositions, [root]: xy };
+      persist({ ...persistable(get()), floorPositions });
+      set({ floorPositions });
+    },
+    setFloorPositions: (positions) => {
+      const floorPositions = { ...get().floorPositions, ...positions };
       persist({ ...persistable(get()), floorPositions });
       set({ floorPositions });
     },

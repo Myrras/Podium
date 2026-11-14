@@ -213,6 +213,53 @@ describe("rooms", () => {
   });
 });
 
+describe("rooms cache", () => {
+  it("returns the same array for the same inputs and does not advance growth", () => {
+    useProjectStore.setState({ projects: [project("ca"), project("cb")] });
+    useLayoutStore.setState({
+      floorPositions: { "/fake/ca": [0, 0], "/fake/cb": [360, 0] },
+    });
+    const a1 = proc("ca1", "ca", "agent");
+    const b1 = proc("cb1", "cb", "agent");
+    useProcessStore.setState({ processes: [a1, b1] });
+    const first = getRooms();
+    expect(getRooms()).toBe(first);
+    useProcessStore.setState({
+      processes: [a1, b1, proc("ca2", "ca", "agent")],
+    });
+    const grown = getRooms();
+    expect(grown[1].rect.x).toBe(400);
+    // Repeated calls and an activity tick hit the cache: the push stays.
+    useAgentActivityStore.setState({ details: {} });
+    for (let i = 0; i < 3; i++) expect(getRooms()).toBe(grown);
+  });
+
+  it("keeps an unchanged room's object when another room changes", () => {
+    seedTwo();
+    const [r1, r2] = getRooms();
+    useAgentActivityStore.setState({ details: { x1: act1("waiting") } });
+    const [n1, n2] = getRooms();
+    expect(n1).not.toBe(r1);
+    expect(n1.needs).toBe(1);
+    expect(n2).toBe(r2);
+  });
+
+  it("shares one result between useRooms callers and getRooms", () => {
+    seedTwo();
+    const one = renderHook(() => useRooms());
+    const two = renderHook(() => useRooms());
+    expect(one.result.current).toBe(two.result.current);
+    expect(getRooms()).toBe(one.result.current);
+  });
+});
+
+function seedTwo() {
+  useProjectStore.setState({ projects: [project("x"), project("y")] });
+  useProcessStore.setState({
+    processes: [proc("x1", "x", "agent"), proc("y1", "y", "agent")],
+  });
+}
+
 describe("useFloorData", () => {
   it("refreshes every project and saves places once", () => {
     const todo = vi.fn().mockResolvedValue(undefined);
@@ -220,7 +267,12 @@ describe("useFloorData", () => {
     useTodoStore.setState({ refresh: todo });
     useScratchpadStore.setState({ refresh: pad });
     useProjectStore.setState({ projects: [project("p1"), project("p2")] });
+    const setFloorPositions = useLayoutStore.getState().setFloorPositions;
+    const write = vi.fn(setFloorPositions);
+    useLayoutStore.setState({ setFloorPositions: write });
     renderHook(() => useFloorData());
+    expect(write).toHaveBeenCalledTimes(1);
+    useLayoutStore.setState({ setFloorPositions });
     expect(todo).toHaveBeenCalledTimes(2);
     expect(pad).toHaveBeenCalledWith("p2");
     const saved = useLayoutStore.getState().floorPositions;

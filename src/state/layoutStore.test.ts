@@ -65,6 +65,23 @@ describe("layoutStore — mode and floor positions", () => {
     });
   });
 
+  it("setFloorPositions writes several positions at once and keeps others", async () => {
+    const store = await freshStore();
+    store.getState().setFloorPosition("/work/alpha", [0, 0]);
+    const write = vi.spyOn(localStorage, "setItem");
+    store.getState().setFloorPositions({
+      "/work/beta": [400, 0],
+      "/work/gamma": [0, 400],
+    });
+    expect(write).toHaveBeenCalledTimes(1);
+    write.mockRestore();
+    expect(saved().floorPositions).toEqual({
+      "/work/alpha": [0, 0],
+      "/work/beta": [400, 0],
+      "/work/gamma": [0, 400],
+    });
+  });
+
   it("forgetProject drops its position, resetFloorPositions drops all", async () => {
     const store = await freshStore();
     store.getState().setFloorPosition("/work/alpha", [0, 0]);

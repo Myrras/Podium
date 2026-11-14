@@ -16,7 +16,8 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 ## Stores
 
 - `layoutStore` (persisted): `floorPositions` (`project.root` → `[x, y]`),
-  `setFloorPosition`, `resetFloorPositions`; `forgetProject(root)` drops the
+  `setFloorPosition`, `setFloorPositions` (several, one write),
+  `resetFloorPositions`; `forgetProject(root)` drops the
   position too.
 - `floorStore` (memory): `camera {x,y,z}`, `animate`, `viewport`, `focus`
   (`"all"` | project id | `null` after a manual pan or zoom), `popover`,
@@ -37,8 +38,11 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   0.3 to 2, far below 0.4.
 - `rooms.ts`: `deskState`, `useRooms`/`getRooms` (never write), `roomOf`,
   `useFloorData` (loads to-dos and scratchpads for every project and writes back
-  changed room positions; only `FloorMap` calls it). `grown` tracks which rooms
-  grew at the latest size change, for `layoutRooms`.
+  changed room positions in one `setFloorPositions`; only `FloorMap` calls it).
+  `getRooms` caches by input (projects, processes, positions, desk states), so
+  the layout runs once per change for every caller; an unchanged room keeps its
+  object so `memo(Room)` skips it. `useRooms` is `useSyncExternalStore` over it.
+  `grown` tracks which rooms grew at the latest size change, for `layoutRooms`.
 - `camera.ts`: `jumpTo("all" | projectId)` (animated), `zoomBy`, `showAgent`.
 - `startAgent.ts`: `startAgentIn` for the nameplate +.
 - `menus.ts`: right-click items (`processMenu`, `todoMenu`, `scratchpadMenu`) for
