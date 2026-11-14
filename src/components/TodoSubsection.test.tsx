@@ -622,4 +622,21 @@ describe("TodoSubsection assigned to-dos", () => {
     unmount();
     expect(addTodo).toHaveBeenCalledTimes(2);
   });
+
+  it("loads the list on mount in project mode, not in bare mode", () => {
+    seed([]);
+    const { refresh } = useTodoStore.getState();
+    const { unmount } = renderBare();
+    expect(refresh).not.toHaveBeenCalled();
+    unmount();
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(refresh).toHaveBeenCalledWith(PROJECT);
+  });
 });

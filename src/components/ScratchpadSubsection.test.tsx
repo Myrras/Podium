@@ -407,4 +407,28 @@ describe("ScratchpadSubsection", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Scratchpad A")).toBeInTheDocument();
   });
+
+  it("loads the list on mount in project mode, not in bare mode", () => {
+    const { refresh } = seed([]);
+    const { unmount } = render(
+      <ScratchpadSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    unmount();
+    render(
+      <ScratchpadSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(refresh).toHaveBeenCalledWith(PROJECT);
+  });
 });

@@ -199,9 +199,10 @@ export function ScratchpadSubsection({
   const anchorRef = useRef<ScratchpadId | null>(null);
 
   // Initial pull; later changes arrive via the `scratchpad:changed` refresh.
+  // A Floor popover (bare) skips it: useFloorData already loaded the list.
   useEffect(() => {
-    void refresh(projectId);
-  }, [projectId, refresh]);
+    if (!bare) void refresh(projectId);
+  }, [projectId, refresh, bare]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
   const selectedIds = useMemo(

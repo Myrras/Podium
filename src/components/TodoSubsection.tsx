@@ -260,9 +260,10 @@ export function TodoSubsection({
   const anchorRef = useRef<TodoId | null>(null);
 
   // Initial pull; later changes arrive via the `todo:changed` refresh.
+  // A Floor popover (bare) skips it: useFloorData already loaded the list.
   useEffect(() => {
-    void refresh(projectId);
-  }, [projectId, refresh]);
+    if (!bare) void refresh(projectId);
+  }, [projectId, refresh, bare]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
   // To-dos a running agent owns can't be part of a selection.
