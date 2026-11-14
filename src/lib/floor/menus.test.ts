@@ -78,7 +78,7 @@ const stoppedBeforeRemove = () =>
 const stopProcess = vi.fn(() => Promise.resolve());
 const startProcess = vi.fn(() => Promise.resolve());
 const restartProcess = vi.fn(() => Promise.resolve());
-const removeProcess = vi.fn(() => Promise.resolve());
+const removeProcess = vi.fn(() => Promise.resolve(true));
 const setActiveProcess = vi.fn();
 const spawnAgent = vi.fn();
 const setTodoDone = vi.fn();
@@ -170,6 +170,14 @@ describe("processMenu", () => {
       expect(toastError).toHaveBeenCalledWith("Could not stop process", "nope"),
     );
     expect(removeProcess).not.toHaveBeenCalled();
+    expect(useFloorStore.getState().terminalId).toBe("p1");
+  });
+  it("Close keeps the modal when the remove fails", async () => {
+    removeProcess.mockResolvedValueOnce(false);
+    useFloorStore.getState().openTerminal("p1");
+    pick(menu("terminal", exited), "Close terminal").onSelect();
+    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+    await Promise.resolve();
     expect(useFloorStore.getState().terminalId).toBe("p1");
   });
   it("Close of a stopped process removes it, then closes its modal", async () => {

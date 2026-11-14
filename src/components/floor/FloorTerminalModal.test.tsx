@@ -82,7 +82,7 @@ function proc(
 const renameProcess = vi.fn((_id: string, _name: string) => Promise.resolve());
 const startProcess = vi.fn((_id: string) => Promise.resolve());
 const stopProcess = vi.fn((_id: string) => Promise.resolve());
-const removeProcess = vi.fn((_id: string) => Promise.resolve());
+const removeProcess = vi.fn((_id: string) => Promise.resolve(true));
 const restartProcess = vi.fn((_id: string) => Promise.resolve());
 const setActiveProcess = vi.fn();
 
@@ -341,7 +341,10 @@ describe("FloorTerminalModal", () => {
     vi.mocked(invoke).mockImplementationOnce(async (cmd) => {
       order.push(cmd === "process_stop" ? "stop" : cmd);
     });
-    removeProcess.mockImplementationOnce(async () => void order.push("remove"));
+    removeProcess.mockImplementationOnce(async () => {
+      order.push("remove");
+      return true;
+    });
     render(<FloorTerminalModal />);
     open("a1");
     fireEvent.click(screen.getByRole("button", { name: "Close agent" }));
@@ -445,7 +448,10 @@ describe("FloorTerminalModal", () => {
     vi.mocked(invoke).mockImplementationOnce(async (cmd) => {
       order.push(cmd === "process_stop" ? "stop" : cmd);
     });
-    removeProcess.mockImplementationOnce(async () => void order.push("remove"));
+    removeProcess.mockImplementationOnce(async () => {
+      order.push("remove");
+      return true;
+    });
     render(<FloorTerminalModal />);
     open("t1");
     fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));

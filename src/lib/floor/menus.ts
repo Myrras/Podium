@@ -66,7 +66,7 @@ export function stopIfRunning(id: ProcessId): void {
 
 /**
  * Close agent / Close terminal: stop if active now, remove, then hide its
- * modal. A failed stop keeps the process and the modal (with a toast). Calls
+ * modal. A failed stop or remove keeps the process and the modal (with a toast). Calls
  * the IPC directly: the store's stop swallows the error, and a successful
  * stop still reads as active (`stopping`) until the process exits.
  */
@@ -86,7 +86,8 @@ export function closeProcess(id: ProcessId): void {
         }
       }
     }
-    await useProcessStore.getState().removeProcess(id);
+    // A failed remove (toasted) keeps the process, so its modal stays.
+    if (!(await useProcessStore.getState().removeProcess(id))) return;
     const floor = useFloorStore.getState();
     if (floor.terminalId === id) floor.closeTerminal();
   })();
