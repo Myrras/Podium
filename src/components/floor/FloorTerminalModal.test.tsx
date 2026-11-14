@@ -29,6 +29,8 @@ vi.mock("../TerminalPane", async () => {
   }
 });
 
+import { invoke } from "@tauri-apps/api/core";
+
 import type {
   ProcessInfo,
   ProcessKind,
@@ -281,7 +283,10 @@ describe("FloorTerminalModal", () => {
 
   it("closes a running agent after asking: stop, remove, hide", async () => {
     const order: string[] = [];
-    stopProcess.mockImplementationOnce(async () => void order.push("stop"));
+    // Close stops through the IPC, so a failed stop can keep the process.
+    vi.mocked(invoke).mockImplementationOnce(async (cmd) => {
+      order.push(cmd === "process_stop" ? "stop" : cmd);
+    });
     removeProcess.mockImplementationOnce(async () => void order.push("remove"));
     render(<FloorTerminalModal />);
     open("a1");
@@ -310,7 +315,7 @@ describe("FloorTerminalModal", () => {
         within(confirmDialog()).getByRole("button", { name: "Close" }),
       );
       await act(async () => {});
-      expect(stopProcess).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalled();
       expect(removeProcess).toHaveBeenCalledWith("a1");
       expect(useFloorStore.getState().terminalId).toBeNull();
       unmount();
@@ -382,7 +387,10 @@ describe("FloorTerminalModal", () => {
 
   it("closes a running terminal fully after asking: stop, remove, close", async () => {
     const order: string[] = [];
-    stopProcess.mockImplementationOnce(async () => void order.push("stop"));
+    // Close stops through the IPC, so a failed stop can keep the process.
+    vi.mocked(invoke).mockImplementationOnce(async (cmd) => {
+      order.push(cmd === "process_stop" ? "stop" : cmd);
+    });
     removeProcess.mockImplementationOnce(async () => void order.push("remove"));
     render(<FloorTerminalModal />);
     open("t1");
@@ -409,7 +417,7 @@ describe("FloorTerminalModal", () => {
       within(confirmDialog()).getByRole("button", { name: "Close" }),
     );
     await act(async () => {});
-    expect(stopProcess).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
     expect(removeProcess).toHaveBeenCalledWith("t1");
   });
 

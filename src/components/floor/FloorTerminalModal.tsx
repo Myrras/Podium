@@ -209,7 +209,10 @@ export function FloorTerminalModal() {
                   : "Stop and remove, with its output"
               }
               onClick={() =>
-                setConfirm({ ...closeConfirm(p), run: () => closeProcess(p) })
+                setConfirm({
+                  ...closeConfirm(p),
+                  run: () => closeProcess(p.id),
+                })
               }
             >
               <DeleteIcon />

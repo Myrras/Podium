@@ -6,6 +6,10 @@ vi.mock("@tauri-apps/api/core", () => ({
     onmessage: (message: unknown) => void = () => undefined;
   },
 }));
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock("../../state/toastStore", () => ({ toastError }));
+
+import { invoke } from "@tauri-apps/api/core";
 
 import type { MenuItem } from "../../components/ContextMenu";
 import type {
@@ -56,8 +60,20 @@ const pick = (items: MenuItem[], label: string) =>
     MenuItem,
     "separator"
   >;
-const menu = (kind: string, status: ProcessStatus) =>
-  processMenu(proc(kind, status), UNTRACKED_ACTIVITY);
+// The store holds the process as the menu saw it; a test may change it after.
+const menu = (kind: string, status: ProcessStatus) => {
+  setStatus(kind, status);
+  return processMenu(proc(kind, status), UNTRACKED_ACTIVITY);
+};
+const setStatus = (kind: string, status: ProcessStatus) =>
+  useProcessStore.setState({ processes: [proc(kind, status)] });
+const stopCalls = () =>
+  vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "process_stop");
+// Close's stop goes through the IPC; it must come before the remove.
+const stoppedBeforeRemove = () =>
+  vi.mocked(invoke).mock.invocationCallOrder[
+    vi.mocked(invoke).mock.calls.findIndex(([cmd]) => cmd === "process_stop")
+  ] < removeProcess.mock.invocationCallOrder[0];
 
 const stopProcess = vi.fn(() => Promise.resolve());
 const startProcess = vi.fn(() => Promise.resolve());
@@ -71,6 +87,7 @@ const setScratchpadArchived = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(invoke).mockImplementation(() => Promise.resolve([]));
   useFloorStore.getState().reset();
   useProcessStore.setState({
     stopProcess,
@@ -119,17 +136,69 @@ describe("processMenu", () => {
     pick(menu("agent", running), "Close agent").onSelect();
     expect(useFloorStore.getState().terminalId).toBeNull();
     await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
-    expect(stopProcess.mock.invocationCallOrder[0]).toBeLessThan(
-      removeProcess.mock.invocationCallOrder[0],
-    );
+    expect(stopCalls()).toEqual([["process_stop", { processId: "p1" }]]);
+    expect(stoppedBeforeRemove()).toBe(true);
   });
   it("agent: Close only removes when ended or never started", async () => {
     for (const s of [exited, notStarted]) {
       vi.clearAllMocks();
       pick(menu("agent", s), "Close agent").onSelect();
       await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
-      expect(stopProcess).not.toHaveBeenCalled();
+      expect(stopCalls()).toEqual([]);
     }
+  });
+  it("Close reads the status at action time: restarted in between, it stops first", async () => {
+    const item = pick(menu("agent", exited), "Close agent");
+    setStatus("agent", running);
+    item.onSelect();
+    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+    expect(stoppedBeforeRemove()).toBe(true);
+  });
+  it("Close keeps the process when its stop fails", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) =>
+      cmd === "process_stop"
+        ? Promise.reject({ kind: "other", message: "nope" })
+        : Promise.resolve([]),
+    );
+    pick(menu("terminal", running), "Close terminal").onSelect();
+    await vi.waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("Could not stop process", "nope"),
+    );
+    expect(removeProcess).not.toHaveBeenCalled();
+  });
+  it("Close still removes one that ended before the stop landed", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) =>
+      cmd === "process_stop"
+        ? Promise.reject({ kind: "processNotRunning", message: "gone" })
+        : Promise.resolve([]),
+    );
+    pick(menu("terminal", running), "Close terminal").onSelect();
+    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+    expect(toastError).not.toHaveBeenCalled();
+  });
+  it("Close does nothing for a process already gone", async () => {
+    const item = pick(menu("terminal", running), "Close terminal");
+    useProcessStore.setState({ processes: [] });
+    item.onSelect();
+    await Promise.resolve();
+    expect(stopCalls()).toEqual([]);
+    expect(removeProcess).not.toHaveBeenCalled();
+  });
+  it("a stale Stop or Start does nothing", () => {
+    const stop = pick(menu("terminal", running), "Stop");
+    setStatus("terminal", exited);
+    stop.onSelect();
+    expect(stopProcess).not.toHaveBeenCalled();
+
+    const resume = pick(menu("agent", exited), "Resume");
+    setStatus("agent", running);
+    resume.onSelect();
+    expect(startProcess).not.toHaveBeenCalled();
+
+    const start = pick(menu("terminal", notStarted), "Start");
+    useProcessStore.setState({ processes: [] });
+    start.onSelect();
+    expect(startProcess).not.toHaveBeenCalled();
   });
 
   it("terminal: running vs not running", () => {
@@ -157,16 +226,14 @@ describe("processMenu", () => {
     pick(menu("terminal", running), "Close terminal").onSelect();
     expect(useFloorStore.getState().terminalId).toBeNull();
     await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
-    expect(stopProcess).toHaveBeenCalledWith("p1");
-    expect(stopProcess.mock.invocationCallOrder[0]).toBeLessThan(
-      removeProcess.mock.invocationCallOrder[0],
-    );
+    expect(stopCalls()).toEqual([["process_stop", { processId: "p1" }]]);
+    expect(stoppedBeforeRemove()).toBe(true);
   });
   it("terminal: Close keeps another terminal's modal and skips Stop when not running", async () => {
     useFloorStore.getState().openTerminal("other");
     pick(menu("terminal", notStarted), "Close terminal").onSelect();
     await vi.waitFor(() => expect(removeProcess).toHaveBeenCalled());
-    expect(stopProcess).not.toHaveBeenCalled();
+    expect(stopCalls()).toEqual([]);
     expect(useFloorStore.getState().terminalId).toBe("other");
   });
 
