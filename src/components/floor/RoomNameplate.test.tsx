@@ -133,6 +133,23 @@ describe("RoomNameplate", () => {
     expect(jumpTo).not.toHaveBeenCalled();
   });
 
+  it("closes an open popover when a drag starts, not on a press alone", () => {
+    render(<RoomNameplate room={a} />);
+    useFloorStore
+      .getState()
+      .openPopover({ projectId: "a", kind: "todos", itemId: null });
+    fireEvent.pointerDown(grip(), {
+      clientX: 0,
+      clientY: 0,
+      button: 0,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(grip(), { clientX: 2, clientY: 0, pointerId: 1 });
+    expect(useFloorStore.getState().popover).not.toBeNull();
+    fireEvent.pointerMove(grip(), { clientX: 130, clientY: 0, pointerId: 1 });
+    expect(useFloorStore.getState().popover).toBeNull();
+  });
+
   it("stops moving after a pointercancel, also on a later hover move", () => {
     const { container } = render(
       <div data-room="a">

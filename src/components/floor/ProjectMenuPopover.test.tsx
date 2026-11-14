@@ -72,6 +72,7 @@ const agent = {
   projectId: "p1",
   name: "Bot One",
   kind: { kind: "agent", adapter: "claude" },
+  status: { state: "running", pid: 1, since: "x" },
   worktree: "wt-b",
 } as unknown as ProcessInfo;
 

@@ -186,7 +186,8 @@ export function getRooms(): RoomModel[] {
   return cache.rooms;
 }
 
-const subscribe = (onChange: () => void) => {
+/** Calls `onChange` on each change of a store the rooms read. */
+export const subscribeRooms = (onChange: () => void) => {
   const off = [
     useProjectStore.subscribe(onChange),
     useProcessStore.subscribe(onChange),
@@ -198,7 +199,7 @@ const subscribe = (onChange: () => void) => {
 
 /** `getRooms` in React; re-renders only when the rooms change. */
 export function useRooms(): RoomModel[] {
-  return useSyncExternalStore(subscribe, getRooms);
+  return useSyncExternalStore(subscribeRooms, getRooms);
 }
 
 export function roomOf(

@@ -22,7 +22,12 @@ import { useProjectStore } from "../../state/projectStore";
 import { useTerminalCommandsStore } from "../../state/terminalCommandsStore";
 import { CommandsFixturePopover } from "./CommandsFixturePopover";
 
-const project = { id: "p1", name: "Demo", root: "/tmp/cmd-popover" };
+const project = {
+  id: "p1",
+  name: "Demo",
+  root: "/tmp/cmd-popover",
+  sections: {},
+};
 
 function renderPopover() {
   const anchor = document.createElement("button");

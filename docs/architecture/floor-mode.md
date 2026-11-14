@@ -81,7 +81,8 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `button, [role="button"], a, input, textarea, select, [data-no-pan]`, after
   4 px. Every clickable thing on the map is a `<button>` or has `data-no-pan`.
 - A room moves by dragging its nameplate (snapped to the grid, a colliding
-  spot is dropped) or with the arrow keys on it. A cancelled drag
+  spot is dropped) or with the arrow keys on it. A drag start (past the click
+  slop) closes the open popover. A cancelled drag
   (`pointercancel`) snaps back and saves nothing.
 - Popovers anchor on `data-fixture="<projectId>:<todos|scratchpads|commands|services|menu>"`;
   `FloorPopovers` looks it up on each render and closes when it is gone, so
@@ -92,7 +93,8 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   (`--dur-4`), then the loop stops. `Popover` and `ContextMenu` know nothing
   of the floor: the fixture popovers, `Desk` and `RoomWall` pass
   `followCamera` (`lib/floor/follow.ts`, fires on each `floorStore` camera
-  change). Both clamp to the window with `clampToViewport` (`lib/viewport.ts`).
+  change and when a room moves or resizes, a push or re-layout, so the popover
+  re-places to its fixture). Both clamp to the window with `clampToViewport` (`lib/viewport.ts`).
 - A right-click menu closes on Esc, an outside mousedown or wheel, a window
   resize and each `follow` move (pan, zoom or jump), so it never stays at a
   stale spot. `useContextMenu(follow?)` defaults to the enclosing popover's

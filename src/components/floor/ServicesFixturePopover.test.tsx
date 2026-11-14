@@ -26,7 +26,12 @@ const svc = (id: string, name: string, state: string, projectId = "p1") =>
 
 const reload = vi.fn(() => Promise.resolve());
 const project = (configError: string | null) =>
-  ({ id: "p1", name: "Demo", configError }) as unknown as ProjectInfo;
+  ({
+    id: "p1",
+    name: "Demo",
+    configError,
+    sections: {},
+  }) as unknown as ProjectInfo;
 
 function setup(configError: string | null = null) {
   useProjectStore.setState(

@@ -72,6 +72,8 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
     if (!d.moved && Math.hypot(dx, dy) < CLICK_SLOP) return;
+    // A popover would stay behind while its fixture moves: close it.
+    if (!d.moved) useFloorStore.getState().closePopover();
     d.moved = true;
     const z = useFloorStore.getState().camera.z || 1;
     d.xy = snap([rect.x + dx / z, rect.y + dy / z]);
