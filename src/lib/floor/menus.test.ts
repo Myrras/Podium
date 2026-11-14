@@ -80,17 +80,23 @@ beforeEach(() => {
 });
 
 describe("processMenu", () => {
-  it("agent: active offers Open and Stop", () => {
-    expect(labels(menu("agent", running))).toEqual(["Open", "Stop"]);
+  it("agent: active offers Open, Stop, then Close agent", () => {
+    const m = menu("agent", running);
+    expect(m.map((i) => (i === "separator" ? "-" : i.label))).toEqual([
+      "Open",
+      "Stop",
+      "-",
+      "Close agent",
+    ]);
+    expect(pick(m, "Close agent").danger).toBe(true);
   });
-  it("agent: ended or crashed offers Resume and Clear the desk", () => {
-    for (const s of [exited, crashed])
+  it("agent: ended, crashed or never started offers Resume and Close agent", () => {
+    for (const s of [exited, crashed, notStarted])
       expect(labels(menu("agent", s))).toEqual([
         "Open",
-        "Resume session",
-        "Clear the desk",
+        "Resume",
+        "Close agent",
       ]);
-    expect(pick(menu("agent", exited), "Clear the desk").danger).toBe(true);
   });
   it("agent actions call the store", () => {
     const m = menu("agent", running);
@@ -99,10 +105,25 @@ describe("processMenu", () => {
     expect(useFloorStore.getState().terminalId).toBe("p1");
     pick(m, "Stop").onSelect();
     expect(stopProcess).toHaveBeenCalledWith("p1");
-    pick(menu("agent", crashed), "Resume session").onSelect();
+    pick(menu("agent", notStarted), "Resume").onSelect();
     expect(startProcess).toHaveBeenCalledWith("p1");
-    pick(menu("agent", crashed), "Clear the desk").onSelect();
-    expect(removeProcess).toHaveBeenCalledWith("p1");
+  });
+  it("agent: Close stops first when running, and closes its modal", async () => {
+    useFloorStore.getState().openTerminal("p1");
+    pick(menu("agent", running), "Close agent").onSelect();
+    expect(useFloorStore.getState().terminalId).toBeNull();
+    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+    expect(stopProcess.mock.invocationCallOrder[0]).toBeLessThan(
+      removeProcess.mock.invocationCallOrder[0],
+    );
+  });
+  it("agent: Close only removes when ended or never started", async () => {
+    for (const s of [exited, notStarted]) {
+      vi.clearAllMocks();
+      pick(menu("agent", s), "Close agent").onSelect();
+      await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledWith("p1"));
+      expect(stopProcess).not.toHaveBeenCalled();
+    }
   });
 
   it("terminal: running vs not running", () => {
@@ -112,11 +133,14 @@ describe("processMenu", () => {
       "Restart",
       "Close terminal",
     ]);
-    expect(labels(menu("terminal", notStarted))).toEqual([
-      "Open",
-      "Start",
-      "Close terminal",
-    ]);
+    for (const s of [notStarted, exited])
+      expect(labels(menu("terminal", s))).toEqual([
+        "Open",
+        "Start",
+        "Close terminal",
+      ]);
+    expect(menu("terminal", running)[3]).toBe("separator");
+    expect(pick(menu("terminal", running), "Close terminal").danger).toBe(true);
     pick(menu("terminal", notStarted), "Start").onSelect();
     expect(startProcess).toHaveBeenCalledWith("p1");
     pick(menu("terminal", running), "Restart").onSelect();
@@ -134,7 +158,7 @@ describe("processMenu", () => {
   });
   it("terminal: Close keeps another terminal's modal and skips Stop when not running", async () => {
     useFloorStore.getState().openTerminal("other");
-    pick(menu("terminal", exited), "Close terminal").onSelect();
+    pick(menu("terminal", notStarted), "Close terminal").onSelect();
     await vi.waitFor(() => expect(removeProcess).toHaveBeenCalled());
     expect(stopProcess).not.toHaveBeenCalled();
     expect(useFloorStore.getState().terminalId).toBe("other");
@@ -147,6 +171,7 @@ describe("processMenu", () => {
       "Restart",
     ]);
     expect(labels(menu("service", exited))).toEqual(["Open", "Start"]);
+    expect(menu("service", running)).not.toContain("separator");
   });
 });
 
@@ -240,11 +265,12 @@ describe("confirm steps", () => {
       body: "The session ends. You can resume it later.",
       action: "Stop",
     });
-    expect(pick(menu("agent", exited), "Clear the desk").confirm).toEqual({
-      title: "Clear the desk?",
-      body: "The agent is removed from the floor.",
-      action: "Clear",
+    expect(pick(menu("agent", exited), "Close agent").confirm).toEqual({
+      title: "Close x?",
+      body: "The agent stops and its desk is removed from the floor.",
+      action: "Close",
     });
+    expect(pick(menu("agent", exited), "Resume").confirm).toBeUndefined();
     const stop = {
       title: "Stop x?",
       body: "The process stops. You can start it again later.",
@@ -254,7 +280,7 @@ describe("confirm steps", () => {
     expect(pick(menu("service", running), "Stop").confirm).toEqual(stop);
     expect(pick(menu("terminal", running), "Close terminal").confirm).toEqual({
       title: "Close x?",
-      body: "The terminal and its output are removed.",
+      body: "The terminal stops and is removed, with its output.",
       action: "Close",
     });
   });

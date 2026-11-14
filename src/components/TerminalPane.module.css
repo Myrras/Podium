@@ -158,3 +158,25 @@
 .headerActions + .trailing {
   margin-left: var(--sp-2);
 }
+
+/* With caller slots (Floor modal) the bar never wraps or overflows: the
+   status label and branch give way; the name and the slots keep their size. */
+.slotted .name {
+  flex-shrink: 0;
+  max-width: 240px;
+}
+
+.slotted .status {
+  overflow: hidden;
+}
+
+.slotted .status > :first-child,
+.slotted .gitInfo > svg {
+  flex-shrink: 0;
+}
+
+.slotted .statusText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
