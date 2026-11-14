@@ -2,6 +2,7 @@ import type { KeyboardEvent } from "react";
 
 import { jumpTo, zoomBy } from "../../lib/floor/camera";
 import { deskState, useRooms } from "../../lib/floor/rooms";
+import { scrollEdges } from "../../lib/scrollEdges";
 import { UNTRACKED_ACTIVITY } from "../../state/agentActivityStore";
 import { useAgentActivityStore } from "../../state/agentActivityStore";
 import { useFloorStore } from "../../state/floorStore";
@@ -38,7 +39,7 @@ export function FloorHeader() {
 
   return (
     <header className={styles.header} onKeyDown={onKeyDown}>
-      <div className={styles.chips}>
+      <div ref={scrollEdges} className={styles.chips}>
         {rooms.length === 0 ? (
           <span className={styles.empty}>
             No projects yet. Add one and it gets a room on the floor.

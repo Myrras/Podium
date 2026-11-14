@@ -85,4 +85,20 @@ describe("FloorHeader", () => {
     fireEvent.keyDown(header, { key: "Escape" });
     expect(jumpTo).not.toHaveBeenCalled();
   });
+
+  it("marks the chip row edges that can scroll", () => {
+    const { container } = render(<FloorHeader />);
+    const row = container.querySelector("header > div") as HTMLElement;
+    const dim = (k: string, v: number) =>
+      Object.defineProperty(row, k, { value: v, configurable: true });
+    dim("clientWidth", 100);
+    dim("scrollWidth", 300);
+    fireEvent.scroll(row);
+    expect(row.hasAttribute("data-more-right")).toBe(true);
+    expect(row.hasAttribute("data-more-left")).toBe(false);
+    row.scrollLeft = 200;
+    fireEvent.scroll(row);
+    expect(row.hasAttribute("data-more-right")).toBe(false);
+    expect(row.hasAttribute("data-more-left")).toBe(true);
+  });
 });
