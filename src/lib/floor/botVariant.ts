@@ -1,6 +1,7 @@
 import { BOT_VARIANTS } from "./sprites";
 
-const hash = (id: string) => {
+/** Stable 32-bit string hash; also seeds each bot's animation phase. */
+export const hash = (id: string) => {
   let h = 0;
   for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return h;

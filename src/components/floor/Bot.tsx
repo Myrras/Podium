@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { hash } from "../../lib/floor/botVariant";
 import {
   botSheet,
   miniSheet,
@@ -13,11 +14,7 @@ const FAINT = "#6e7681";
 const GONE = "#8b949e";
 
 // Stable per-seed phase (0..1) so bots do not animate in step; CSS turns it into a delay.
-const phase = (seed: string) => {
-  let h = 0;
-  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) % 100003;
-  return h / 100003;
-};
+const phase = (seed: string) => (hash(seed) % 100003) / 100003;
 
 const frame = (image: string, seed: string): CSSProperties =>
   ({ backgroundImage: image, "--phase": phase(seed) }) as CSSProperties;

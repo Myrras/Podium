@@ -21,6 +21,22 @@ describe("Bot", () => {
     expect(pa).not.toBe(ph(b.firstElementChild!.firstElementChild!));
   });
 
+  it("spreads the phases of many bots over the beat", () => {
+    const phases = Array.from({ length: 40 }, (_, i) => {
+      const c = render(
+        <Bot color="#58a6ff" state="working" seed={`proc-${i}-9f2c`} />,
+      ).container;
+      return Number(
+        (
+          c.firstElementChild!.firstElementChild as HTMLElement
+        ).style.getPropertyValue("--phase"),
+      );
+    });
+    expect(new Set(phases).size).toBe(40);
+    expect(Math.min(...phases)).toBeLessThan(0.25);
+    expect(Math.max(...phases)).toBeGreaterThan(0.75);
+  });
+
   it("greys ended and idle bots and falls back without a colour", () => {
     const img = (c: Element) =>
       (c.firstElementChild!.firstElementChild as HTMLElement).style
