@@ -69,8 +69,8 @@ Settings > General > Appearance > View.
   background shells are monitors behind it (three each, then +N). Terminals are
   desks with a monitor and no bot, grey and labelled "stopped" once they end.
   The pinned desk has no lasting outline. Zoomed far out, labels hide. Right-click
-  a desk for Open, Stop, Resume session and the like; items that stop or remove
-  something (Stop, Close terminal, Clear the desk) ask for confirmation inside the menu.
+  a desk for Open, Stop, Resume and the like; items that stop or remove
+  something (Stop, Close terminal, Close agent) ask for confirmation inside the menu.
 - **Fixtures.** The back wall of a room holds what the sidebar held: a
   **pinboard** (to-dos, notes in the owning agent's colour), a **shelf**
   (scratchpads), **Commands** (a toolbox) and a **rack** (`podium.yml` services,
@@ -87,9 +87,9 @@ Settings > General > Appearance > View.
   floor. Esc goes to the terminal, so it does not close the modal: use the
   close button or click beside it. The modal has one header bar (the terminal's own) with the
   terminal's state. Stop is an icon at the far left and asks first; **Close terminal**
-  and **Clear the desk** ask first too. Click the agent's name to rename it;
-  **Resume session** is in the header, and **Next that needs
-  you** steps through waiting agents. There are no answer buttons: type the answer.
+  and **Close agent** ask first too. **×** hides the modal and keeps the process
+  running. Click the agent's name to rename it; **Resume** is in the header, and
+  **Next: _name_** steps through waiting agents. There are no answer buttons: type the answer.
 - **Nameplate.** **+** starts an agent: with the assistant on and its panel open
   it drafts a prompt there, otherwise (or with Cmd/Ctrl held) it opens the New
   agent screen. The terminal icon opens a new terminal. **⋯** is the project menu:

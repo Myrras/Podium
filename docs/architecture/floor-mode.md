@@ -99,10 +99,11 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 - The modal has one header bar: `TerminalPane`'s, filled through its optional
   `leading`, `trailing`, `onRename` and `hideActions` props (the modal draws no
   bar of its own). Stop is an icon at the far left.
-- Agent actions map to existing commands: Resume session = `startProcess`, Stop
-  = `stopProcess`, Clear the desk = `removeProcess`. Stop, Close terminal and
-  Clear the desk ask first in a confirm dialog inside the card (Esc only
-  cancels it).
+- Agent actions map to existing commands: Resume = `startProcess`, Stop
+  = `stopProcess`, Close agent = stop if active, then `removeProcess`. × hides
+  the modal and keeps the process running; `Next: <name>` opens the next
+  waiting agent. Stop, Close terminal and Close agent ask first in a confirm
+  dialog inside the card (Esc only cancels it).
 
 ## Not built
 
