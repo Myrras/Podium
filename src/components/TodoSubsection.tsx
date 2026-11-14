@@ -223,6 +223,9 @@ export function TodoSubsection({
   // The live text, read by submit: a blur right after Esc (Chromium blurs
   // the input as it goes) finds it cleared and adds nothing.
   const pendingText = useRef("");
+  // The text of the add in flight: a blur during it (Enter, then a close)
+  // does not add the same text again.
+  const inFlight = useRef<string | null>(null);
 
   // Multi-select lives in the shared selection store — the assistant
   // composer shows the same rows as context chips. Only the Shift+range
@@ -267,7 +270,10 @@ export function TodoSubsection({
   const submit = async () => {
     const trimmed = pendingText.current.trim();
     if (!trimmed) return cancel();
+    if (inFlight.current === trimmed) return;
+    inFlight.current = trimmed;
     const added = await addTodo(projectId, trimmed);
+    if (inFlight.current === trimmed) inFlight.current = null;
     // A failed add keeps the text for a retry; text edited meanwhile stays too.
     if (!added || pendingText.current.trim() !== trimmed) return;
     pendingText.current = "";

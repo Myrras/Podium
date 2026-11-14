@@ -603,6 +603,25 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(added()).toEqual(expected);
   });
 
+  it.each([
+    ["clears the input after a successful add", true, ""],
+    ["keeps the text after a failed add", false, "Ship it"],
+  ])("Enter, then a blur during the add: one add, %s", async (_l, ok, left) => {
+    seed([]);
+    let settle!: (ok: boolean) => void;
+    const addTodo = vi.fn(
+      () => new Promise<boolean>((resolve) => (settle = resolve)),
+    );
+    useTodoStore.setState({ addTodo });
+    renderBare();
+    const input = typeAndSubmit("Ship it");
+    fireEvent.blur(input);
+    expect(addTodo).toHaveBeenCalledTimes(1);
+    await act(async () => settle(ok));
+    expect(addTodo).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("New to-do text")).toHaveValue(left);
+  });
+
   it("adds it again on a popover close after a failed add", async () => {
     seed([]);
     const addTodo = vi.fn(() => Promise.resolve(false));
