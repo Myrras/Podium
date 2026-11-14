@@ -119,6 +119,7 @@ export function FloorTerminalModal() {
         onKeyDown={trapTab}
       >
         <TerminalPane
+          key={shown.id}
           process={shown}
           leading={actions?.lifecycle}
           trailing={

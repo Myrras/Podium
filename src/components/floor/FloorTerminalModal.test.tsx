@@ -9,9 +9,15 @@ vi.mock("@tauri-apps/api/event", () => ({
 // xterm does not run in jsdom; a textarea stands in for its focus target.
 // The mock renders the bar the modal hands over and keeps the last props.
 let paneProps: ComponentProps<typeof TerminalPane>;
-vi.mock("../TerminalPane", () => ({
-  TerminalPane: (props: ComponentProps<typeof TerminalPane>) => {
+// Names of the processes a pane mounted for, in order.
+const mounts: string[] = [];
+vi.mock("../TerminalPane", async () => {
+  const { useState } = await import("react");
+  return { TerminalPane: MockPane };
+  function MockPane(props: ComponentProps<typeof TerminalPane>) {
     paneProps = props;
+    // The initialiser runs once per mount.
+    useState(() => mounts.push(props.process.name));
     return (
       <div>
         {props.leading}
@@ -20,8 +26,8 @@ vi.mock("../TerminalPane", () => ({
         <textarea aria-label="terminal input" />
       </div>
     );
-  },
-}));
+  }
+});
 
 import type {
   ProcessInfo,
@@ -318,6 +324,15 @@ describe("FloorTerminalModal", () => {
     expect(renameProcess).not.toHaveBeenCalled();
     act(() => paneProps.onRename?.("Fix signup"));
     expect(renameProcess).toHaveBeenCalledWith("a1", "Fix signup");
+  });
+
+  it("mounts a fresh pane per shown process, so no rename carries over", () => {
+    mounts.length = 0;
+    render(<FloorTerminalModal />);
+    open("a1");
+    open("t1");
+    expect(screen.getByText("Pane of Shell")).toBeInTheDocument();
+    expect(mounts).toEqual(["Fix login", "Shell"]);
   });
 
   it("gives a running terminal Stop, Restart, Close terminal and ×", () => {
