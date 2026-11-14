@@ -88,6 +88,24 @@ describe("FloorStatusBar", () => {
     expect(screen.getByRole("status").textContent).toMatch(/^Working/);
   });
 
+  it("shows a pinned service by its pill word, not as an idle desk", () => {
+    useProcessStore.setState({
+      processes: [
+        agent,
+        {
+          id: "s1",
+          projectId: "p1",
+          name: "web",
+          kind: { kind: "service" },
+          status: { state: "running" },
+        } as unknown as ProcessInfo,
+      ],
+      activeProcessId: "s1",
+    });
+    render(<FloorStatusBar />);
+    expect(screen.getByRole("status").textContent).toBe("Up");
+  });
+
   it("with a room in focus, shows the pinned desk only when it is in that room", () => {
     useProcessStore.setState({ activeProcessId: "a1" });
     useFloorStore.setState({ focus: "p2" });

@@ -1,5 +1,6 @@
 import type { ProcessInfo } from "../../ipc/types";
 import { useProcessActivity } from "../../lib/useAgentActivity";
+import { pillState, pillWord } from "../../lib/processStatus";
 import { formatElapsed } from "../../lib/subagents";
 import { deskState, useRooms } from "../../lib/floor/rooms";
 import { useFloorStore } from "../../state/floorStore";
@@ -29,13 +30,18 @@ function AgentDetails({ process }: { process: ProcessInfo }) {
       (t) => t.assignedAgent?.processId === process.id,
     ),
   );
-  const state = deskState(process, activity);
+  const kind = process.kind.kind;
+  // Desk states are agent words; a terminal or service reads like its pill (Up, Running).
+  const word =
+    kind === "agent"
+      ? STATE_LABEL[deskState(process, activity)]
+      : pillWord(pillState(process.status, kind, activity), kind);
   const since =
     activity.sinceMs === null
       ? ""
       : ` for ${formatElapsed(Math.max(0, Date.now() - activity.sinceMs))}`;
   const parts = [
-    `${STATE_LABEL[state]}${since}`,
+    `${word}${since}`,
     todo?.text,
     process.worktree ? `worktree ${process.worktree}` : null,
     activity.subagents > 0 ? plural(activity.subagents, "sub-agent") : null,
