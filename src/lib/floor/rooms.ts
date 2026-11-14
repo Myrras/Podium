@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import type {
   ProcessId,
@@ -214,16 +214,40 @@ export function roomOf(
   );
 }
 
-/** Loads to-dos, scratchpads and worktrees of every project and saves room places; FloorMap calls it. */
+// The section each list belongs to, and its store's refresh.
+const LISTS = {
+  todos: (id: ProjectId) => useTodoStore.getState().refresh(id),
+  scratchpads: (id: ProjectId) => useScratchpadStore.getState().refresh(id),
+  worktrees: (id: ProjectId) => useWorktreeStore.getState().refresh(id),
+};
+type ListKind = keyof typeof LISTS;
+
+/**
+ * Loads the to-dos, scratchpads and worktrees each project shows, once per
+ * project and list (a new project or a section turned on), and saves room
+ * places; FloorMap calls it.
+ */
 export function useFloorData(): void {
-  const ids = useProjectStore((s) => s.projects.map((p) => p.id).join("\n"));
+  const keys = useProjectStore((s) =>
+    s.projects
+      .flatMap((p) =>
+        (Object.keys(LISTS) as ListKind[])
+          .filter((k) => p.sections[k])
+          .map((k) => `${k}\t${p.id}`),
+      )
+      .join("\n"),
+  );
+  const loaded = useRef(new Set<string>());
   useEffect(() => {
-    for (const id of ids ? (ids.split("\n") as ProjectId[]) : []) {
-      void useTodoStore.getState().refresh(id);
-      void useScratchpadStore.getState().refresh(id);
-      void useWorktreeStore.getState().refresh(id);
+    const now = new Set(keys ? keys.split("\n") : []);
+    for (const key of now) {
+      if (loaded.current.has(key)) continue;
+      const [kind, id] = key.split("\t") as [ListKind, ProjectId];
+      void LISTS[kind](id);
     }
-  }, [ids]);
+    // Forgets removed projects, so one added back loads again.
+    loaded.current = now;
+  }, [keys]);
 
   const rooms = useRooms();
   useEffect(() => {

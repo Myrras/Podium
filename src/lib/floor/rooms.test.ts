@@ -299,4 +299,44 @@ describe("useFloorData", () => {
       getRooms()[0].rect.y,
     ]);
   });
+
+  it("refreshes only an added project, and only the lists it shows", () => {
+    const todo = vi.fn().mockResolvedValue(undefined);
+    const pad = vi.fn().mockResolvedValue(undefined);
+    const trees = vi.fn().mockResolvedValue(undefined);
+    useTodoStore.setState({ refresh: todo });
+    useScratchpadStore.setState({ refresh: pad });
+    useWorktreeStore.setState({ refresh: trees });
+    useProjectStore.setState({ projects: [project("p1")] });
+    renderHook(() => useFloorData());
+    vi.clearAllMocks();
+
+    const sections = {
+      todos: true,
+      terminals: true,
+      worktrees: false,
+      scratchpads: false,
+      issues: true,
+    };
+    act(() =>
+      useProjectStore.setState({
+        projects: [project("p1"), project("p2", { sections })],
+      }),
+    );
+    expect(todo.mock.calls).toEqual([["p2"]]);
+    expect(pad).not.toHaveBeenCalled();
+    expect(trees).not.toHaveBeenCalled();
+
+    // Turning a section on loads just that list.
+    act(() =>
+      useProjectStore.setState({
+        projects: [
+          project("p1"),
+          project("p2", { sections: { ...sections, worktrees: true } }),
+        ],
+      }),
+    );
+    expect(trees.mock.calls).toEqual([["p2"]]);
+    expect(todo).toHaveBeenCalledTimes(1);
+  });
 });
