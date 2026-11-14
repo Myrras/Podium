@@ -122,6 +122,14 @@ describe("rooms", () => {
     expect(r1.rect.x % 40).toBe(0);
   });
 
+  it("gives each agent in a room its own bot design", () => {
+    seed();
+    const [r1, r2] = getRooms();
+    expect(Object.keys(r1.variants).sort()).toEqual(["a1", "a2"]);
+    expect(r1.variants.a1).not.toBe(r1.variants.a2);
+    expect(r2.variants).toEqual({});
+  });
+
   it("is wide enough for the wall fixtures it shows", () => {
     useProjectStore.setState({
       projects: [

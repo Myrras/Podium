@@ -125,20 +125,15 @@ describe("Desk", () => {
     expect(b.container.querySelector("[class*=zzz]")).toBeNull();
   });
 
-  it("gives agents in one project different bot designs", () => {
-    const procs = ["p1", "p2", "p3"].map((id) => proc({ id }));
-    useProcessStore.setState({
-      processes: [...procs, proc({ id: "other", projectId: "else" })],
-    } as never);
-    const imgs = procs.map((p) => {
-      const r = render(<Desk process={p} />);
+  it("draws the bot design it is given", () => {
+    const imgs = [0, 1, 2].map((variant) => {
+      const r = render(<Desk process={proc()} variant={variant} />);
       const img = (r.container.querySelector("[data-state] > i") as HTMLElement)
         .style.backgroundImage;
       r.unmount();
       return img;
     });
     expect(new Set(imgs).size).toBe(3);
-    useProcessStore.setState({ processes: [] } as never);
   });
 
   it("renders a terminal desk without a bot", () => {

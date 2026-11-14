@@ -38,6 +38,7 @@ const mk = (id: string, x: number, y: number): RoomModel => ({
   needs: 2,
   crashed: 1,
   lit: false,
+  variants: {},
 });
 const a = mk("a", 0, 0);
 const b = mk("b", 800, 0);

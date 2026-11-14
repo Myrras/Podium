@@ -53,7 +53,7 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   justfile recipes and saved commands, run in a new terminal.
 - `waypoints.ts`: edge markers for rooms that need you and are out of view.
 - `sprites.ts` + `Bot.tsx`: pixel art as SVG data URLs, 8 bot heads; only a
-  working bot moves. `botVariant.ts` gives each agent in a room its own head. Idle
+  working bot moves. `botVariant.ts` gives each agent in a room its own head (`RoomModel.variants`, set in `buildRooms`). Idle
   and ended bots are grey; the desk adds a floating Zzz for idle only.
 
 ## Components

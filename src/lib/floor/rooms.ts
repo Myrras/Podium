@@ -18,6 +18,7 @@ import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import { useWorktreeStore } from "../../state/worktreeStore";
 import { pillState } from "../processStatus";
+import { botVariants } from "./botVariant";
 import { layoutRooms, roomSize, type WallFixture } from "./geometry";
 import type { DeskState, RoomModel, Size } from "./types";
 
@@ -101,6 +102,7 @@ function buildRooms(
         states.filter((s) => s === "crashed").length +
         services.filter((s) => state(s) === "crashed").length,
       lit: states.some((s) => s === "working" || s === "needs"),
+      variants: Object.fromEntries(botVariants(agents.map((p) => p.id))),
     };
   });
   const items = parts.map((r) => ({
@@ -122,6 +124,7 @@ function buildRooms(
 const sameList = (a: ProcessInfo[], b: ProcessInfo[]) =>
   a.length === b.length && a.every((p, i) => p === b[i]);
 
+/** `variants` follows `agents`, so it needs no check of its own. */
 const sameRoom = (a: RoomModel, b: RoomModel) =>
   a.project === b.project &&
   a.needs === b.needs &&

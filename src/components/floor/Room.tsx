@@ -33,7 +33,7 @@ export const Room = memo(function Room({ room }: { room: RoomModel }) {
       </div>
       <div className={styles.desks}>
         {room.agents.map((p) => (
-          <Desk key={p.id} process={p} />
+          <Desk key={p.id} process={p} variant={room.variants[p.id]} />
         ))}
         {room.terminals.map((p) => (
           <Desk key={p.id} process={p} />

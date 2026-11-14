@@ -9,8 +9,8 @@ vi.mock("./RoomNameplate", () => ({
 }));
 vi.mock("./RoomWall", () => ({ RoomWall: () => <i data-testid="wall" /> }));
 vi.mock("./Desk", () => ({
-  Desk: ({ process }: { process: ProcessInfo }) => (
-    <i data-testid="desk" data-id={process.id} />
+  Desk: ({ process, variant }: { process: ProcessInfo; variant?: number }) => (
+    <i data-testid="desk" data-id={process.id} data-variant={variant} />
   ),
 }));
 
@@ -28,6 +28,7 @@ const model = (
     needs: 0,
     crashed: 0,
     lit: true,
+    variants: { a1: 3, a2: 5 },
     ...over,
   }) as RoomModel;
 
@@ -50,6 +51,9 @@ describe("Room", () => {
       "a2",
       "t1",
     ]);
+    expect(
+      getAllByTestId("desk").map((d) => d.dataset.variant ?? null),
+    ).toEqual(["3", "5", null]);
   });
 
   it("marks unlit and uncoloured rooms", () => {

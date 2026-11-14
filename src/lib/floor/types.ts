@@ -1,4 +1,5 @@
 import type {
+  ProcessId,
   ProcessInfo,
   ProjectId,
   ProjectInfo,
@@ -34,6 +35,7 @@ export interface RoomModel {
   needs: number; // agents that wait on the user
   crashed: number; // crashed agents + crashed services
   lit: boolean; // an agent is working or waiting
+  variants: Record<ProcessId, number>; // bot design per agent, unique in the room
 }
 export interface FloorPopover {
   projectId: ProjectId;
