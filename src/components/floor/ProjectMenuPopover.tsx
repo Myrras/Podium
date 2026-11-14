@@ -43,9 +43,22 @@ export function ProjectMenuPopover({
   // The worktree awaiting a "discard changes" answer, and how to give it.
   const [dirty, setDirty] = useState<string | null>(null);
   const pendingAnswer = useRef<((discard: boolean) => void) | null>(null);
-  // Closing the popover answers "keep", so removeWorktree never hangs.
-  useEffect(() => () => pendingAnswer.current?.(false), []);
+  // The current removal's token. Back, another worktree view or a close voids
+  // it: a dirty-worktree question that arrives later is answered "keep" at
+  // once and shows nothing.
+  const removal = useRef<object | null>(null);
   const [removing, setRemoving] = useState(false);
+  // Leaving the view answers "keep", so removeWorktree never hangs.
+  useEffect(
+    () => () => {
+      removal.current = null;
+      pendingAnswer.current?.(false);
+      pendingAnswer.current = null;
+      setDirty(null);
+      setRemoving(false);
+    },
+    [itemId],
+  );
   // An edited name not yet saved, null once saved: each edit saves at most once.
   const pendingName = useRef<string | null>(null);
   const rename = () => {
@@ -115,12 +128,17 @@ export function ProjectMenuPopover({
     };
     const remove = async () => {
       if (removing) return;
+      const token = {};
+      removal.current = token;
+      const current = () => removal.current === token;
       setRemoving(true);
       try {
-        if (await removeWorktree(projectId, wt.name, confirmForce))
-          setPopoverItem(null);
+        const gone = await removeWorktree(projectId, wt.name, (name) =>
+          current() ? confirmForce(name) : Promise.resolve(false),
+        );
+        if (gone && current()) setPopoverItem(null);
       } finally {
-        setRemoving(false);
+        if (current()) setRemoving(false);
       }
     };
     return (
@@ -130,6 +148,7 @@ export function ProjectMenuPopover({
         title={wt.name}
         onClose={close}
         onBack={() => {
+          removal.current = null;
           answer(false);
           setPopoverItem(null);
         }}

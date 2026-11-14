@@ -100,9 +100,12 @@ function setup(itemId: string | null = null, p = project) {
   });
   const anchor = document.createElement("button");
   document.body.append(anchor);
-  return render(
-    <ProjectMenuPopover projectId="p1" itemId={itemId} anchor={anchor} />,
-  );
+  return {
+    ...render(
+      <ProjectMenuPopover projectId="p1" itemId={itemId} anchor={anchor} />,
+    ),
+    anchor,
+  };
 }
 
 beforeEach(() => {
@@ -346,6 +349,32 @@ describe("ProjectMenuPopover", () => {
     await act(async () => {});
     expect(result).toBe(false);
     expect(m.worktreeRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("worktree view: a dirty answer after Back is no, with no prompt on the next visit", async () => {
+    let reject!: (e: unknown) => void;
+    m.worktreeRemove.mockReturnValueOnce(
+      new Promise((_resolve, r) => (reject = r)),
+    );
+    m.removals.length = 0;
+    const { rerender, anchor } = setup("wt-a");
+    const view = (itemId: string | null) => (
+      <ProjectMenuPopover projectId="p1" itemId={itemId} anchor={anchor} />
+    );
+    fireEvent.click(screen.getByText("Remove worktree"));
+    fireEvent.click(screen.getByText("Back to the project menu"));
+    rerender(view(null));
+    rerender(view("wt-a"));
+    let result: boolean | undefined;
+    void m.removals[0].then((r) => (result = r));
+    await act(async () => reject({ kind: "worktreeDirty", message: "dirty" }));
+
+    expect(result).toBe(false);
+    expect(screen.queryByText(/uncommitted changes/)).toBeNull();
+    expect(m.worktreeRemove).toHaveBeenCalledTimes(1);
+    expect(
+      (screen.getByText("Remove worktree") as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 
   it("worktree view: in-use worktree has the agent and no remove", () => {
