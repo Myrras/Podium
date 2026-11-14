@@ -228,6 +228,32 @@ describe("TerminalPane header actions", () => {
       expect(onRename).toHaveBeenLastCalledWith(null);
     });
 
+    it("saves an unblurred rename on unmount, but not one cancelled with Esc", () => {
+      const onRename = vi.fn();
+      const first = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: " web " },
+      });
+      // Closing the Floor modal unmounts the pane without a blur.
+      first.unmount();
+      expect(onRename).toHaveBeenCalledWith("web");
+
+      onRename.mockClear();
+      const second = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "draft" },
+      });
+      fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Escape" });
+      second.unmount();
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
     it("cancels the edit on Esc without letting it bubble", () => {
       const onRename = vi.fn();
       const outer = vi.fn();

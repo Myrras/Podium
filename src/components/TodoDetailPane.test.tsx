@@ -229,6 +229,39 @@ describe("TodoDetailPane", () => {
     });
   });
 
+  it("saves an unblurred title edit on unmount", () => {
+    const { updateTodo } = seed();
+    const { unmount } = render(
+      <TodoDetailPane projectId={PROJECT} todoId={TODO} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Edit title" }), {
+      target: { value: " Ship the export " },
+    });
+    // Closing the Floor popover unmounts the pane without a blur.
+    unmount();
+
+    expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
+      text: "Ship the export",
+    });
+  });
+
+  it("does not save a title edit cancelled with Escape on unmount", () => {
+    const { updateTodo } = seed();
+    const { unmount } = render(
+      <TodoDetailPane projectId={PROJECT} todoId={TODO} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    fireEvent.change(input, { target: { value: "Nope" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    unmount();
+
+    expect(updateTodo).not.toHaveBeenCalled();
+  });
+
   it("cancels a comment edit on Escape and marks the key handled", () => {
     const { editComment } = seed({ comments: [comment()] });
     render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);

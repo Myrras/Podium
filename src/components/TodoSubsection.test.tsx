@@ -545,4 +545,27 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(false);
     expect(screen.queryByLabelText("New to-do text")).toBeNull();
   });
+
+  it.each([
+    ["adds typed text", "Ship it", ["Ship it"]],
+    ["skips text cancelled with Esc", null, []],
+  ])("on unmount without a blur, %s", (_label, typed, added) => {
+    seed([]);
+    const { unmount } = render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    fireEvent.change(input, { target: { value: ` ${typed ?? "Nope"} ` } });
+    if (typed === null) fireEvent.keyDown(input, { key: "Escape" });
+    unmount();
+    const { addTodo } = useTodoStore.getState();
+    expect(vi.mocked(addTodo).mock.calls.map((c) => c[1])).toEqual(added);
+  });
 });

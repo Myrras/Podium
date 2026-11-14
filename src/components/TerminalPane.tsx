@@ -87,10 +87,25 @@ export function TerminalPane({
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
-  const commit = () => {
-    const next = draft?.trim() ?? "";
-    setDraft(null);
+  // A typed name not yet committed: closing the modal unmounts the input
+  // without a blur, so the cleanup commits it. Esc clears it.
+  const pendingName = useRef<string | null>(null);
+  const rename = (name: string) => {
+    pendingName.current = null;
+    const next = name.trim();
     if (next !== process.name) onRename?.(next || null);
+  };
+  const renameRef = useRef(rename);
+  renameRef.current = rename;
+  useEffect(
+    () => () => {
+      if (pendingName.current !== null) renameRef.current(pendingName.current);
+    },
+    [],
+  );
+  const commit = () => {
+    setDraft(null);
+    rename(draft ?? "");
   };
 
   return (
@@ -107,7 +122,10 @@ export function TerminalPane({
             className={styles.nameInput}
             aria-label="Name"
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              pendingName.current = e.target.value;
+            }}
             onBlur={commit}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -117,6 +135,7 @@ export function TerminalPane({
                 // Cancels the edit only: it must not close a modal around us.
                 e.preventDefault();
                 e.stopPropagation();
+                pendingName.current = null;
                 setDraft(null);
               }
             }}

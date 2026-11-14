@@ -69,6 +69,9 @@ export function TodoDetailPane({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
+  // A typed title not yet committed: closing a Floor popover unmounts the
+  // input without a blur, so the cleanup below saves it. Esc clears it.
+  const pendingTitle = useRef<string | null>(null);
   const savedRef = useRef<string>("");
   const seededFor = useRef<TodoId | null>(null);
 
@@ -129,6 +132,19 @@ export function TodoDetailPane({
       void update(projectId, todoId, { description: pending.description });
     };
   }, [projectId, todoId]);
+  useEffect(() => {
+    return () => {
+      const next = pendingTitle.current?.trim();
+      pendingTitle.current = null;
+      if (!next) return;
+      const { todosByProject, updateTodo: update } = useTodoStore.getState();
+      const current = (todosByProject[projectId] ?? NO_TODOS).find(
+        (t) => t.id === todoId,
+      );
+      if (current && next !== current.text)
+        void update(projectId, todoId, { text: next });
+    };
+  }, [projectId, todoId]);
 
   if (todo === undefined) return null;
 
@@ -148,6 +164,7 @@ export function TodoDetailPane({
   };
 
   const commitTitle = () => {
+    pendingTitle.current = null;
     setEditingTitle(false);
     const next = titleDraft.trim();
     if (next.length === 0 || next === todo.text) return;
@@ -207,7 +224,10 @@ export function TodoDetailPane({
           className={styles.nameInput}
           value={titleDraft}
           aria-label="Edit title"
-          onChange={(e) => setTitleDraft(e.target.value)}
+          onChange={(e) => {
+            setTitleDraft(e.target.value);
+            pendingTitle.current = e.target.value;
+          }}
           onBlur={commitTitle}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -215,6 +235,7 @@ export function TodoDetailPane({
               commitTitle();
             } else if (e.key === "Escape") {
               e.preventDefault();
+              pendingTitle.current = null;
               setEditingTitle(false);
             }
           }}

@@ -225,6 +225,17 @@ export function TodoSubsection({
     items: MenuItem[];
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Typed but not yet added: closing the Floor popover unmounts the input
+  // without a blur, so the cleanup adds it. Esc and submit clear it.
+  const pendingText = useRef("");
+  useEffect(
+    () => () => {
+      const pending = pendingText.current.trim();
+      pendingText.current = "";
+      if (pending) void useTodoStore.getState().addTodo(projectId, pending);
+    },
+    [projectId],
+  );
 
   // Multi-select lives in the shared selection store — the assistant
   // composer shows the same rows as context chips. Only the Shift+range
@@ -265,6 +276,7 @@ export function TodoSubsection({
   }, [adding]);
 
   const submit = async () => {
+    pendingText.current = "";
     const trimmed = text.trim();
     if (!trimmed) {
       setAdding(false);
@@ -275,6 +287,7 @@ export function TodoSubsection({
   };
 
   const cancel = () => {
+    pendingText.current = "";
     setAdding(false);
     setText("");
   };
@@ -382,7 +395,10 @@ export function TodoSubsection({
         value={text}
         placeholder="What needs doing?"
         aria-label="New to-do text"
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          pendingText.current = e.target.value;
+        }}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             e.preventDefault();
