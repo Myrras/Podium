@@ -23,6 +23,12 @@ const rooms = vi.hoisted(() => [
   },
 ]);
 vi.mock("../../lib/floor/rooms", () => ({ useRooms: () => rooms }));
+// Counts the computations; the real function still runs.
+vi.mock("../../lib/floor/waypoints", async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import("../../lib/floor/waypoints")>();
+  return { waypoints: vi.fn(real.waypoints) };
+});
 
 describe("FloorWaypoints", () => {
   beforeEach(() => {
@@ -72,5 +78,23 @@ describe("FloorWaypoints", () => {
         .setCamera({ x: -20, y: 0, z: 1 }, { animate: true }),
     );
     expect(marker.hasAttribute("data-animate")).toBe(true);
+  });
+
+  it("computes once per camera change and not on other floor changes", () => {
+    const commits = vi.fn();
+    render(
+      <Profiler id="w" onRender={commits}>
+        <FloorWaypoints />
+      </Profiler>,
+    );
+    vi.mocked(waypoints).mockClear();
+    commits.mockClear();
+
+    act(() => useFloorStore.getState().setHoverDesk("a1"));
+    expect(waypoints).not.toHaveBeenCalled();
+    expect(commits).not.toHaveBeenCalled();
+
+    act(() => useFloorStore.getState().setCamera({ x: -5, y: 0, z: 1 }));
+    expect(waypoints).toHaveBeenCalledTimes(1);
   });
 });
