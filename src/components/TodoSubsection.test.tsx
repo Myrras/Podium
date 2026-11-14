@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The stores pull in the IPC layer; jsdom has no Tauri bridge.
@@ -567,5 +567,59 @@ describe("TodoSubsection assigned to-dos", () => {
     unmount();
     const { addTodo } = useTodoStore.getState();
     expect(vi.mocked(addTodo).mock.calls.map((c) => c[1])).toEqual(added);
+  });
+
+  const renderBare = () =>
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+  const typeAndSubmit = (text: string) => {
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.submit(input.closest("form")!);
+  };
+
+  it.each([
+    [
+      "adds it again on close after a failed add",
+      false,
+      ["Ship it", "Ship it"],
+    ],
+    [
+      "does not add twice on a close during a successful add",
+      true,
+      ["Ship it"],
+    ],
+  ])("%s", async (_label, result, added) => {
+    seed([]);
+    let settle!: (ok: boolean) => void;
+    const addTodo = vi.fn(
+      () => new Promise<boolean>((resolve) => (settle = resolve)),
+    );
+    useTodoStore.setState({ addTodo });
+    const { unmount } = renderBare();
+    typeAndSubmit("Ship it");
+    expect(addTodo).toHaveBeenCalledTimes(1);
+    unmount();
+    await act(async () => settle(result));
+    expect(addTodo.mock.calls.map((c) => (c as unknown[])[1])).toEqual(added);
+  });
+
+  it("adds it on a later close after a failed add", async () => {
+    seed([]);
+    const addTodo = vi.fn(() => Promise.resolve(false));
+    useTodoStore.setState({ addTodo });
+    const { unmount } = renderBare();
+    typeAndSubmit("Ship it");
+    await act(async () => {});
+    unmount();
+    expect(addTodo).toHaveBeenCalledTimes(2);
   });
 });

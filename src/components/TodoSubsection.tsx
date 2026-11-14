@@ -221,13 +221,25 @@ export function TodoSubsection({
   const menu = useContextMenu();
   const inputRef = useRef<HTMLInputElement>(null);
   // Typed but not yet added: closing the Floor popover unmounts the input
-  // without a blur, so the cleanup adds it. Esc and submit clear it.
+  // without a blur, so the cleanup adds it. Esc and a successful add clear it.
   const pendingText = useRef("");
+  // The add in flight: the cleanup waits for it, so a close during a
+  // successful add does not add the same text twice.
+  const inFlightAdd = useRef<{ text: string; ok: Promise<boolean> } | null>(
+    null,
+  );
   useEffect(
     () => () => {
       const pending = pendingText.current.trim();
       pendingText.current = "";
-      if (pending) void useTodoStore.getState().addTodo(projectId, pending);
+      if (!pending) return;
+      const add = () =>
+        void useTodoStore.getState().addTodo(projectId, pending);
+      const busy = inFlightAdd.current;
+      if (!busy) return add();
+      void busy.ok.then((ok) => {
+        if (!ok || busy.text !== pending) add();
+      });
     },
     [projectId],
   );
@@ -272,14 +284,22 @@ export function TodoSubsection({
   }, [adding]);
 
   const submit = async () => {
-    pendingText.current = "";
     const trimmed = text.trim();
     if (!trimmed) {
+      pendingText.current = "";
       setAdding(false);
       setText("");
       return;
     }
-    if (await addTodo(projectId, trimmed)) setText("");
+    const ok = addTodo(projectId, trimmed);
+    const busy = { text: trimmed, ok };
+    inFlightAdd.current = busy;
+    const added = await ok;
+    if (inFlightAdd.current === busy) inFlightAdd.current = null;
+    if (!added) return;
+    // Kept when edited meanwhile: that text is still unsaved.
+    if (pendingText.current.trim() === trimmed) pendingText.current = "";
+    setText("");
   };
 
   const cancel = () => {
