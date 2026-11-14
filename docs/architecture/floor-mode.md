@@ -40,8 +40,9 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   moves; spots are kept when a room shrinks), `bounds`, `frame`, `zoomAt`, `toScreen`; zoom
   0.3 to 2, far below 0.4.
 - `rooms.ts`: `deskState`, `useRooms`/`getRooms` (never write), `roomOf`,
-  `useFloorData` (loads to-dos, scratchpads and worktrees for every project and writes back
-  changed room positions in one `setFloorPositions`; only `FloorMap` calls it).
+  `useFloorData` (loads to-dos, scratchpads and worktrees once per added project and
+  enabled section, forgetting removed projects, and writes back changed room
+  positions in one `setFloorPositions`; only `FloorMap` calls it).
   `getRooms` caches by input (projects, processes, positions, desk states), so
   the layout runs once per change for every caller; an unchanged room keeps its
   object so `memo(Room)` skips it. `useRooms` is `useSyncExternalStore` over it.
@@ -110,7 +111,9 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `leading`, `trailing`, `onRename` and `hideActions` props (the modal draws no
   bar of its own). Stop is an icon at the far left.
 - Agent actions map to existing commands: Resume = `startProcess`, Stop
-  = `stopProcess`, Close agent = stop if active, then `removeProcess`. × hides
+  = `stopProcess`. Close agent/terminal (`closeProcess`) reads the current
+  process when it runs, calls `processStop` while it is active, keeps it (toast)
+  when the stop fails, and otherwise calls `removeProcess`. × hides
   the modal and keeps the process running; `Next: <name>` opens the next
   waiting agent. Stop, Close terminal and Close agent ask first in a confirm
   dialog inside the card (Esc only cancels it).
