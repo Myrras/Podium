@@ -268,8 +268,9 @@ export function TodoSubsection({
   );
 
   // The to-do currently open in the work area, highlighted like a selected
-  // agent/terminal row.
-  const openTodoId = openTodo?.projectId === projectId ? openTodo.todoId : null;
+  // agent/terminal row. A Floor popover is not the work area: no highlight.
+  const openTodoId =
+    !bare && openTodo?.projectId === projectId ? openTodo.todoId : null;
 
   useEffect(() => {
     if (adding) inputRef.current?.focus();
@@ -429,7 +430,16 @@ export function TodoSubsection({
           {headerActions}
         </div>
       )}
-      {collapsed ? null : todos.length > 0 || adding ? (
+      {/* The popover counts open to-dos: its placeholder shows at 0 open,
+          above any done ones still waiting to be archived. */}
+      {!collapsed &&
+        !adding &&
+        (bare ? todos.every((t) => t.done) : todos.length === 0) && (
+          <div className={sidebarStyles.placeholder}>
+            {bare ? "No open to-dos. Add one with +." : "No to-dos yet."}
+          </div>
+        )}
+      {!collapsed && (todos.length > 0 || adding) && (
         <div className={`${styles.rows} ${bare ? styles.bare : ""}`}>
           {bare && addForm}
           {todos.map((todo) => (
@@ -461,10 +471,6 @@ export function TodoSubsection({
             />
           ))}
           {!bare && addForm}
-        </div>
-      ) : (
-        <div className={sidebarStyles.placeholder}>
-          {bare ? "No open to-dos. Add one with +." : "No to-dos yet."}
         </div>
       )}
       {/* Stays visible while collapsed: the selection outlives the fold, so

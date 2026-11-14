@@ -20,6 +20,7 @@ vi.mock("../../lib/floor/menus", () => ({
 import type { ScratchpadInfo } from "../../ipc/types";
 import { scratchpadMenu } from "../../lib/floor/menus";
 import { useFloorStore } from "../../state/floorStore";
+import { useLayoutStore } from "../../state/layoutStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
 import { ScratchpadFixturePopover } from "./ScratchpadFixturePopover";
 
@@ -146,6 +147,15 @@ describe("ScratchpadFixturePopover", () => {
     expect(
       screen.getByText("No scratchpads yet. Add one with +."),
     ).toBeInTheDocument();
+  });
+
+  it("does not highlight the scratchpad open in Project mode's work area", () => {
+    useLayoutStore.setState({
+      openScratchpad: { projectId: "p1", scratchpadId: "a" },
+    });
+    renderPopover(null);
+    expect(screen.getByText("Notes A").closest("[data-open]")).toBeNull();
+    useLayoutStore.setState({ openScratchpad: null });
   });
 
   it("right-click on a row opens its menu", () => {

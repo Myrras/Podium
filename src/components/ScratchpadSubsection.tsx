@@ -174,8 +174,9 @@ export function ScratchpadSubsection({
   );
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
   const openScratchpad = useLayoutStore((s) => s.openScratchpad);
+  // A Floor popover is not the work area: no open highlight there.
   const openScratchpadId =
-    openScratchpad?.projectId === projectId
+    !bare && openScratchpad?.projectId === projectId
       ? openScratchpad.scratchpadId
       : null;
 

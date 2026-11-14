@@ -16,6 +16,7 @@ vi.mock("../../lib/floor/menus", async (orig) => ({
 import type { TodoInfo } from "../../ipc/types";
 import { todoMenu } from "../../lib/floor/menus";
 import { useFloorStore } from "../../state/floorStore";
+import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
 import { useTodoStore } from "../../state/todoStore";
 import { TodoFixturePopover } from "./TodoFixturePopover";
@@ -209,6 +210,26 @@ describe("TodoFixturePopover", () => {
     expect(
       screen.getByText("No open to-dos. Add one with +."),
     ).toBeInTheDocument();
+  });
+
+  it("with 0 open and 3 done, invites to add one and still lists the done ones", () => {
+    const done = (id: string) => ({ ...todo(id, `Done ${id}`), done: true });
+    useTodoStore.setState({
+      todosByProject: { [P]: [done("d1"), done("d2"), done("d3")] },
+    } as never);
+    open(null);
+    expect(
+      screen.getByText("No open to-dos. Add one with +."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Done d1")).toBeInTheDocument();
+    expect(screen.getByText("Done d3")).toBeInTheDocument();
+  });
+
+  it("does not highlight the to-do open in Project mode's work area", () => {
+    useLayoutStore.setState({ openTodo: { projectId: P, todoId: "t1" } });
+    open(null);
+    expect(screen.getByText("Fix the lamp").closest("[data-open]")).toBeNull();
+    useLayoutStore.setState({ openTodo: null });
   });
 
   it("right-click on a row opens its menu, one at a time", () => {
