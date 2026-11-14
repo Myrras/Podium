@@ -366,6 +366,79 @@ describe("ScratchpadDetailPane", () => {
     },
   );
 
+  it("waits for an in-flight title save on unmount and sends the content with its timestamp", async () => {
+    vi.useFakeTimers();
+    const { updateTitle, updateContent } = seed();
+    let resolveTitle!: (value: ScratchpadInfo) => void;
+    updateTitle.mockReturnValueOnce(
+      new Promise<ScratchpadInfo>((resolve) => {
+        resolveTitle = resolve;
+      }),
+    );
+    const { unmount } = render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.blur(input);
+    fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+      target: { value: "notes" },
+    });
+
+    unmount();
+    await act(async () => {});
+    expect(updateContent).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveTitle(
+        scratchpad({ title: "Renamed", updatedAt: "2024-04-03T12:05:00Z" }),
+      );
+    });
+
+    expect(updateTitle).toHaveBeenCalledTimes(1);
+    expect(updateContent).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "notes",
+      "2024-04-03T12:05:00Z",
+    );
+  });
+
+  it("debounced content save waits for an in-flight title save", async () => {
+    vi.useFakeTimers();
+    const { updateTitle, updateContent } = seed();
+    let resolveTitle!: (value: null) => void;
+    updateTitle.mockReturnValueOnce(
+      new Promise<null>((resolve) => {
+        resolveTitle = resolve;
+      }) as never,
+    );
+    render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.blur(input);
+    fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+      target: { value: "notes" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(updateContent).not.toHaveBeenCalled();
+
+    // The title save fails: the content still goes out, with the last known timestamp.
+    await act(async () => {
+      resolveTitle(null);
+    });
+    expect(updateContent).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "notes",
+      "2024-04-03T12:00:00Z",
+    );
+  });
+
   it("does not save the title again on unmount once it was committed", () => {
     const { updateTitle } = seed();
     const { unmount } = render(

@@ -129,6 +129,20 @@ export function ScratchpadDetailPane({
   projectIdRef.current = projectId;
   scratchpadIdRef.current = scratchpadId;
   existsRef.current = scratchpad !== undefined;
+  // The title or content save in flight, if any. Saves of this pad run one
+  // after another: each sends `expectedUpdatedAtRef` as it is when it starts,
+  // so a content save after a title save carries the title's new timestamp.
+  const inFlightRef = useRef<Promise<unknown> | null>(null);
+  const queueSave = (run: () => Promise<unknown>) => {
+    const prev = inFlightRef.current;
+    const p = prev ? prev.then(run, run) : run();
+    inFlightRef.current = p;
+    const clear = () => {
+      if (inFlightRef.current === p) inFlightRef.current = null;
+    };
+    p.then(clear, clear);
+    return p;
+  };
 
   // Adopt an external title change (e.g. an agent rename) only when the
   // field has no unsaved local edit pending. Frozen while a conflict banner
@@ -200,23 +214,26 @@ export function ScratchpadDetailPane({
       const projectId = projectIdRef.current;
       const id = scratchpadIdRef.current;
       const content = latestContentRef.current;
-      void (async () => {
-        let expected = expectedUpdatedAtRef.current;
-        if (titleDirty) {
-          // The content save needs the timestamp this one returns; a failed
-          // title save must not drop the content, so it still goes out.
+      // Queued: the content save reads the timestamp the title save returns,
+      // or the last known one if it failed, so the content still goes out.
+      if (titleDirty) {
+        void queueSave(async () => {
           const result = await updateTitle(
             projectId,
             id,
             title.trim(),
-            expected,
+            expectedUpdatedAtRef.current,
           );
           if (result !== null && !("conflict" in result)) {
-            expected = result.updatedAt;
+            expectedUpdatedAtRef.current = result.updatedAt;
           }
-        }
-        if (pending) void updateContent(projectId, id, content, expected);
-      })();
+        });
+      }
+      if (pending) {
+        void queueSave(() =>
+          updateContent(projectId, id, content, expectedUpdatedAtRef.current),
+        );
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -230,19 +247,22 @@ export function ScratchpadDetailPane({
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
       savedContentRef.current = value;
-      const expected = expectedUpdatedAtRef.current;
-      void updateContent(projectId, scratchpadId, value, expected).then(
-        (result) => {
-          if (result === null) return;
-          if ("conflict" in result) {
-            setConflict(true);
-            void refresh(projectId);
-            return;
-          }
-          savedContentRef.current = result.content;
-          expectedUpdatedAtRef.current = result.updatedAt;
-        },
-      );
+      void queueSave(async () => {
+        const result = await updateContent(
+          projectId,
+          scratchpadId,
+          value,
+          expectedUpdatedAtRef.current,
+        );
+        if (result === null) return;
+        if ("conflict" in result) {
+          setConflict(true);
+          void refresh(projectId);
+          return;
+        }
+        savedContentRef.current = result.content;
+        expectedUpdatedAtRef.current = result.updatedAt;
+      });
     }, AUTOSAVE_DELAY_MS);
   };
 
@@ -250,20 +270,23 @@ export function ScratchpadDetailPane({
     const trimmed = title.trim();
     if (trimmed === scratchpad.title) return;
     savedTitleRef.current = trimmed;
-    const expected = expectedUpdatedAtRef.current;
-    void updateTitle(projectId, scratchpadId, trimmed, expected).then(
-      (result) => {
-        if (result === null) return;
-        if ("conflict" in result) {
-          setConflict(true);
-          void refresh(projectId);
-          return;
-        }
-        savedTitleRef.current = result.title;
-        setTitle(result.title);
-        expectedUpdatedAtRef.current = result.updatedAt;
-      },
-    );
+    void queueSave(async () => {
+      const result = await updateTitle(
+        projectId,
+        scratchpadId,
+        trimmed,
+        expectedUpdatedAtRef.current,
+      );
+      if (result === null) return;
+      if ("conflict" in result) {
+        setConflict(true);
+        void refresh(projectId);
+        return;
+      }
+      savedTitleRef.current = result.title;
+      setTitle(result.title);
+      expectedUpdatedAtRef.current = result.updatedAt;
+    });
   };
 
   // Discard the local edit and adopt the latest content/title from the
