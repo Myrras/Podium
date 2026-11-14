@@ -27,9 +27,10 @@ export function zoomBy(factor: number): void {
   setCamera(zoomAt(camera, viewport.w / 2, viewport.h / 2, factor));
 }
 
-/** jumpTo the agent's room and make it the active process. */
+/** jumpTo the agent's room and make it the active process; nothing when it has no room (removed). */
 export function showAgent(processId: ProcessId): void {
   const room = roomOf(processId, getRooms());
-  if (room) jumpTo(room.project.id);
+  if (!room) return;
+  jumpTo(room.project.id);
   useProcessStore.getState().setActiveProcess(processId);
 }

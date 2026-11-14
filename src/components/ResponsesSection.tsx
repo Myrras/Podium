@@ -12,6 +12,7 @@ import { formatRelativeTime } from "../lib/dateFormat";
 import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
+import { useProcessStore } from "../state/processStore";
 import { AgentIcon, CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
 import styles from "./ResponsesSection.module.css";
 
@@ -142,6 +143,10 @@ function ResponseRow({
   const dismissResponse = useAssistantStore((s) => s.dismissResponse);
   const replyResponse = useAssistantStore((s) => s.replyResponse);
   const onFloor = useLayoutStore((s) => s.mode === "floor");
+  // A removed agent has no desk to show.
+  const hasProcess = useProcessStore((s) =>
+    s.processes.some((p) => p.id === item.processId),
+  );
   // Focused only when the user opens the reply box — never on mount, or a
   // row that replaced one with an open draft would steal focus from
   // whatever the user is typing in now.
@@ -230,7 +235,7 @@ function ResponseRow({
           </div>
         )}
       </div>
-      {onFloor && item.processId && (
+      {onFloor && item.processId && hasProcess && (
         <button
           type="button"
           className={styles.iconBtn}

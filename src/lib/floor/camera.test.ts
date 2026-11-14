@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useFloorStore } from "../../state/floorStore";
+import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
 import { jumpTo, showAgent, zoomBy } from "./camera";
 import { bounds, frame } from "./geometry";
@@ -79,5 +80,19 @@ describe("camera", () => {
     showAgent("a1");
     expect(useFloorStore.getState().focus).toBe("p1");
     expect(useProcessStore.getState().activeProcessId).toBe("a1");
+  });
+
+  it("showAgent does nothing for a process in no room", () => {
+    useProcessStore.setState({ activeProcessId: "a1" });
+    useLayoutStore.setState({
+      openTodo: { projectId: "p1", todoId: "t1" },
+    } as never);
+    showAgent("gone");
+    expect(useProcessStore.getState().activeProcessId).toBe("a1");
+    expect(useLayoutStore.getState().openTodo).toEqual({
+      projectId: "p1",
+      todoId: "t1",
+    });
+    expect(useFloorStore.getState().focus).toBeNull();
   });
 });

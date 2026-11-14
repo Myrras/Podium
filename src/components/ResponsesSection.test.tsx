@@ -7,10 +7,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../ipc/commands", () => ({}));
 vi.mock("../lib/floor/camera", () => ({ showAgent: vi.fn() }));
 
-import type { ResponseItem } from "../ipc/types";
+import type { ProcessInfo, ResponseItem } from "../ipc/types";
 import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
+import { useProcessStore } from "../state/processStore";
 import { formatRelativeTime } from "../lib/dateFormat";
 import { ResponsesSection } from "./ResponsesSection";
 
@@ -46,6 +47,9 @@ describe("ResponsesSection", () => {
     replyResponse.mockResolvedValue(true);
     vi.mocked(showAgent).mockClear();
     useLayoutStore.setState({ mode: "project" });
+    useProcessStore.setState({
+      processes: [{ id: "proc-1" } as ProcessInfo],
+    });
     useAssistantStore.setState({
       responses: [
         item(),
@@ -97,6 +101,14 @@ describe("ResponsesSection", () => {
     expect(buttons).toHaveLength(1);
     await userEvent.click(buttons[0]);
     expect(showAgent).toHaveBeenCalledWith("proc-1");
+  });
+
+  it("hides Show on floor once the agent's process is gone", () => {
+    useLayoutStore.setState({ mode: "floor" });
+    render(<ResponsesSection />);
+    expect(screen.getByRole("button", { name: "Show on floor" })).toBeTruthy();
+    act(() => useProcessStore.setState({ processes: [] }));
+    expect(screen.queryByRole("button", { name: "Show on floor" })).toBeNull();
   });
 
   it("leaves blank name parts out of the row's name, as the label does", () => {
