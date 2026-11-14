@@ -29,6 +29,7 @@ import type {
 } from "../ipc/types";
 import { projectOpenInWarp, toIpcError } from "../ipc/commands";
 import { themeAccentHex } from "../lib/color";
+import { commitProjectName } from "../lib/projectName";
 import { newTerminal, runCommand } from "../lib/terminals";
 import { SECTIONS, sectionKey, useLayoutStore } from "../state/layoutStore";
 import type { Section } from "../state/layoutStore";
@@ -218,7 +219,6 @@ function ProjectGroup({
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
   const closeProject = useProjectStore((s) => s.closeProject);
   const reloadProjectConfig = useProjectStore((s) => s.reloadProjectConfig);
-  const renameProject = useProjectStore((s) => s.renameProject);
   const setProjectSections = useProjectStore((s) => s.setProjectSections);
   const setProjectColor = useProjectStore((s) => s.setProjectColor);
   const hasWorktrees = useWorktreeStore(
@@ -337,11 +337,7 @@ function ProjectGroup({
 
   const commitRename = () => {
     setEditing(false);
-    const next = draft.trim();
-    // Clear the override (null) when the name is blank or unchanged from the
-    // config/folder name; otherwise persist the new name.
-    if (next === project.name) return;
-    void renameProject(project.id, next.length > 0 ? next : null);
+    commitProjectName(project, draft);
   };
 
   const cancelRename = () => {

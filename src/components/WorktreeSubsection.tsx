@@ -22,15 +22,12 @@
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import {
-  toIpcError,
-  worktreeOpenInWarp,
-  worktreeRemove,
-} from "../ipc/commands";
+import { toIpcError, worktreeOpenInWarp } from "../ipc/commands";
 import type { ProcessInfo, ProjectId, WorktreeInfo } from "../ipc/types";
 import { activityRollup } from "../lib/activityRollup";
 import { isActive } from "../lib/processStatus";
 import { newTerminal } from "../lib/terminals";
+import { dirtyWorktreeQuestion, removeWorktree } from "../lib/worktrees";
 import { useAgentActivityStore } from "../state/agentActivityStore";
 import { useProcessStore } from "../state/processStore";
 import { toastError } from "../state/toastStore";
@@ -77,7 +74,6 @@ export function WorktreeSubsection({
     (s) => s.worktreesByProject[projectId] ?? NO_WORKTREES,
   );
   const refresh = useWorktreeStore((s) => s.refresh);
-  const setWorktrees = useWorktreeStore((s) => s.setWorktrees);
   const processes = useProcessStore((s) => s.processes);
 
   /** Name of the worktree whose removal is in flight — git can take a
@@ -119,29 +115,13 @@ export function WorktreeSubsection({
     }
   };
 
-  const removeWorktree = async (wt: WorktreeInfo) => {
+  const remove = async (wt: WorktreeInfo) => {
     if (removing) return;
     setRemoving(wt.name);
     try {
-      try {
-        setWorktrees(
-          projectId,
-          await worktreeRemove(projectId, wt.name, false),
-        );
-      } catch (e: unknown) {
-        const err = toIpcError(e);
-        if (err.kind !== "worktreeDirty") {
-          toastError("Could not remove worktree", err.message);
-          return;
-        }
-        const discard = window.confirm(
-          `Worktree "${wt.name}" has uncommitted changes. Discard them and remove it anyway?`,
-        );
-        if (!discard) return;
-        setWorktrees(projectId, await worktreeRemove(projectId, wt.name, true));
-      }
-    } catch (e2: unknown) {
-      toastError("Could not remove worktree", toIpcError(e2).message);
+      await removeWorktree(projectId, wt.name, (name) =>
+        Promise.resolve(window.confirm(dirtyWorktreeQuestion(name))),
+      );
     } finally {
       setRemoving(null);
     }
@@ -239,7 +219,7 @@ export function WorktreeSubsection({
                       }
                       data-busy={removing === wt.name || undefined}
                       disabled={busy || removing !== null}
-                      onClick={() => void removeWorktree(wt)}
+                      onClick={() => void remove(wt)}
                     >
                       <DeleteIcon size={13} />
                     </button>

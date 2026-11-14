@@ -1,17 +1,17 @@
 /** The ⋯ menu of a room's nameplate: rename, colour, worktrees, board, reload, remove. */
 import { useEffect, useRef, useState } from "react";
 
-import { toIpcError, worktreeRemove } from "../../ipc/commands";
 import type { ProjectId, WorktreeInfo } from "../../ipc/types";
 import { themeAccentHex } from "../../lib/color";
 import { openProcess } from "../../lib/floor/menus";
+import { commitProjectName } from "../../lib/projectName";
 import { newTerminal } from "../../lib/terminals";
+import { dirtyWorktreeQuestion, removeWorktree } from "../../lib/worktrees";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useThemeStore } from "../../state/themeStore";
-import { toastError } from "../../state/toastStore";
 import { useWorktreeStore } from "../../state/worktreeStore";
 import { Popover } from "../Popover";
 import styles from "./ProjectMenuPopover.module.css";
@@ -28,7 +28,7 @@ export function ProjectMenuPopover({
   const project = useProjectStore((s) =>
     s.projects.find((p) => p.id === projectId),
   );
-  const { renameProject, setProjectColor, closeProject, reloadProjectConfig } =
+  const { setProjectColor, closeProject, reloadProjectConfig } =
     useProjectStore.getState();
   const worktrees = useWorktreeStore((s) => s.worktreesByProject[projectId]);
   const processes = useProcessStore((s) => s.processes);
@@ -37,8 +37,11 @@ export function ProjectMenuPopover({
 
   const [draft, setDraft] = useState(project?.name ?? "");
   const [confirmRemove, setConfirmRemove] = useState(false);
-  // Name of the worktree awaiting a "discard changes" answer.
-  const [dirty, setDirty] = useState<string | null>(null);
+  // The worktree awaiting a "discard changes" answer, and how to give it.
+  const [dirty, setDirty] = useState<{
+    name: string;
+    answer: (discard: boolean) => void;
+  } | null>(null);
   const [removing, setRemoving] = useState(false);
   const colorRef = useRef<HTMLInputElement>(null);
   // An edited name not yet saved; Esc closes the popover without a blur, so unmount saves it.
@@ -49,10 +52,7 @@ export function ProjectMenuPopover({
     const current = useProjectStore
       .getState()
       .projects.find((p) => p.id === projectId);
-    if (next === null || !current) return;
-    const trimmed = next.trim();
-    if (trimmed === current.name) return;
-    void renameProject(projectId, trimmed.length > 0 ? trimmed : null);
+    if (next !== null && current) commitProjectName(current, next);
   };
   const renameRef = useRef(rename);
   renameRef.current = rename;
@@ -83,22 +83,23 @@ export function ProjectMenuPopover({
         p.kind.kind === "agent" &&
         p.worktree === wt.name,
     );
-    const remove = async (force: boolean) => {
+    // Asks inline; the buttons resolve it.
+    const confirmForce = (name: string) =>
+      new Promise<boolean>((resolve) => {
+        setRemoving(false);
+        setDirty({ name, answer: resolve });
+      });
+    const answer = (discard: boolean) => {
+      dirty?.answer(discard);
+      setDirty(null);
+      if (discard) setRemoving(true);
+    };
+    const remove = async () => {
       if (removing) return;
       setRemoving(true);
       try {
-        useWorktreeStore
-          .getState()
-          .setWorktrees(
-            projectId,
-            await worktreeRemove(projectId, wt.name, force),
-          );
-        setDirty(null);
-        setPopoverItem(null);
-      } catch (e: unknown) {
-        const err = toIpcError(e);
-        if (err.kind === "worktreeDirty" && !force) setDirty(wt.name);
-        else toastError("Could not remove worktree", err.message);
+        if (await removeWorktree(projectId, wt.name, confirmForce))
+          setPopoverItem(null);
       } finally {
         setRemoving(false);
       }
@@ -109,7 +110,7 @@ export function ProjectMenuPopover({
         title={wt.name}
         onClose={close}
         onBack={() => {
-          setDirty(null);
+          answer(false);
           setPopoverItem(null);
         }}
         backLabel="Back to the project menu"
@@ -135,24 +136,22 @@ export function ProjectMenuPopover({
             Open a terminal here
           </button>
           {!wt.inUse &&
-            (dirty === wt.name ? (
+            (dirty?.name === wt.name ? (
               <div className={styles.confirm}>
-                <span>
-                  {`Worktree "${wt.name}" has uncommitted changes. Discard them and remove it anyway?`}
-                </span>
+                <span>{dirtyWorktreeQuestion(wt.name)}</span>
                 <div className={styles.row}>
                   <button
                     type="button"
                     className={styles.danger}
                     disabled={removing}
-                    onClick={() => void remove(true)}
+                    onClick={() => answer(true)}
                   >
                     Discard and remove
                   </button>
                   <button
                     type="button"
                     className="ghost"
-                    onClick={() => setDirty(null)}
+                    onClick={() => answer(false)}
                   >
                     Keep
                   </button>
@@ -163,7 +162,7 @@ export function ProjectMenuPopover({
                 type="button"
                 className={`ghost ${styles.danger}`}
                 disabled={removing}
-                onClick={() => void remove(false)}
+                onClick={() => void remove()}
               >
                 Remove worktree
               </button>

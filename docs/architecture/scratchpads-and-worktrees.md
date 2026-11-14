@@ -101,7 +101,9 @@ Each row carries four actions:
 - open the Commands modal targeted at it (its quick commands then run there
   instead of the project root), and
 - remove it (`worktreeRemove(force=false)`; a `worktreeDirty` rejection prompts
-  a confirm before retrying with `force=true`).
+  a confirm before retrying with `force=true`). The flow is `removeWorktree` in
+  `src/lib/worktrees.ts`, shared with the Floor project menu; each caller passes
+  its own confirm (`window.confirm` here, an inline one on the Floor).
 
 A worktree's own terminal processes (`p.worktree === wt.name`) render nested
 under its row via the shared `ProcessRow` and are excluded from the plain

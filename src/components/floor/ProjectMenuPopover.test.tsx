@@ -230,6 +230,26 @@ describe("ProjectMenuPopover", () => {
     expect(m.worktreeRemove).toHaveBeenLastCalledWith("p1", "wt-a", true);
   });
 
+  it("worktree view: Keep answers the dirty question with no", async () => {
+    m.worktreeRemove.mockRejectedValueOnce({
+      kind: "worktreeDirty",
+      message: "dirty",
+    });
+    setup("wt-a");
+    await act(async () => {
+      fireEvent.click(screen.getByText("Remove worktree"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Keep"));
+    });
+    expect(screen.queryByText(/uncommitted changes/)).toBeNull();
+    expect(m.worktreeRemove).toHaveBeenCalledTimes(1);
+    expect(useFloorStore.getState().popover?.itemId).toBe("wt-a");
+    expect(
+      (screen.getByText("Remove worktree") as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
   it("worktree view: in-use worktree has the agent and no remove", () => {
     setup("wt-b");
     expect(screen.queryByText("Remove worktree")).toBeNull();

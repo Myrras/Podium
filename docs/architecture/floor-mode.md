@@ -48,7 +48,11 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 - `menus.ts`: right-click items (`processMenu`, `todoMenu`, `scratchpadMenu`) for
   `ContextMenu`; used by desks, wall notes, notebooks, rack lights and the to-do
   and scratchpad popover rows. Items that stop or remove something set `confirm`
-  on `MenuItem` (`ContextMenu.tsx`) and ask inside the menu.
+  on `MenuItem` (`ContextMenu.tsx`) and ask inside the menu. `openProcess` (pin
+  and open the modal) and `todoAgentAction` (Open the agent / Start agent) are
+  the one way to do those; desks, Next and the to-do popover footer use them.
+  The project menu shares worktree removal (`src/lib/worktrees.ts`) and the
+  rename rule (`src/lib/projectName.ts`) with the sidebar.
 - `terminalCommands.ts` (`useTerminalCommands`) and `terminals.ts` `runCommand`:
   justfile recipes and saved commands, run in a new terminal.
 - `waypoints.ts`: edge markers for rooms that need you and are out of view.
