@@ -1,5 +1,6 @@
 import type { ProcessInfo } from "../../ipc/types";
 import { useProcessActivity } from "../../lib/useAgentActivity";
+import { useNow } from "../../lib/useNow";
 import { pillState, pillWord } from "../../lib/processStatus";
 import { formatElapsed } from "../../lib/subagents";
 import { deskState, useRooms } from "../../lib/floor/rooms";
@@ -25,6 +26,8 @@ const plural = (n: number, one: string, many = `${one}s`) =>
 
 function AgentDetails({ process }: { process: ProcessInfo }) {
   const activity = useProcessActivity(process.id);
+  // Seconds are shown, so tick every second (a single element).
+  const now = useNow(activity.sinceMs, 1000);
   const todo = useTodoStore((s) =>
     s.todosByProject[process.projectId]?.find(
       (t) => t.assignedAgent?.processId === process.id,
@@ -39,7 +42,7 @@ function AgentDetails({ process }: { process: ProcessInfo }) {
   const since =
     activity.sinceMs === null
       ? ""
-      : ` for ${formatElapsed(Math.max(0, Date.now() - activity.sinceMs))}`;
+      : ` for ${formatElapsed(Math.max(0, now - activity.sinceMs))}`;
   const parts = [
     `${word}${since}`,
     todo?.text,

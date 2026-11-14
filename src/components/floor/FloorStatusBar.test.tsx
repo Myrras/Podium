@@ -88,6 +88,24 @@ describe("FloorStatusBar", () => {
     expect(screen.getByRole("status").textContent).toMatch(/^Working/);
   });
 
+  it("advances the elapsed time while shown", () => {
+    vi.useFakeTimers();
+    try {
+      useProcessStore.setState({ activeProcessId: "a1" });
+      useAgentActivityStore.setState({
+        details: {
+          a1: { ...UNTRACKED_ACTIVITY, sinceMs: Date.now() - 65_000 },
+        },
+      });
+      render(<FloorStatusBar />);
+      expect(screen.getByRole("status").textContent).toMatch(/for 1m 05s/);
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(screen.getByRole("status").textContent).toMatch(/for 1m 15s/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows a pinned service by its pill word, not as an idle desk", () => {
     useProcessStore.setState({
       processes: [

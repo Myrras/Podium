@@ -1,8 +1,9 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useState } from "react";
 import type { ProcessInfo } from "../../ipc/types";
 import { deskState } from "../../lib/floor/rooms";
 import { formatSince, pillState } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
+import { useNow } from "../../lib/useNow";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { DESK_H } from "../../lib/floor/geometry";
@@ -47,13 +48,7 @@ export function Desk({
 }) {
   const act = useProcessActivity(process.id);
   const active = useProcessStore((s) => s.activeProcessId === process.id);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (act.sinceMs === null) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 15_000);
-    return () => clearInterval(t);
-  }, [act.sinceMs]);
+  const now = useNow(act.sinceMs, 15_000);
 
   const terminal = process.kind.kind === "terminal";
   const state = deskState(process, act);
