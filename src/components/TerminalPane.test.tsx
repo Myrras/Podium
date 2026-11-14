@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Per-command invoke stub; `process_git_branch` is overridable per test.
@@ -179,6 +179,7 @@ describe("TerminalPane header actions", () => {
 
   describe("caller props", () => {
     const service = () => process("s1", "dev", { kind: "service" });
+    beforeEach(() => useProcessStore.setState({ processes: [service()] }));
 
     it("renders as before without them", () => {
       const { container } = render(<TerminalPane process={service()} />);
@@ -251,6 +252,55 @@ describe("TerminalPane header actions", () => {
       });
       fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Escape" });
       second.unmount();
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    // Chromium/WebView2 blurs the input while Enter/Esc removes it: the blur
+    // lands before React re-renders, so both fire in one batch here.
+    it("saves nothing on the blur after Esc", () => {
+      const onRename = vi.fn();
+      const { unmount } = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      const input = screen.getByLabelText("Name");
+      fireEvent.change(input, { target: { value: "draft" } });
+      act(() => {
+        fireEvent.keyDown(input, { key: "Escape" });
+        fireEvent.blur(input);
+      });
+      unmount();
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    it("saves once on Enter followed by a blur", () => {
+      const onRename = vi.fn();
+      const { unmount } = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      const input = screen.getByLabelText("Name");
+      fireEvent.change(input, { target: { value: "web" } });
+      act(() => {
+        fireEvent.keyDown(input, { key: "Enter" });
+        fireEvent.blur(input);
+      });
+      unmount();
+      expect(onRename).toHaveBeenCalledTimes(1);
+      expect(onRename).toHaveBeenCalledWith("web");
+    });
+
+    it("does not rename on unmount once the process is gone", () => {
+      const onRename = vi.fn();
+      const { unmount } = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "web" },
+      });
+      act(() => useProcessStore.setState({ processes: [] }));
+      unmount();
       expect(onRename).not.toHaveBeenCalled();
     });
 

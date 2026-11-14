@@ -87,25 +87,27 @@ export function TerminalPane({
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
-  // A typed name not yet committed: closing the modal unmounts the input
-  // without a blur, so the cleanup commits it. Esc clears it.
+  // The open edit's name, null once committed or cancelled. Each edit commits
+  // at most once: Chromium blurs the input as Enter/Esc removes it, and closing
+  // the modal unmounts it without a blur, so the cleanup commits it.
   const pendingName = useRef<string | null>(null);
-  const rename = (name: string) => {
+  const commitPending = () => {
+    const name = pendingName.current;
     pendingName.current = null;
+    // A process removed meanwhile (e.g. closed from the modal) has nothing to rename.
+    const exists = useProcessStore
+      .getState()
+      .processes.some((p) => p.id === process.id);
+    if (name === null || !exists) return;
     const next = name.trim();
     if (next !== process.name) onRename?.(next || null);
   };
-  const renameRef = useRef(rename);
-  renameRef.current = rename;
-  useEffect(
-    () => () => {
-      if (pendingName.current !== null) renameRef.current(pendingName.current);
-    },
-    [],
-  );
+  const commitRef = useRef(commitPending);
+  commitRef.current = commitPending;
+  useEffect(() => () => commitRef.current(), []);
   const commit = () => {
     setDraft(null);
-    rename(draft ?? "");
+    commitPending();
   };
 
   return (
@@ -135,7 +137,7 @@ export function TerminalPane({
                 // Cancels the edit only: it must not close a modal around us.
                 e.preventDefault();
                 e.stopPropagation();
-                pendingName.current = null;
+                pendingName.current = null; // a later blur saves nothing
                 setDraft(null);
               }
             }}
@@ -145,7 +147,10 @@ export function TerminalPane({
             type="button"
             className={`${styles.name} ${styles.nameBtn}`}
             title="Rename"
-            onClick={() => setDraft(process.name)}
+            onClick={() => {
+              pendingName.current = process.name;
+              setDraft(process.name);
+            }}
           >
             {process.name}
           </button>
