@@ -132,6 +132,23 @@ describe("RoomNameplate", () => {
     expect(jumpTo).not.toHaveBeenCalled();
   });
 
+  it("stops moving after a pointercancel, also on a later hover move", () => {
+    const { container } = render(
+      <div data-room="a">
+        <RoomNameplate room={a} />
+      </div>,
+    );
+    const roomEl = container.firstElementChild as HTMLElement;
+    drag(130);
+    fireEvent.pointerCancel(grip(), { pointerId: 1 });
+    fireEvent.pointerMove(grip(), { clientX: 260, clientY: 0, pointerId: 1 });
+    expect(roomEl.style.transform).toBe("");
+    fireEvent.click(grip());
+    expect(jumpTo).not.toHaveBeenCalled();
+    fireEvent.click(grip());
+    expect(jumpTo).toHaveBeenCalledTimes(1);
+  });
+
   it("reads the other rooms once per drag, not per move", () => {
     render(<RoomNameplate room={a} />);
     m.reads = 0;

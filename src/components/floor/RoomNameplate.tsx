@@ -33,6 +33,8 @@ interface Drag {
 export function RoomNameplate({ room }: { room: RoomModel }) {
   const { project, rect } = room;
   const drag = useRef<Drag | null>(null);
+  // A drag past CLICK_SLOP ends in a click event that must not jump.
+  const suppressClick = useRef(false);
   const root = useRef<HTMLDivElement>(null);
   const [bad, setBad] = useState(false);
 
@@ -55,6 +57,7 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
   const onDown = (e: PointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
+    suppressClick.current = false;
     drag.current = {
       sx: e.clientX,
       sy: e.clientY,
@@ -75,9 +78,13 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
     shift(...d.xy);
     setBad(blocked(...d.xy, d.others));
   };
+  // Also handles pointercancel: always ends the drag, so a later hover move
+  // cannot keep moving the room.
   const onUp = () => {
     const d = drag.current;
+    drag.current = null;
     if (!d?.moved) return; // a plain click is handled by onClick
+    suppressClick.current = true;
     const [x, y] = d.xy;
     if (!blocked(x, y, d.others))
       useLayoutStore.getState().setFloorPosition(project.root, [x, y]);
@@ -85,9 +92,9 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
     setBad(false);
   };
   const onClick = () => {
-    const moved = drag.current?.moved;
-    drag.current = null;
-    if (!moved) jumpTo(project.id);
+    const suppress = suppressClick.current;
+    suppressClick.current = false;
+    if (!suppress) jumpTo(project.id);
   };
   const onKey = (e: KeyboardEvent<HTMLButtonElement>) => {
     const step = KEYS[e.key];
