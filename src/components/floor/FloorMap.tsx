@@ -87,15 +87,15 @@ export function FloorMap() {
   }, []);
 
   // Fit all once per Floor visit (the flag survives a remount), as soon as the viewport and rooms are known, unless the camera moved first.
+  // `moved`, not camera identity: StrictMode's simulated unmount runs Floor's reset, which replaces the camera.
   const hasViewport = useFloorStore(
     (s) => s.viewport.w > 0 && s.viewport.h > 0,
   );
-  const startCamera = useRef(useFloorStore.getState().camera);
   useEffect(() => {
-    if (useFloorStore.getState().fitted || !hasViewport || rooms.length === 0)
-      return;
+    const { fitted, moved } = useFloorStore.getState();
+    if (fitted || !hasViewport || rooms.length === 0) return;
     useFloorStore.setState({ fitted: true });
-    if (useFloorStore.getState().camera === startCamera.current) jumpTo("all");
+    if (!moved) jumpTo("all");
   }, [hasViewport, rooms.length]);
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {

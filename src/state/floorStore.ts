@@ -26,6 +26,8 @@ interface FloorData {
   scratchpadAgentModal: ScratchpadAgentModalRequest | null;
   /** FloorMap fitted all once; survives its remount (the Git board), so pan and zoom stay. */
   fitted: boolean;
+  /** A pan, zoom or jump set the camera since the last reset; the first fit then stays away. */
+  moved: boolean;
 }
 
 export interface FloorState extends FloorData {
@@ -61,6 +63,7 @@ const initial = (): FloorData => ({
   agentModal: null,
   scratchpadAgentModal: null,
   fitted: false,
+  moved: false,
 });
 
 export const useFloorStore = create<FloorState>((set) => ({
@@ -70,6 +73,7 @@ export const useFloorStore = create<FloorState>((set) => ({
       camera,
       focus: opts?.focus ?? null,
       animate: opts?.animate ?? false,
+      moved: true,
     }),
   setViewport: (viewport) => set({ viewport }),
   openPopover: (popover) => set({ popover }),

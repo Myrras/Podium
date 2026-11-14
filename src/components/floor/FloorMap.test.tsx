@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RoomModel } from "../../lib/floor/types";
@@ -238,6 +239,20 @@ describe("FloorMap", () => {
       render(<FloorMap />);
       act(() => resize(800, 600));
       expect(jumpTo).not.toHaveBeenCalled();
+    });
+
+    it("fits all under StrictMode, whose simulated unmount resets the store (Floor)", () => {
+      function WithFloorReset() {
+        useEffect(() => () => useFloorStore.getState().reset(), []);
+        return <FloorMap />;
+      }
+      render(
+        <StrictMode>
+          <WithFloorReset />
+        </StrictMode>,
+      );
+      act(() => resize(800, 600));
+      expect(jumpTo).toHaveBeenCalledWith("all");
     });
 
     it("does not fit when the camera moved before the rooms arrived", () => {

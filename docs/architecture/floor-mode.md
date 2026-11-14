@@ -21,7 +21,10 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   position too.
 - `floorStore` (memory): `camera {x,y,z}`, `animate`, `viewport`, `focus`
   (`"all"` | project id | `null` after a manual pan or zoom), `popover`,
-  `terminalId`, `hoverDesk`, `agentModal`, `scratchpadAgentModal`.
+  `terminalId`, `hoverDesk`, `agentModal`, `scratchpadAgentModal`, `fitted`
+  (FloorMap fitted all once) and `moved` (`setCamera` ran since the last
+  reset). The first fit skips when `moved` is set; it checks the flag, not the
+  camera object, because StrictMode's simulated unmount runs `reset()`.
   `setCamera` defaults to `focus: null, animate: false`; `openTerminal` closes
   the popover.
 - The pinned desk is `processStore.activeProcessId`; the open modal is
