@@ -203,15 +203,17 @@ export function ScratchpadDetailPane({
       void (async () => {
         let expected = expectedUpdatedAtRef.current;
         if (titleDirty) {
-          // The content save needs the timestamp this one returns.
+          // The content save needs the timestamp this one returns; a failed
+          // title save must not drop the content, so it still goes out.
           const result = await updateTitle(
             projectId,
             id,
             title.trim(),
             expected,
           );
-          if (result === null || "conflict" in result) return;
-          expected = result.updatedAt;
+          if (result !== null && !("conflict" in result)) {
+            expected = result.updatedAt;
+          }
         }
         if (pending) void updateContent(projectId, id, content, expected);
       })();

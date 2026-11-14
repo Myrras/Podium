@@ -334,6 +334,38 @@ describe("ScratchpadDetailPane", () => {
     );
   });
 
+  it.each([
+    ["fails", null],
+    ["conflicts", { conflict: true as const }],
+  ])(
+    "still saves the pending content on unmount when the title save %s",
+    async (_label, titleResult) => {
+      vi.useFakeTimers();
+      const { updateTitle, updateContent } = seed();
+      updateTitle.mockResolvedValueOnce(titleResult as never);
+      const { unmount } = render(
+        <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+      );
+      fireEvent.change(screen.getByLabelText("Scratchpad title"), {
+        target: { value: "Renamed" },
+      });
+      fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+        target: { value: "notes" },
+      });
+
+      unmount();
+      await act(async () => {});
+
+      expect(updateTitle).toHaveBeenCalledTimes(1);
+      expect(updateContent).toHaveBeenCalledWith(
+        PROJECT,
+        SCRATCHPAD,
+        "notes",
+        "2024-04-03T12:00:00Z",
+      );
+    },
+  );
+
   it("does not save the title again on unmount once it was committed", () => {
     const { updateTitle } = seed();
     const { unmount } = render(
