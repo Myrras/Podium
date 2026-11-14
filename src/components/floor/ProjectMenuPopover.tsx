@@ -44,7 +44,7 @@ export function ProjectMenuPopover({
   // Closing the popover answers "keep", so removeWorktree never hangs.
   useEffect(() => () => pendingAnswer.current?.(false), []);
   const [removing, setRemoving] = useState(false);
-  // An edited name not yet saved; Esc closes the popover without a blur, so unmount saves it.
+  // An edited name not yet saved, null once saved: each edit saves at most once.
   const pendingName = useRef<string | null>(null);
   const rename = () => {
     const next = pendingName.current;
@@ -54,9 +54,6 @@ export function ProjectMenuPopover({
       .projects.find((p) => p.id === projectId);
     if (next !== null && current) commitProjectName(current, next);
   };
-  const renameRef = useRef(rename);
-  renameRef.current = rename;
-  useEffect(() => () => renameRef.current(), []);
 
   // Commit on the native `change` event: React's onChange fires on every drag tick.
   // The input is keyed by `shown`, so it remounts with the current colour (e.g. after No colour).

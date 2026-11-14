@@ -34,6 +34,7 @@ import {
   RestartIcon,
   RunIcon,
 } from "../icons";
+import { blurWithin } from "../Popover";
 import { TerminalPane } from "../TerminalPane";
 import styles from "./FloorTerminalModal.module.css";
 
@@ -75,6 +76,7 @@ export function FloorTerminalModal() {
   const startProcess = useProcessStore((s) => s.startProcess);
   const restartProcess = useProcessStore((s) => s.restartProcess);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const overlay = useRef<HTMLDivElement>(null);
   // A question about one process never carries over to the next one shown.
   const [askedFor, setAskedFor] = useState({ terminalId, openSubagentId });
   if (
@@ -95,7 +97,11 @@ export function FloorTerminalModal() {
 
   const shown = subagent ? subagentProcess(subagent) : process;
   if (!shown) return null;
-  const close = subagent ? clearOpenSubagent : closeTerminal;
+  // Blur first: the rename field's onBlur commit runs before it unmounts.
+  const close = () => {
+    blurWithin(overlay.current);
+    (subagent ? clearOpenSubagent : closeTerminal)();
+  };
 
   const rename = (name: string | null) => {
     // The store cannot clear a name: a blank one keeps the current name.
@@ -105,6 +111,7 @@ export function FloorTerminalModal() {
 
   return createPortal(
     <div
+      ref={overlay}
       className={styles.overlay}
       role="presentation"
       onMouseDown={(e) => {

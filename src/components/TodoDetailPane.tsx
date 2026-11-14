@@ -69,8 +69,8 @@ export function TodoDetailPane({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
-  // A typed title not yet committed: closing a Floor popover unmounts the
-  // input without a blur, so the cleanup below saves it. Esc clears it.
+  // A typed title not yet committed, null once committed or cancelled: the
+  // blur after Enter or Esc (Chromium blurs the input as it goes) saves nothing.
   const pendingTitle = useRef<string | null>(null);
   const savedRef = useRef<string>("");
   const seededFor = useRef<TodoId | null>(null);
@@ -132,19 +132,6 @@ export function TodoDetailPane({
       void update(projectId, todoId, { description: pending.description });
     };
   }, [projectId, todoId]);
-  useEffect(() => {
-    return () => {
-      const next = pendingTitle.current?.trim();
-      pendingTitle.current = null;
-      if (!next) return;
-      const { todosByProject, updateTodo: update } = useTodoStore.getState();
-      const current = (todosByProject[projectId] ?? NO_TODOS).find(
-        (t) => t.id === todoId,
-      );
-      if (current && next !== current.text)
-        void update(projectId, todoId, { text: next });
-    };
-  }, [projectId, todoId]);
 
   if (todo === undefined) return null;
 
@@ -164,10 +151,10 @@ export function TodoDetailPane({
   };
 
   const commitTitle = () => {
+    const next = pendingTitle.current?.trim();
     pendingTitle.current = null;
     setEditingTitle(false);
-    const next = titleDraft.trim();
-    if (next.length === 0 || next === todo.text) return;
+    if (!next || next === todo.text) return;
     void updateTodo(projectId, todoId, { text: next });
   };
 

@@ -42,6 +42,7 @@ vi.mock("./ScratchpadToolbar", () => ({
 import type { ScratchpadInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
+import { Popover } from "./Popover";
 import { ScratchpadDetailPane } from "./ScratchpadDetailPane";
 
 const initialScratchpad = useScratchpadStore.getState();
@@ -300,23 +301,29 @@ describe("ScratchpadDetailPane", () => {
     );
   });
 
-  it("saves an unblurred title edit on unmount, then the pending content with its timestamp", async () => {
+  it("a popover close blurs the title first: it saves, then the pending content with its timestamp", async () => {
     vi.useFakeTimers();
     const { updateTitle, updateContent } = seed();
     updateTitle.mockResolvedValueOnce(
       scratchpad({ title: "Renamed", updatedAt: "2024-04-03T12:05:00Z" }),
     );
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
     const { unmount } = render(
-      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+      <Popover anchor={anchor} onClose={onClose}>
+        <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />
+      </Popover>,
     );
-    fireEvent.change(screen.getByLabelText("Scratchpad title"), {
-      target: { value: " Renamed " },
-    });
+    const input = screen.getByLabelText("Scratchpad title");
+    input.focus();
+    fireEvent.change(input, { target: { value: " Renamed " } });
     fireEvent.change(screen.getByLabelText("Scratchpad content"), {
       target: { value: "notes" },
     });
 
-    // Esc closes the Floor popover: the pane unmounts without a blur.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
     unmount();
     await act(async () => {});
 
@@ -346,9 +353,9 @@ describe("ScratchpadDetailPane", () => {
       const { unmount } = render(
         <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
       );
-      fireEvent.change(screen.getByLabelText("Scratchpad title"), {
-        target: { value: "Renamed" },
-      });
+      const input = screen.getByLabelText("Scratchpad title");
+      fireEvent.change(input, { target: { value: "Renamed" } });
+      fireEvent.blur(input);
       fireEvent.change(screen.getByLabelText("Scratchpad content"), {
         target: { value: "notes" },
       });

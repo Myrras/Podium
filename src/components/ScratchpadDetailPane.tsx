@@ -117,9 +117,6 @@ export function ScratchpadDetailPane({
   // over by the debounce timer) so the unmount flush below can always save
   // the current value instead of a stale one from an earlier render.
   const latestContentRef = useRef(scratchpad?.content ?? "");
-  // The latest title, for the same unmount flush.
-  const latestTitleRef = useRef(scratchpad?.title ?? "");
-  latestTitleRef.current = title;
   const projectIdRef = useRef(projectId);
   const scratchpadIdRef = useRef(scratchpadId);
   // Whether the scratchpad still exists in the store, tracked in a ref (not
@@ -200,40 +197,20 @@ export function ScratchpadDetailPane({
   // so it always saves the latest value even though this effect only runs
   // once. Skipped if the scratchpad was removed out from under us (e.g. the
   // project closed) — saving would just fail with "not found"; a pending
-  // edit is lost in that case (known Phase 1 limitation). An unsaved title
-  // goes first: Esc closes a Floor popover without blurring the title field.
+  // edit is lost in that case (known Phase 1 limitation). Queued: a title
+  // save in flight (a Floor popover close blurs the title first) goes first,
+  // and the content carries the timestamp it returns.
   useEffect(() => {
     return () => {
-      const pending = saveTimerRef.current !== null;
-      if (pending) clearTimeout(saveTimerRef.current!);
+      if (!saveTimerRef.current) return;
+      clearTimeout(saveTimerRef.current);
       if (!existsRef.current) return;
-      const title = latestTitleRef.current;
-      const saved = savedTitleRef.current;
-      const titleDirty = title !== saved && title.trim() !== saved;
-      if (!titleDirty && !pending) return;
       const projectId = projectIdRef.current;
       const id = scratchpadIdRef.current;
       const content = latestContentRef.current;
-      // Queued: the content save reads the timestamp the title save returns,
-      // or the last known one if it failed, so the content still goes out.
-      if (titleDirty) {
-        void queueSave(async () => {
-          const result = await updateTitle(
-            projectId,
-            id,
-            title.trim(),
-            expectedUpdatedAtRef.current,
-          );
-          if (result !== null && !("conflict" in result)) {
-            expectedUpdatedAtRef.current = result.updatedAt;
-          }
-        });
-      }
-      if (pending) {
-        void queueSave(() =>
-          updateContent(projectId, id, content, expectedUpdatedAtRef.current),
-        );
-      }
+      void queueSave(() =>
+        updateContent(projectId, id, content, expectedUpdatedAtRef.current),
+      );
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

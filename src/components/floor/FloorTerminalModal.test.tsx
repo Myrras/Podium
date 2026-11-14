@@ -164,6 +164,28 @@ describe("FloorTerminalModal", () => {
     expect(removeProcess).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a click beside the card", () => screen.getByRole("presentation")],
+    ["×", () => screen.getByRole("button", { name: "Hide Fix login" })],
+  ])(
+    "blurs a focused field before %s closes it, so its onBlur commit runs",
+    (_label, target) => {
+      render(<FloorTerminalModal />);
+      open("a1");
+      const field = screen.getByLabelText("terminal input");
+      field.focus();
+      const seen: (string | null)[] = [];
+      field.addEventListener("blur", () =>
+        seen.push(useFloorStore.getState().terminalId),
+      );
+      const el = target();
+      fireEvent.mouseDown(el);
+      fireEvent.click(el);
+      expect(seen).toEqual(["a1"]);
+      expect(useFloorStore.getState().terminalId).toBeNull();
+    },
+  );
+
   it("does not close on Esc with focus on a header button", () => {
     render(<FloorTerminalModal />);
     open("a1");

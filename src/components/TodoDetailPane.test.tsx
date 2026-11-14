@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The stores pull in the IPC layer; jsdom has no Tauri bridge.
@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 import type { TodoComment, TodoInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
+import { Popover } from "./Popover";
 import { TodoDetailPane } from "./TodoDetailPane";
 
 const initialTodo = useTodoStore.getState();
@@ -229,35 +230,41 @@ describe("TodoDetailPane", () => {
     });
   });
 
-  it("saves an unblurred title edit on unmount", () => {
+  it("saves a title edit when a popover close blurs it", () => {
     const { updateTodo } = seed();
-    const { unmount } = render(
-      <TodoDetailPane projectId={PROJECT} todoId={TODO} />,
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} onClose={onClose}>
+        <TodoDetailPane projectId={PROJECT} todoId={TODO} />
+      </Popover>,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Edit title" }), {
-      target: { value: " Ship the export " },
-    });
-    // Closing the Floor popover unmounts the pane without a blur.
-    unmount();
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    input.focus();
+    fireEvent.change(input, { target: { value: " Ship the export " } });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
       text: "Ship the export",
     });
   });
 
-  it("does not save a title edit cancelled with Escape on unmount", () => {
+  it("does not save a title edit cancelled with Escape, nor on the blur after it", () => {
     const { updateTodo } = seed();
-    const { unmount } = render(
-      <TodoDetailPane projectId={PROJECT} todoId={TODO} />,
-    );
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
     const input = screen.getByRole("textbox", { name: "Edit title" });
     fireEvent.change(input, { target: { value: "Nope" } });
-    fireEvent.keyDown(input, { key: "Escape" });
-    unmount();
+    // Chromium blurs the input as Esc removes it: both land in one batch.
+    act(() => {
+      fireEvent.keyDown(input, { key: "Escape" });
+      fireEvent.blur(input);
+    });
 
     expect(updateTodo).not.toHaveBeenCalled();
   });

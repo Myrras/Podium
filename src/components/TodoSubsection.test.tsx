@@ -15,6 +15,7 @@ import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSelectionStore } from "../lib/selection";
 import { useTodoStore } from "../state/todoStore";
+import { Popover } from "./Popover";
 import { TodoSubsection } from "./TodoSubsection";
 
 const initialTodo = useTodoStore.getState();
@@ -546,29 +547,6 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(screen.queryByLabelText("New to-do text")).toBeNull();
   });
 
-  it.each([
-    ["adds typed text", "Ship it", ["Ship it"]],
-    ["skips text cancelled with Esc", null, []],
-  ])("on unmount without a blur, %s", (_label, typed, added) => {
-    seed([]);
-    const { unmount } = render(
-      <TodoSubsection
-        bare
-        projectId={PROJECT}
-        projectRoot="/fake/root"
-        onOpenTodo={vi.fn()}
-        onPickAgent={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByLabelText("New to-do"));
-    const input = screen.getByLabelText("New to-do text");
-    fireEvent.change(input, { target: { value: ` ${typed ?? "Nope"} ` } });
-    if (typed === null) fireEvent.keyDown(input, { key: "Escape" });
-    unmount();
-    const { addTodo } = useTodoStore.getState();
-    expect(vi.mocked(addTodo).mock.calls.map((c) => c[1])).toEqual(added);
-  });
-
   const renderBare = () =>
     render(
       <TodoSubsection
@@ -579,47 +557,60 @@ describe("TodoSubsection assigned to-dos", () => {
         onPickAgent={vi.fn()}
       />,
     );
+  // In a real Popover: its close blurs the focused field before it closes.
+  const renderInPopover = () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="To-dos" onClose={onClose}>
+        <TodoSubsection
+          bare
+          projectId={PROJECT}
+          projectRoot="/fake/root"
+          onOpenTodo={vi.fn()}
+          onPickAgent={vi.fn()}
+        />
+      </Popover>,
+    );
+    return onClose;
+  };
   const typeAndSubmit = (text: string) => {
     fireEvent.click(screen.getByLabelText("New to-do"));
     const input = screen.getByLabelText("New to-do text");
     fireEvent.change(input, { target: { value: text } });
     fireEvent.submit(input.closest("form")!);
+    return input;
   };
+  const added = () =>
+    vi
+      .mocked(useTodoStore.getState().addTodo)
+      .mock.calls.map((c) => (c as unknown[])[1]);
 
   it.each([
-    [
-      "adds it again on close after a failed add",
-      false,
-      ["Ship it", "Ship it"],
-    ],
-    [
-      "does not add twice on a close during a successful add",
-      true,
-      ["Ship it"],
-    ],
-  ])("%s", async (_label, result, added) => {
+    ["adds typed text", "Ship it", ["Ship it"]],
+    ["skips text cancelled with Esc", null, []],
+  ])("on a popover close, %s", (_label, typed, expected) => {
     seed([]);
-    let settle!: (ok: boolean) => void;
-    const addTodo = vi.fn(
-      () => new Promise<boolean>((resolve) => (settle = resolve)),
-    );
-    useTodoStore.setState({ addTodo });
-    const { unmount } = renderBare();
-    typeAndSubmit("Ship it");
-    expect(addTodo).toHaveBeenCalledTimes(1);
-    unmount();
-    await act(async () => settle(result));
-    expect(addTodo.mock.calls.map((c) => (c as unknown[])[1])).toEqual(added);
+    const onClose = renderInPopover();
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    input.focus();
+    fireEvent.change(input, { target: { value: ` ${typed ?? "Nope"} ` } });
+    if (typed === null) fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(added()).toEqual(expected);
   });
 
-  it("adds it on a later close after a failed add", async () => {
+  it("adds it again on a popover close after a failed add", async () => {
     seed([]);
     const addTodo = vi.fn(() => Promise.resolve(false));
     useTodoStore.setState({ addTodo });
-    const { unmount } = renderBare();
-    typeAndSubmit("Ship it");
+    renderInPopover();
+    typeAndSubmit("Ship it").focus();
     await act(async () => {});
-    unmount();
+    fireEvent.click(screen.getByLabelText("Close"));
     expect(addTodo).toHaveBeenCalledTimes(2);
   });
 

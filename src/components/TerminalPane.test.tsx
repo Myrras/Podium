@@ -229,7 +229,7 @@ describe("TerminalPane header actions", () => {
       expect(onRename).toHaveBeenLastCalledWith(null);
     });
 
-    it("saves an unblurred rename on unmount, but not one cancelled with Esc", () => {
+    it("commits on blur only: an unmount alone or an Esc saves nothing", () => {
       const onRename = vi.fn();
       const first = render(
         <TerminalPane process={service()} onRename={onRename} />,
@@ -238,11 +238,10 @@ describe("TerminalPane header actions", () => {
       fireEvent.change(screen.getByLabelText("Name"), {
         target: { value: " web " },
       });
-      // Closing the Floor modal unmounts the pane without a blur.
+      // The Floor modal blurs before it closes; a bare unmount is no commit.
       first.unmount();
-      expect(onRename).toHaveBeenCalledWith("web");
+      expect(onRename).not.toHaveBeenCalled();
 
-      onRename.mockClear();
       const second = render(
         <TerminalPane process={service()} onRename={onRename} />,
       );
@@ -290,7 +289,7 @@ describe("TerminalPane header actions", () => {
       expect(onRename).toHaveBeenCalledWith("web");
     });
 
-    it("does not rename on unmount once the process is gone", () => {
+    it("does not rename on blur once the process is gone", () => {
       const onRename = vi.fn();
       const { unmount } = render(
         <TerminalPane process={service()} onRename={onRename} />,
@@ -300,6 +299,7 @@ describe("TerminalPane header actions", () => {
         target: { value: "web" },
       });
       act(() => useProcessStore.setState({ processes: [] }));
+      fireEvent.blur(screen.getByLabelText("Name"));
       unmount();
       expect(onRename).not.toHaveBeenCalled();
     });

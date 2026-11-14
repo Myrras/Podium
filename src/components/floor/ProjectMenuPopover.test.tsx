@@ -123,12 +123,14 @@ describe("ProjectMenuPopover", () => {
     expect(m.rename).toHaveBeenLastCalledWith("p1", null);
   });
 
-  it("saves an unblurred name when Esc closes the popover", () => {
+  it("Esc closes the popover after blurring the name, which saves it", () => {
     const { unmount } = setup();
     const input = screen.getByLabelText("Project name");
+    input.focus();
     fireEvent.change(input, { target: { value: "Gamma" } });
     fireEvent.keyDown(input, { key: "Escape" });
     expect(useFloorStore.getState().popover).toBeNull();
+    expect(m.rename).toHaveBeenCalledWith("p1", "Gamma");
     unmount();
     expect(m.rename).toHaveBeenCalledTimes(1);
     expect(m.rename).toHaveBeenCalledWith("p1", "Gamma");

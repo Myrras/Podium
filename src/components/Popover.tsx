@@ -46,6 +46,16 @@ export function PopoverSlot({
   return el ? createPortal(children, el) : null;
 }
 
+/**
+ * Blurs the focused element when it sits inside `el`, so a field's onBlur
+ * commit runs before a close unmounts it. React delivers no blur for an
+ * element its commit removes, so callers blur first, then close.
+ */
+export function blurWithin(el: Element | null | undefined): void {
+  const at = document.activeElement;
+  if (at instanceof HTMLElement && el?.contains(at)) at.blur();
+}
+
 /** Centred, GAP under the anchor; above it when below does not fit; MARGIN inside the window. */
 export function placePopover(
   anchor: Rect,
@@ -93,8 +103,13 @@ export function Popover({
   const ref = useRef<HTMLDivElement>(null);
   const [header, setHeader] = useState<HTMLElement | null>(null);
   const [footer, setFooter] = useState<HTMLElement | null>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  // Every close blurs a focused field first, so its own onBlur commit runs.
+  const close = () => {
+    blurWithin(ref.current);
+    onClose();
+  };
+  const closeRef = useRef(close);
+  closeRef.current = close;
 
   // Placed on open, on window resize, when the anchor or popover resizes, and
   // after each `follow` move; an animated one (a camera jump) is followed frame
@@ -107,7 +122,7 @@ export function Popover({
     let until = 0;
     const place = () => {
       // Its fixture unmounted (e.g. the last service removed): close, do not jump to 0,0.
-      if (!anchor.isConnected) return onCloseRef.current();
+      if (!anchor.isConnected) return closeRef.current();
       const r = anchor.getBoundingClientRect();
       const key = `${r.x},${r.y},${r.width},${r.height},${el.offsetWidth},${el.offsetHeight},${window.innerWidth},${window.innerHeight}`;
       if (key === last) return;
@@ -170,7 +185,7 @@ export function Popover({
         t.closest?.('[role="dialog"], [data-popover-keep]')
       )
         return;
-      onCloseRef.current();
+      closeRef.current();
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -193,7 +208,7 @@ export function Popover({
           ref.current?.contains(e.target as Node)
         ) {
           e.stopPropagation();
-          onClose();
+          close();
         }
       }}
     >
@@ -218,7 +233,7 @@ export function Popover({
           </h2>
         )}
         <div ref={setHeader} className={styles.slot} />
-        <button type="button" aria-label="Close" onClick={onClose}>
+        <button type="button" aria-label="Close" onClick={close}>
           <CloseIcon />
         </button>
       </header>

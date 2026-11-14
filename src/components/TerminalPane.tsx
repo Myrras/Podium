@@ -88,8 +88,8 @@ export function TerminalPane({
     if (editing) inputRef.current?.select();
   }, [editing]);
   // The open edit's name, null once committed or cancelled. Each edit commits
-  // at most once: Chromium blurs the input as Enter/Esc removes it, and closing
-  // the modal unmounts it without a blur, so the cleanup commits it.
+  // at most once: Chromium blurs the input as Enter/Esc removes it. Closing
+  // the Floor modal blurs it first, so that commit is the blur's.
   const pendingName = useRef<string | null>(null);
   const commitPending = () => {
     const name = pendingName.current;
@@ -102,9 +102,6 @@ export function TerminalPane({
     const next = name.trim();
     if (next !== process.name) onRename?.(next || null);
   };
-  const commitRef = useRef(commitPending);
-  commitRef.current = commitPending;
-  useEffect(() => () => commitRef.current(), []);
   const commit = () => {
     setDraft(null);
     commitPending();

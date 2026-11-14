@@ -113,6 +113,13 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   while a popover or the terminal modal is open.
 - A popover closes on Esc only while focus is inside it (it takes focus on open
   and gives it back to the anchor).
+- Close blurs first: `Popover` (Esc, ×, outside mousedown, a vanished anchor)
+  and `FloorTerminalModal` (× and the overlay) blur a focused element inside
+  them (`blurWithin`) before they close, so a field's own onBlur commit saves
+  it. React delivers no blur for an element its commit removes, so fields keep
+  no unmount commit of their own. An Esc a field uses to cancel its edit calls
+  `preventDefault`, so it neither closes nor commits. Only real autosave
+  flushes (to-do description, scratchpad content) still run on unmount.
 - `FloorTerminalModal` is a portal overlay, not `Modal`: Esc must reach the
   terminal (Claude Code uses it) and the card must not scale (xterm mouse
   mapping). It closes with its button or a mousedown on the overlay. Esc in the
