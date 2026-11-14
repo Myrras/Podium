@@ -86,15 +86,15 @@ export function FloorMap() {
     return () => observer.disconnect();
   }, []);
 
-  // Fit all once, as soon as both the viewport and the rooms are known, unless the camera moved first.
+  // Fit all once per Floor visit (the flag survives a remount), as soon as the viewport and rooms are known, unless the camera moved first.
   const hasViewport = useFloorStore(
     (s) => s.viewport.w > 0 && s.viewport.h > 0,
   );
   const startCamera = useRef(useFloorStore.getState().camera);
-  const fitted = useRef(false);
   useEffect(() => {
-    if (fitted.current || !hasViewport || rooms.length === 0) return;
-    fitted.current = true;
+    if (useFloorStore.getState().fitted || !hasViewport || rooms.length === 0)
+      return;
+    useFloorStore.setState({ fitted: true });
     if (useFloorStore.getState().camera === startCamera.current) jumpTo("all");
   }, [hasViewport, rooms.length]);
 

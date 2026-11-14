@@ -24,6 +24,8 @@ interface FloorData {
   hoverDesk: ProcessId | null;
   agentModal: AgentModalRequest | null;
   scratchpadAgentModal: ScratchpadAgentModalRequest | null;
+  /** FloorMap fitted all once; survives its remount (the Git board), so pan and zoom stay. */
+  fitted: boolean;
 }
 
 export interface FloorState extends FloorData {
@@ -58,6 +60,7 @@ const initial = (): FloorData => ({
   hoverDesk: null,
   agentModal: null,
   scratchpadAgentModal: null,
+  fitted: false,
 });
 
 export const useFloorStore = create<FloorState>((set) => ({

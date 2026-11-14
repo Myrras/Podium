@@ -64,6 +64,7 @@ describe("floorStore", () => {
     const s = useFloorStore.getState();
     s.setViewport({ w: 800, h: 600 });
     s.setHoverDesk("proc-1");
+    useFloorStore.setState({ fitted: true });
     s.setAgentModal({ projectId: "proj-1" });
     s.setScratchpadAgentModal({ projectId: "proj-1", scratchpadIds: ["s-1"] });
     s.reset();
@@ -72,6 +73,7 @@ describe("floorStore", () => {
       hoverDesk: null,
       agentModal: null,
       scratchpadAgentModal: null,
+      fitted: false,
     });
   });
 });

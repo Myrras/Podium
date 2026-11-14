@@ -229,6 +229,17 @@ describe("FloorMap", () => {
       expect(jumpTo).not.toHaveBeenCalled();
     });
 
+    it("does not fit again after a remount (closing the Git board)", () => {
+      const { unmount } = render(<FloorMap />);
+      act(() => resize(800, 600));
+      expect(jumpTo).toHaveBeenCalledTimes(1);
+      unmount();
+      jumpTo.mockClear();
+      render(<FloorMap />);
+      act(() => resize(800, 600));
+      expect(jumpTo).not.toHaveBeenCalled();
+    });
+
     it("does not fit when the camera moved before the rooms arrived", () => {
       rooms = [];
       const { rerender } = render(<FloorMap />);
