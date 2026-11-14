@@ -103,7 +103,35 @@ describe("AssistantPane", () => {
       hydrated: false,
       pending: [],
       responses: [],
+      draft: null,
     });
+  });
+
+  it("takes over a handed-over draft, focused with the caret at the end", () => {
+    render(<AssistantPane />);
+    act(() =>
+      useAssistantStore.getState().setDraft("Start an agent in Webshop on "),
+    );
+
+    const input = screen.getByLabelText(
+      "Message the assistant",
+    ) as HTMLTextAreaElement;
+    expect(input).toHaveValue("Start an agent in Webshop on ");
+    expect(input).toHaveFocus();
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(useAssistantStore.getState().draft).toBeNull();
+  });
+
+  it("appends a handed-over draft on a new line when the composer has text", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPane />);
+    const input = screen.getByLabelText(
+      "Message the assistant",
+    ) as HTMLTextAreaElement;
+    await user.type(input, "typed");
+    act(() => useAssistantStore.getState().setDraft("from nameplate"));
+    expect(input).toHaveValue("typed\nfrom nameplate");
+    expect(input.selectionStart).toBe(input.value.length);
   });
 
   it("sends the typed turn and shows it in the log", async () => {

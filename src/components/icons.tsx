@@ -46,6 +46,7 @@ import {
   Rows3,
   Play,
   Square,
+  CircleStop,
   RotateCw,
   Plus,
   Folder,
@@ -68,6 +69,7 @@ import {
   SlidersHorizontal,
   Tag,
   Trash2,
+  SkipForward,
   ExternalLink,
   GitBranch,
   GitPullRequest,
@@ -77,6 +79,9 @@ import {
   Paperclip,
   Image as ImageGlyph,
   File as FileGlyph,
+  Scan,
+  ZoomIn,
+  ZoomOut,
   type LucideIcon,
   type LucideProps,
 } from "lucide-react";
@@ -122,6 +127,8 @@ export const MinusIcon = icon(Minus, { size: 15 });
 export const CloseIcon = icon(X);
 export const RunIcon = icon(Play);
 export const StopIcon = icon(Square);
+// The floor modal's Stop: next to the header text a hollow square read as a checkbox.
+export const CircleStopIcon = icon(CircleStop);
 export const RestartIcon = icon(RotateCw);
 export const CheckIcon = icon(Check);
 export const CopyIcon = icon(Copy);
@@ -134,9 +141,13 @@ export const EditIcon = icon(Pencil, { size: 13 });
 export const SectionsIcon = icon(SlidersHorizontal, { size: 13 });
 export const TagIcon = icon(Tag, { size: 12 });
 export const DeleteIcon = icon(Trash2, { size: 13 });
+export const NextIcon = icon(SkipForward, { size: 13 });
 export const IssueIcon = icon(CircleDot);
 export const PrIcon = icon(GitPullRequest);
 export const BoardIcon = icon(SquareKanban);
+export const ZoomOutIcon = icon(ZoomOut, { size: 15 });
+export const ZoomInIcon = icon(ZoomIn, { size: 15 });
+export const FitIcon = icon(Scan, { size: 15 });
 export const BranchIcon = icon(GitBranch, { size: 13 });
 export const ExternalLinkIcon = icon(ExternalLink, { size: 13 });
 export const GripIcon = icon(GripVertical, { size: 14 });

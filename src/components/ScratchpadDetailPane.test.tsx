@@ -42,6 +42,7 @@ vi.mock("./ScratchpadToolbar", () => ({
 import type { ScratchpadInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
+import { Popover } from "./Popover";
 import { ScratchpadDetailPane } from "./ScratchpadDetailPane";
 
 const initialScratchpad = useScratchpadStore.getState();
@@ -298,6 +299,188 @@ describe("ScratchpadDetailPane", () => {
       "Renamed",
       "2024-04-03T12:00:00Z",
     );
+  });
+
+  it("a popover close blurs the title first: it saves, then the pending content with its timestamp", async () => {
+    vi.useFakeTimers();
+    const { updateTitle, updateContent } = seed();
+    updateTitle.mockResolvedValueOnce(
+      scratchpad({ title: "Renamed", updatedAt: "2024-04-03T12:05:00Z" }),
+    );
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    const { unmount } = render(
+      <Popover anchor={anchor} onClose={onClose}>
+        <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />
+      </Popover>,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    input.focus();
+    fireEvent.change(input, { target: { value: " Renamed " } });
+    fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+      target: { value: "notes" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    unmount();
+    await act(async () => {});
+
+    expect(updateTitle).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "Renamed",
+      "2024-04-03T12:00:00Z",
+    );
+    expect(updateContent).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "notes",
+      "2024-04-03T12:05:00Z",
+    );
+  });
+
+  it.each([
+    ["fails", null],
+    ["conflicts", { conflict: true as const }],
+  ])(
+    "still saves the pending content on unmount when the title save %s",
+    async (_label, titleResult) => {
+      vi.useFakeTimers();
+      const { updateTitle, updateContent } = seed();
+      updateTitle.mockResolvedValueOnce(titleResult as never);
+      const { unmount } = render(
+        <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+      );
+      const input = screen.getByLabelText("Scratchpad title");
+      fireEvent.change(input, { target: { value: "Renamed" } });
+      fireEvent.blur(input);
+      fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+        target: { value: "notes" },
+      });
+
+      unmount();
+      await act(async () => {});
+
+      expect(updateTitle).toHaveBeenCalledTimes(1);
+      expect(updateContent).toHaveBeenCalledWith(
+        PROJECT,
+        SCRATCHPAD,
+        "notes",
+        "2024-04-03T12:00:00Z",
+      );
+    },
+  );
+
+  it("waits for an in-flight title save on unmount and sends the content with its timestamp", async () => {
+    vi.useFakeTimers();
+    const { updateTitle, updateContent } = seed();
+    let resolveTitle!: (value: ScratchpadInfo) => void;
+    updateTitle.mockReturnValueOnce(
+      new Promise<ScratchpadInfo>((resolve) => {
+        resolveTitle = resolve;
+      }),
+    );
+    const { unmount } = render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.blur(input);
+    fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+      target: { value: "notes" },
+    });
+
+    unmount();
+    await act(async () => {});
+    expect(updateContent).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveTitle(
+        scratchpad({ title: "Renamed", updatedAt: "2024-04-03T12:05:00Z" }),
+      );
+    });
+
+    expect(updateTitle).toHaveBeenCalledTimes(1);
+    expect(updateContent).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "notes",
+      "2024-04-03T12:05:00Z",
+    );
+  });
+
+  it("debounced content save waits for an in-flight title save", async () => {
+    vi.useFakeTimers();
+    const { updateTitle, updateContent } = seed();
+    let resolveTitle!: (value: null) => void;
+    updateTitle.mockReturnValueOnce(
+      new Promise<null>((resolve) => {
+        resolveTitle = resolve;
+      }) as never,
+    );
+    render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.blur(input);
+    fireEvent.change(screen.getByLabelText("Scratchpad content"), {
+      target: { value: "notes" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(updateContent).not.toHaveBeenCalled();
+
+    // The title save fails: the content still goes out, with the last known timestamp.
+    await act(async () => {
+      resolveTitle(null);
+    });
+    expect(updateContent).toHaveBeenCalledWith(
+      PROJECT,
+      SCRATCHPAD,
+      "notes",
+      "2024-04-03T12:00:00Z",
+    );
+  });
+
+  it("does not save the title again on unmount once it was committed", () => {
+    const { updateTitle } = seed();
+    const { unmount } = render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    const input = screen.getByLabelText("Scratchpad title");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.blur(input);
+    unmount();
+    expect(updateTitle).toHaveBeenCalledTimes(1);
+  });
+
+  it("Esc leaves full screen; out of it, Esc closes the popover", () => {
+    seed();
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} onClose={onClose}>
+        <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />
+      </Popover>,
+    );
+    const pane = () => document.querySelector("[data-fullscreen]");
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    expect(pane()).not.toBeNull();
+
+    const content = screen.getByLabelText("Scratchpad content");
+    expect(fireEvent.keyDown(content, { key: "Escape" })).toBe(false);
+    expect(pane()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(screen.getByLabelText("Scratchpad content"), {
+      key: "Escape",
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("archives via the archive button", () => {
@@ -585,5 +768,25 @@ describe("ScratchpadDetailPane", () => {
     );
     // Still conflicted — the second autosave must not have silently succeeded.
     expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("compact_hides_toc_and_close_calls_onClose", () => {
+    seed();
+    const onClose = vi.fn();
+    const clear = vi.fn();
+    useLayoutStore.setState({ clearOpenScratchpad: clear });
+    render(
+      <ScratchpadDetailPane
+        compact
+        projectId={PROJECT}
+        scratchpadId={SCRATCHPAD}
+        onClose={onClose}
+      />,
+    );
+
+    expect(screen.queryByLabelText("On this page")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close scratchpad" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
   });
 });

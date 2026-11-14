@@ -218,3 +218,49 @@
   font-size: var(--fs-sm);
   padding: var(--sp-1) var(--sp-2);
 }
+
+/* ── Popover list (bare) ──────────────────────────────────────────────────
+   Rows start at the popover's --sp-3 inset, the same edge as its title. */
+.bare .row {
+  position: relative;
+}
+
+.bare .rowMain {
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+}
+
+/* The owner's colour as a thin edge on the popover's left border, like the
+   notes on the room's pinboard: solid while its agent runs, hollow once it
+   stopped, none for a free to-do. */
+.bare .owner {
+  position: absolute;
+  left: 0;
+  top: var(--sp-2);
+  bottom: var(--sp-2);
+  width: 3px;
+  height: auto;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.bare .owner[data-stopped="true"] {
+  border-width: 1px;
+  border-left: none;
+}
+
+.bare .checkbox:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.bare .addForm {
+  padding: var(--sp-1) var(--sp-3);
+}
+
+/* Muted relative "updated" time on scratchpad rows. */
+.bare .meta {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}

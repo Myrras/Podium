@@ -130,6 +130,7 @@ Notes live in `docs/architecture/`, not here. Read the matching file before chan
 - `docs/architecture/tauri-ipc-contract.md` — Tauri commands, events, wire casing; read when adding a command
 - `docs/architecture/podium-yml.md` — `podium.yml` format
 - `docs/architecture/terminal-and-activity.md` — frontend terminal, agent activity, window chrome
+- `docs/architecture/floor-mode.md` — Floor mode: stores, camera, rooms, Esc and terminal rules
 
 ## Build, run, test
 

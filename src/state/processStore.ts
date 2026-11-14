@@ -48,7 +48,8 @@ interface ProcessState {
     projectId: ProjectId,
     options: AgentSpawnOptions,
   ) => Promise<ProcessInfo | null>;
-  removeProcess: (id: ProcessId) => Promise<void>;
+  /** Whether it was removed; a failure toasts. */
+  removeProcess: (id: ProcessId) => Promise<boolean>;
   /** Rename a process's display label; blank names are rejected. */
   renameProcess: (id: ProcessId, name: string) => Promise<void>;
   startProcess: (id: ProcessId) => Promise<void>;
@@ -118,8 +119,10 @@ export const useProcessStore = create<ProcessState>((set) => ({
   removeProcess: async (id) => {
     try {
       await processRemove(id);
+      return true;
     } catch (e) {
       toastError("Could not remove process", toIpcError(e).message);
+      return false;
     }
   },
 

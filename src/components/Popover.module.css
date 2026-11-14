@@ -1,0 +1,122 @@
+.popover {
+  composes: glass from global;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 900;
+  max-width: calc(100vw - 12px);
+  max-height: calc(100vh - 12px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-raised, var(--pop-surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-md);
+}
+
+/* Glass: the translucent fill over the busy floor left map content readable.
+   Lay it over the theme canvas (its last layer is a solid colour): opaque,
+   still tinted like the glass islands. */
+:global(:root[data-theme^="glass"]) .popover {
+  background:
+    linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
+}
+
+/* A fullscreen child (scratchpad) is position: fixed; backdrop-filter and
+   transform would make this popover its containing block. The theme prefix
+   outranks `:root[data-theme="glass-*"] .glass` in global.css, which a bare
+   `.popover:has()` loses to, so the pane folded into the popover. */
+:global(:root[data-theme^="glass"]) .popover:has([data-fullscreen]) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform: none;
+}
+
+/* One bar: back, title and count, the content's actions (slot), ×.
+   --sp-3 is the one horizontal inset shared by header, rows and footer. */
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The back button sits in the inset, so the item title starts near the edge. */
+.header:has(.back) {
+  padding-left: var(--sp-1);
+}
+
+.title {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count {
+  margin-left: var(--sp-2);
+  font-weight: 400;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filled by PopoverSlot: list actions, or an opened item's title row. */
+.slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+}
+
+/* Header buttons are quiet icon squares. */
+.header button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.header button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.back svg {
+  transform: rotate(180deg);
+}
+
+.body {
+  overflow: auto;
+  padding: var(--sp-3);
+}
+
+.body[data-flush] {
+  padding: 0;
+}
+
+/* Filled by PopoverSlot; one hairline divides it from the body. */
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.footer:empty {
+  display: none;
+}

@@ -1,6 +1,7 @@
 /** Work-area pane for the focused process: header bar + live terminal. */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { processGitBranch } from "../ipc/commands";
 import type { ProcessId, ProcessInfo } from "../ipc/types";
@@ -24,7 +25,23 @@ import styles from "./TerminalPane.module.css";
 // background refresh updates it — the git call itself takes a login shell.
 const branchCache = new Map<ProcessId, string | null>();
 
-export function TerminalPane({ process }: { process: ProcessInfo }) {
+export function TerminalPane({
+  process,
+  leading,
+  trailing,
+  onRename,
+  hideActions = false,
+}: {
+  process: ProcessInfo;
+  /** Replaces the terminal icon at the far left. */
+  leading?: ReactNode;
+  /** Rendered at the far right of the header. */
+  trailing?: ReactNode;
+  /** Makes the name editable inline; a blank name comes through as null. */
+  onRename?: (name: string | null) => void;
+  /** Hides the built-in Stop/Start/Restart buttons. */
+  hideActions?: boolean;
+}) {
   const startProcess = useProcessStore((s) => s.startProcess);
   const stopProcess = useProcessStore((s) => s.stopProcess);
   const restartProcess = useProcessStore((s) => s.restartProcess);
@@ -64,11 +81,79 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
     };
   }, [process.id]);
 
+  const [draft, setDraft] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const editing = draft !== null;
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+  // The open edit's name, null once committed or cancelled. Each edit commits
+  // at most once: Chromium blurs the input as Enter/Esc removes it. Closing
+  // the Floor modal blurs it first, so that commit is the blur's.
+  const pendingName = useRef<string | null>(null);
+  const commitPending = () => {
+    const name = pendingName.current;
+    pendingName.current = null;
+    // A process removed meanwhile (e.g. closed from the modal) has nothing to rename.
+    const exists = useProcessStore
+      .getState()
+      .processes.some((p) => p.id === process.id);
+    if (name === null || !exists) return;
+    const next = name.trim();
+    if (next !== process.name) onRename?.(next || null);
+  };
+  const commit = () => {
+    setDraft(null);
+    commitPending();
+  };
+
   return (
     <div className={styles.pane}>
-      <header className={styles.header}>
-        <TerminalIcon className={styles.kindIcon} />
-        <span className={styles.name}>{process.name}</span>
+      <header
+        className={
+          trailing ? `${styles.header} ${styles.slotted}` : styles.header
+        }
+      >
+        {leading ?? <TerminalIcon className={styles.kindIcon} />}
+        {editing ? (
+          <input
+            ref={inputRef}
+            className={styles.nameInput}
+            aria-label="Name"
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              pendingName.current = e.target.value;
+            }}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+              } else if (e.key === "Escape") {
+                // Cancels the edit only: it must not close a modal around us.
+                e.preventDefault();
+                e.stopPropagation();
+                pendingName.current = null; // a later blur saves nothing
+                setDraft(null);
+              }
+            }}
+          />
+        ) : onRename ? (
+          <button
+            type="button"
+            className={`${styles.name} ${styles.nameBtn}`}
+            title="Rename"
+            onClick={() => {
+              pendingName.current = process.name;
+              setDraft(process.name);
+            }}
+          >
+            {process.name}
+          </button>
+        ) : (
+          <span className={styles.name}>{process.name}</span>
+        )}
         <span className={styles.status}>
           <StatusPill
             state={state}
@@ -124,7 +209,7 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
         )}
         {/* Agents get no start/stop/restart controls — an agent session is
             a one-shot conversation, not a restartable service. */}
-        {!isAgent && (
+        {!isAgent && !hideActions && (
           <span className={styles.headerActions}>
             {active ? (
               <button
@@ -158,6 +243,7 @@ export function TerminalPane({ process }: { process: ProcessInfo }) {
             </button>
           </span>
         )}
+        {trailing && <span className={styles.trailing}>{trailing}</span>}
       </header>
       <TerminalView processId={process.id} />
     </div>

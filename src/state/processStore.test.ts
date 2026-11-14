@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The store reaches Tauri only through these; neither is exercised here.
-vi.mock("../ipc/commands", () => ({ toIpcError: vi.fn() }));
+vi.mock("../ipc/commands", () => ({
+  toIpcError: vi.fn(() => ({ message: "x" })),
+  processRemove: vi.fn(),
+}));
+vi.mock("./toastStore", () => ({ toastError: vi.fn() }));
 vi.mock("../lib/terminalRegistry", () => ({ disposeTerminal: vi.fn() }));
 
+import { processRemove } from "../ipc/commands";
 import type { ProcessInfo } from "../ipc/types";
 import { disposeTerminal } from "../lib/terminalRegistry";
 import { useProcessStore } from "./processStore";
+import { toastError } from "./toastStore";
 
 function agent(id: string): ProcessInfo {
   return {
@@ -53,5 +59,19 @@ describe("processStore.applyRemoved", () => {
     useProcessStore.getState().applyRemoved("a2");
 
     expect(useProcessStore.getState().activeProcessId).toBe("a1");
+  });
+});
+
+describe("processStore.removeProcess", () => {
+  it("returns whether the process was removed; a failure toasts", async () => {
+    vi.mocked(processRemove).mockResolvedValueOnce(undefined as never);
+    await expect(useProcessStore.getState().removeProcess("a1")).resolves.toBe(
+      true,
+    );
+    vi.mocked(processRemove).mockRejectedValueOnce(new Error("busy"));
+    await expect(useProcessStore.getState().removeProcess("a1")).resolves.toBe(
+      false,
+    );
+    expect(toastError).toHaveBeenCalledWith("Could not remove process", "x");
   });
 });

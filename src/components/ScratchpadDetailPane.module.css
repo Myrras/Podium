@@ -14,6 +14,11 @@
   background: var(--bg);
 }
 
+/* Inside the Floor popover: no parent gives it a height. */
+.pane[data-compact]:not([data-fullscreen]) {
+  height: 420px;
+}
+
 /* Header mirrors the to-do/terminal panes: kind icon, title, close. */
 .header {
   display: flex;
@@ -224,6 +229,22 @@
   width: 4px;
   background: var(--accent);
   pointer-events: none;
+}
+
+/* In a Floor popover: the popover's --sp-3 inset around the editor. */
+.pane[data-docked] .editorArea {
+  padding: var(--sp-3);
+}
+
+/* Last-edit time, quiet at the end of the popover footer. */
+.dockedMeta {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
 .footer {

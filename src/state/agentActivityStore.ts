@@ -46,6 +46,7 @@ import { notifyAgentWaiting } from "../lib/notify";
 import { subagentProcess } from "../lib/subagents";
 import { readViewportText } from "../lib/terminalRegistry";
 import { useAssistantStore } from "./assistantStore";
+import { useFloorStore } from "./floorStore";
 import { useLayoutStore } from "./layoutStore";
 import { useProcessStore } from "./processStore";
 
@@ -178,11 +179,15 @@ function sameActivity(a: ProcessActivity, b: ProcessActivity): boolean {
 /**
  * The process whose terminal the user is looking at right now: the app window
  * is focused, it is the active process, and nothing covers the work area (a
- * to-do, scratchpad or Git board pane replaces the terminal there).
+ * to-do, scratchpad or Git board pane replaces the terminal there). In Floor
+ * mode it is the process open in the terminal modal instead.
  */
 function viewedProcessId(): ProcessId | null {
   if (!document.hasFocus()) return null;
   const layout = useLayoutStore.getState();
+  if (layout.mode === "floor") {
+    return layout.openSubagent ?? useFloorStore.getState().terminalId;
+  }
   if (
     layout.openTodo !== null ||
     layout.openScratchpad !== null ||

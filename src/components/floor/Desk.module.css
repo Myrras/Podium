@@ -1,0 +1,182 @@
+.desk {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 152px;
+  padding: 8px 4px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pad {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  border-radius: var(--radius-md);
+}
+
+.desk[data-state="working"] .pad {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+}
+
+.desk[data-state="needs"] .pad {
+  background: var(--warning);
+}
+
+.desk[data-state="idle"] .pad,
+.desk[data-state="ended"] .pad,
+.desk[data-state="crashed"] .pad {
+  background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+}
+
+/* A stopped terminal: grey art, like an ended agent. */
+.desk[data-stopped] .pad > :first-child {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+/* Only a working bot moves. */
+.desk:not([data-working]) * {
+  animation-play-state: paused;
+}
+
+/* Sleeping idle bot: Zs float up and fade, staggered by negative delays so none sits still. */
+.zzz {
+  position: absolute;
+  top: -10px;
+  right: 2px;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.zzz > i {
+  font-style: normal;
+  font-size: 10px;
+  animation: zzz calc(var(--dur-beat) * 3) var(--ease-out) infinite;
+}
+
+.zzz > i:nth-child(2) {
+  animation-delay: calc(var(--dur-beat) * -1);
+}
+
+.zzz > i:nth-child(3) {
+  font-size: 13px;
+  animation-delay: calc(var(--dur-beat) * -2);
+}
+
+/* The pause above stops everything on a non-working desk; the Zs must keep floating. */
+.desk:not([data-working]) .zzz > i {
+  animation-play-state: running;
+}
+
+@keyframes zzz {
+  from {
+    opacity: 0;
+    transform: translate(0, 4px);
+  }
+
+  25% {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+    transform: translate(4px, -12px);
+  }
+}
+
+.mark {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-weight: 700;
+  /* Scales with the desk, but never below 0.84 of its size on screen. */
+  transform: scale(max(1, calc(0.84 / var(--z, 1))));
+  transform-origin: top right;
+}
+
+/* --bg is translucent on glass themes, so it cannot carry the glyph. */
+.ask {
+  background: var(--needs-bg);
+  color: var(--needs-fg);
+}
+
+.bang {
+  background: var(--danger);
+  color: var(--accent-contrast);
+}
+
+.shells {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+/* A column left of the pad (the desk has 38px each side of it), so monitors never cover the bot. */
+.shells > span {
+  --m: 20px;
+
+  width: var(--m);
+  height: var(--m);
+}
+
+.shells > b {
+  line-height: 1;
+}
+
+.minis {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.minis[data-dim] {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+
+.more {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+:global([data-far]) .name,
+:global([data-far]) .label {
+  visibility: hidden;
+}

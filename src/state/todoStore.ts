@@ -109,6 +109,10 @@ interface TodoState {
   dropProject: (projectId: ProjectId) => void;
 }
 
+/** A project's open (not done) to-dos: what the Floor counts and pins up. */
+export const openTodos = (todos: TodoInfo[] | undefined): TodoInfo[] =>
+  todos?.filter((t) => !t.done) ?? [];
+
 export const useTodoStore = create<TodoState>((set) => ({
   todosByProject: {},
   archivedByProject: {},

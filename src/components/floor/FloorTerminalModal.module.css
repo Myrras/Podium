@@ -1,0 +1,193 @@
+/* Modal's backdrop (colour per theme), without its Esc handler or scaled card. */
+.overlay {
+  composes: overlay from "../Modal.module.css";
+  animation: fade var(--dur-3) var(--ease-out);
+}
+
+/* Glass themes tint their own backdrop faintly; dim the floor like light does.
+   Doubled class outranks Modal's per-theme rules whatever the load order. */
+:global(:root[data-theme^="glass"]) .overlay.overlay {
+  background: color-mix(in srgb, var(--floor-screen) 55%, transparent);
+}
+
+:global(:root[data-theme^="glass"]) .scrim {
+  background: color-mix(in srgb, var(--floor-screen) 40%, transparent);
+}
+
+/* A definite height: TerminalPane's .pane is flex: 1; min-height: 0. */
+.card {
+  composes: glass from global;
+  width: min(1100px, 100vw - 64px);
+  height: min(720px, 100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--pop-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    var(--shadow-lg);
+  position: relative;
+  container-type: inline-size;
+  animation: rise var(--dur-3) var(--ease-out);
+}
+
+/* Glass: --term-bg is transparent there and TerminalPane has no fill, so the
+   terminal shows the card, and the translucent card the room behind it. Lay
+   the fill over the theme canvas (its last layer is a solid colour): opaque,
+   still tinted like the glass islands. */
+:global(:root[data-theme^="glass"]) .card,
+:global(:root[data-theme^="glass"]) .confirm {
+  background:
+    linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* Confirm dialog: covers the card so nothing behind it takes a click. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  animation: fade var(--dur-2) var(--ease-out);
+}
+
+.confirm {
+  composes: glass from global;
+  width: min(360px, 100% - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--pop-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: rise var(--dur-2) var(--ease-out);
+}
+
+.confirmTitle {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.confirmBody {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+/* Header bar: one size for every icon button (TerminalPane's --sp-5 square). */
+.iconBtn {
+  flex-shrink: 0;
+  width: var(--sp-5);
+  height: var(--sp-5);
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.iconBtn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+/* Process actions: Restart, Close. */
+.group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+/* Quiet text buttons, as tall as the icon buttons. */
+.close,
+.next {
+  height: var(--sp-5);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.close {
+  flex-shrink: 0;
+}
+
+.close:hover:not(:disabled),
+.close:focus-visible {
+  background: var(--danger-bg);
+  border-color: transparent;
+  color: var(--danger);
+}
+
+.divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: var(--sp-4);
+  background: var(--border);
+}
+
+/* Navigation: long names end in an ellipsis (full name in the title). */
+.next {
+  max-width: 160px;
+  min-width: 0;
+}
+
+.next:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.next > svg {
+  flex-shrink: 0;
+}
+
+.nextLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Once the status label and branch are gone, Next goes icon-only. */
+@container (max-width: 640px) {
+  .next {
+    width: var(--sp-5);
+    padding: 0;
+  }
+
+  .nextLabel {
+    display: none;
+  }
+}
+
+/* × stands alone at the far right. */
+.hide {
+  margin-left: var(--sp-2);
+}

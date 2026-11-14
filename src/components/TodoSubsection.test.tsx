@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The stores pull in the IPC layer; jsdom has no Tauri bridge.
@@ -15,6 +15,7 @@ import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSelectionStore } from "../lib/selection";
 import { useTodoStore } from "../state/todoStore";
+import { Popover } from "./Popover";
 import { TodoSubsection } from "./TodoSubsection";
 
 const initialTodo = useTodoStore.getState();
@@ -493,5 +494,159 @@ describe("TodoSubsection assigned to-dos", () => {
     fireEvent.click(titleOf("Todo A"), { metaKey: true });
     expect(onOpenTodo).toHaveBeenCalledWith(PROJECT, "a");
     expect(screen.queryByText(/Start agent on/)).not.toBeInTheDocument();
+  });
+
+  it("bare mode has no section title or collapse toggle", () => {
+    seed([todo("a", "Todo A")]);
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(titleOf("Todo A")).toBeInTheDocument();
+    expect(screen.queryByText("To-dos")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("New to-do")).toBeInTheDocument();
+  });
+
+  it("bare mode's + leaves the sidebar's saved collapse state alone", () => {
+    seed([todo("a", "Todo A")]);
+    const setSectionCollapsed = vi.fn();
+    useLayoutStore.setState({ setSectionCollapsed });
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    expect(screen.getByLabelText("New to-do text")).toBeInTheDocument();
+    expect(setSectionCollapsed).not.toHaveBeenCalled();
+  });
+
+  it("Esc cancels adding and marks the key handled, so a popover stays open", () => {
+    seed([todo("a", "Todo A")]);
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    expect(fireEvent.keyDown(input, { key: "Escape" })).toBe(false);
+    expect(screen.queryByLabelText("New to-do text")).toBeNull();
+  });
+
+  const renderBare = () =>
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+  // In a real Popover: its close blurs the focused field before it closes.
+  const renderInPopover = () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="To-dos" onClose={onClose}>
+        <TodoSubsection
+          bare
+          projectId={PROJECT}
+          projectRoot="/fake/root"
+          onOpenTodo={vi.fn()}
+          onPickAgent={vi.fn()}
+        />
+      </Popover>,
+    );
+    return onClose;
+  };
+  const typeAndSubmit = (text: string) => {
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.submit(input.closest("form")!);
+    return input;
+  };
+  const added = () =>
+    vi
+      .mocked(useTodoStore.getState().addTodo)
+      .mock.calls.map((c) => (c as unknown[])[1]);
+
+  it.each([
+    ["adds typed text", "Ship it", ["Ship it"]],
+    ["skips text cancelled with Esc", null, []],
+  ])("on a popover close, %s", (_label, typed, expected) => {
+    seed([]);
+    const onClose = renderInPopover();
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    const input = screen.getByLabelText("New to-do text");
+    input.focus();
+    fireEvent.change(input, { target: { value: ` ${typed ?? "Nope"} ` } });
+    if (typed === null) fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(added()).toEqual(expected);
+  });
+
+  it.each([
+    ["clears the input after a successful add", true, ""],
+    ["keeps the text after a failed add", false, "Ship it"],
+  ])("Enter, then a blur during the add: one add, %s", async (_l, ok, left) => {
+    seed([]);
+    let settle!: (ok: boolean) => void;
+    const addTodo = vi.fn(
+      () => new Promise<boolean>((resolve) => (settle = resolve)),
+    );
+    useTodoStore.setState({ addTodo });
+    renderBare();
+    const input = typeAndSubmit("Ship it");
+    fireEvent.blur(input);
+    expect(addTodo).toHaveBeenCalledTimes(1);
+    await act(async () => settle(ok));
+    expect(addTodo).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("New to-do text")).toHaveValue(left);
+  });
+
+  it("adds it again on a popover close after a failed add", async () => {
+    seed([]);
+    const addTodo = vi.fn(() => Promise.resolve(false));
+    useTodoStore.setState({ addTodo });
+    renderInPopover();
+    typeAndSubmit("Ship it").focus();
+    await act(async () => {});
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(addTodo).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads the list on mount in project mode, not in bare mode", () => {
+    seed([]);
+    const { refresh } = useTodoStore.getState();
+    const { unmount } = renderBare();
+    expect(refresh).not.toHaveBeenCalled();
+    unmount();
+    render(
+      <TodoSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(refresh).toHaveBeenCalledWith(PROJECT);
   });
 });
