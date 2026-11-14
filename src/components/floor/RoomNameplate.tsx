@@ -5,7 +5,7 @@ import { jumpTo } from "../../lib/floor/camera";
 import { GRID, hits, snap } from "../../lib/floor/geometry";
 import { getRooms } from "../../lib/floor/rooms";
 import { startAgentIn } from "../../lib/floor/startAgent";
-import type { RoomModel } from "../../lib/floor/types";
+import type { Rect, RoomModel } from "../../lib/floor/types";
 import { newTerminal } from "../../lib/terminals";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
@@ -26,6 +26,8 @@ interface Drag {
   sy: number;
   xy: [number, number];
   moved: boolean;
+  /** The other rooms, read once at pointerdown. */
+  others: Rect[];
 }
 
 export function RoomNameplate({ room }: { room: RoomModel }) {
@@ -34,13 +36,12 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
   const root = useRef<HTMLDivElement>(null);
   const [bad, setBad] = useState(false);
 
-  const blocked = (x: number, y: number) =>
-    hits(
-      { ...rect, x, y },
-      getRooms()
-        .filter((r) => r.project.id !== project.id)
-        .map((r) => r.rect),
-    );
+  const others = () =>
+    getRooms()
+      .filter((r) => r.project.id !== project.id)
+      .map((r) => r.rect);
+  const blocked = (x: number, y: number, rects = others()) =>
+    hits({ ...rect, x, y }, rects);
   // The room's positioned root moves while dragging.
   const shift = (x: number, y: number) => {
     const el = root.current?.closest<HTMLElement>("[data-room]");
@@ -59,6 +60,7 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
       sy: e.clientY,
       xy: [rect.x, rect.y],
       moved: false,
+      others: others(),
     };
   };
   const onMove = (e: PointerEvent<HTMLButtonElement>) => {
@@ -71,13 +73,13 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
     const z = useFloorStore.getState().camera.z || 1;
     d.xy = snap([rect.x + dx / z, rect.y + dy / z]);
     shift(...d.xy);
-    setBad(blocked(...d.xy));
+    setBad(blocked(...d.xy, d.others));
   };
   const onUp = () => {
     const d = drag.current;
     if (!d?.moved) return; // a plain click is handled by onClick
     const [x, y] = d.xy;
-    if (!blocked(x, y))
+    if (!blocked(x, y, d.others))
       useLayoutStore.getState().setFloorPosition(project.root, [x, y]);
     shift(rect.x, rect.y);
     setBad(false);

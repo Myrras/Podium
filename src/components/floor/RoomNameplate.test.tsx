@@ -7,10 +7,15 @@ import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 
 vi.mock("../../lib/terminals", () => ({ newTerminal: vi.fn() }));
-const m = vi.hoisted(() => ({ rooms: [] as unknown[] }));
+const m = vi.hoisted(() => ({ rooms: [] as unknown[], reads: 0 }));
 vi.mock("../../lib/floor/camera", () => ({ jumpTo: vi.fn() }));
 vi.mock("../../lib/floor/startAgent", () => ({ startAgentIn: vi.fn() }));
-vi.mock("../../lib/floor/rooms", () => ({ getRooms: () => m.rooms }));
+vi.mock("../../lib/floor/rooms", () => ({
+  getRooms: () => {
+    m.reads++;
+    return m.rooms;
+  },
+}));
 
 import { jumpTo } from "../../lib/floor/camera";
 import { newTerminal } from "../../lib/terminals";
@@ -124,6 +129,16 @@ describe("RoomNameplate", () => {
     expect(roomEl.style.transform).toBe("");
     expect(useLayoutStore.getState().floorPositions["/r/a"]).toEqual([120, 0]);
     expect(jumpTo).not.toHaveBeenCalled();
+  });
+
+  it("reads the other rooms once per drag, not per move", () => {
+    render(<RoomNameplate room={a} />);
+    m.reads = 0;
+    drag(130);
+    fireEvent.pointerMove(grip(), { clientX: 260, clientY: 0, pointerId: 1 });
+    fireEvent.pointerMove(grip(), { clientX: 390, clientY: 0, pointerId: 1 });
+    fireEvent.pointerUp(grip(), { pointerId: 1 });
+    expect(m.reads).toBe(1);
   });
 
   it("marks and drops a colliding drag", () => {
