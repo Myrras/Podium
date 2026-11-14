@@ -1,6 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { Popover } from "../components/Popover";
+import { useFloorStore } from "../state/floorStore";
+import { followCamera } from "./floor/follow";
 import { useContextMenu } from "./useContextMenu";
 
 function Row({ onOuter }: { onOuter: () => void }) {
@@ -33,5 +36,26 @@ describe("useContextMenu", () => {
     expect(screen.getByRole("menuitem", { name: "Archive" })).toBeVisible();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("inside a Popover, closes when the popover's follow moves", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    render(
+      <Popover
+        anchor={anchor}
+        title="t"
+        onClose={vi.fn()}
+        follow={followCamera}
+      >
+        <Row onOuter={vi.fn()} />
+      </Popover>,
+    );
+    fireEvent.contextMenu(screen.getByText("Row"));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    act(() => useFloorStore.getState().setCamera({ x: 5, y: 0, z: 1 }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    useFloorStore.getState().reset();
+    anchor.remove();
   });
 });

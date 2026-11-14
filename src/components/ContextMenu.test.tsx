@@ -2,21 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { ContextMenu, clampMenu } from "./ContextMenu";
+import { act } from "react";
+
+import { followCamera } from "../lib/floor/follow";
+import { useFloorStore } from "../state/floorStore";
+import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
-
-const vp = { w: 1000, h: 800 };
-const size = { w: 200, h: 100 };
-
-describe("clampMenu", () => {
-  it("keeps the point when it fits", () => {
-    expect(clampMenu(100, 100, size, vp)).toEqual({ left: 100, top: 100 });
-  });
-  it("stays 6px inside every edge", () => {
-    expect(clampMenu(-5, -5, size, vp)).toEqual({ left: 6, top: 6 });
-    expect(clampMenu(990, 790, size, vp)).toEqual({ left: 794, top: 694 });
-  });
-});
 
 function setup(
   extra: Partial<{ disabled: boolean }> = {},
@@ -83,6 +74,35 @@ describe("ContextMenu", () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.mouseDown(document.body, { button: 2 });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on a wheel outside it and on a window resize, not on a wheel inside", () => {
+    const { onClose } = setup();
+    fireEvent.wheel(screen.getByText("A"));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.wheel(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent(window, new Event("resize"));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes on each move of what it follows (the floor camera)", () => {
+    const onClose = vi.fn();
+    const { unmount } = render(
+      <ContextMenu
+        x={10}
+        y={10}
+        items={[{ label: "A", onSelect: vi.fn() }]}
+        onClose={onClose}
+        follow={followCamera}
+      />,
+    );
+    act(() => useFloorStore.getState().setCamera({ x: 5, y: 0, z: 1 }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    unmount();
+    act(() => useFloorStore.getState().setCamera({ x: 9, y: 0, z: 1 }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    useFloorStore.getState().reset();
   });
 
   it("does not run a disabled item", () => {

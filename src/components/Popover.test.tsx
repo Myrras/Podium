@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { followCamera } from "../lib/floor/follow";
 import { useFloorStore } from "../state/floorStore";
 import { Popover, PopoverSlot, placePopover } from "./Popover";
 
@@ -234,7 +235,7 @@ describe("Popover placement", () => {
   });
 
   /** An anchor whose box the test moves; jsdom has no layout. */
-  function anchored() {
+  function anchored(follow: typeof followCamera | null = followCamera) {
     vi.useFakeTimers({ toFake: ["requestAnimationFrame", "performance"] });
     const raf = vi.spyOn(window, "requestAnimationFrame");
     const anchor = document.createElement("button");
@@ -243,7 +244,12 @@ describe("Popover placement", () => {
     anchor.getBoundingClientRect = () =>
       ({ x, y: 50, width: 40, height: 20 }) as DOMRect;
     render(
-      <Popover anchor={anchor} title="t" onClose={() => {}}>
+      <Popover
+        anchor={anchor}
+        title="t"
+        onClose={() => {}}
+        follow={follow ?? undefined}
+      >
         x
       </Popover>,
     );
@@ -292,5 +298,14 @@ describe("Popover placement", () => {
     fireEvent(window, new Event("resize"));
     expect(left()).toBe("270px");
     expect(raf).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the camera without a follow", () => {
+    const { raf, left, moveTo } = anchored(null);
+    moveTo(300);
+    act(() => useFloorStore.getState().setCamera({ x: 5, y: 0, z: 1 }));
+    vi.advanceTimersByTime(20);
+    expect(raf).not.toHaveBeenCalled();
+    expect(left()).toBe("120px");
   });
 });

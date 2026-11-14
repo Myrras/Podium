@@ -3,6 +3,7 @@ import type { ProcessInfo } from "../../ipc/types";
 import { deskState } from "../../lib/floor/rooms";
 import { formatSince, pillState } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
+import { followCamera } from "../../lib/floor/follow";
 import { useContextMenu } from "../../lib/useContextMenu";
 import { useNow } from "../../lib/useNow";
 import { useFloorStore } from "../../state/floorStore";
@@ -55,7 +56,7 @@ export function Desk({
   const ps = pillState(process.status, process.kind.kind, act);
   const stopped =
     terminal && (ps === "exited" || ps === "crashed" || ps === "notStarted");
-  const menu = useContextMenu();
+  const menu = useContextMenu(followCamera);
   const since = formatSince(act.sinceMs, now);
   const label = terminal
     ? stopped

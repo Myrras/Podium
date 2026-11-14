@@ -1,10 +1,13 @@
-/** A right-click menu: portalled at a point, no backdrop, closes on Esc or an outside mousedown.
+/** A right-click menu: portalled at a point, no backdrop. Closes on Esc, an
+ *  outside mousedown or wheel, a window resize, and each `follow` move (the
+ *  Floor camera), so it never stays at a stale spot.
  *  An item with `confirm` swaps the panel for a compact confirm view first. */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
+import { clampToViewport, type Follow } from "../lib/viewport";
 import styles from "./ContextMenu.module.css";
 
 export type MenuConfirm = { title: string; body: string; action: string };
@@ -21,32 +24,19 @@ export type MenuItem =
 
 type Choice = Exclude<MenuItem, "separator">;
 
-const MARGIN = 6;
-
-/** The point, kept MARGIN inside the viewport. */
-export function clampMenu(
-  x: number,
-  y: number,
-  size: { w: number; h: number },
-  viewport: { w: number; h: number },
-): { left: number; top: number } {
-  const clamp = (v: number, max: number) => Math.max(MARGIN, Math.min(v, max));
-  return {
-    left: clamp(x, viewport.w - size.w - MARGIN),
-    top: clamp(y, viewport.h - size.h - MARGIN),
-  };
-}
-
 export function ContextMenu({
   x,
   y,
   items,
   onClose,
+  follow,
 }: {
   x: number;
   y: number;
   items: MenuItem[];
   onClose: () => void;
+  /** What the point moves with (the Floor camera): the menu closes on each move. */
+  follow?: Follow;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -64,26 +54,30 @@ export function ContextMenu({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const p = clampMenu(
-      x,
-      y,
-      { w: el.offsetWidth, h: el.offsetHeight },
-      { w: window.innerWidth, h: window.innerHeight },
-    );
-    el.style.left = `${p.left}px`;
-    el.style.top = `${p.top}px`;
+    el.style.left = `${clampToViewport(x, el.offsetWidth, window.innerWidth)}px`;
+    el.style.top = `${clampToViewport(y, el.offsetHeight, window.innerHeight)}px`;
     (pending ? cancelRef.current : buttons()[0])?.focus({
       preventScroll: true,
     });
   }, [x, y, pending]);
 
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onCloseRef.current();
+    const close = () => onCloseRef.current();
+    const outside = (e: Event) => {
+      if (!ref.current?.contains(e.target as Node)) close();
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, []);
+    document.addEventListener("mousedown", outside);
+    // Capture: the floor map's own wheel handler may stop it bubbling.
+    window.addEventListener("wheel", outside, { capture: true, passive: true });
+    window.addEventListener("resize", close);
+    const off = follow?.(close);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      window.removeEventListener("wheel", outside, { capture: true });
+      window.removeEventListener("resize", close);
+      off?.();
+    };
+  }, [follow]);
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {

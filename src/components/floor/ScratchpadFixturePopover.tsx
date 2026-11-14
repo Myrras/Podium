@@ -3,6 +3,7 @@ import type { ProjectId } from "../../ipc/types";
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useScratchpadStore } from "../../state/scratchpadStore";
+import { followCamera } from "../../lib/floor/follow";
 import { Popover } from "../Popover";
 import { ScratchpadDetailPane } from "../ScratchpadDetailPane";
 import { ScratchpadSubsection } from "../ScratchpadSubsection";
@@ -32,6 +33,7 @@ export function ScratchpadFixturePopover({
 
   return (
     <Popover
+      follow={followCamera}
       anchor={anchor}
       title={itemId ? undefined : "Scratchpads"}
       count={itemId ? undefined : count}

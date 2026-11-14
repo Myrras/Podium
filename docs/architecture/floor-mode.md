@@ -87,8 +87,16 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `FloorPopovers` looks it up on each render and closes when it is gone, so
   fixtures stay mounted while open. One popover at a time. `Popover` places
   itself on open, on window resize, through a `ResizeObserver` on anchor and
-  popover, and one frame after each camera change; an animated jump is
-  followed with rAF for `MOTION.slow` (`--dur-4`), then the loop stops.
+  popover, and one frame after each move of its optional `follow`
+  subscription; an animated move is followed with rAF for `MOTION.slow`
+  (`--dur-4`), then the loop stops. `Popover` and `ContextMenu` know nothing
+  of the floor: the fixture popovers, `Desk` and `RoomWall` pass
+  `followCamera` (`lib/floor/follow.ts`, fires on each `floorStore` camera
+  change). Both clamp to the window with `clampToViewport` (`lib/viewport.ts`).
+- A right-click menu closes on Esc, an outside mousedown or wheel, a window
+  resize and each `follow` move (pan, zoom or jump), so it never stays at a
+  stale spot. `useContextMenu(follow?)` defaults to the enclosing popover's
+  `follow`, so the to-do and scratchpad rows in a popover close theirs too.
 - A section hidden in `ProjectInfo.sections` hides its fixture (Commands follows
   `terminals`). Services show only when the project has any.
 - To-do and scratchpad popovers fill the `Popover` header and footer through

@@ -2,6 +2,7 @@ import type { MenuItem } from "../ContextMenu";
 import type { ProcessInfo } from "../../ipc/types";
 import { processMenu, scratchpadMenu, todoMenu } from "../../lib/floor/menus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
+import { followCamera } from "../../lib/floor/follow";
 import { useContextMenu } from "../../lib/useContextMenu";
 import type { RoomModel } from "../../lib/floor/types";
 import { useFloorStore } from "../../state/floorStore";
@@ -51,7 +52,7 @@ export function RoomWall({ room }: { room: RoomModel }) {
     (s) => s.scratchpadsByProject[project.id] ?? NO_ITEMS,
   );
   const openTodos = todos.filter((t) => !t.done);
-  const { open: onMenu, element: menu } = useContextMenu();
+  const { open: onMenu, element: menu } = useContextMenu(followCamera);
   const isCrashed = (p: ProcessInfo) => lightOf(p) === "crashed";
   const sorted = [...services].sort(
     (a, b) => Number(isCrashed(b)) - Number(isCrashed(a)),

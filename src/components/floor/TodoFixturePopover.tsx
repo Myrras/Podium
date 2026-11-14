@@ -5,6 +5,7 @@ import type { PickAgent } from "../../lib/todoAgent";
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useTodoStore } from "../../state/todoStore";
+import { followCamera } from "../../lib/floor/follow";
 import { Popover, PopoverSlot } from "../Popover";
 import { TodoDetailPane } from "../TodoDetailPane";
 import { TodoSubsection } from "../TodoSubsection";
@@ -61,6 +62,7 @@ export function TodoFixturePopover({
 
   return (
     <Popover
+      follow={followCamera}
       anchor={anchor}
       title={itemId ? undefined : "To-dos"}
       count={itemId ? undefined : openCount}

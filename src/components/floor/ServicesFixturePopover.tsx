@@ -5,6 +5,7 @@ import { useProcessActivity } from "../../lib/useAgentActivity";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
+import { followCamera } from "../../lib/floor/follow";
 import { Popover } from "../Popover";
 import styles from "./ServicesFixturePopover.module.css";
 
@@ -47,7 +48,12 @@ export function ServicesFixturePopover({
   );
 
   return (
-    <Popover anchor={anchor} title="Services" onClose={closePopover}>
+    <Popover
+      follow={followCamera}
+      anchor={anchor}
+      title="Services"
+      onClose={closePopover}
+    >
       {project?.configError && (
         <p className={styles.error} role="alert">
           {project.configError}

@@ -8,6 +8,7 @@ import { runCommand } from "../../lib/terminals";
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
 import { EditIcon } from "../icons";
+import { followCamera } from "../../lib/floor/follow";
 import { Popover, PopoverSlot } from "../Popover";
 import { TerminalCommandsModal } from "../TerminalCommandsModal";
 import sidebarStyles from "../Sidebar.module.css";
@@ -95,6 +96,7 @@ export function CommandsFixturePopover({
   return (
     <>
       <Popover
+        follow={followCamera}
         anchor={anchor}
         title="Commands"
         width={320}

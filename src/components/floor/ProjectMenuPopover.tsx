@@ -13,6 +13,7 @@ import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
 import { useThemeStore } from "../../state/themeStore";
 import { useWorktreeStore } from "../../state/worktreeStore";
+import { followCamera } from "../../lib/floor/follow";
 import { Popover } from "../Popover";
 import styles from "./ProjectMenuPopover.module.css";
 
@@ -117,6 +118,7 @@ export function ProjectMenuPopover({
     };
     return (
       <Popover
+        follow={followCamera}
         anchor={anchor}
         title={wt.name}
         onClose={close}
@@ -187,7 +189,12 @@ export function ProjectMenuPopover({
   }
 
   return (
-    <Popover anchor={anchor} title={project.name} onClose={close}>
+    <Popover
+      follow={followCamera}
+      anchor={anchor}
+      title={project.name}
+      onClose={close}
+    >
       <div className={styles.menu}>
         <label className={styles.row}>
           <span>Name</span>

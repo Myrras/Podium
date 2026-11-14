@@ -13,18 +13,20 @@ import { createPortal } from "react-dom";
 
 import type { Rect, Size } from "../lib/floor/types";
 import { MOTION } from "../lib/motion";
-import { useFloorStore } from "../state/floorStore";
+import { clampToViewport, type Follow, MARGIN } from "../lib/viewport";
 import { CaretIcon, CloseIcon } from "./icons";
 import styles from "./Popover.module.css";
 
 const GAP = 8;
-const MARGIN = 6;
 
 type Slots = { header: HTMLElement | null; footer: HTMLElement | null };
-const SlotContext = createContext<Slots | null>(null);
+const SlotContext = createContext<(Slots & { follow?: Follow }) | null>(null);
 
 /** Whether the caller sits inside a Popover (its header/footer slots exist). */
 export const useInPopover = () => useContext(SlotContext) !== null;
+
+/** The enclosing Popover's `follow`, so a right-click menu inside it closes when it moves. */
+export const usePopoverFollow = () => useContext(SlotContext)?.follow;
 
 /**
  * Renders children into the enclosing Popover's header (left of ×) or footer,
@@ -50,10 +52,10 @@ export function placePopover(
   size: Size,
   viewport: Size,
 ): { left: number; top: number; above: boolean } {
-  const clamp = (v: number, max: number) => Math.max(MARGIN, Math.min(v, max));
-  const left = clamp(
+  const left = clampToViewport(
     anchor.x + anchor.w / 2 - size.w / 2,
-    viewport.w - size.w - MARGIN,
+    size.w,
+    viewport.w,
   );
   const below = anchor.y + anchor.h + GAP;
   const above = below + size.h + MARGIN > viewport.h;
@@ -70,6 +72,7 @@ export function Popover({
   backLabel,
   width = 360,
   flush = false,
+  follow,
   children,
 }: {
   anchor: HTMLElement | null;
@@ -83,6 +86,8 @@ export function Popover({
   width?: number;
   /** No body padding: the content brings its own (full-width rows). */
   flush?: boolean;
+  /** What the anchor moves with (the Floor camera); without it, only resizes re-place. */
+  follow?: Follow;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -92,8 +97,8 @@ export function Popover({
   onCloseRef.current = onClose;
 
   // Placed on open, on window resize, when the anchor or popover resizes, and
-  // after each camera move; an animated jump is followed frame by frame for
-  // its --dur-4 transition (MOTION.slow), then the loop stops.
+  // after each `follow` move; an animated one (a camera jump) is followed frame
+  // by frame for its --dur-4 transition (MOTION.slow), then the loop stops.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!anchor || !el) return;
@@ -117,20 +122,18 @@ export function Popover({
       el.dataset.above = String(p.above);
       el.style.visibility = "visible";
     };
-    const follow = () => {
+    const tick = () => {
       raf = 0;
       place();
-      if (performance.now() < until) raf = requestAnimationFrame(follow);
+      if (performance.now() < until) raf = requestAnimationFrame(tick);
     };
     // At least one frame later, so FloorMap has written the layer transform first.
-    const onCamera = (animate: boolean) => {
+    const onMove = (animate: boolean) => {
       until = Math.max(until, performance.now() + (animate ? MOTION.slow : 0));
-      if (!raf) raf = requestAnimationFrame(follow);
+      if (!raf) raf = requestAnimationFrame(tick);
     };
     place();
-    const off = useFloorStore.subscribe((s, prev) => {
-      if (s.camera !== prev.camera) onCamera(s.animate);
-    });
+    const off = follow?.(onMove);
     window.addEventListener("resize", place);
     // jsdom has no ResizeObserver.
     const ro =
@@ -139,11 +142,11 @@ export function Popover({
     ro?.observe(el);
     return () => {
       cancelAnimationFrame(raf);
-      off();
+      off?.();
       window.removeEventListener("resize", place);
       ro?.disconnect();
     };
-  }, [anchor]);
+  }, [anchor, follow]);
 
   // Focus in, so Esc works right after the click on the fixture; hand it back on close.
   useLayoutEffect(() => {
@@ -219,7 +222,7 @@ export function Popover({
           <CloseIcon />
         </button>
       </header>
-      <SlotContext.Provider value={{ header, footer }}>
+      <SlotContext.Provider value={{ header, footer, follow }}>
         <div className={styles.body} data-flush={flush || undefined}>
           {children}
         </div>
