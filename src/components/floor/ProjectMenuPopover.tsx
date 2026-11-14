@@ -75,14 +75,16 @@ export function ProjectMenuPopover({
   if (!project) return null;
   const close = closePopover;
   const wt = itemId ? worktrees?.find((w) => w.name === itemId) : undefined;
-
-  if (wt) {
-    const agent = processes.find(
+  const agentOf = (w: WorktreeInfo) =>
+    processes.find(
       (p) =>
         p.projectId === projectId &&
         p.kind.kind === "agent" &&
-        p.worktree === wt.name,
+        p.worktree === w.name,
     );
+
+  if (wt) {
+    const agent = agentOf(wt);
     // Asks inline; the buttons resolve it.
     const confirmForce = (name: string) =>
       new Promise<boolean>((resolve) => {
@@ -174,14 +176,6 @@ export function ProjectMenuPopover({
       </Popover>
     );
   }
-
-  const agentOf = (w: WorktreeInfo) =>
-    processes.find(
-      (p) =>
-        p.projectId === projectId &&
-        p.kind.kind === "agent" &&
-        p.worktree === w.name,
-    );
 
   return (
     <Popover anchor={anchor} title={project.name} onClose={close}>

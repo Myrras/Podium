@@ -27,11 +27,10 @@ import {
 import { formatRelativeTime, formatUpdatedAt } from "../lib/dateFormat";
 import { scratchpadMenu } from "../lib/floor/menus";
 import { textPreview } from "../lib/textPreview";
+import { useContextMenu } from "../lib/useContextMenu";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
-import { ContextMenu } from "./ContextMenu";
-import type { MenuItem } from "./ContextMenu";
 import { CopyIdButton } from "./CopyIdButton";
 import {
   AddIcon,
@@ -181,11 +180,7 @@ export function ScratchpadSubsection({
       : null;
 
   const [archiveOpen, setArchiveOpen] = useState(false);
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    items: MenuItem[];
-  } | null>(null);
+  const menu = useContextMenu();
 
   // Multi-select state: the chosen ids and the anchor row for Shift+range.
   // Multi-select lives in the shared selection store — the assistant
@@ -327,15 +322,7 @@ export function ScratchpadSubsection({
               bare={bare}
               onContextMenu={
                 bare
-                  ? (e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        items: scratchpadMenu(projectId, sp),
-                      });
-                    }
+                  ? (e) => menu.open(e, scratchpadMenu(projectId, sp))
                   : undefined
               }
               multiSelected={selected.has(sp.id)}
@@ -380,7 +367,7 @@ export function ScratchpadSubsection({
           </button>
         </div>
       )}
-      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
+      {menu.element}
       <ScratchpadArchiveModal
         open={archiveOpen}
         projectId={projectId}

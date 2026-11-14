@@ -1,14 +1,14 @@
-import { type ReactElement, useState } from "react";
+import type { ReactElement } from "react";
 import type { ProcessInfo } from "../../ipc/types";
 import { deskState } from "../../lib/floor/rooms";
 import { formatSince, pillState } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
+import { useContextMenu } from "../../lib/useContextMenu";
 import { useNow } from "../../lib/useNow";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { DESK_H } from "../../lib/floor/geometry";
 import { openProcess, processMenu } from "../../lib/floor/menus";
-import { ContextMenu } from "../ContextMenu";
 import { Bot, MiniBot, Monitor, TerminalDeskArt } from "./Bot";
 import styles from "./Desk.module.css";
 
@@ -55,7 +55,7 @@ export function Desk({
   const ps = pillState(process.status, process.kind.kind, act);
   const stopped =
     terminal && (ps === "exited" || ps === "crashed" || ps === "notStarted");
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const menu = useContextMenu();
   const since = formatSince(act.sinceMs, now);
   const label = terminal
     ? stopped
@@ -88,10 +88,7 @@ export function Desk({
         aria-label={`${process.name}, ${label}`}
         title={`${process.name}, ${label}`}
         onClick={() => openProcess(process.id)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setMenu({ x: e.clientX, y: e.clientY });
-        }}
+        onContextMenu={(e) => menu.open(e, processMenu(process, act))}
         onMouseEnter={hover(process.id)}
         onMouseLeave={hover(null)}
         onFocus={hover(process.id)}
@@ -155,14 +152,7 @@ export function Desk({
         <span className={styles.name}>{process.name}</span>
         <span className={styles.label}>{label}</span>
       </button>
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          items={processMenu(process, act)}
-          onClose={() => setMenu(null)}
-        />
-      )}
+      {menu.element}
     </>
   );
 }

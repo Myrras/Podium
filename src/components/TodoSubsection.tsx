@@ -26,14 +26,13 @@ import {
   useSelectionStore,
 } from "../lib/selection";
 import { textPreview } from "../lib/textPreview";
+import { useContextMenu } from "../lib/useContextMenu";
 import { startAgentOnTodo } from "../lib/todoAgent";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
 import { useTodoStore } from "../state/todoStore";
 import { ArchiveModal } from "./ArchiveModal";
-import { ContextMenu } from "./ContextMenu";
-import type { MenuItem } from "./ContextMenu";
 import { CopyIdButton } from "./CopyIdButton";
 import {
   AddIcon,
@@ -219,11 +218,7 @@ export function TodoSubsection({
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    items: MenuItem[];
-  } | null>(null);
+  const menu = useContextMenu();
   const inputRef = useRef<HTMLInputElement>(null);
   // Typed but not yet added: closing the Floor popover unmounts the input
   // without a blur, so the cleanup adds it. Esc and submit clear it.
@@ -457,15 +452,7 @@ export function TodoSubsection({
               onArchive={() => void setTodoArchived(projectId, todo.id, true)}
               onContextMenu={
                 bare
-                  ? (e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        items: todoMenu(projectId, todo),
-                      });
-                    }
+                  ? (e) => menu.open(e, todoMenu(projectId, todo))
                   : undefined
               }
             />
@@ -500,7 +487,7 @@ export function TodoSubsection({
           </button>
         </div>
       )}
-      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
+      {menu.element}
       <ArchiveModal
         open={archiveOpen}
         projectId={projectId}
