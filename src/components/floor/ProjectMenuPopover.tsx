@@ -36,7 +36,9 @@ export function ProjectMenuPopover({
   const themeMode = useThemeStore((s) => s.mode);
   const { closePopover, setPopoverItem } = useFloorStore.getState();
 
-  const [draft, setDraft] = useState(project?.name ?? "");
+  // The name being edited; null shows the store's name (after a save too, so a
+  // blanked name shows the folder or config name again).
+  const [draft, setDraft] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   // The worktree awaiting a "discard changes" answer, and how to give it.
   const [dirty, setDirty] = useState<string | null>(null);
@@ -52,7 +54,15 @@ export function ProjectMenuPopover({
     const current = useProjectStore
       .getState()
       .projects.find((p) => p.id === projectId);
-    if (next !== null && current) commitProjectName(current, next);
+    if (next === null || !current) return;
+    void commitProjectName(current, next).finally(() => {
+      if (pendingName.current === null) setDraft(null);
+    });
+  };
+  // Remove project drops an unsaved name: no rename for a project being removed.
+  const cancelRename = () => {
+    pendingName.current = null;
+    setDraft(null);
   };
 
   // Commit on the native `change` event: React's onChange fires on every drag tick.
@@ -198,7 +208,7 @@ export function ProjectMenuPopover({
           <input
             type="text"
             aria-label="Project name"
-            value={draft}
+            value={draft ?? project.name}
             onChange={(e) => {
               setDraft(e.target.value);
               pendingName.current = e.target.value;
@@ -293,7 +303,12 @@ export function ProjectMenuPopover({
           <button
             type="button"
             className={`ghost ${styles.danger}`}
-            onClick={() => setConfirmRemove(true)}
+            // Before the name field's blur, which would save it.
+            onMouseDown={cancelRename}
+            onClick={() => {
+              cancelRename();
+              setConfirmRemove(true);
+            }}
           >
             Remove project
           </button>

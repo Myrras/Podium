@@ -146,6 +146,49 @@ describe("ProjectMenuPopover", () => {
     expect(m.rename).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the store's name again after a save, also for a blanked one", async () => {
+    let finish!: () => void;
+    m.rename.mockImplementation(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    setup();
+    const input = screen.getByLabelText("Project name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(m.rename).toHaveBeenCalledWith("p1", null);
+    // The override is gone: the store now holds the folder name.
+    act(() =>
+      useProjectStore.setState({
+        projects: [{ ...project, name: "acme-dir" }],
+      }),
+    );
+    await act(async () => finish());
+    expect(input.value).toBe("acme-dir");
+
+    // A failed rename shows the unchanged store name.
+    m.rename.mockResolvedValueOnce(undefined);
+    fireEvent.change(input, { target: { value: "Beta" } });
+    fireEvent.blur(input);
+    await act(async () => {});
+    expect(input.value).toBe("acme-dir");
+  });
+
+  it("Remove project drops an unsaved name edit: no rename for a removed project", () => {
+    setup();
+    const input = screen.getByLabelText("Project name") as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: "Gamma" } });
+    const remove = screen.getByText("Remove project");
+    // A real mousedown blurs the field after its handlers ran.
+    fireEvent.mouseDown(remove);
+    input.blur();
+    fireEvent.click(remove);
+    fireEvent.click(screen.getByText("Remove"));
+    expect(m.close).toHaveBeenCalledWith("p1");
+    expect(m.rename).not.toHaveBeenCalled();
+    expect(input.value).toBe("Acme");
+  });
+
   it("commits the colour on the native change event only", () => {
     setup();
     const el = screen.getByLabelText("Project colour") as HTMLInputElement;
