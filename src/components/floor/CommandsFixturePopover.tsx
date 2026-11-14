@@ -13,6 +13,9 @@ import { TerminalCommandsModal } from "../TerminalCommandsModal";
 import sidebarStyles from "../Sidebar.module.css";
 import styles from "./CommandsFixturePopover.module.css";
 
+const keyOf = (c: { name: string; command: string }) =>
+  `${c.name}\t${c.command}`;
+
 export function CommandsFixturePopover({
   projectId,
   anchor,
@@ -31,7 +34,9 @@ export function CommandsFixturePopover({
     !!project,
   );
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(-1);
+  // The highlighted command by identity: recipes load in front of the saved
+  // commands later, which would shift an index.
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const q = query.trim().toLowerCase();
@@ -44,6 +49,10 @@ export function CommandsFixturePopover({
     : commands;
   const hasList = !!project && commands.length > 0;
   const rowId = (i: number) => `${listId}-${i}`;
+  const active =
+    activeKey === null ? -1 : shown.findIndex((c) => keyOf(c) === activeKey);
+  // The highlighted command is gone: clear the highlight.
+  if (activeKey !== null && active < 0) setActiveKey(null);
 
   // After Popover's own focus-in (a layout effect), so the field wins.
   useEffect(() => {
@@ -59,7 +68,7 @@ export function CommandsFixturePopover({
     closePopover();
   };
   const move = (i: number) => {
-    setActive(i);
+    setActiveKey(keyOf(shown[i]));
     document.getElementById(rowId(i))?.scrollIntoView?.({ block: "nearest" });
   };
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -67,7 +76,7 @@ export function CommandsFixturePopover({
       e.preventDefault();
       e.stopPropagation();
       setQuery("");
-      setActive(-1);
+      setActiveKey(null);
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (shown.length === 0) return;
@@ -120,7 +129,7 @@ export function CommandsFixturePopover({
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setActive(-1);
+                setActiveKey(null);
               }}
               onKeyDown={onKeyDown}
             />

@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const recipes = vi.hoisted(() => vi.fn());
@@ -116,6 +122,41 @@ describe("CommandsFixturePopover", () => {
       const rows = ["just build", "pnpm dev"];
       expect(rows).toContain(run.mock.calls[0][1]);
       expect(run.mock.calls[0][1]).toBe("pnpm dev");
+    });
+
+    it("keeps the highlight on the same command when recipes load in front", async () => {
+      let resolve!: (r: string[]) => void;
+      recipes.mockReturnValue(new Promise((r) => (resolve = r)));
+      renderPopover();
+      await screen.findByText("Dev");
+      fireEvent.keyDown(search(), { key: "ArrowDown" });
+      await act(async () => resolve(["build", "test"]));
+      expect(screen.getByText("build")).toBeTruthy();
+      fireEvent.keyDown(search(), { key: "Enter" });
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "p1" }),
+        "pnpm dev",
+        "Dev",
+      );
+    });
+
+    it("clears the highlight when its command goes away", async () => {
+      renderPopover();
+      await screen.findByText("Dev");
+      fireEvent.keyDown(search(), { key: "ArrowUp" }); // the last row: Dev
+      expect(search().getAttribute("aria-activedescendant")).not.toBeNull();
+      act(() =>
+        useTerminalCommandsStore.setState({
+          customByRoot: { [project.root]: [] },
+        }),
+      );
+      expect(search().getAttribute("aria-activedescendant")).toBeNull();
+      fireEvent.keyDown(search(), { key: "Enter" });
+      expect(run).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "p1" }),
+        "just build",
+        "build",
+      );
     });
 
     it("runs the first match on Enter without a highlight", async () => {
