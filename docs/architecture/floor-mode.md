@@ -80,6 +80,9 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 - Pan starts from a pointerdown whose target is outside
   `button, [role="button"], a, input, textarea, select, [data-no-pan]`, after
   4 px. Every clickable thing on the map is a `<button>` or has `data-no-pan`.
+- A room moves by dragging its nameplate (snapped to the grid, a colliding
+  spot is dropped) or with the arrow keys on it. A cancelled drag
+  (`pointercancel`) snaps back and saves nothing.
 - Popovers anchor on `data-fixture="<projectId>:<todos|scratchpads|commands|services|menu>"`;
   `FloorPopovers` looks it up on each render and closes when it is gone, so
   fixtures stay mounted while open. One popover at a time. `Popover` places

@@ -78,15 +78,15 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
     shift(...d.xy);
     setBad(blocked(...d.xy, d.others));
   };
-  // Also handles pointercancel: always ends the drag, so a later hover move
-  // cannot keep moving the room.
-  const onUp = () => {
+  // Also ends a cancelled drag (`save` false): the room snaps back unsaved,
+  // and a later hover move cannot keep moving it.
+  const onUp = (save: boolean) => {
     const d = drag.current;
     drag.current = null;
     if (!d?.moved) return; // a plain click is handled by onClick
     suppressClick.current = true;
     const [x, y] = d.xy;
-    if (!blocked(x, y, d.others))
+    if (save && !blocked(x, y, d.others))
       useLayoutStore.getState().setFloorPosition(project.root, [x, y]);
     shift(rect.x, rect.y);
     setBad(false);
@@ -114,8 +114,8 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
         data-no-pan
         onPointerDown={onDown}
         onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={onUp}
+        onPointerUp={() => onUp(true)}
+        onPointerCancel={() => onUp(false)}
         onClick={onClick}
         onKeyDown={onKey}
       >

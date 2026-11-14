@@ -150,6 +150,20 @@ describe("RoomNameplate", () => {
     expect(jumpTo).toHaveBeenCalledTimes(1);
   });
 
+  it("snaps a cancelled drag back without saving it", () => {
+    const { container } = render(
+      <div data-room="a">
+        <RoomNameplate room={a} />
+      </div>,
+    );
+    const roomEl = container.firstElementChild as HTMLElement;
+    drag(130);
+    expect(roomEl.style.transform).toBe("translate(120px, 0px)");
+    fireEvent.pointerCancel(grip(), { pointerId: 1 });
+    expect(roomEl.style.transform).toBe("");
+    expect(useLayoutStore.getState().floorPositions["/r/a"]).toBeUndefined();
+  });
+
   it("reads the other rooms once per drag, not per move", () => {
     render(<RoomNameplate room={a} />);
     m.reads = 0;
