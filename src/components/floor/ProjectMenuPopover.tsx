@@ -38,10 +38,10 @@ export function ProjectMenuPopover({
   const [draft, setDraft] = useState(project?.name ?? "");
   const [confirmRemove, setConfirmRemove] = useState(false);
   // The worktree awaiting a "discard changes" answer, and how to give it.
-  const [dirty, setDirty] = useState<{
-    name: string;
-    answer: (discard: boolean) => void;
-  } | null>(null);
+  const [dirty, setDirty] = useState<string | null>(null);
+  const pendingAnswer = useRef<((discard: boolean) => void) | null>(null);
+  // Closing the popover answers "keep", so removeWorktree never hangs.
+  useEffect(() => () => pendingAnswer.current?.(false), []);
   const [removing, setRemoving] = useState(false);
   const colorRef = useRef<HTMLInputElement>(null);
   // An edited name not yet saved; Esc closes the popover without a blur, so unmount saves it.
@@ -87,10 +87,13 @@ export function ProjectMenuPopover({
     const confirmForce = (name: string) =>
       new Promise<boolean>((resolve) => {
         setRemoving(false);
-        setDirty({ name, answer: resolve });
+        pendingAnswer.current?.(false);
+        pendingAnswer.current = resolve;
+        setDirty(name);
       });
     const answer = (discard: boolean) => {
-      dirty?.answer(discard);
+      pendingAnswer.current?.(discard);
+      pendingAnswer.current = null;
       setDirty(null);
       if (discard) setRemoving(true);
     };
@@ -136,7 +139,7 @@ export function ProjectMenuPopover({
             Open a terminal here
           </button>
           {!wt.inUse &&
-            (dirty?.name === wt.name ? (
+            (dirty === wt.name ? (
               <div className={styles.confirm}>
                 <span>{dirtyWorktreeQuestion(wt.name)}</span>
                 <div className={styles.row}>

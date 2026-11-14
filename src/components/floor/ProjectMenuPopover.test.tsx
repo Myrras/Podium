@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
   color: vi.fn(),
   close: vi.fn(),
   reload: vi.fn(),
+  removals: [] as Promise<boolean>[],
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../ipc/commands", () => ({
@@ -21,6 +22,18 @@ vi.mock("../../ipc/commands", () => ({
 }));
 vi.mock("../../lib/terminals", () => ({ newTerminal: m.newTerminal }));
 vi.mock("../../state/toastStore", () => ({ toastError: vi.fn() }));
+// Records each removal's promise so a test can see it settle.
+vi.mock("../../lib/worktrees", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../lib/worktrees")>();
+  return {
+    ...real,
+    removeWorktree: (...args: Parameters<typeof real.removeWorktree>) => {
+      const p = real.removeWorktree(...args);
+      m.removals.push(p);
+      return p;
+    },
+  };
+});
 
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
@@ -248,6 +261,25 @@ describe("ProjectMenuPopover", () => {
     expect(
       (screen.getByText("Remove worktree") as HTMLButtonElement).disabled,
     ).toBe(false);
+  });
+
+  it("worktree view: closing with the dirty question open answers no", async () => {
+    m.worktreeRemove.mockRejectedValueOnce({
+      kind: "worktreeDirty",
+      message: "dirty",
+    });
+    m.removals.length = 0;
+    const { unmount } = setup("wt-a");
+    await act(async () => {
+      fireEvent.click(screen.getByText("Remove worktree"));
+    });
+    expect(screen.getByText(/uncommitted changes/)).toBeTruthy();
+    let result: boolean | undefined;
+    void m.removals[0].then((r) => (result = r));
+    unmount();
+    await act(async () => {});
+    expect(result).toBe(false);
+    expect(m.worktreeRemove).toHaveBeenCalledTimes(1);
   });
 
   it("worktree view: in-use worktree has the agent and no remove", () => {
