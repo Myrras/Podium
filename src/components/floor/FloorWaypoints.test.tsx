@@ -1,27 +1,28 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { Profiler } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectId } from "../../ipc/types";
 import type { RoomModel } from "../../lib/floor/types";
+import { waypoints } from "../../lib/floor/waypoints";
 import { useFloorStore } from "../../state/floorStore";
 import { FloorWaypoints } from "./FloorWaypoints";
 
 const jumpTo = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/floor/camera", () => ({ jumpTo }));
-vi.mock("../../lib/floor/rooms", () => ({
-  useRooms: () => [
-    {
-      project: {
-        id: "p1" as ProjectId,
-        name: "Alpha",
-        iconInitials: "AL",
-        color: null,
-      },
-      rect: { x: 3000, y: 0, w: 400, h: 400 },
-      needs: 2,
-      crashed: 1,
-    } as unknown as RoomModel,
-  ],
-}));
+const rooms = vi.hoisted(() => [
+  {
+    project: {
+      id: "p1" as ProjectId,
+      name: "Alpha",
+      iconInitials: "AL",
+      color: null,
+    },
+    rect: { x: 3000, y: 0, w: 400, h: 400 },
+    needs: 2,
+    crashed: 1,
+  },
+]);
+vi.mock("../../lib/floor/rooms", () => ({ useRooms: () => rooms }));
 
 describe("FloorWaypoints", () => {
   beforeEach(() => {
@@ -39,5 +40,37 @@ describe("FloorWaypoints", () => {
     });
     fireEvent.click(btn);
     expect(jumpTo).toHaveBeenCalledWith("p1");
+  });
+
+  it("moves markers on a pan without re-rendering, animating only jumps", () => {
+    const commits = vi.fn();
+    render(
+      <Profiler id="w" onRender={commits}>
+        <FloorWaypoints />
+      </Profiler>,
+    );
+    const marker = screen.getByRole("button", { name: /Go to Alpha/ });
+    const at = (camera: { x: number; y: number; z: number }) => {
+      const [m] = waypoints(rooms as unknown as RoomModel[], camera, {
+        w: 1000,
+        h: 600,
+      });
+      return `translate(${m.x}px, ${m.y}px)`;
+    };
+    expect(marker.style.transform).toBe(at({ x: 0, y: 0, z: 1 }));
+    commits.mockClear();
+
+    const pan = { x: -10, y: 120, z: 1 };
+    act(() => useFloorStore.getState().setCamera(pan));
+    expect(commits).not.toHaveBeenCalled();
+    expect(marker.style.transform).toBe(at(pan));
+    expect(marker.hasAttribute("data-animate")).toBe(false);
+
+    act(() =>
+      useFloorStore
+        .getState()
+        .setCamera({ x: -20, y: 0, z: 1 }, { animate: true }),
+    );
+    expect(marker.hasAttribute("data-animate")).toBe(true);
   });
 });

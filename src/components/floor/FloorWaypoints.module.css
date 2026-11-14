@@ -13,6 +13,9 @@
   background: none;
   pointer-events: auto;
   cursor: pointer;
+}
+/* FloorWaypoints sets it only for an animated camera change, so a pan does not trail. */
+.marker[data-animate] {
   transition: transform var(--dur-3) var(--ease-out);
 }
 /* Centres the marker on the point from waypoints(). */
@@ -39,6 +42,7 @@
   border-left: 10px solid var(--text);
   border-top: 6px solid transparent;
   border-bottom: 6px solid transparent;
+  transform: rotate(var(--angle, 0rad));
 }
 .badge {
   min-width: 20px;

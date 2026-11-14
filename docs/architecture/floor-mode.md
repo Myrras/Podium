@@ -66,7 +66,9 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   and writes the world layer's `transform`, `--z` and `data-far` (z < 0.4;
   labels hide with `:global([data-far])`). Only transform and opacity animate;
   `--z` is registered with `@property` so it animates with the layer, and
-  nameplates and desk marks counter-scale by `1 / --z`.
+  nameplates and desk marks counter-scale by `1 / --z`. `FloorWaypoints` does
+  the same: React renders the set of markers, a store subscription writes their
+  positions, and they transition only when `animate` is set.
 - Pan starts from a pointerdown whose target is outside
   `button, [role="button"], a, input, textarea, select, [data-no-pan]`, after
   4 px. Every clickable thing on the map is a `<button>` or has `data-no-pan`.
