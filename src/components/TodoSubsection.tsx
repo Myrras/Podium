@@ -358,7 +358,8 @@ export function TodoSubsection({
         aria-label="New to-do"
         title="New to-do"
         onClick={() => {
-          setCollapsed(false);
+          // bare (a Floor popover) never touches the sidebar's saved collapse state.
+          if (!bare) setCollapsed(false);
           setAdding(true);
         }}
       >

@@ -288,7 +288,8 @@ export function ScratchpadSubsection({
         aria-label="New scratchpad"
         title="New scratchpad"
         onClick={() => {
-          setCollapsed(false);
+          // bare (a Floor popover) never touches the sidebar's saved collapse state.
+          if (!bare) setCollapsed(false);
           void addAndOpen();
         }}
       >

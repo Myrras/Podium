@@ -511,6 +511,24 @@ describe("TodoSubsection assigned to-dos", () => {
     expect(screen.getByLabelText("New to-do")).toBeInTheDocument();
   });
 
+  it("bare mode's + leaves the sidebar's saved collapse state alone", () => {
+    seed([todo("a", "Todo A")]);
+    const setSectionCollapsed = vi.fn();
+    useLayoutStore.setState({ setSectionCollapsed });
+    render(
+      <TodoSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenTodo={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("New to-do"));
+    expect(screen.getByLabelText("New to-do text")).toBeInTheDocument();
+    expect(setSectionCollapsed).not.toHaveBeenCalled();
+  });
+
   it("Esc cancels adding and marks the key handled, so a popover stays open", () => {
     seed([todo("a", "Todo A")]);
     render(
