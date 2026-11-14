@@ -95,7 +95,11 @@ export function TerminalPane({
 
   return (
     <div className={styles.pane}>
-      <header className={styles.header}>
+      <header
+        className={
+          trailing ? `${styles.header} ${styles.slotted}` : styles.header
+        }
+      >
         {leading ?? <TerminalIcon className={styles.kindIcon} />}
         {editing ? (
           <input

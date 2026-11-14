@@ -19,7 +19,15 @@ import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
-import { CloseIcon, RestartIcon, RunIcon, StopIcon } from "../icons";
+import { closeConfirm, closeProcess, stopConfirm } from "../../lib/floor/menus";
+import {
+  CloseIcon,
+  DeleteIcon,
+  NextIcon,
+  RestartIcon,
+  RunIcon,
+  StopIcon,
+} from "../icons";
 import { TerminalPane } from "../TerminalPane";
 import styles from "./FloorTerminalModal.module.css";
 
@@ -61,7 +69,6 @@ export function FloorTerminalModal() {
   const startProcess = useProcessStore((s) => s.startProcess);
   const stopProcess = useProcessStore((s) => s.stopProcess);
   const restartProcess = useProcessStore((s) => s.restartProcess);
-  const removeProcess = useProcessStore((s) => s.removeProcess);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   // A question about one process never carries over to the next one shown.
   const [askedFor, setAskedFor] = useState({ terminalId, openSubagentId });
@@ -85,27 +92,11 @@ export function FloorTerminalModal() {
   if (!shown) return null;
   const close = subagent ? clearOpenSubagent : closeTerminal;
 
-  const kind = shown.kind.kind;
   const rename = (name: string | null) => {
     // The store cannot clear a name: a blank one keeps the current name.
     if (name !== null) void renameProcess(shown.id, name);
   };
-  const hide = (
-    <button
-      type="button"
-      className="ghost"
-      aria-label="Hide terminal"
-      title="Hide (keeps running)"
-      onClick={close}
-    >
-      <CloseIcon />
-    </button>
-  );
-  const bar: Bar = subagent
-    ? { trailing: hide }
-    : kind === "agent"
-      ? agentBar(shown, hide)
-      : terminalBar(shown, hide);
+  const actions = subagent ? null : processActions(shown);
 
   return createPortal(
     <div
@@ -124,8 +115,26 @@ export function FloorTerminalModal() {
       >
         <TerminalPane
           process={shown}
-          leading={bar.leading}
-          trailing={bar.trailing}
+          leading={actions?.lifecycle}
+          trailing={
+            <>
+              {actions?.process && (
+                <>
+                  <span className={styles.group}>{actions.process}</span>
+                  <span className={styles.divider} aria-hidden="true" />
+                </>
+              )}
+              {!subagent && <NextNeedsYou currentId={shown.id} />}
+              <IconButton
+                className={styles.hide}
+                label={`Hide ${shown.name}`}
+                title="Hide (keeps running)"
+                onClick={close}
+              >
+                <CloseIcon />
+              </IconButton>
+            </>
+          }
           onRename={subagent ? undefined : rename}
           hideActions={!subagent}
         />
@@ -137,75 +146,27 @@ export function FloorTerminalModal() {
     document.body,
   );
 
-  function agentBar(p: ProcessInfo, hideBtn: ReactNode): Bar {
-    const ended = p.status.state === "exited";
-    return {
-      leading: isActive(p.status) ? (
-        <IconButton
-          label={`Stop ${p.name}`}
-          title="Stop"
-          onClick={() =>
-            setConfirm({
-              title: `Stop ${p.name}?`,
-              body: "The session ends. You can resume it later.",
-              action: "Stop",
-              run: () => void stopProcess(p.id),
-            })
-          }
-        >
-          <StopIcon />
-        </IconButton>
-      ) : (
-        <IconButton
-          label={`Resume ${p.name}`}
-          title="Resume session"
-          onClick={() => void startProcess(p.id)}
-        >
-          <RunIcon />
-        </IconButton>
-      ),
-      trailing: (
-        <>
-          <NextNeedsYou currentId={p.id} />
-          {ended && (
-            <button
-              type="button"
-              className="danger"
-              onClick={() =>
-                setConfirm({
-                  title: "Clear the desk?",
-                  body: "The agent is removed from the floor.",
-                  action: "Clear the desk",
-                  run: () => void removeProcess(p.id).then(closeTerminal),
-                })
-              }
-            >
-              Clear the desk
-            </button>
-          )}
-          {hideBtn}
-        </>
-      ),
-    };
-  }
-
-  function terminalBar(p: ProcessInfo, hideBtn: ReactNode): Bar {
+  /**
+   * Stop while active, else Resume (agents) or Start; Restart for running
+   * terminals and services; Close for agents and terminals in any state.
+   */
+  function processActions(p: ProcessInfo): {
+    lifecycle: ReactNode;
+    process: ReactNode;
+  } {
+    const kind = p.kind.kind;
     const active = isActive(p.status);
-    const closeFully = async () => {
-      if (isActive(p.status)) await stopProcess(p.id);
-      await removeProcess(p.id);
-      closeTerminal();
-    };
+    const start = kind === "agent" ? "Resume" : "Start";
+    const restart = active && kind !== "agent";
+    const closable = kind !== "service";
     return {
-      leading: active ? (
+      lifecycle: active ? (
         <IconButton
           label={`Stop ${p.name}`}
           title="Stop"
           onClick={() =>
             setConfirm({
-              title: `Stop ${p.name}?`,
-              body: "The process stops. You can start it again later.",
-              action: "Stop",
+              ...stopConfirm(p),
               run: () => void stopProcess(p.id),
             })
           }
@@ -214,16 +175,16 @@ export function FloorTerminalModal() {
         </IconButton>
       ) : (
         <IconButton
-          label={`Start ${p.name}`}
-          title="Start"
+          label={`${start} ${p.name}`}
+          title={start}
           onClick={() => void startProcess(p.id)}
         >
           <RunIcon />
         </IconButton>
       ),
-      trailing: (
+      process: (restart || closable) && (
         <>
-          {active && (
+          {restart && (
             <IconButton
               label={`Restart ${p.name}`}
               title="Restart"
@@ -232,30 +193,28 @@ export function FloorTerminalModal() {
               <RestartIcon />
             </IconButton>
           )}
-          {p.kind.kind === "terminal" && (
+          {closable && (
             <button
               type="button"
-              className="danger"
+              className={styles.close}
+              title={
+                kind === "agent"
+                  ? "Stop and remove the desk"
+                  : "Stop and remove, with its output"
+              }
               onClick={() =>
-                setConfirm({
-                  title: `Close ${p.name}?`,
-                  body: "The terminal and its output are removed.",
-                  action: "Close terminal",
-                  run: () => void closeFully(),
-                })
+                setConfirm({ ...closeConfirm(p), run: () => closeProcess(p) })
               }
             >
-              Close terminal
+              <DeleteIcon />
+              {kind === "agent" ? "Close agent" : "Close terminal"}
             </button>
           )}
-          {hideBtn}
         </>
       ),
     };
   }
 }
-
-type Bar = { leading?: ReactNode; trailing: ReactNode };
 
 type Confirm = { title: string; body: string; action: string; run: () => void };
 
@@ -263,17 +222,19 @@ function IconButton({
   label,
   title,
   onClick,
+  className = "",
   children,
 }: {
   label: string;
   title: string;
   onClick: () => void;
+  className?: string;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
-      className="ghost"
+      className={`${styles.iconBtn} ${className}`}
       aria-label={label}
       title={title}
       onClick={onClick}
@@ -346,6 +307,7 @@ function ConfirmDialog({
     </div>
   );
 }
+
 /** "Next that needs you": the next waiting agent after this one, wrapping round. */
 function NextNeedsYou({ currentId }: { currentId: string }) {
   const processes = useProcessStore((s) => s.processes);
@@ -367,12 +329,15 @@ function NextNeedsYou({ currentId }: { currentId: string }) {
   return (
     <button
       type="button"
+      className={styles.next}
+      title={`Next that needs you: ${next.name}`}
       onClick={() => {
         openTerminal(next.id);
         setActiveProcess(next.id);
       }}
     >
-      Next that needs you: {next.name}
+      <NextIcon />
+      <span className={styles.nextLabel}>Next: {next.name}</span>
     </button>
   );
 }

@@ -29,6 +29,7 @@
     inset 0 1px 0 var(--glass-hi),
     var(--shadow-lg);
   position: relative;
+  container-type: inline-size;
   animation: rise var(--dur-3) var(--ease-out);
 }
 
@@ -97,4 +98,96 @@
   justify-content: flex-end;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+
+/* Header bar: one size for every icon button (TerminalPane's --sp-5 square). */
+.iconBtn {
+  flex-shrink: 0;
+  width: var(--sp-5);
+  height: var(--sp-5);
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.iconBtn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+/* Process actions: Restart, Close. */
+.group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+/* Quiet text buttons, as tall as the icon buttons. */
+.close,
+.next {
+  height: var(--sp-5);
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.close {
+  flex-shrink: 0;
+}
+
+.close:hover:not(:disabled),
+.close:focus-visible {
+  background: var(--danger-bg);
+  border-color: transparent;
+  color: var(--danger);
+}
+
+.divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: var(--sp-4);
+  background: var(--border);
+}
+
+/* Navigation: long names end in an ellipsis (full name in the title). */
+.next {
+  max-width: 160px;
+  min-width: 0;
+}
+
+.next:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.next > svg {
+  flex-shrink: 0;
+}
+
+.nextLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Once the status label and branch are gone, Next goes icon-only. */
+@container (max-width: 640px) {
+  .next {
+    width: var(--sp-5);
+    padding: 0;
+  }
+
+  .nextLabel {
+    display: none;
+  }
+}
+
+/* × stands alone at the far right. */
+.hide {
+  margin-left: var(--sp-2);
 }

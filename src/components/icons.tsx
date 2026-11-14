@@ -68,6 +68,7 @@ import {
   SlidersHorizontal,
   Tag,
   Trash2,
+  SkipForward,
   ExternalLink,
   GitBranch,
   GitPullRequest,
@@ -137,6 +138,7 @@ export const EditIcon = icon(Pencil, { size: 13 });
 export const SectionsIcon = icon(SlidersHorizontal, { size: 13 });
 export const TagIcon = icon(Tag, { size: 12 });
 export const DeleteIcon = icon(Trash2, { size: 13 });
+export const NextIcon = icon(SkipForward, { size: 13 });
 export const IssueIcon = icon(CircleDot);
 export const PrIcon = icon(GitPullRequest);
 export const BoardIcon = icon(SquareKanban);

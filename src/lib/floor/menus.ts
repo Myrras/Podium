@@ -1,6 +1,6 @@
 /** Right-click menu contents for floor items. Rename lives in the modal and detail panes. */
 
-import type { MenuItem } from "../../components/ContextMenu";
+import type { MenuConfirm, MenuItem } from "../../components/ContextMenu";
 import type {
   ProcessInfo,
   ProjectId,
@@ -14,13 +14,51 @@ import { useScratchpadStore } from "../../state/scratchpadStore";
 import { useTodoStore } from "../../state/todoStore";
 import type { ProcessActivity } from "../../state/agentActivityStore";
 import { isActive, pillState } from "../processStatus";
+import type { PillState } from "../processStatus";
+
+const ENDED = new Set<PillState>(["notStarted", "exited", "crashed"]);
 
 function openProcess(id: string): void {
   useProcessStore.getState().setActiveProcess(id);
   useFloorStore.getState().openTerminal(id);
 }
 
-/** Agent, terminal or service. */
+/** Confirm texts for Stop and Close, shared by these menus and the terminal modal. */
+export function stopConfirm(process: ProcessInfo): MenuConfirm {
+  return {
+    title: `Stop ${process.name}?`,
+    body:
+      process.kind.kind === "agent"
+        ? "The session ends. You can resume it later."
+        : "The process stops. You can start it again later.",
+    action: "Stop",
+  };
+}
+
+export function closeConfirm(process: ProcessInfo): MenuConfirm {
+  return {
+    title: `Close ${process.name}?`,
+    body:
+      process.kind.kind === "agent"
+        ? "The agent stops and its desk is removed from the floor."
+        : "The terminal stops and is removed, with its output.",
+    action: "Close",
+  };
+}
+
+/** Close agent / Close terminal: stop if active, remove, and hide its modal. */
+export function closeProcess(process: ProcessInfo): void {
+  const ps = useProcessStore.getState();
+  const { id } = process;
+  void (async () => {
+    if (isActive(process.status)) await ps.stopProcess(id);
+    await ps.removeProcess(id);
+  })();
+  const floor = useFloorStore.getState();
+  if (floor.terminalId === id) floor.closeTerminal();
+}
+
+/** Agent, terminal or service, by the pill its desk shows: not started, exited and crashed are ended. */
 export function processMenu(
   process: ProcessInfo,
   activity: ProcessActivity,
@@ -28,87 +66,33 @@ export function processMenu(
   const { id } = process;
   const ps = () => useProcessStore.getState();
   const kind = process.kind.kind;
-  const state = pillState(process.status, kind, activity);
-  const ended = state === "exited" || state === "crashed";
-  const running = process.status.state === "running";
-  const open: MenuItem = { label: "Open", onSelect: () => openProcess(id) };
-  const name = process.name;
-
-  if (kind === "agent") {
-    return [
-      open,
-      ...(isActive(process.status)
-        ? [
-            {
-              label: "Stop",
-              confirm: {
-                title: `Stop ${name}?`,
-                body: "The session ends. You can resume it later.",
-                action: "Stop",
-              },
-              onSelect: () => void ps().stopProcess(id),
-            },
-          ]
-        : []),
-      ...(ended
-        ? [
-            {
-              label: "Resume session",
-              onSelect: () => void ps().startProcess(id),
-            },
-            "separator" as const,
-            {
-              label: "Clear the desk",
-              danger: true,
-              confirm: {
-                title: "Clear the desk?",
-                body: "The agent is removed from the floor.",
-                action: "Clear",
-              },
-              onSelect: () => void ps().removeProcess(id),
-            },
-          ]
-        : []),
-    ];
-  }
-
-  const items: MenuItem[] = [open];
-  if (running) {
-    items.push(
-      {
-        label: "Stop",
-        confirm: {
-          title: `Stop ${name}?`,
-          body: "The process stops. You can start it again later.",
-          action: "Stop",
+  const active = !ENDED.has(pillState(process.status, kind, activity));
+  const items: MenuItem[] = [
+    { label: "Open", onSelect: () => openProcess(id) },
+    active
+      ? {
+          label: "Stop",
+          confirm: stopConfirm(process),
+          onSelect: () => void ps().stopProcess(id),
+        }
+      : {
+          label: kind === "agent" ? "Resume" : "Start",
+          onSelect: () => void ps().startProcess(id),
         },
-        onSelect: () => void ps().stopProcess(id),
-      },
-      { label: "Restart", onSelect: () => void ps().restartProcess(id) },
-    );
-  } else if (!isActive(process.status)) {
-    items.push({ label: "Start", onSelect: () => void ps().startProcess(id) });
-  }
-  // podium.yml owns services: no remove.
-  if (kind === "terminal") {
-    items.push("separator", {
-      label: "Close terminal",
-      danger: true,
-      confirm: {
-        title: `Close ${name}?`,
-        body: "The terminal and its output are removed.",
-        action: "Close",
-      },
-      onSelect: () => {
-        void (async () => {
-          if (running) await ps().stopProcess(id);
-          await ps().removeProcess(id);
-        })();
-        const floor = useFloorStore.getState();
-        if (floor.terminalId === id) floor.closeTerminal();
-      },
+  ];
+  if (active && kind !== "agent")
+    items.push({
+      label: "Restart",
+      onSelect: () => void ps().restartProcess(id),
     });
-  }
+  // podium.yml owns services: no Close.
+  if (kind !== "service")
+    items.push("separator", {
+      label: kind === "agent" ? "Close agent" : "Close terminal",
+      danger: true,
+      confirm: closeConfirm(process),
+      onSelect: () => closeProcess(process),
+    });
   return items;
 }
 
