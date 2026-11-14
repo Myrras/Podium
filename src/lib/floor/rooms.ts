@@ -98,6 +98,7 @@ function buildRooms(
       services,
       size: roomSize(agents.length + terminals.length, fixtures),
       needs: states.filter((s) => s === "needs").length,
+      working: states.filter((s) => s === "working").length,
       crashed:
         states.filter((s) => s === "crashed").length +
         services.filter((s) => state(s) === "crashed").length,
@@ -128,6 +129,7 @@ const sameList = (a: ProcessInfo[], b: ProcessInfo[]) =>
 const sameRoom = (a: RoomModel, b: RoomModel) =>
   a.project === b.project &&
   a.needs === b.needs &&
+  a.working === b.working &&
   a.crashed === b.crashed &&
   a.lit === b.lit &&
   a.rect.x === b.rect.x &&

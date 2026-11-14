@@ -8,12 +8,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const h = vi.hoisted(() => ({ rooms: [] as unknown[] }));
 vi.mock("../../lib/floor/camera", () => ({ jumpTo: vi.fn(), zoomBy: vi.fn() }));
-vi.mock("../../lib/floor/rooms", () => ({
-  useRooms: () => h.rooms,
-  deskState: () => "working",
-}));
+vi.mock("../../lib/floor/rooms", () => ({ useRooms: () => h.rooms }));
+
+import { Profiler } from "react";
 
 import { jumpTo, zoomBy } from "../../lib/floor/camera";
+import { useAgentActivityStore } from "../../state/agentActivityStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProjectStore } from "../../state/projectStore";
@@ -22,6 +22,7 @@ import { FloorHeader } from "./FloorHeader";
 const room = (id: string, needs = 0, crashed = 0) => ({
   project: { id, name: `Proj ${id}`, color: null, iconInitials: "PX" },
   agents: [{ id: `a-${id}` }],
+  working: 1,
   needs,
   crashed,
 });
@@ -35,6 +36,18 @@ describe("FloorHeader", () => {
     useFloorStore.getState().reset();
     useProjectStore.setState({ openProjectDialog: open }, false);
     useLayoutStore.setState({ resetFloorPositions: reset }, false);
+  });
+
+  it("does not re-render on an activity tick", () => {
+    const renders = vi.fn();
+    render(
+      <Profiler id="header" onRender={renders}>
+        <FloorHeader />
+      </Profiler>,
+    );
+    renders.mockClear();
+    act(() => useAgentActivityStore.setState({ details: {} }));
+    expect(renders).not.toHaveBeenCalled();
   });
 
   it("chips jump, totals show, buttons work", () => {

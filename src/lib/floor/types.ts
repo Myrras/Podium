@@ -33,6 +33,7 @@ export interface RoomModel {
   terminals: ProcessInfo[]; // [] when sections.terminals is off
   services: ProcessInfo[];
   needs: number; // agents that wait on the user
+  working: number; // agents at work
   crashed: number; // crashed agents + crashed services
   lit: boolean; // an agent is working or waiting
   variants: Record<ProcessId, number>; // bot design per agent, unique in the room

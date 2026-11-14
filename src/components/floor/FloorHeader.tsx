@@ -1,10 +1,8 @@
 import type { KeyboardEvent } from "react";
 
 import { jumpTo, zoomBy } from "../../lib/floor/camera";
-import { deskState, useRooms } from "../../lib/floor/rooms";
+import { useRooms } from "../../lib/floor/rooms";
 import { scrollEdges } from "../../lib/scrollEdges";
-import { UNTRACKED_ACTIVITY } from "../../state/agentActivityStore";
-import { useAgentActivityStore } from "../../state/agentActivityStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProjectStore } from "../../state/projectStore";
@@ -14,7 +12,6 @@ import styles from "./FloorHeader.module.css";
 
 export function FloorHeader() {
   const rooms = useRooms();
-  const details = useAgentActivityStore((s) => s.details);
   const focus = useFloorStore((s) => s.focus);
   const blocked = useFloorStore(
     (s) => s.popover !== null || s.terminalId !== null,
@@ -23,14 +20,7 @@ export function FloorHeader() {
 
   const needs = rooms.reduce((n, r) => n + r.needs, 0);
   const crashed = rooms.reduce((n, r) => n + r.crashed, 0);
-  const working = rooms.reduce(
-    (n, r) =>
-      n +
-      r.agents.filter(
-        (a) => deskState(a, details[a.id] ?? UNTRACKED_ACTIVITY) === "working",
-      ).length,
-    0,
-  );
+  const working = rooms.reduce((n, r) => n + r.working, 0);
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape" && !blocked) jumpTo("all");

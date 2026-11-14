@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { Profiler } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -103,6 +104,37 @@ describe("RoomWall", () => {
     expect(
       document.querySelector('[data-fixture="p1:scratchpads"]'),
     ).toBeTruthy();
+  });
+
+  it("marks the open fixture and ignores another room's popover", () => {
+    seed([], 1);
+    const renders = vi.fn();
+    render(
+      <Profiler id="wall" onRender={renders}>
+        <RoomWall room={room()} />
+      </Profiler>,
+    );
+    const pads = screen.getByLabelText("Scratchpads of Alpha, 1");
+    act(() =>
+      useFloorStore
+        .getState()
+        .openPopover({ projectId: "p1", kind: "scratchpads", itemId: null }),
+    );
+    expect(pads.dataset.on).toBe("true");
+    renders.mockClear();
+    act(() =>
+      useFloorStore
+        .getState()
+        .openPopover({ projectId: "p2", kind: "todos", itemId: null }),
+    );
+    expect(pads.dataset.on).toBe("false");
+    renders.mockClear();
+    act(() =>
+      useFloorStore
+        .getState()
+        .openPopover({ projectId: "p2", kind: "scratchpads", itemId: null }),
+    );
+    expect(renders).not.toHaveBeenCalled();
   });
 
   it("hides fixtures of hidden sections", () => {

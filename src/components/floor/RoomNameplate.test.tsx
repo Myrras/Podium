@@ -36,6 +36,7 @@ const mk = (id: string, x: number, y: number): RoomModel => ({
   terminals: [],
   services: [],
   needs: 2,
+  working: 0,
   crashed: 1,
   lit: false,
   variants: {},

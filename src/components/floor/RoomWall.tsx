@@ -44,7 +44,10 @@ function Light({
 export function RoomWall({ room }: { room: RoomModel }) {
   const { project, services } = room;
   const openPopover = useFloorStore((s) => s.openPopover);
-  const open = useFloorStore((s) => s.popover);
+  // Only this room's open fixture kind: other rooms' popovers don't re-render it.
+  const openKind = useFloorStore((s) =>
+    s.popover?.projectId === project.id ? s.popover.kind : null,
+  );
   const todos = useTodoStore((s) => s.todosByProject[project.id] ?? NO_ITEMS);
   const pads = useScratchpadStore(
     (s) => s.scratchpadsByProject[project.id] ?? NO_ITEMS,
@@ -76,7 +79,7 @@ export function RoomWall({ room }: { room: RoomModel }) {
       type="button"
       className={styles.fx}
       data-fixture={`${project.id}:${kind}`}
-      data-on={open?.projectId === project.id && open.kind === kind}
+      data-on={openKind === kind}
       aria-label={`${title} of ${project.name}${n === null ? "" : `, ${n}`}`}
       onClick={() => openPopover({ projectId: project.id, kind, itemId: null })}
     >

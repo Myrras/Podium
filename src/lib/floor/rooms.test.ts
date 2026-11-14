@@ -116,9 +116,9 @@ describe("rooms", () => {
     expect(r1.agents.map((p) => p.id)).toEqual(["a1", "a2"]);
     expect(r1.terminals).toHaveLength(1);
     expect(r1.services).toHaveLength(1);
-    expect(r1).toMatchObject({ needs: 1, crashed: 1, lit: true });
+    expect(r1).toMatchObject({ needs: 1, working: 1, crashed: 1, lit: true });
     expect(r2.terminals).toEqual([]);
-    expect(r2).toMatchObject({ needs: 0, crashed: 0, lit: false });
+    expect(r2).toMatchObject({ needs: 0, working: 0, crashed: 0, lit: false });
     expect(r1.rect.x % 40).toBe(0);
   });
 
@@ -219,6 +219,11 @@ describe("rooms", () => {
     );
     expect(result.current).not.toBe(first);
     expect(result.current[0].needs).toBe(0);
+    expect(result.current[0].working).toBe(1);
+    const second = result.current;
+    act(() => useAgentActivityStore.setState({ details: {} }));
+    expect(result.current).not.toBe(second);
+    expect(result.current[0].working).toBe(0);
   });
 });
 
