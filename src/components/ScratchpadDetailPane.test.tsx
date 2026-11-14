@@ -458,6 +458,31 @@ describe("ScratchpadDetailPane", () => {
     expect(updateTitle).toHaveBeenCalledTimes(1);
   });
 
+  it("Esc leaves full screen; out of it, Esc closes the popover", () => {
+    seed();
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} onClose={onClose}>
+        <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />
+      </Popover>,
+    );
+    const pane = () => document.querySelector("[data-fullscreen]");
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    expect(pane()).not.toBeNull();
+
+    const content = screen.getByLabelText("Scratchpad content");
+    expect(fireEvent.keyDown(content, { key: "Escape" })).toBe(false);
+    expect(pane()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(screen.getByLabelText("Scratchpad content"), {
+      key: "Escape",
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("archives via the archive button", () => {
     const { setScratchpadArchived } = seed();
     render(

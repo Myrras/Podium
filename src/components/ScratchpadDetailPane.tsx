@@ -368,6 +368,14 @@ export function ScratchpadDetailPane({
       data-fullscreen={fullscreen || undefined}
       data-compact={compact || undefined}
       data-docked={docked || undefined}
+      onKeyDown={(e) => {
+        // Esc leaves full screen first; it does not close a popover around it.
+        if (fullscreen && e.key === "Escape" && !e.defaultPrevented) {
+          e.preventDefault();
+          e.stopPropagation();
+          setFullscreen(false);
+        }
+      }}
     >
       {docked ? (
         <>
