@@ -68,13 +68,16 @@ describe("layoutStore — mode and floor positions", () => {
   it("setFloorPositions writes several positions at once and keeps others", async () => {
     const store = await freshStore();
     store.getState().setFloorPosition("/work/alpha", [0, 0]);
-    const write = vi.spyOn(localStorage, "setItem");
+    // Swap the global: on jsdom's real Storage an instance spy misses writes.
+    const real = localStorage;
+    const write = vi.fn((k: string, v: string) => real.setItem(k, v));
+    vi.stubGlobal("localStorage", { setItem: write });
     store.getState().setFloorPositions({
       "/work/beta": [400, 0],
       "/work/gamma": [0, 400],
     });
     expect(write).toHaveBeenCalledTimes(1);
-    write.mockRestore();
+    vi.unstubAllGlobals();
     expect(saved().floorPositions).toEqual({
       "/work/alpha": [0, 0],
       "/work/beta": [400, 0],
