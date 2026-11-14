@@ -12,6 +12,8 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { Rect, Size } from "../lib/floor/types";
+import { MOTION } from "../lib/motion";
+import { useFloorStore } from "../state/floorStore";
 import { CaretIcon, CloseIcon } from "./icons";
 import styles from "./Popover.module.css";
 
@@ -89,33 +91,58 @@ export function Popover({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // shortcut: one rAF loop per open popover; upgrade to a shared loop when several can be open.
+  // Placed on open, on window resize, when the anchor or popover resizes, and
+  // after each camera move; an animated jump is followed frame by frame for
+  // its --dur-4 transition (MOTION.slow), then the loop stops.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!anchor || !el) return;
     let last = "";
     let raf = 0;
-    const update = () => {
+    let until = 0;
+    const place = () => {
       // Its fixture unmounted (e.g. the last service removed): close, do not jump to 0,0.
       if (!anchor.isConnected) return onCloseRef.current();
       const r = anchor.getBoundingClientRect();
       const key = `${r.x},${r.y},${r.width},${r.height},${el.offsetWidth},${el.offsetHeight},${window.innerWidth},${window.innerHeight}`;
-      if (key !== last) {
-        last = key;
-        const p = placePopover(
-          { x: r.x, y: r.y, w: r.width, h: r.height },
-          { w: el.offsetWidth, h: el.offsetHeight },
-          { w: window.innerWidth, h: window.innerHeight },
-        );
-        el.style.left = `${p.left}px`;
-        el.style.top = `${p.top}px`;
-        el.dataset.above = String(p.above);
-        el.style.visibility = "visible";
-      }
-      raf = requestAnimationFrame(update);
+      if (key === last) return;
+      last = key;
+      const p = placePopover(
+        { x: r.x, y: r.y, w: r.width, h: r.height },
+        { w: el.offsetWidth, h: el.offsetHeight },
+        { w: window.innerWidth, h: window.innerHeight },
+      );
+      el.style.left = `${p.left}px`;
+      el.style.top = `${p.top}px`;
+      el.dataset.above = String(p.above);
+      el.style.visibility = "visible";
     };
-    update();
-    return () => cancelAnimationFrame(raf);
+    const follow = () => {
+      raf = 0;
+      place();
+      if (performance.now() < until) raf = requestAnimationFrame(follow);
+    };
+    // At least one frame later, so FloorMap has written the layer transform first.
+    const onCamera = (animate: boolean) => {
+      until = Math.max(until, performance.now() + (animate ? MOTION.slow : 0));
+      if (!raf) raf = requestAnimationFrame(follow);
+    };
+    place();
+    const off = useFloorStore.subscribe((s, prev) => {
+      if (s.camera !== prev.camera) onCamera(s.animate);
+    });
+    window.addEventListener("resize", place);
+    // jsdom has no ResizeObserver.
+    const ro =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    ro?.observe(anchor);
+    ro?.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      off();
+      window.removeEventListener("resize", place);
+      ro?.disconnect();
+    };
   }, [anchor]);
 
   // Focus in, so Esc works right after the click on the fixture; hand it back on close.

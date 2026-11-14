@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createPortal } from "react-dom";
-import { describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { useFloorStore } from "../state/floorStore";
 import { Popover, PopoverSlot, placePopover } from "./Popover";
 
 const vp = { w: 1000, h: 800 };
@@ -222,5 +224,73 @@ describe("Popover", () => {
     expect(screen.getByTestId("host")).toContainElement(
       screen.getByText("New"),
     );
+  });
+});
+
+describe("Popover placement", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    useFloorStore.getState().reset();
+  });
+
+  /** An anchor whose box the test moves; jsdom has no layout. */
+  function anchored() {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "performance"] });
+    const raf = vi.spyOn(window, "requestAnimationFrame");
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    let x = 100;
+    anchor.getBoundingClientRect = () =>
+      ({ x, y: 50, width: 40, height: 20 }) as DOMRect;
+    render(
+      <Popover anchor={anchor} title="t" onClose={() => {}}>
+        x
+      </Popover>,
+    );
+    const left = () => screen.getByRole("group").style.left;
+    return { raf, left, moveTo: (to: number) => (x = to) };
+  }
+
+  it("places once and runs no frame loop while idle", () => {
+    const { raf, left } = anchored();
+    expect(left()).toBe("120px");
+    vi.advanceTimersByTime(1000);
+    expect(raf).not.toHaveBeenCalled();
+  });
+
+  it("follows an animated camera jump for its transition, then stops", () => {
+    const { raf, left, moveTo } = anchored();
+    moveTo(300);
+    act(() =>
+      useFloorStore
+        .getState()
+        .setCamera({ x: 1, y: 0, z: 1 }, { animate: true }),
+    );
+    vi.advanceTimersByTime(20);
+    expect(left()).toBe("320px");
+    moveTo(400);
+    vi.advanceTimersByTime(100);
+    expect(left()).toBe("420px");
+    vi.advanceTimersByTime(400);
+    const calls = raf.mock.calls.length;
+    moveTo(500);
+    vi.advanceTimersByTime(500);
+    expect(raf.mock.calls.length).toBe(calls);
+    expect(left()).toBe("420px");
+  });
+
+  it("re-places one frame after a pan, and on window resize", () => {
+    const { raf, left, moveTo } = anchored();
+    moveTo(200);
+    act(() => useFloorStore.getState().setCamera({ x: 5, y: 0, z: 1 }));
+    act(() => useFloorStore.getState().setCamera({ x: 6, y: 0, z: 1 }));
+    // Several pan moves in one frame share one frame.
+    expect(raf).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(20);
+    expect(left()).toBe("220px");
+    moveTo(250);
+    fireEvent(window, new Event("resize"));
+    expect(left()).toBe("270px");
+    expect(raf).toHaveBeenCalledTimes(1);
   });
 });

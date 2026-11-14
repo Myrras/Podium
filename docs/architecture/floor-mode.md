@@ -74,7 +74,10 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   4 px. Every clickable thing on the map is a `<button>` or has `data-no-pan`.
 - Popovers anchor on `data-fixture="<projectId>:<todos|scratchpads|commands|services|menu>"`;
   `FloorPopovers` looks it up on each render and closes when it is gone, so
-  fixtures stay mounted while open. One popover at a time.
+  fixtures stay mounted while open. One popover at a time. `Popover` places
+  itself on open, on window resize, through a `ResizeObserver` on anchor and
+  popover, and one frame after each camera change; an animated jump is
+  followed with rAF for `MOTION.slow` (`--dur-4`), then the loop stops.
 - A section hidden in `ProjectInfo.sections` hides its fixture (Commands follows
   `terminals`). Services show only when the project has any.
 - To-do and scratchpad popovers fill the `Popover` header and footer through
