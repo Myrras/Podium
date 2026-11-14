@@ -1,4 +1,5 @@
 import type { ProcessInfo, ProjectId } from "../../ipc/types";
+import { openProcess } from "../../lib/floor/menus";
 import { pillState, pillWord } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
 import { useFloorStore } from "../../state/floorStore";
@@ -9,7 +10,6 @@ import styles from "./ServicesFixturePopover.module.css";
 
 function ServiceRow({ service }: { service: ProcessInfo }) {
   const activity = useProcessActivity(service.id);
-  const openTerminal = useFloorStore((s) => s.openTerminal);
   const word = pillWord(
     pillState(service.status, service.kind.kind, activity),
     service.kind.kind,
@@ -19,7 +19,7 @@ function ServiceRow({ service }: { service: ProcessInfo }) {
       <button
         type="button"
         className={`ghost ${styles.row}`}
-        onClick={() => openTerminal(service.id)}
+        onClick={() => openProcess(service.id)}
       >
         <span className={styles.name}>{service.name}</span>
         <span className={styles.status}>{word}</span>

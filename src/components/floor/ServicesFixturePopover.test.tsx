@@ -40,6 +40,7 @@ function setup(configError: string | null = null) {
         svc("s2", "db", "off"),
         svc("s3", "other", "running", "p2"),
       ],
+      activeProcessId: null,
     },
     false,
   );
@@ -68,10 +69,11 @@ describe("ServicesFixturePopover", () => {
     expect(screen.queryByText("other")).toBeNull();
   });
 
-  it("opens a service in the modal", () => {
+  it("pins a service and opens it in the modal", () => {
     setup();
     fireEvent.click(screen.getByRole("button", { name: /web/ }));
     expect(useFloorStore.getState().terminalId).toBe("s1");
+    expect(useProcessStore.getState().activeProcessId).toBe("s1");
   });
 
   it("reloads podium.yml and shows a config error", () => {

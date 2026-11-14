@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { toIpcError, worktreeRemove } from "../../ipc/commands";
 import type { ProjectId, WorktreeInfo } from "../../ipc/types";
 import { themeAccentHex } from "../../lib/color";
+import { openProcess } from "../../lib/floor/menus";
 import { newTerminal } from "../../lib/terminals";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
@@ -32,8 +33,7 @@ export function ProjectMenuPopover({
   const worktrees = useWorktreeStore((s) => s.worktreesByProject[projectId]);
   const processes = useProcessStore((s) => s.processes);
   const themeMode = useThemeStore((s) => s.mode);
-  const { closePopover, setPopoverItem, openTerminal } =
-    useFloorStore.getState();
+  const { closePopover, setPopoverItem } = useFloorStore.getState();
 
   const [draft, setDraft] = useState(project?.name ?? "");
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -101,7 +101,7 @@ export function ProjectMenuPopover({
             <button
               type="button"
               className="ghost"
-              onClick={() => openTerminal(agent.id)}
+              onClick={() => openProcess(agent.id)}
             >
               Open the agent
             </button>

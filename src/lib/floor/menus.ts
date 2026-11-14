@@ -18,7 +18,8 @@ import type { PillState } from "../processStatus";
 
 const ENDED = new Set<PillState>(["notStarted", "exited", "crashed"]);
 
-function openProcess(id: string): void {
+/** Pin a process and open it in the modal, as clicking its desk does. */
+export function openProcess(id: string): void {
   useProcessStore.getState().setActiveProcess(id);
   useFloorStore.getState().openTerminal(id);
 }

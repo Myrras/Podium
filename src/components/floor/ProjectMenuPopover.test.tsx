@@ -77,7 +77,10 @@ function setup(itemId: string | null = null, p = project) {
     { worktreesByProject: { p1: [free, used] } },
     false,
   );
-  useProcessStore.setState({ processes: [agent] }, false);
+  useProcessStore.setState(
+    { processes: [agent], activeProcessId: null },
+    false,
+  );
   useFloorStore.setState({
     popover: { projectId: "p1", kind: "menu", itemId },
   });
@@ -199,5 +202,6 @@ describe("ProjectMenuPopover", () => {
     expect(useFloorStore.getState().popover?.itemId).toBeNull();
     fireEvent.click(screen.getByText("Open the agent"));
     expect(useFloorStore.getState().terminalId).toBe("a1");
+    expect(useProcessStore.getState().activeProcessId).toBe("a1");
   });
 });
