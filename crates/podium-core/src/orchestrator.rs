@@ -1417,14 +1417,30 @@ impl Orchestrator {
         fingerprint: String,
         text: String,
     ) -> CoreResult<()> {
+        let item = self.agent_response_item(process, kind, reason, fingerprint, text);
+        self.responses()
+            .upsert(item, |items| self.publish_responses(items))
+            .map(|_| ())
+    }
+
+    fn agent_response_item(
+        &self,
+        process: &ProcessInfo,
+        kind: ResponseKind,
+        reason: ResponseReason,
+        fingerprint: String,
+        text: String,
+    ) -> ResponseItem {
         let project = self
             .list_projects()
             .into_iter()
             .find(|p| p.id == process.project_id);
-        let item = ResponseItem {
+        ResponseItem {
             id: ResponseId::new(),
             kind,
-            text,
+            // Capped like the assistant's own items: an agent's summary is
+            // its own text, and the row is meant to be a line or two.
+            text: crate::assistant::truncate(&text, MAX_RESPONSE_TEXT_CHARS),
             project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
             agent: Some(crate::assistant::truncate(&process.name, 40)),
             agent_color: process.color.clone(),
@@ -1438,14 +1454,13 @@ impl Orchestrator {
             state: ResponseState::Open,
             reason,
             sender: None,
-        };
-        self.responses()
-            .upsert(item, |items| self.publish_responses(items))
-            .map(|_| ())
+        }
     }
 
     /// File a "ready to review" item for an agent, unless the user is
-    /// looking at it. `text` is the agent's summary.
+    /// looking at it. `text` is the agent's summary. A second filing while
+    /// the first is still listed only updates its text (see
+    /// [`ResponseStore::upsert_review`]), so it notifies once.
     pub(crate) fn file_review_response(
         &self,
         process: &ProcessInfo,
@@ -1454,13 +1469,15 @@ impl Orchestrator {
         if process.viewing {
             return Ok(());
         }
-        self.file_agent_response(
+        let item = self.agent_response_item(
             process,
             ResponseKind::Fyi,
             ResponseReason::Review,
             format!("review:{}", Utc::now().timestamp_millis()),
             text,
-        )
+        );
+        self.responses()
+            .upsert_review(item, |items| self.publish_responses(items))
     }
 
     /// Drop Podium's own item about this agent, if there is one.
@@ -1468,6 +1485,20 @@ impl Orchestrator {
         self.responses().remove(&agent_response_key(id), |items| {
             self.publish_responses(items)
         })
+    }
+
+    /// Drop Podium's own item about this agent only if it is there for
+    /// `reason`: a question that ended must not take a fresh review with it.
+    pub(crate) fn remove_agent_response_for(
+        &self,
+        id: ProcessId,
+        reason: ResponseReason,
+    ) -> CoreResult<()> {
+        let key = agent_response_key(id);
+        self.responses().remove_where(
+            |i| i.key == key && i.reason == reason,
+            |items| self.publish_responses(items),
+        )
     }
 
     /// Drop Podium's own agent items for every process not in `live`.
@@ -1479,8 +1510,10 @@ impl Orchestrator {
 
     /// File the external sweep's full set of waiting messages, keyed
     /// `msg:<source>:<conversation>:<thread>`, and drop every `msg:` item not
-    /// in it (replied to, or aged out). Same newest message: `Unchanged`, so
-    /// a dismissed item stays dismissed until a newer one arrives.
+    /// in it (replied to, or aged out) — except a dismissed one whose newest
+    /// message is under 2 days old, so a sweep that misses it once does not
+    /// bring it back. Same newest message: `Unchanged`, so a dismissed item
+    /// stays dismissed until a newer one arrives.
     pub(crate) fn sync_message_responses(
         &self,
         messages: &[crate::sweep::WaitingMessage],
@@ -1508,8 +1541,19 @@ impl Orchestrator {
                 .upsert(item, |items| self.publish_responses(items))?;
         }
         let live: Vec<String> = messages.iter().map(|m| m.key()).collect();
-        self.responses()
-            .reconcile("msg:", &live, |items| self.publish_responses(items))
+        // A dismissed thread one sweep missed is kept while its newest message
+        // is recent, so finding it again (same newest) leaves it dismissed.
+        let keep_until = Utc::now() - chrono::Duration::days(2);
+        self.responses().remove_where(
+            |i| {
+                i.key.starts_with("msg:")
+                    && !live.contains(&i.key)
+                    && !(i.state == ResponseState::Dismissed
+                        && DateTime::parse_from_rfc3339(&i.fingerprint)
+                            .is_ok_and(|newest| newest > keep_until))
+            },
+            |items| self.publish_responses(items),
+        )
     }
 
     /// Tick one Responses item off: dismissed, not deleted, so the same
@@ -3893,14 +3937,9 @@ impl Orchestrator {
         pty.write(bytes)?;
         if is_user_input(bytes) {
             // The user took it from here: a "ready to review" item is done.
-            let key = agent_response_key(id);
-            if self
-                .responses()
-                .list()
-                .iter()
-                .any(|i| i.key == key && i.reason == ResponseReason::Review)
-            {
-                self.remove_agent_response(id)?;
+            // Not worth failing the keystroke over.
+            if let Err(e) = self.remove_agent_response_for(id, ResponseReason::Review) {
+                tracing::warn!("could not clear an agent's review item: {e}");
             }
             if let Some(p) = self
                 .inner
@@ -7708,6 +7747,101 @@ mod tests {
         orch.write_stdin(id, b"ok\r").await.unwrap();
         assert_eq!(orch.assistant_responses().len(), 1);
         orch.shutdown().await;
+    }
+
+    /// A keystroke never fails because the review item could not be cleared.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "runs `cat` in a PTY")]
+    async fn user_input_survives_a_failed_review_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let orch = Orchestrator::new();
+        orch.set_responses_path(data.join("assistant-responses.json"));
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut spec = spec_of(agent_kind(), dir.path());
+        spec.command = "cat".to_string();
+        let id = orch.add_process(project, spec).await.unwrap();
+        orch.start_process(id).await.unwrap();
+        orch.file_review_response(&orch.process_info(id).unwrap(), "Done.".to_string())
+            .unwrap();
+        // A file where the data dir should be: every later write fails.
+        std::fs::remove_dir_all(&data).unwrap();
+        std::fs::write(&data, "").unwrap();
+
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert!(orch.last_user_input(id).is_some());
+        assert_eq!(orch.assistant_responses().len(), 1);
+        orch.shutdown().await;
+    }
+
+    /// `complete_todo` then `report_to_assistant`: one item, one ping, the
+    /// summary's text, clipped like any item.
+    #[tokio::test]
+    async fn a_second_review_filing_keeps_the_item_and_clips_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = orch
+            .add_process(project, spec_of(agent_kind(), dir.path()))
+            .await
+            .unwrap();
+        let info = orch.process_info(id).unwrap();
+        orch.file_review_response(&info, "Completed to-do: Fix login".to_string())
+            .unwrap();
+        let first = orch.assistant_responses()[0].clone();
+
+        let long = "x".repeat(MAX_RESPONSE_TEXT_CHARS + 50);
+        orch.file_review_response(&info, long).unwrap();
+        let items = orch.assistant_responses();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, first.id);
+        assert_eq!(items[0].fingerprint, first.fingerprint);
+        assert_eq!(items[0].text.chars().count(), MAX_RESPONSE_TEXT_CHARS + 1);
+        assert!(items[0].text.ends_with('…'));
+    }
+
+    fn waiting(conversation: &str, newest: DateTime<Utc>) -> crate::sweep::WaitingMessage {
+        crate::sweep::WaitingMessage {
+            source: "slack",
+            conversation: conversation.to_string(),
+            thread: conversation.to_string(),
+            sender: "Ada".to_string(),
+            place: "Slack, direct message".to_string(),
+            newest,
+            text: "Can you approve the deploy?".to_string(),
+        }
+    }
+
+    /// A dismissed thread one sweep missed stays dismissed when found again;
+    /// it is dropped only once its newest message is over 2 days old.
+    #[test]
+    fn a_dismissed_message_missed_by_one_sweep_stays_dismissed() {
+        let orch = Orchestrator::new();
+        let recent = waiting("D0FAKE1", Utc::now() - chrono::Duration::hours(1));
+        let old = waiting("D0FAKE2", Utc::now() - chrono::Duration::days(3));
+        let open = waiting("D0FAKE3", Utc::now() - chrono::Duration::hours(1));
+        orch.sync_message_responses(&[recent.clone(), old.clone(), open.clone()])
+            .unwrap();
+        for m in [&recent, &old] {
+            orch.set_assistant_response_state(&m.key(), ResponseState::Dismissed)
+                .unwrap();
+        }
+        // Still on disk (dismissing again is a no-op), or gone (not found).
+        let stored = |key: &str| {
+            orch.set_assistant_response_state(key, ResponseState::Dismissed)
+                .is_ok()
+        };
+
+        // A sweep that misses all three: the open one and the stale
+        // dismissed one go, the recent dismissed one is kept.
+        orch.sync_message_responses(&[]).unwrap();
+        assert!(stored(&recent.key()));
+        assert!(!stored(&old.key()));
+        assert!(!stored(&open.key()));
+
+        // Found again with the same newest message: still dismissed.
+        orch.sync_message_responses(&[recent]).unwrap();
+        assert!(orch.assistant_responses().is_empty());
     }
 
     const WINDOW: Duration = Duration::from_secs(5 * 60);

@@ -956,7 +956,10 @@ impl PodiumTools {
             if let Ok(process) = self.find_process(agent) {
                 if self.orchestrator.assistant_enabled() {
                     self.orchestrator
-                        .file_review_response(&process, format!("Completed to-do: {}", info.text))
+                        .file_review_response(
+                            &process,
+                            format!("{}{}", crate::responses::COMPLETED_TODO, info.text),
+                        )
                         .map_err(core_error)?;
                 }
             }

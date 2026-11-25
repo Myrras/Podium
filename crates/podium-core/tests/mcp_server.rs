@@ -4310,8 +4310,7 @@ async fn a_sub_agent_on_the_folder_trust_dialog_is_reported_and_never_answered()
         .await
         .expect("spawn sub-agent")
         .process_id;
-    // Flagged as waiting on the user, so the stuck check raises it at its
-    // next tick rather than after the silence timer…
+    // Flagged as waiting on the user, like a prompt seen on screen…
     wait_for("the trust dialog to be reported", || {
         orch.agents_awaiting_input().iter().any(|p| p.id == id)
     })

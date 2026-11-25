@@ -376,8 +376,7 @@ only replaced by another agent's.
 dismisses; an unknown key is `responseNotFound`. Dismissing is **soft**: the
 item stays on disk (so the same fingerprint does not bring it back) and the
 snapshot omits it. Parked items are listed but quiet: they ping nothing and
-count for nobody (Floor desks show them asleep). `assistant_response_dismiss`
-(tick by id) is the same soft dismiss.
+count for nobody (Floor desks show them asleep).
 
 ### The add_response tool
 
@@ -405,7 +404,7 @@ in the order the changes happened, and a write that fails leaves the list
 
 ### Dismissing and replying
 
-The user either ticks an item (`assistant_response_dismiss`, a soft dismiss)
+The user either dismisses an item (`assistant_set_response_state`, soft)
 or replies (`assistant_response_reply`). The reply is an ordinary
 user turn through `send`'s path (`AssistantManager::send_reply`, so it queues
 like any message) carrying the answered `ResponseItem` itself. The session

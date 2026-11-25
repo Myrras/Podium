@@ -30,11 +30,10 @@
 //! the one notice when the check keeps failing. One sweep runs at a time: a
 //! tick while one still runs is skipped.
 //!
-//! Agent items are filed whenever the assistant is on; the `proactive`
-//! setting only gates desktop notifications (the frontend's call) and the
-//! external sweep. Both are read per tick, so flipping them takes effect at
-//! once. Likewise the poll settings are read on every tick, so a changed
-//! interval applies without a restart.
+//! Agent items are filed, and the external sweep runs, whenever the assistant
+//! is on; the `proactive` setting only gates desktop notifications (the
+//! frontend's call). The poll settings are read on every tick, so a changed
+//! interval or source applies without a restart.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
@@ -147,12 +146,12 @@ impl Asking {
 }
 
 impl Watcher {
-    /// Run the external sweep in its own session, unless the user switched
-    /// proactivity off, and file what it found on the Responses list. It
+    /// Run the external sweep in its own session and file what it found on
+    /// the Responses list. It
     /// runs on its own task (a sweep may take minutes), one at a time: a
     /// tick while one still runs is skipped.
     fn poll(&self, orchestrator: &Orchestrator, polling: AssistantPolling) {
-        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
+        if !orchestrator.assistant_enabled() {
             return;
         }
         let Some(sweep) = orchestrator.begin_external_sweep() else {
@@ -167,10 +166,7 @@ impl Watcher {
                 // The settings may have changed while the sweep ran: what is
                 // filed, and the notice's wording, follow what is on *now*.
                 let polling_now = orchestrator.assistant_polling();
-                if orchestrator.assistant_enabled()
-                    && orchestrator.assistant_proactivity()
-                    && polling_now.is_active()
-                {
+                if orchestrator.assistant_enabled() && polling_now.is_active() {
                     match outcome {
                         SweepOutcome::Quiet => {}
                         SweepOutcome::Messages(mut messages) => {
@@ -317,7 +313,8 @@ impl Watcher {
             .collect();
         for id in ended {
             self.asking.remove(&id);
-            orchestrator.remove_agent_response(id)?;
+            // Only the question: the agent may have filed a review since.
+            orchestrator.remove_agent_response_for(id, ResponseReason::Question)?;
         }
         let active = active(orchestrator);
         for process in processes {
@@ -381,6 +378,64 @@ fn exit_code(code: Option<i32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent that stops waiting loses its question, not a review it
+    /// filed meanwhile (`complete_todo` while the question was up).
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "runs `cat` in a PTY")]
+    async fn a_question_that_ends_leaves_a_review_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Arc::new(Orchestrator::new());
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = orch
+            .add_process(
+                project,
+                crate::process::ProcessSpec {
+                    name: "fix-login".to_string(),
+                    command: "cat".to_string(),
+                    cwd: dir.path().to_path_buf(),
+                    env: Vec::new(),
+                    kind: ProcessKind::Agent {
+                        adapter: "claude-code".to_string(),
+                    },
+                    restart_policy: crate::process::RestartPolicy::Never,
+                    color: None,
+                },
+            )
+            .await
+            .unwrap();
+        orch.start_process(id).await.unwrap();
+        let info = orch.process_info(id).unwrap();
+        let mut watcher = Watcher {
+            weak: Arc::downgrade(&orch),
+            config: ProactivityConfig::default(),
+            asking: HashMap::new(),
+            last_poll: Instant::now(),
+        };
+
+        // It was asking; now it is not, and it filed a review.
+        watcher.asking.insert(id, Asking::new());
+        orch.file_review_response(&info, "Login fixed.".to_string())
+            .unwrap();
+        watcher.check_agents(&orch).unwrap();
+        let items = orch.assistant_responses();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].reason, ResponseReason::Review);
+
+        // A question still goes when the wait ends.
+        orch.file_agent_response(
+            &info,
+            ResponseKind::NeedsYou,
+            ResponseReason::Question,
+            "question:1".to_string(),
+            "Waiting for your input.".to_string(),
+        )
+        .unwrap();
+        watcher.asking.insert(id, Asking::new());
+        watcher.check_agents(&orch).unwrap();
+        assert!(orch.assistant_responses().is_empty());
+        orch.shutdown().await;
+    }
 
     #[test]
     fn an_exit_without_a_code_is_still_reported() {

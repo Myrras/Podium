@@ -22,17 +22,29 @@ reaches a *running* session only on its next spawn.
 One task watches the `EventBus` and, on a slow tick, the agents. It holds only
 a weak reference, so it ends with the orchestrator. It files **items** on the
 Responses list (see [assistant.md](assistant.md#responses)) and writes nothing
-to the chat. Agent items are filed whenever the assistant is on; `proactive`
-gates only desktop notifications (the frontend's call) and the external sweep.
+to the chat. Agent items are filed, and the external sweep runs, whenever the
+assistant is on; `proactive` gates only desktop notifications (the frontend's
+call).
 
 ### Items
 
 | Item | Key | Reason | Filed when | Goes when |
 | ---- | --- | ------ | ---------- | --------- |
-| Agent waiting | `agent:<id>` | `question` | the agent waits on the user (Claude Code's own `waiting` report, else the prompt the UI saw: `process_report_waiting` → `report_agent_waiting` / `agents_awaiting_input`) | it stops waiting |
+| Agent waiting | `agent:<id>` | `question` | the agent waits on the user (Claude Code's own `waiting` report, else the prompt the UI saw: `process_report_waiting` → `report_agent_waiting` / `agents_awaiting_input`) | it stops waiting (only a `question` item goes; a review filed meanwhile stays) |
 | Agent crashed | `agent:<id>` | `crashed` | exit that was not a stop on request | restarted or removed |
 | Ready to review | `agent:<id>` | `review` | `report_to_assistant`, or the agent completing its to-do (`file_review_response`) | the user types into the agent, or it is removed |
 | Message | `msg:<source>:<conversation>:<thread>` | `message` | the external sweep (below) | replied or aged out |
+
+A second review while the first is still listed (open or parked), e.g.
+`complete_todo` then `report_to_assistant`, only updates its text
+(`ResponseStore::upsert_review`): id, fingerprint and state stay, so it pings
+once. The newer text wins, but a bare "Completed to-do: …" never replaces an
+agent's summary. Agent item text is clipped to `MAX_RESPONSE_TEXT_CHARS`, like
+the assistant's own items.
+
+**Known limit: agent items do not survive a Podium restart.** Process ids are
+new on every run, so the first tick's `reconcile_agent_responses` drops every
+`agent:` item an earlier run left (a pending review included).
 
 The fingerprint is `question:<since>` / `crashed:<since>` / `review:<ms>` /
 the newest message's time, so re-filing the same episode is `Unchanged`:
@@ -182,16 +194,18 @@ dropped in code too. An answer with no readable `messages` array is a failed
 sweep and files and removes **nothing**, so a bad run never wipes the list.
 `sender`/`place` are clipped to 40 chars, `text` to 300.
 
-On hand-off (re-checking enabled, proactivity and the poll settings, and
+On hand-off (re-checking enabled and the poll settings, and
 dropping entries of a source switched off since),
 `Orchestrator::sync_message_responses` upserts each as a `needsYou` item, key
 `msg:<source>:<conversation>:<thread>`, reason `message`, `sender`,
-`source` = place, fingerprint = `newest`, then `reconcile("msg:", live)`: a
-replied or aged-out conversation leaves the list. Same `newest` is
+`source` = place, fingerprint = `newest`, then drops every `msg:` item not in
+the set: a replied or aged-out conversation leaves the list. A *dismissed* one
+stays until its `newest` is over 2 days old, so a sweep that misses a thread
+once cannot bring it back as new when the next one finds it. Same `newest` is
 `Unchanged` (nothing written, a dismissed item stays dismissed); a newer one
 is `Changed` and back to open. Message items never ping (the frontend skips
-reason `message`). With both sources off or proactivity off no sweep runs at
-all.
+reason `message`). With both sources off or a zero interval no sweep runs at
+all; the `proactive` setting does not affect it.
 
 ## The silence contract
 

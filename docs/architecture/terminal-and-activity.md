@@ -89,8 +89,8 @@ The monitor also covers the assistant's sub-agents, which are never in
 `processStore`. `agentActivityStore` adds the running ones from
 `assistantStore.subagents` (through `subagentProcess`) to its input, so one
 stuck on a prompt is reported at once, **once its terminal has been opened**
-(the prompt is read off the xterm viewport). A sub-agent whose terminal was
-never opened is caught by the backend's 5-minute silence timer instead. Only
+(the prompt is read off the xterm viewport). A prompt in a sub-agent whose
+terminal was never opened goes unseen: the backend has no silence timer. Only
 its folder-trust dialog the backend spots on its own (see
 [Assistant sub-agents](assistant-subagents.md#fallback-detection)).
 
