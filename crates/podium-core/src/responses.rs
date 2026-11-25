@@ -329,15 +329,11 @@ impl ResponseStore {
 
     /// Drop the item with `key` for good (its source says it is handled).
     /// No such item is a no-op.
-    // Callers arrive with the agent and message sources (next tasks).
-    #[allow(dead_code)]
     pub fn remove(&self, key: &str, changed: impl FnOnce(&[ResponseItem])) -> CoreResult<()> {
         self.remove_where(|i| i.key == key, changed)
     }
 
     /// Drop every item whose key starts with `prefix` and is not in `live`.
-    // Callers arrive with the agent and message sources (next tasks).
-    #[allow(dead_code)]
     pub fn reconcile(
         &self,
         prefix: &str,

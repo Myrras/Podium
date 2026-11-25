@@ -29,7 +29,6 @@ pub mod scratchpad;
 pub mod subagent;
 pub mod sweep;
 pub mod todo;
-pub mod triage;
 pub mod worktree;
 
 pub use activity::ReportedState;
@@ -69,5 +68,4 @@ pub use subagent::{
 };
 pub use sweep::SweepConfig;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
-pub use triage::TriageConfig;
 pub use worktree::WorktreeInfo;

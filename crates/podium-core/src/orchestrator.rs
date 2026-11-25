@@ -41,7 +41,6 @@ use crate::subagent::{
 };
 use crate::sweep::{SweepConfig, SweepManager, SweepRun};
 use crate::todo::{TodoInfo, TodoStore};
-use crate::triage::{TriageConfig, TriageItem, TriageManager};
 use crate::worktree::WorktreeInfo;
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
@@ -353,9 +352,6 @@ pub struct Orchestrator {
     assistant_toggle: tokio::sync::Mutex<()>,
     /// The external sweep's own Haiku session ([`crate::sweep`]).
     sweep: Arc<SweepManager>,
-    /// The proactivity nudges' debounce buffer and Haiku triage
-    /// ([`crate::triage`]).
-    triage: Arc<TriageManager>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -384,7 +380,6 @@ impl Orchestrator {
             assistant: Arc::new(AssistantManager::new(events.clone())),
             assistant_toggle: tokio::sync::Mutex::new(()),
             sweep: Arc::new(SweepManager::new()),
-            triage: Arc::new(TriageManager::new()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -463,8 +458,6 @@ impl Orchestrator {
     pub fn configure_assistant(&self, config: AssistantConfig) {
         self.sweep
             .set_launch(config.command.clone(), config.cwd.clone());
-        self.triage
-            .set_launch(config.command.clone(), config.cwd.clone());
         self.assistant.configure(config);
     }
 
@@ -473,25 +466,6 @@ impl Orchestrator {
     /// the binary and cwd, so call this after it.
     pub fn configure_sweep(&self, config: SweepConfig) {
         self.sweep.configure(config);
-    }
-
-    /// Point the nudge triage's session at a binary / cwd and set its
-    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
-    /// the binary and cwd, so call this after it.
-    pub fn configure_triage(&self, config: TriageConfig) {
-        self.triage.configure(config);
-    }
-
-    /// The nudge triage ([`crate::triage`]), for its worker.
-    pub(crate) fn triage(&self) -> Arc<TriageManager> {
-        Arc::clone(&self.triage)
-    }
-
-    /// Buffer a proactivity nudge for triage instead of handing it to the
-    /// assistant at once; `true` when the caller must start the triage
-    /// worker ([`crate::triage::start_worker`]).
-    pub(crate) fn push_triage(&self, item: TriageItem) -> bool {
-        self.triage.push(item)
     }
 
     /// Claim the one external-sweep slot; `None` while a sweep still runs
@@ -1174,32 +1148,6 @@ impl Orchestrator {
             .collect()
     }
 
-    /// Running agents that have printed nothing for at least `min_idle` —
-    /// what [`crate::proactivity`] reads as "probably waiting on input".
-    pub fn idle_agents(&self, min_idle: Duration) -> Vec<ProcessInfo> {
-        let now = Instant::now();
-        let inner = self.inner.lock().expect(LOCK_POISONED);
-        inner
-            .processes
-            .iter()
-            .filter(|(_, p)| matches!(p.spec.kind, ProcessKind::Agent { .. }))
-            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
-            .filter_map(|(id, p)| {
-                // An agent that never printed anything is measured from its
-                // start, so a session stuck on its first prompt still counts.
-                let last = p
-                    .scrollback
-                    .lock()
-                    .expect(LOCK_POISONED)
-                    .last_append_at()
-                    .or(p.started_at)?;
-                (now.duration_since(last) >= min_idle)
-                    .then(|| process_info_in(&inner, *id))
-                    .flatten()
-            })
-            .collect()
-    }
-
     /// How recently and how steadily each running process has been printing,
     /// keyed by process id — what the UI polls for its "working…" indicator.
     /// Read off the scrollback, so it covers processes whose terminal was
@@ -1475,6 +1423,59 @@ impl Orchestrator {
             .responses()
             .upsert(item, |items| self.publish_responses(items))?;
         Ok(Some(item))
+    }
+
+    /// File Podium's own item about an agent, keyed `agent:<id>`: a question
+    /// it waits on or a crash ([`crate::proactivity`]). A re-file with the
+    /// same fingerprint is `Unchanged` and publishes nothing, so the UI only
+    /// notifies about news.
+    pub(crate) fn file_agent_response(
+        &self,
+        process: &ProcessInfo,
+        kind: ResponseKind,
+        reason: ResponseReason,
+        fingerprint: String,
+        text: String,
+    ) -> CoreResult<()> {
+        let project = self
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == process.project_id);
+        let item = ResponseItem {
+            id: ResponseId::new(),
+            kind,
+            text,
+            project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent: Some(crate::assistant::truncate(&process.name, 40)),
+            agent_color: process.color.clone(),
+            todo: None,
+            source: None,
+            process_id: Some(process.id),
+            todo_id: None,
+            created_at: Utc::now(),
+            key: agent_response_key(process.id),
+            fingerprint,
+            state: ResponseState::Open,
+            reason,
+            sender: None,
+        };
+        self.responses()
+            .upsert(item, |items| self.publish_responses(items))
+            .map(|_| ())
+    }
+
+    /// Drop Podium's own item about this agent, if there is one.
+    pub(crate) fn remove_agent_response(&self, id: ProcessId) -> CoreResult<()> {
+        self.responses().remove(&agent_response_key(id), |items| {
+            self.publish_responses(items)
+        })
+    }
+
+    /// Drop Podium's own agent items for every process not in `live`.
+    pub(crate) fn reconcile_agent_responses(&self, live: &[ProcessId]) -> CoreResult<()> {
+        let live: Vec<String> = live.iter().map(|id| agent_response_key(*id)).collect();
+        self.responses()
+            .reconcile("agent:", &live, |items| self.publish_responses(items))
     }
 
     /// Tick one Responses item off: dismissed, not deleted, so the same
@@ -3948,9 +3949,7 @@ impl Orchestrator {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
         // The sweep first: one that finishes while the assistant is already
         // gone would hand it a finding and start a new assistant child that
-        // nothing kills. A triage worker likewise must not deliver to an
-        // assistant session after it has been killed.
-        self.triage.shutdown();
+        // nothing kills.
         self.sweep.shutdown().await;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
@@ -5378,6 +5377,11 @@ fn apply_live_session(inner: &mut Inner, probe: &LiveProbe, live: String) {
 
 /// Whether an agent run that just exited was a resume that failed: it
 /// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
+/// The Responses key of Podium's own item about an agent.
+fn agent_response_key(id: ProcessId) -> String {
+    format!("agent:{id}")
+}
+
 fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
     session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
 }
