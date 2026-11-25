@@ -30,7 +30,7 @@ import {
   assistantQueueRemove,
   assistantQueueSendNow,
   assistantResolveProposal,
-  assistantResponseDismiss,
+  assistantSetResponseState,
   assistantResponseReply,
   assistantResponsesList,
   assistantSend,
@@ -48,6 +48,7 @@ import type {
   ProcessStatus,
   QueuedMessage,
   ResponseItem,
+  ResponseState,
   SubagentInfo,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
@@ -141,6 +142,12 @@ export function resetSeenResponses(): void {
   responsesBaselined = false;
 }
 
+const PING_REASONS: ResponseItem["reason"][] = [
+  "question",
+  "crashed",
+  "review",
+];
+
 /**
  * Ping the desktop for Responses items this run has not seen before: the
  * Responses list is the only thing that reaches it. Several new items in one
@@ -158,11 +165,41 @@ function notifyNewResponses(items: ResponseItem[]): void {
   if (!responsesBaselined || fresh.length === 0 || isAssistantVisible()) return;
   const viewing = viewedAgentId();
   // The list is newest first, so is `fresh`.
-  const news = fresh.filter((i) => viewing === null || i.processId !== viewing);
+  // Only what needs the user pings; messages and the rest stay quiet.
+  const news = fresh.filter(
+    (i) =>
+      i.state === "open" &&
+      PING_REASONS.includes(i.reason) &&
+      (viewing === null || i.processId !== viewing),
+  );
   if (news.length === 0) return;
   const title = news.some((i) => i.kind === "needsYou") ? "Needs you" : "FYI";
   const more = news.length > 1 ? ` (+${news.length - 1} more)` : "";
   notifyAssistant(title, `${news[0].text}${more}`);
+}
+
+/** Optimistic state change; on failure, back to the backend's list. */
+async function setResponseState(
+  key: string,
+  state: ResponseState,
+  set: (fn: (s: AssistantState) => Partial<AssistantState>) => void,
+  get: () => AssistantState,
+): Promise<void> {
+  set((s) => ({
+    responses:
+      state === "dismissed"
+        ? s.responses.filter((r) => r.key !== key)
+        : s.responses.map((r) => (r.key === key ? { ...r, state } : r)),
+  }));
+  try {
+    await assistantSetResponseState(key, state);
+  } catch (e) {
+    // Reload rather than restore: a snapshot may have landed meanwhile.
+    set((s) => ({
+      messages: [...s.messages, message("notice", toIpcError(e).message)],
+    }));
+    await get().loadResponses();
+  }
 }
 
 /** A gated action awaiting (or carrying) the user's decision. */
@@ -239,7 +276,11 @@ interface AssistantState {
   /** Drop the ended rows past their `expiresAt` (driven by its own timer). */
   pruneExpiredSubagents: (now?: number) => void;
   /** Tick a Responses item off. */
-  dismissResponse: (id: string) => Promise<void>;
+  /** Park an item (by key) until it changes. */
+  parkResponse: (key: string) => Promise<void>;
+  /** Bring a parked item back. */
+  unparkResponse: (key: string) => Promise<void>;
+  dismissResponse: (key: string) => Promise<void>;
   /** Reply to a Responses item; returns whether it was accepted. */
   replyResponse: (id: string, text: string) => Promise<boolean>;
   /** Replay the persisted transcript into the log (once, on mount). */
@@ -382,20 +423,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       responsesBaselined = true;
     }
   },
-  dismissResponse: async (id) => {
-    set((s) => ({ responses: s.responses.filter((r) => r.id !== id) }));
-    try {
-      await assistantResponseDismiss(id);
-    } catch (e) {
-      // Back to the backend's list rather than the one from before the
-      // click: a snapshot may have landed meanwhile (the item superseded,
-      // a new one filed), and restoring the old array would undo it.
-      set((s) => ({
-        messages: [...s.messages, message("notice", toIpcError(e).message)],
-      }));
-      await get().loadResponses();
-    }
-  },
+  parkResponse: (key) => setResponseState(key, "parked", set, get),
+  unparkResponse: (key) => setResponseState(key, "open", set, get),
+  dismissResponse: (key) => setResponseState(key, "dismissed", set, get),
   replyResponse: async (id, text) => {
     const trimmed = text.trim();
     if (!trimmed) return false;

@@ -2,7 +2,8 @@
  * The assistant's Responses list, pinned above the chat log: the one-line
  * essentials of agent updates ("needs you" / "FYI") the assistant filed, so
  * they can be ticked off or answered without scrolling back through the
- * conversation. Workspace-wide, persisted by the backend, hidden when empty.
+ * conversation. Workspace-wide, persisted by the backend, always shown: what
+ * needs the user, and a collapsed group of parked items.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -13,7 +14,15 @@ import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
-import { AgentIcon, CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
+import {
+  AgentIcon,
+  ArchiveIcon,
+  CaretIcon,
+  CloseIcon,
+  ReplyIcon,
+  SendIcon,
+  UnarchiveIcon,
+} from "./icons";
 import styles from "./ResponsesSection.module.css";
 
 /**
@@ -69,6 +78,7 @@ function placeDrafts(
 export function ResponsesSection() {
   const responses = useAssistantStore((s) => s.responses);
   const [open, setOpen] = useState(true);
+  const [parkedOpen, setParkedOpen] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   // One tick for the whole section re-renders every row's age.
   const [, setTick] = useState(0);
@@ -98,7 +108,21 @@ export function ResponsesSection() {
     });
   }
 
-  if (responses.length === 0) return null;
+  const needsYou = responses.filter((r) => r.state === "open");
+  const parked = responses.filter((r) => r.state === "parked");
+
+  const rows = (list: ResponseItem[]) => (
+    <ul className={styles.list}>
+      {list.map((item) => (
+        <ResponseRow
+          key={item.id}
+          item={item}
+          draft={placed.get(item.id)?.text ?? null}
+          setDraft={(text) => setDraftOf(item, text)}
+        />
+      ))}
+    </ul>
+  );
 
   return (
     <section className={styles.section} aria-label="Responses">
@@ -111,20 +135,31 @@ export function ResponsesSection() {
         <span className={styles.caret} data-open={open}>
           <CaretIcon />
         </span>
-        Responses
-        <span className={styles.count}>{responses.length}</span>
+        Needs you
+        <span className={styles.count}>{needsYou.length}</span>
       </button>
-      {open && (
-        <ul className={styles.list}>
-          {responses.map((item) => (
-            <ResponseRow
-              key={item.id}
-              item={item}
-              draft={placed.get(item.id)?.text ?? null}
-              setDraft={(text) => setDraftOf(item, text)}
-            />
-          ))}
-        </ul>
+      {open &&
+        (needsYou.length === 0 ? (
+          <p className={styles.text}>Nothing needs you.</p>
+        ) : (
+          rows(needsYou)
+        ))}
+      {parked.length > 0 && (
+        <>
+          <button
+            type="button"
+            className={styles.header}
+            aria-expanded={parkedOpen}
+            onClick={() => setParkedOpen(!parkedOpen)}
+          >
+            <span className={styles.caret} data-open={parkedOpen}>
+              <CaretIcon />
+            </span>
+            Parked
+            <span className={styles.count}>{parked.length}</span>
+          </button>
+          {parkedOpen && rows(parked)}
+        </>
       )}
     </section>
   );
@@ -141,6 +176,9 @@ function ResponseRow({
   setDraft: (text: string | null) => void;
 }) {
   const dismissResponse = useAssistantStore((s) => s.dismissResponse);
+  const parkResponse = useAssistantStore((s) => s.parkResponse);
+  const unparkResponse = useAssistantStore((s) => s.unparkResponse);
+  const parked = item.state === "parked";
   const replyResponse = useAssistantStore((s) => s.replyResponse);
   const onFloor = useLayoutStore((s) => s.mode === "floor");
   // A removed agent has no desk to show.
@@ -262,14 +300,26 @@ function ResponseRow({
       <button
         type="button"
         className={styles.iconBtn}
-        aria-label="Mark as read"
-        title="Mark as read"
+        aria-label={parked ? "Bring back" : "Park until it changes"}
+        title={parked ? "Bring back" : "Park until it changes"}
         onClick={() => {
           setDraft(null);
-          void dismissResponse(item.id);
+          void (parked ? unparkResponse(item.key) : parkResponse(item.key));
         }}
       >
-        <CheckIcon />
+        {parked ? <UnarchiveIcon /> : <ArchiveIcon />}
+      </button>
+      <button
+        type="button"
+        className={styles.iconBtn}
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={() => {
+          setDraft(null);
+          void dismissResponse(item.key);
+        }}
+      >
+        <CloseIcon />
       </button>
     </li>
   );
