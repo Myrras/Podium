@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProcessInfo, ProjectInfo } from "../../ipc/types";
 import { useAgentActivityStore } from "../../state/agentActivityStore";
+import { useAssistantStore } from "../../state/assistantStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
@@ -14,6 +15,7 @@ import { pillState } from "../processStatus";
 import {
   deskState,
   getRooms,
+  overlayOf,
   roomOf,
   subscribeRooms,
   useFloorData,
@@ -71,6 +73,31 @@ beforeEach(() => {
   useProcessStore.setState({ processes: [] });
   useAgentActivityStore.setState({ details: {} });
   useLayoutStore.setState({ floorPositions: {} });
+  useAssistantStore.setState({ responses: [] });
+});
+
+const item = (pid: string, state: string, reason: string) =>
+  ({ key: `agent:${pid}`, state, reason }) as never;
+
+describe("parked and review", () => {
+  it("maps the item of an agent to an overlay", () => {
+    const r = [item("a1", "parked", "question"), item("a2", "open", "review")];
+    expect(overlayOf(r, "a1")).toBe("parked");
+    expect(overlayOf(r, "a2")).toBe("review");
+    expect(overlayOf([item("a3", "open", "question")], "a3")).toBeNull();
+    expect(overlayOf(r, "zz")).toBeNull();
+  });
+
+  it("does not count a parked agent, so no waypoint follows", () => {
+    useProjectStore.setState({ projects: [project("p1")] });
+    useProcessStore.setState({ processes: [proc("a1", "p1", "agent")] });
+    useAgentActivityStore.setState({ details: { a1: act1("waiting") } });
+    expect(getRooms()[0].needs).toBe(1);
+    useAssistantStore.setState({
+      responses: [item("a1", "parked", "question")],
+    });
+    expect(getRooms()[0]).toMatchObject({ needs: 0, lit: false });
+  });
 });
 
 describe("deskState", () => {
