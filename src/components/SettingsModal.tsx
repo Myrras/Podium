@@ -2,7 +2,7 @@
  * App settings dialog with four tabs: General (appearance, terminal, and on
  * Windows the WSL backend), Agents
  * (per-adapter command override + default arguments, the argument merge
- * mode, and when exited agents are removed), Assistant (autonomy mode, proactive nudges, external polling), and
+ * mode, and when exited agents are removed), Assistant (autonomy mode, desktop notifications, external polling), and
  * MCP (one-click registration of the stdio bridge with external clients like
  * Claude Code and Auggie).
  */
@@ -377,7 +377,7 @@ function AssistantTab() {
         <h3 className={styles.sectionLabel}>Notifications</h3>
         <SettingToggle
           label="Desktop notifications"
-          help="Notify when an agent asks a question, crashed or is ready to review. Messages never notify; they show in Responses."
+          help="Desktop notifications when an agent asks a question, crashes or is ready to review. Messages never notify; they show in Responses. Does not affect the Slack/Teams check."
           value={proactive}
           onChange={(enabled) => void setProactivity(enabled)}
         />

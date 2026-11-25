@@ -277,6 +277,7 @@ export function OverviewRow({
                   e.preventDefault();
                   void send();
                 } else if (e.key === "Escape") {
+                  e.preventDefault(); // keep the enclosing popover open
                   setDraft(null);
                 }
               }}

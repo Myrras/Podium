@@ -256,7 +256,7 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   tick: (output) => {
     // The assistant's sub-agents are running agents too, but never in the
     // process store — so add them, or a sub-agent stuck on a prompt would
-    // only surface through the backend's five-minute silence timer.
+    // never be noticed.
     const processes = [
       ...useProcessStore.getState().processes,
       ...useAssistantStore
@@ -315,12 +315,11 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
         // (also covers the working↔waiting flicker of a live prompt).
         notified[p.id] = true;
       } else if (activity === "waiting") {
-        notifyAgentWaiting(p.name, p.kind.kind === "agent");
-        // The assistant only ever heard about a stuck agent through the
-        // watcher's five-minute silence timer, which cannot tell "waiting for
-        // you" from "done thinking". This is the same one-per-episode
-        // transition the notification uses, so it says so at once — and only
-        // for agents, since the assistant reasons about those.
+        // Only the "Desktop notifications" flag gates this, not `enabled`.
+        if (useAssistantStore.getState().proactive)
+          notifyAgentWaiting(p.name, p.kind.kind === "agent");
+        // Tell the assistant at once, once per episode, and only for agents,
+        // since the assistant reasons about those.
         if (p.kind.kind === "agent") void processReportWaiting(p.id);
         notified[p.id] = true;
       }

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The store imports the IPC layer; nothing here should reach it, since the
@@ -19,6 +20,7 @@ import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { OverviewRow } from "./OverviewRow";
+import { Popover } from "./Popover";
 
 function item(overrides: Partial<ResponseItem> = {}): ResponseItem {
   return {
@@ -169,5 +171,28 @@ describe("OverviewRow", () => {
     expect(screen.queryByRole("button", { name: "Show on floor" })).toBeNull();
     await user.click(screen.getByText("Rebase on main or merge?"));
     expect(showAgent).not.toHaveBeenCalled();
+  });
+
+  it("Esc in the reply field closes the field, not the enclosing popover", async () => {
+    const user = userEvent.setup();
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    function Row() {
+      const [draft, setDraft] = useState<string | null>("");
+      return (
+        <ul>
+          <OverviewRow item={item()} draft={draft} setDraft={setDraft} />
+        </ul>
+      );
+    }
+    render(
+      <Popover anchor={anchor} title="Items" onClose={onClose}>
+        <Row />
+      </Popover>,
+    );
+    await user.type(screen.getByLabelText("Reply text"), "{Escape}");
+    expect(screen.queryByLabelText("Reply text")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

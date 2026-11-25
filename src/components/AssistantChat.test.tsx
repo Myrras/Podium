@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -8,6 +9,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 import { useAssistantStore } from "../state/assistantStore";
 import { AssistantChat } from "./AssistantChat";
+import { Popover } from "./Popover";
 
 const initial = useAssistantStore.getState();
 
@@ -52,5 +54,36 @@ describe("AssistantChat", () => {
     expect(screen.queryByLabelText("Message the assistant")).toBeNull();
     expect(screen.getByLabelText("Autonomy")).toBeDisabled();
     expect(screen.queryByLabelText("Assistant memory")).toBeNull();
+  });
+
+  it("Esc cancels a waiting-message edit without saving or closing the popover", async () => {
+    const user = userEvent.setup();
+    const editPending = vi.fn(() => Promise.resolve());
+    useAssistantStore.setState({
+      editPending,
+      pending: [
+        { id: "q1", kind: "user", text: "first", attachments: [] },
+      ] as never,
+    });
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="Chat" onClose={onClose}>
+        <AssistantChat header={(c) => <nav>{c}</nav>}>
+          <p>Host</p>
+        </AssistantChat>
+      </Popover>,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Edit waiting message" }),
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Edit waiting message" }),
+      " more{Escape}",
+    );
+    expect(screen.getByText("first")).toBeInTheDocument();
+    expect(editPending).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

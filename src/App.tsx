@@ -194,6 +194,7 @@ export default function App() {
   useEffect(() => {
     void useAssistantStore.getState().loadResponses();
     void useAssistantStore.getState().loadEnabled();
+    void useAssistantStore.getState().loadProactivity();
   }, []);
 
   // Terminals are not React-rendered, so push theme/font changes into the

@@ -6,7 +6,7 @@
  * locally when the user sends, and from the `assistant:event` stream as the
  * backend parses the headless session's output. Actions the assistant ran show
  * as cards in the same log, and actions the autonomy gate held back show as
- * proposal cards the user confirms or rejects here. Podium's proactive nudges
+ * proposal cards the user confirms or rejects here. Podium's own nudges
  * arrive as notice rows. Starting a new conversation clears both sides.
  */
 
@@ -53,16 +53,21 @@ import type {
 import { notifyAssistant } from "../lib/notify";
 import { textPreview } from "../lib/textPreview";
 import { viewedAgentId } from "./agentActivityStore";
+import { useFloorStore } from "./floorStore";
 import { useLayoutStore } from "./layoutStore";
 
 /**
  * Is the user already looking at the assistant's Responses list? True only
- * when the app window is focused and the chat pane is open — the same "don't
- * ping the window you're watching" rule `agentActivityStore` applies to
- * agents.
+ * when the app window is focused and the assistant is on screen (Project
+ * mode: the pane is open; Floor mode: the front desk popover is open) — the
+ * same "don't ping the window you're watching" rule `agentActivityStore`
+ * applies to agents.
  */
 function isAssistantVisible(): boolean {
-  return document.hasFocus() && useLayoutStore.getState().assistantOpen;
+  if (!document.hasFocus()) return false;
+  return useLayoutStore.getState().mode === "floor"
+    ? useFloorStore.getState().deskPopover !== null
+    : useLayoutStore.getState().assistantOpen;
 }
 
 export type ChatRole =
@@ -235,7 +240,7 @@ interface AssistantState {
   activity: string | null;
   /** How much the assistant may do unasked; mirrors the persisted setting. */
   autonomy: AutonomyMode;
-  /** Whether Podium nudges the assistant unprompted; mirrors the setting. */
+  /** Whether desktop notifications are on (Settings → Notifications). */
   proactive: boolean;
   /**
    * The proactive external-source (Slack/Teams) polling sweep; mirrors the
@@ -301,7 +306,7 @@ interface AssistantState {
   loadAutonomy: () => Promise<void>;
   /** Change the autonomy mode. */
   setAutonomy: (mode: AutonomyMode) => Promise<void>;
-  /** Whether the assistant is switched on; off = no session, nudges or pings. */
+  /** Whether the assistant is switched on; off = no session or Responses pings. */
   enabled: boolean;
   /** Load the on/off switch (on app start). */
   loadEnabled: () => Promise<void>;
@@ -309,7 +314,7 @@ interface AssistantState {
   setEnabled: (enabled: boolean) => Promise<void>;
   /** Load the stored proactivity setting (Settings → Assistant). */
   loadProactivity: () => Promise<void>;
-  /** Turn proactive nudges on or off. */
+  /** Turn desktop notifications on or off. */
   setProactivity: (enabled: boolean) => Promise<void>;
   /** Load the stored polling settings (Settings → Assistant). */
   loadPolling: () => Promise<void>;
