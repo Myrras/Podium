@@ -1464,6 +1464,25 @@ impl Orchestrator {
             .map(|_| ())
     }
 
+    /// File a "ready to review" item for an agent, unless the user is
+    /// looking at it. `text` is the agent's summary.
+    pub(crate) fn file_review_response(
+        &self,
+        process: &ProcessInfo,
+        text: String,
+    ) -> CoreResult<()> {
+        if process.viewing {
+            return Ok(());
+        }
+        self.file_agent_response(
+            process,
+            ResponseKind::Fyi,
+            ResponseReason::Review,
+            format!("review:{}", Utc::now().timestamp_millis()),
+            text,
+        )
+    }
+
     /// Drop Podium's own item about this agent, if there is one.
     pub(crate) fn remove_agent_response(&self, id: ProcessId) -> CoreResult<()> {
         self.responses().remove(&agent_response_key(id), |items| {
@@ -3858,6 +3877,16 @@ impl Orchestrator {
         }
         pty.write(bytes)?;
         if is_user_input(bytes) {
+            // The user took it from here: a "ready to review" item is done.
+            let key = agent_response_key(id);
+            if self
+                .responses()
+                .list()
+                .iter()
+                .any(|i| i.key == key && i.reason == ResponseReason::Review)
+            {
+                self.remove_agent_response(id)?;
+            }
             if let Some(p) = self
                 .inner
                 .lock()
@@ -7631,6 +7660,38 @@ mod tests {
                 matches!(event, PodiumEvent::TodosChanged { project_id } if project_id == project);
         }
         assert!(todos_changed, "the owner's to-dos are re-listed on restart");
+        orch.shutdown().await;
+    }
+
+    /// Typing into an agent clears its "ready to review" item, not a question.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "runs `cat` in a PTY")]
+    async fn user_input_removes_a_review_item_but_not_a_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut spec = spec_of(agent_kind(), dir.path());
+        spec.command = "cat".to_string();
+        let id = orch.add_process(project, spec).await.unwrap();
+        orch.start_process(id).await.unwrap();
+        let info = orch.process_info(id).unwrap();
+
+        orch.file_review_response(&info, "Done.".to_string())
+            .unwrap();
+        assert_eq!(orch.assistant_responses().len(), 1);
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert!(orch.assistant_responses().is_empty());
+
+        orch.file_agent_response(
+            &info,
+            ResponseKind::NeedsYou,
+            ResponseReason::Question,
+            "question:1".to_string(),
+            "Waiting for your input.".to_string(),
+        )
+        .unwrap();
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert_eq!(orch.assistant_responses().len(), 1);
         orch.shutdown().await;
     }
 
