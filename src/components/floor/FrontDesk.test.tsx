@@ -17,6 +17,7 @@ import type { ResponseItem } from "../../ipc/types";
 import { showAgent } from "../../lib/floor/camera";
 import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
+import { Popover } from "../Popover";
 import { FrontDesk } from "./FrontDesk";
 
 const initialAssistant = useAssistantStore.getState();
@@ -160,6 +161,23 @@ describe("FrontDesk", () => {
     await user.click(card.getByRole("button", { name: "Reply" }));
     await user.type(card.getByLabelText("Reply text"), "Rebase it{Enter}");
     expect(replyResponse).toHaveBeenCalledWith("r-1", "Rebase it");
+  });
+
+  it("Esc in the reply field closes it, not the enclosing popover", async () => {
+    const user = userEvent.setup();
+    seed([item(1)]);
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="Desk" onClose={onClose}>
+        <FrontDesk />
+      </Popover>,
+    );
+    await user.click(screen.getByRole("button", { name: "Reply" }));
+    await user.type(screen.getByLabelText("Reply text"), "{Escape}");
+    expect(screen.queryByLabelText("Reply text")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("has no Reply on a message", () => {

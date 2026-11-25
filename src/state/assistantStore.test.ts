@@ -67,6 +67,7 @@ vi.mock("./agentActivityStore", () => ({
   viewedAgentId: () => viewed(),
 }));
 
+import { useFloorStore } from "./floorStore";
 import { useLayoutStore } from "./layoutStore";
 import { resetSeenResponses, useAssistantStore } from "./assistantStore";
 
@@ -824,6 +825,21 @@ describe("assistantStore", () => {
       snapshot(responseItem());
 
       expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("in Floor mode only the front desk popover counts as visible", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      useLayoutStore.setState({ mode: "floor", assistantOpen: true });
+      useFloorStore.setState({ deskPopover: null });
+      snapshot(responseItem());
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+
+      notifyAssistant.mockClear();
+      useFloorStore.setState({ deskPopover: "chat" as never });
+      snapshot(responseItem());
+      expect(notifyAssistant).not.toHaveBeenCalled();
+      useFloorStore.setState({ deskPopover: null });
+      useLayoutStore.setState({ mode: "project" });
     });
 
     it("skips an item about the agent the user is viewing", () => {

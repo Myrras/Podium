@@ -4,7 +4,7 @@
  * mode held back, as cards the user confirms or rejects right here. The log is
  * replayed from the persisted transcript on mount. Its header controls (memory,
  * autonomy) go wherever the host puts them: the pane's strip in Project mode,
- * the front desk's chat popover on the floor. Podium's own proactive nudges
+ * the front desk's chat popover on the floor. Podium's own nudges
  * arrive as folded rows, so an unprompted reply always has a visible reason.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -978,7 +978,11 @@ function PendingRow({ item }: { item: QueuedMessage }) {
   const [draft, setDraft] = useState<string | null>(null);
   const editing = draft !== null;
 
+  // Set by Esc so the blur that follows cannot commit the cancelled draft.
+  const cancelled = useRef(false);
+
   function save() {
+    if (cancelled.current) return;
     const text = (draft ?? "").trim();
     if (text && text !== item.text) void editPending(item.id, text);
     setDraft(null);
@@ -995,7 +999,12 @@ function PendingRow({ item }: { item: QueuedMessage }) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") save();
-            if (e.key === "Escape") setDraft(null);
+            if (e.key === "Escape") {
+              // Cancel the edit only; the enclosing popover stays open.
+              e.preventDefault();
+              cancelled.current = true;
+              setDraft(null);
+            }
           }}
           onBlur={save}
         />
@@ -1022,7 +1031,10 @@ function PendingRow({ item }: { item: QueuedMessage }) {
             className={styles.iconBtn}
             aria-label="Edit waiting message"
             title="Edit before it is sent"
-            onClick={() => setDraft(item.text)}
+            onClick={() => {
+              cancelled.current = false;
+              setDraft(item.text);
+            }}
           >
             <EditIcon />
           </button>

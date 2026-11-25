@@ -354,6 +354,15 @@ describe("agentActivityStore", () => {
     expect(notifyAgentWaiting).toHaveBeenCalledTimes(1);
   });
 
+  it("does not notify an agent waiting when desktop notifications are off", () => {
+    viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
+    useAssistantStore.setState({ proactive: false });
+    seed([proc("a1", AGENT, RUNNING)]);
+    tick();
+    useAssistantStore.setState({ proactive: true });
+    expect(notifyAgentWaiting).not.toHaveBeenCalled();
+  });
+
   it("viewing the prompt before any ping also acknowledges the episode", () => {
     viewport.mockReturnValue("Do you want to proceed?\n❯ 1. Yes");
     vi.mocked(document.hasFocus).mockReturnValue(true);
