@@ -29,9 +29,10 @@
 //! an assistant turn. One sweep runs at a time: a tick while one still runs
 //! is skipped.
 //!
-//! The whole thing files nothing while the assistant or the `proactive`
-//! setting is off — both are checked per tick, so flipping them takes effect
-//! at once. Likewise the poll settings are read on every tick, so a changed
+//! Agent items are filed whenever the assistant is on; the `proactive`
+//! setting only gates desktop notifications (the frontend's call) and the
+//! external sweep. Both are read per tick, so flipping them takes effect at
+//! once. Likewise the poll settings are read on every tick, so a changed
 //! interval applies without a restart.
 
 use std::collections::HashMap;
@@ -119,9 +120,11 @@ fn sweep_notice(polling: AssistantPolling, outcome: SweepOutcome) -> Option<Stri
     }
 }
 
-/// Whether Podium may file items at all right now.
+/// Whether Podium may file agent items right now: whenever the assistant is
+/// on. `proactive` only gates the desktop notification, which the frontend
+/// decides, so the list stays complete with it off.
 fn active(orchestrator: &Orchestrator) -> bool {
-    orchestrator.assistant_enabled() && orchestrator.assistant_proactivity()
+    orchestrator.assistant_enabled()
 }
 
 struct Watcher {
@@ -160,7 +163,7 @@ impl Watcher {
     /// It runs on its own task (a sweep may take minutes), one at a time: a
     /// tick while one still runs is skipped.
     fn poll(&self, orchestrator: &Orchestrator, polling: AssistantPolling) {
-        if !active(orchestrator) {
+        if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
             return;
         }
         let Some(sweep) = orchestrator.begin_external_sweep() else {

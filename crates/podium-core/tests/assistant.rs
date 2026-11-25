@@ -2806,6 +2806,21 @@ async fn a_waiting_agent_is_one_question_item_until_it_stops_waiting() {
 }
 
 #[tokio::test]
+async fn a_waiting_agent_is_filed_with_proactivity_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
+    // Off only silences desktop notifications: the list stays complete.
+    orch.set_assistant_proactivity(false).expect("switch off");
+    let agent = watched_agent(&orch, dir.path(), "cat").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    orch.report_agent_waiting(agent);
+
+    let item = until_item(&orch, agent, true).await.expect("item");
+    assert_eq!(item.reason, ResponseReason::Question);
+    orch.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_agent_the_user_is_viewing_gets_no_question_item() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(dir.path(), FAKE_CLAUDE));
