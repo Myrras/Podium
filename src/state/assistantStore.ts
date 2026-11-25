@@ -142,11 +142,9 @@ export function resetSeenResponses(): void {
   responsesBaselined = false;
 }
 
-const PING_REASONS: ResponseItem["reason"][] = [
-  "question",
-  "crashed",
-  "review",
-];
+// "question" is absent on purpose: a waiting agent already pings once through
+// agentActivityStore's prompt episode (works with the assistant off too).
+const PING_REASONS: ResponseItem["reason"][] = ["crashed", "review"];
 
 /**
  * Ping the desktop for Responses items this run has not seen before: the
@@ -161,7 +159,9 @@ function notifyNewResponses(items: ResponseItem[]): void {
   // Remembered even while off: items the backend restores on turning off
   // are not news when the assistant comes back on.
   for (const i of items) seenResponseIds.add(i.id);
-  if (!useAssistantStore.getState().enabled) return;
+  const { enabled, proactive } = useAssistantStore.getState();
+  // `proactive` is the "Desktop notifications" setting.
+  if (!enabled || !proactive) return;
   if (!responsesBaselined || fresh.length === 0 || isAssistantVisible()) return;
   const viewing = viewedAgentId();
   // The list is newest first, so is `fresh`.
