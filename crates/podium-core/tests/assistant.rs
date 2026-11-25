@@ -1607,12 +1607,25 @@ async fn the_sweep_runs_on_haiku_in_a_fresh_session_and_a_quiet_one_reaches_nobo
         !dir.path().join("stdin.jsonl").exists(),
         "a quiet sweep reached the assistant"
     );
+    let mut sweeping = Vec::new();
     while let Ok(event) = rx.try_recv() {
-        assert!(
-            !matches!(event, PodiumEvent::AssistantEvent { .. }),
-            "{event:?}"
-        );
+        match event {
+            // The bot's pose: start and end, nothing for the chat.
+            PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Sweeping { active },
+            } => sweeping.push(active),
+            event => assert!(
+                !matches!(event, PodiumEvent::AssistantEvent { .. }),
+                "{event:?}"
+            ),
+        }
     }
+    // Each sweep announces its start, then its end, never overlapping.
+    assert!(sweeping.starts_with(&[true, false]), "{sweeping:?}");
+    assert!(
+        sweeping.iter().enumerate().all(|(i, a)| *a == (i % 2 == 0)),
+        "{sweeping:?}"
+    );
     assert!(orch.assistant_transcript().is_empty());
     assert!(orch.assistant_responses().is_empty());
     orch.shutdown().await;
@@ -1824,12 +1837,25 @@ async fn shutting_down_during_a_sweep_kills_it_and_forwards_nothing() {
     // no failure notice for a sweep that was merely cut short.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!dir.path().join("stdin.jsonl").exists());
+    let mut sweeping = Vec::new();
     while let Ok(event) = rx.try_recv() {
-        assert!(
-            !matches!(event, PodiumEvent::AssistantEvent { .. }),
-            "{event:?}"
-        );
+        match event {
+            // The bot's pose: start and end, nothing for the chat.
+            PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Sweeping { active },
+            } => sweeping.push(active),
+            event => assert!(
+                !matches!(event, PodiumEvent::AssistantEvent { .. }),
+                "{event:?}"
+            ),
+        }
     }
+    // Each sweep announces its start, then its end, never overlapping.
+    assert!(sweeping.starts_with(&[true, false]), "{sweeping:?}");
+    assert!(
+        sweeping.iter().enumerate().all(|(i, a)| *a == (i % 2 == 0)),
+        "{sweeping:?}"
+    );
     assert!(orch.assistant_transcript().is_empty());
 }
 

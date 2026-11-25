@@ -271,6 +271,12 @@ interface AssistantState {
    * `subagentsChanged` snapshots, with `process:status` applied in between.
    */
   subagents: SubagentInfo[];
+  /**
+   * The Slack/Teams sweep is running (`sweeping` events). Not reset when the
+   * assistant is switched off: the run still ends with its own event, and
+   * the desk shows "off" meanwhile.
+   */
+  sweeping: boolean;
   /** Load the sub-agent list (on app start). */
   loadSubagents: () => Promise<void>;
   /** Stop (or cancel, while queued) one sub-agent — no confirm, the user's click. */
@@ -376,6 +382,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   pending: [],
   responses: [],
   subagents: [],
+  sweeping: false,
   draft: null,
   setDraft: (draft) => set({ draft }),
   composer: "",
@@ -835,6 +842,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           return { responses: event.items };
         case "subagentsChanged":
           return { subagents: event.subagents };
+        case "sweeping":
+          return { sweeping: event.active };
       }
     });
   },

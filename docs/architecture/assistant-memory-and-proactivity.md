@@ -149,13 +149,21 @@ spawns a fresh session** (no `--resume`, no state between sweeps) and ends it
 afterwards: stdin is closed so the CLI can stop its MCP servers, then it is
 killed after `SESSION_EXIT_GRACE` (5 s); a failed or cut-short turn is killed
 at once. Each sweep is one turn read straight off its stdout (no output
-task, no events, no transcript): the `result` event's text is the answer (a
+task, no chat events, no transcript): the `result` event's text is the answer (a
 turn cut off at the turn limit has none; the last prose block is only the
 fallback for a normal end without `result` text). The hand-off follows the
 settings *then*, and `shutdown()` stops the sweep before the assistant.
 **One sweep at a time** (`SweepManager::begin`, a busy flag held by
 `SweepRun` until the hand-off is done): the watcher runs it on its own task
 (weak orchestrator ref) and a tick that finds one still running is skipped.
+`Orchestrator::begin_external_sweep` announces the run
+(`SweepRun::announce`): it publishes `AssistantEvent::Sweeping { active:
+true }` at once and `{ active: false }` when the `SweepRun` drops, so the
+end is announced on every path (answer, failure, timeout, shutdown, a
+panicking task). Runtime-only, never recorded; the frontend mirrors it as
+`assistantStore.sweeping`, and the bot (`useAssistantDesk`, state `reading`)
+holds letters while it is set and nothing more urgent is going on. There is
+no getter: a webview that loads mid-sweep shows it only from the next sweep.
 A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the child.
 Shutdown wakes a running turn at once (`Notify`),
 kills the child and counts as neither a finding nor a failure. Failures are

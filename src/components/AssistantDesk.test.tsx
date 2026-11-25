@@ -10,6 +10,7 @@ describe("AssistantDesk", () => {
     ["idle", 0, "Idle", "still"],
     ["answering", 0, "Answering", "typing"],
     ["answering", 2, "Looking things up with 2 helpers", "typing"],
+    ["reading", 0, "Checking Slack & Teams", "typing"],
     ["waiting", 0, "Waiting for your OK", "arm"],
     ["off", 0, "Off", "still"],
   ] as const)("%s with %i helpers", (state, helpers, line, p) => {
@@ -42,6 +43,18 @@ describe("AssistantDesk", () => {
     expect(container.querySelector('[data-state="working"]')).toBeNull();
     rerender(<AssistantDesk state="answering" helpers={0} />);
     expect(container.querySelector('[data-state="working"]')).not.toBeNull();
+  });
+
+  it("holds letters and works its hands only while reading", () => {
+    const { container, rerender } = render(
+      <AssistantDesk state="reading" helpers={0} />,
+    );
+    expect(
+      screen.getByRole("img", { name: "Checking Slack and Teams" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector('[data-state="working"]')).not.toBeNull();
+    rerender(<AssistantDesk state="idle" helpers={0} />);
+    expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("caps helpers at 3 minis and then shows +N", () => {

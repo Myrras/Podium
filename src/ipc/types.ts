@@ -613,7 +613,9 @@ export type AssistantEvent =
    * The assistant's sub-agents changed (spawned, started, ended, dropped
    * off). Carries the whole list, oldest first — a snapshot.
    */
-  | { type: "subagentsChanged"; subagents: SubagentInfo[] };
+  | { type: "subagentsChanged"; subagents: SubagentInfo[] }
+  /** The Slack/Teams sweep started or finished; drives the bot, not the chat. */
+  | { type: "sweeping"; active: boolean };
 
 /**
  * Whether a queued item can be edited or withdrawn before delivery. Only a

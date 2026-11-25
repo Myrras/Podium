@@ -469,9 +469,12 @@ impl Orchestrator {
     }
 
     /// Claim the one external-sweep slot; `None` while a sweep still runs
-    /// (that tick is skipped) or after shutdown. See [`crate::sweep`].
+    /// (that tick is skipped) or after shutdown. See [`crate::sweep`]. The
+    /// run announces itself ([`AssistantEvent::Sweeping`]) until it drops.
     pub fn begin_external_sweep(&self) -> Option<SweepRun> {
-        self.sweep.begin()
+        self.sweep
+            .begin()
+            .map(|run| run.announce(self.events.clone()))
     }
 
     /// Send a chat turn to the personal assistant, spawning its session on

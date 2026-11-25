@@ -6,10 +6,12 @@
 import type { CSSProperties, ReactNode } from "react";
 
 import { useAssistantStore } from "../state/assistantStore";
+import { noteSheet } from "../lib/floor/sprites";
 import { Bot, MiniBot } from "./floor/Bot";
 import styles from "./AssistantDesk.module.css";
 
-export type AssistantDeskState = "idle" | "answering" | "waiting" | "off";
+export type AssistantDeskState =
+  "idle" | "answering" | "reading" | "waiting" | "off";
 
 /** Body colour no agent palette uses. */
 export const HOUSE_COLOR = "#c9d1d9";
@@ -24,6 +26,7 @@ export function useAssistantDesk(): {
 } {
   const enabled = useAssistantStore((s) => s.enabled);
   const busy = useAssistantStore((s) => s.busy);
+  const sweeping = useAssistantStore((s) => s.sweeping);
   const waiting = useAssistantStore((s) =>
     s.messages.some((m) => m.proposal?.status === "pending"),
   );
@@ -36,7 +39,9 @@ export function useAssistantDesk(): {
       ? "waiting"
       : busy
         ? "answering"
-        : "idle";
+        : sweeping
+          ? "reading"
+          : "idle";
   return { state, helpers };
 }
 
@@ -50,6 +55,8 @@ export function deskLine(state: AssistantDeskState, helpers: number): string {
       return helpers > 0
         ? `Looking things up with ${helpers} ${helpers === 1 ? "helper" : "helpers"}`
         : "Answering";
+    case "reading":
+      return "Checking Slack & Teams";
     default:
       return "Idle";
   }
@@ -59,6 +66,7 @@ const POSE = {
   idle: "still",
   off: "still",
   answering: "typing",
+  reading: "typing",
   waiting: "arm",
 } as const;
 
@@ -89,11 +97,22 @@ export function AssistantDesk({
           still frame 0 (eyes open, hands down) when not working. */}
       <Bot
         color={HOUSE_COLOR}
-        state={state === "answering" ? "working" : "needs"}
+        state={POSE[state] === "typing" ? "working" : "needs"}
         seed="assistant"
         size={size}
         variant={HEADSET}
       />
+      {state === "reading" && (
+        <span
+          className={styles.letters}
+          role="img"
+          aria-label="Checking Slack and Teams"
+          title="Checking Slack and Teams"
+        >
+          <i style={{ backgroundImage: noteSheet() }} />
+          <i style={{ backgroundImage: noteSheet() }} />
+        </span>
+      )}
       {helpers > 0 && (
         <span className={styles.helpers} title={`${helpers} helpers`}>
           {Array.from({ length: shown }, (_, i) => (

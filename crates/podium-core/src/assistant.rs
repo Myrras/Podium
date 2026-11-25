@@ -707,6 +707,9 @@ pub enum AssistantEvent {
     SubagentsChanged {
         subagents: Vec<crate::subagent::SubagentInfo>,
     },
+    /// The Slack/Teams sweep ([`crate::sweep`]) started (`true`) or finished
+    /// (`false`). Runtime-only for the bot's pose; never recorded.
+    Sweeping { active: bool },
 }
 
 /// Who spoke in one persisted transcript row. A subset of the live event
@@ -3009,6 +3012,19 @@ mod tests {
         store.record(&AssistantEvent::SubagentsChanged {
             subagents: Vec::new(),
         });
+        assert!(store.transcript().is_empty());
+    }
+
+    #[test]
+    fn a_sweeping_event_is_tagged_and_never_recorded() {
+        let json =
+            serde_json::to_value(AssistantEvent::Sweeping { active: true }).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "sweeping", "active": true })
+        );
+        let store = AssistantStore::new();
+        store.record(&AssistantEvent::Sweeping { active: false });
         assert!(store.transcript().is_empty());
     }
 

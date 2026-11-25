@@ -100,7 +100,8 @@ Settings > General > Appearance > View.
   to fly to that agent. The count opens the full list, its bot (or the title
   bar's assistant button) opens the chat above the desk. Esc inside closes it.
   A desk shows a tick when its agent is ready to review, and sleeps while its
-  item is parked.
+  item is parked. While the assistant checks Slack and Teams, its bot reads
+  through letters.
 - **Waypoints.** A room that needs you while out of view gets a marker on the edge
   of the map with an amber **?** (waiting agents) or red **!** (crashed) count;
   click it to fly there. Counts also show in the header, the chips and nameplates.

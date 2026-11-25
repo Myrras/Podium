@@ -1,4 +1,5 @@
 .desk {
+  position: relative;
   display: inline-flex;
   align-items: flex-end;
   gap: var(--sp-1);
@@ -8,6 +9,52 @@
 /* Still frame 0 (eyes open, no motion) at full colour; "needs" would show the raised arm. */
 .desk[data-pose="still"] [data-state] > i {
   transform: translateX(0);
+}
+
+/* Reading the Slack/Teams sweep: two letters held up below the eyes; the
+   front one is lifted off and put back. Rest pose = 0%/100%, so the
+   reduced-motion guard leaves it still. */
+.letters {
+  position: absolute;
+  left: calc(var(--h) * 5 / 16);
+  bottom: calc(var(--h) / 4);
+  width: calc(var(--h) * 3 / 8);
+  height: calc(var(--h) * 3 / 8);
+  pointer-events: none;
+}
+
+.letters > i {
+  position: absolute;
+  inset: 0;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+
+.letters > i:first-child {
+  transform: translate(-2px, -1px);
+}
+
+.letters > i:last-child {
+  animation: shuffle calc(var(--dur-beat) * 2) var(--ease-in-out) infinite;
+}
+
+@keyframes shuffle {
+  0%,
+  45%,
+  100% {
+    transform: translate(0, 0);
+    opacity: 1;
+  }
+
+  70% {
+    transform: translate(3px, -4px) rotate(8deg);
+    opacity: 0;
+  }
+
+  71% {
+    transform: translate(0, 2px);
+    opacity: 0;
+  }
 }
 
 .desk[data-state="off"] [data-state] {

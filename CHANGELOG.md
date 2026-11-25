@@ -17,6 +17,7 @@ when it merges.
 - Park an item until it changes, or dismiss it; both survive a restart.
 - Floor mode: a front desk in the corner with the assistant's bot and a queue of open items (Reply, Park, Dismiss), and desks that show agents ready to review or parked.
 - Settings > Assistant > Desktop notifications: notify when an agent asks a question, crashed or is ready to review. Messages never notify.
+- The assistant's bot reads through letters while it checks Slack and Teams.
 
 ### Changed
 
@@ -27,6 +28,7 @@ when it merges.
 
 - Unsent text in the assistant input now survives closing and reopening the assistant.
 - The assistant chat on the Floor opens instantly with the existing conversation instead of reloading.
+- The assistant's pixel bot no longer closes its eyes; it stays still and alert, and only moves its eyes and hands while it is working.
 
 ### Removed
 

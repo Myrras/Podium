@@ -48,6 +48,7 @@ use crate::assistant::{
     parse_stream_line, poll_sources, truncate, AssistantEvent, AssistantPolling,
 };
 use crate::error::CoreResult;
+use crate::events::{EventBus, PodiumEvent};
 
 /// The model the sweep runs on: reading a few channels and judging whether
 /// anything needs the user is a small job, and it runs every few minutes.
@@ -458,6 +459,7 @@ impl SweepManager {
         }
         Some(SweepRun {
             manager: Arc::clone(self),
+            events: None,
         })
     }
 
@@ -595,9 +597,20 @@ async fn turn(session: &mut SweepSession, prompt: &str) -> Result<Turn, ()> {
 /// One claimed sweep; dropping it frees the slot.
 pub struct SweepRun {
     manager: Arc<SweepManager>,
+    /// Set by [`Self::announce`]: the bus that hears it start and finish.
+    events: Option<EventBus>,
 }
 
 impl SweepRun {
+    /// Publish [`AssistantEvent::Sweeping`] `active: true` now and `false`
+    /// when this run drops, so the end is announced on every path (answer,
+    /// failure, timeout, shutdown, a panicking task).
+    pub fn announce(mut self, events: EventBus) -> Self {
+        publish_sweeping(&events, true);
+        self.events = Some(events);
+        self
+    }
+
     /// The [`SweepOutcome::NotWorking`] notice this run returned was dropped
     /// rather than handed on: the next failed sweep raises it again.
     pub fn notice_discarded(&self) {
@@ -617,7 +630,16 @@ impl SweepRun {
 impl Drop for SweepRun {
     fn drop(&mut self) {
         self.manager.busy.store(false, Ordering::Release);
+        if let Some(events) = &self.events {
+            publish_sweeping(events, false);
+        }
     }
+}
+
+fn publish_sweeping(events: &EventBus, active: bool) {
+    events.publish(PodiumEvent::AssistantEvent {
+        event: AssistantEvent::Sweeping { active },
+    });
 }
 
 fn spawn(config: &SweepConfig) -> CoreResult<SweepSession> {
@@ -1018,5 +1040,32 @@ echo '{result}'"#
         drop(again);
         manager.shutdown().await;
         assert!(manager.begin().is_none(), "a sweep started after shutdown");
+    }
+
+    /// An announced run publishes its start, and its end when it drops, also
+    /// after a failed sweep.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_announced_sweep_publishes_its_start_and_end_even_when_it_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = manager_running(dir.path(), "exit 1", Duration::from_secs(5));
+        let events = EventBus::new();
+        let mut rx = events.subscribe();
+        let sweeping = |event: PodiumEvent| match event {
+            PodiumEvent::AssistantEvent {
+                event: AssistantEvent::Sweeping { active },
+            } => active,
+            other => panic!("unexpected event {other:?}"),
+        };
+        let run = manager.begin().expect("free slot").announce(events);
+        assert!(sweeping(rx.try_recv().expect("start published")));
+        assert_eq!(run.run("check").await, SweepOutcome::Quiet);
+        assert!(rx.try_recv().is_err(), "ended before the run dropped");
+        drop(run);
+        assert!(!sweeping(rx.try_recv().expect("end published")));
+        // An unannounced run (as the other tests use) publishes nothing.
+        drop(manager.begin().expect("slot freed"));
+        assert!(rx.try_recv().is_err());
+        manager.shutdown().await;
     }
 }

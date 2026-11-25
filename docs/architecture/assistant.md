@@ -38,6 +38,7 @@ webview as `assistant:event`.
 | `queueItemDelivered` | a waiting message's turn came up |
 | `responsesChanged` | the Responses list changed |
 | `subagentsChanged` | the sub-agent list changed |
+| `sweeping` | the Slack/Teams sweep started or finished (`active`); drives the bot only |
 
 Unparseable lines (a chatty shell profile) are skipped, stderr is dropped,
 and the binary + cwd are injectable (`AssistantConfig`) so integration tests

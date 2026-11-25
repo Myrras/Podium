@@ -131,6 +131,15 @@ describe("assistantStore", () => {
     });
   });
 
+  it("mirrors the Slack/Teams sweep from sweeping events, outside the chat", () => {
+    useAssistantStore.setState({ sweeping: false });
+    useAssistantStore.getState().apply({ type: "sweeping", active: true });
+    expect(useAssistantStore.getState().sweeping).toBe(true);
+    useAssistantStore.getState().apply({ type: "sweeping", active: false });
+    expect(useAssistantStore.getState().sweeping).toBe(false);
+    expect(useAssistantStore.getState().messages).toEqual([]);
+  });
+
   describe("responses", () => {
     beforeEach(() => {
       vi.mocked(assistantResponsesList).mockReset();

@@ -107,6 +107,33 @@ describe("FrontDesk", () => {
     ).toHaveTextContent("Idle");
   });
 
+  it("shows the bot reading letters only while the Slack/Teams check runs", () => {
+    seed([]);
+    useAssistantStore.setState({ sweeping: true });
+    const { container, unmount } = render(<FrontDesk />);
+    expect(screen.getByText("Checking Slack & Teams")).toBeInTheDocument();
+    expect(
+      container.querySelector('[title="Checking Slack and Teams"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-state="working"]')).not.toBeNull();
+    unmount();
+
+    seed([]);
+    const idle = render(<FrontDesk />);
+    expect(screen.getByText("Idle")).toBeInTheDocument();
+    expect(
+      idle.container.querySelector('[title="Checking Slack and Teams"]'),
+    ).toBeNull();
+  });
+
+  it("answering wins over the Slack/Teams check", () => {
+    seed([]);
+    useAssistantStore.setState({ sweeping: true, busy: true });
+    render(<FrontDesk />);
+    expect(screen.getByText("Answering")).toBeInTheDocument();
+    expect(screen.queryByText("Checking Slack & Teams")).toBeNull();
+  });
+
   it("rings the agent's desk while a figure is hovered or focused", () => {
     seed([item(1)]);
     render(<FrontDesk />);
