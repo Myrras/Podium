@@ -88,7 +88,7 @@ function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
     key: "process:proc-1",
     fingerprint: "",
     state: "open",
-    reason: "question",
+    reason: "review",
     sender: null,
     label: "Invoice export · Webshop · Export invoices",
     ...overrides,
@@ -215,17 +215,19 @@ describe("assistantStore", () => {
       expect(useAssistantStore.getState().responses[0].state).toBe("open");
     });
 
-    it("pings only for question, crashed and review items", async () => {
+    it("pings only for crashed and review items, never for question", async () => {
       await useAssistantStore.getState().loadResponses();
       const apply = (items: ResponseItem[]) =>
         useAssistantStore.getState().apply({ type: "responsesChanged", items });
       apply([
         responseItem({ id: "m", reason: "message" }),
         responseItem({ id: "o", reason: "other" }),
+        // A waiting agent already pings via agentActivityStore.
+        responseItem({ id: "q", reason: "question" }),
       ]);
       expect(notifyAssistant).not.toHaveBeenCalled();
 
-      for (const reason of ["question", "crashed", "review"] as const) {
+      for (const reason of ["crashed", "review"] as const) {
         notifyAssistant.mockClear();
         apply([responseItem({ id: `n-${reason}`, reason })]);
         expect(notifyAssistant).toHaveBeenCalledOnce();
@@ -719,6 +721,17 @@ describe("assistantStore", () => {
       });
 
       expect(notifyAssistant).not.toHaveBeenCalled();
+    });
+
+    it("stays silent while desktop notifications are off", () => {
+      useAssistantStore.setState({ proactive: false });
+
+      snapshot(responseItem({ reason: "crashed" }));
+      expect(notifyAssistant).not.toHaveBeenCalled();
+
+      useAssistantStore.setState({ proactive: true });
+      snapshot(responseItem({ id: "r-2", reason: "crashed" }));
+      expect(notifyAssistant).toHaveBeenCalledOnce();
     });
 
     it("pings for a new needs-you item with its text", () => {
