@@ -25,11 +25,11 @@ import { textPreview } from "../lib/textPreview";
 import type { ChatMessage, ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
+import { AssistantDesk, useAssistantDesk } from "./AssistantDesk";
 import { Markdown } from "./Markdown";
 import { ResponsesSection } from "./ResponsesSection";
 import { SubagentsSection } from "./SubagentsSection";
 import {
-  AssistantIcon,
   AttachIcon,
   CloseIcon,
   DeleteIcon,
@@ -238,6 +238,7 @@ export function AssistantPane() {
   // Regrouped only when the transcript changes, not on composer keystrokes.
   const groups = useMemo(() => groupActivity(messages), [messages]);
   const busy = useAssistantStore((s) => s.busy);
+  const desk = useAssistantDesk();
   const activity = useAssistantStore((s) => s.activity);
   const send = useAssistantStore((s) => s.send);
   const pushNotice = useAssistantStore((s) => s.pushNotice);
@@ -485,8 +486,11 @@ export function AssistantPane() {
       }}
     >
       <header className={styles.header}>
-        <AssistantIcon className={styles.headerIcon} />
-        <span className={styles.title}>Assistant</span>
+        <div className={styles.stage}>
+          <AssistantDesk state={desk.state} helpers={desk.helpers}>
+            <span className={styles.title}>Assistant</span>
+          </AssistantDesk>
+        </div>
         {/* The memory editor lives in the body, which is gone while the
             assistant is off: a button for it would do nothing. */}
         {enabled && (
@@ -552,8 +556,7 @@ export function AssistantPane() {
             {!messages.some((m) => !isActivity(m)) && pending.length === 0 && (
               <div className={styles.emptyState}>
                 <p className={styles.empty}>
-                  Ask for anything across your projects — to-dos, agents, an
-                  overview.
+                  Ask about your agents, projects or messages.
                 </p>
               </div>
             )}
@@ -588,11 +591,6 @@ export function AssistantPane() {
                   <div className={styles.working} role="status">
                     <span>
                       {activity ? `${actionLabel(activity)}…` : "thinking…"}
-                    </span>
-                    <span className={styles.workingDots} aria-hidden="true">
-                      <span />
-                      <span />
-                      <span />
                     </span>
                     <button
                       type="button"
@@ -691,7 +689,7 @@ export function AssistantPane() {
                 className={styles.input}
                 value={draft}
                 rows={2}
-                placeholder="Message the assistant…"
+                placeholder="Ask the assistant"
                 aria-label="Message the assistant"
                 onChange={(e) => setDraft(e.target.value)}
                 onPaste={(e) => {

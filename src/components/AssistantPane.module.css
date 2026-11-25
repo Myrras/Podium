@@ -35,13 +35,20 @@
   user-select: none;
 }
 
-.headerIcon {
-  color: var(--accent);
-  flex-shrink: 0;
+/* The header is a strip of floor wall: the bot stands on the floor's 3px baseline. */
+.stage {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: flex-end;
+  margin: calc(var(--sp-2) * -1) 0;
+  padding: var(--sp-1) var(--sp-2) 0;
+  border-bottom: 3px solid var(--border-strong);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
 .title {
-  flex: 1;
   font-size: var(--fs-md);
   font-weight: 600;
 }
@@ -224,7 +231,7 @@
   gap: var(--sp-1);
   padding: var(--sp-2);
   background: var(--surface-2);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--warning);
   border-radius: var(--radius-md);
   transition:
     border-color var(--dur-3) var(--ease-out),
@@ -449,35 +456,6 @@
 .interruptBtn:hover {
   background: var(--danger-bg);
   color: var(--text);
-}
-
-/* Three dots pulsing in sequence — opacity-only, same reasoning as the
-   sidebar's agent-activity dot in StatusDot.module.css. */
-.workingDots {
-  display: inline-flex;
-  gap: 3px;
-}
-
-.workingDots span {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentcolor;
-  animation: dotPulse 0.9s var(--ease-in-out) infinite;
-}
-
-.workingDots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.workingDots span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes dotPulse {
-  50% {
-    opacity: 0.2;
-  }
 }
 
 @keyframes messageIn {

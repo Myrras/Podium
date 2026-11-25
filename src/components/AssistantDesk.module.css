@@ -1,0 +1,53 @@
+.desk {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+/* Asleep frame at full colour; the bot's "needs" state would show the raised arm. */
+.desk[data-pose="asleep"] [data-state] > i {
+  transform: translateX(-75%);
+}
+
+.desk[data-state="off"] [data-state] {
+  opacity: 0.45;
+  filter: saturate(0.2);
+}
+
+.helpers {
+  display: inline-flex;
+  align-items: flex-end;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* The mini sprite is 32px; shown at 16px beside the bot. */
+.mini {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: hidden;
+}
+
+.mini > span {
+  transform: scale(0.5);
+  transform-origin: top left;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-left: var(--sp-1);
+  align-self: center;
+}
+
+.line {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.desk[data-state="waiting"] .line {
+  color: var(--warning);
+}
