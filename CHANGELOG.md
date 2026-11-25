@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Fixed
+
+- With "Remember agent sessions" on, closing Podium no longer asks whether to stop running agents and terminals: it closes straight away and remembers the agents, so they resume the next time their project opens.
+
 ## [3.4.0] - 2026-11-13
 
 ### Added

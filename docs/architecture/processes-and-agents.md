@@ -96,6 +96,11 @@ that, each id follows a `/clear` (see
 read happens outside the lock and within 200 ms, and no process starts on that
 exit path.
 
+With `remember_sessions` on, the **quit guard** steps aside entirely
+(`has_active_agents_or_terminals` returns `false`): a quit keeps what is open
+instead of asking first. Before, every quit asked to stop the very sessions it
+was about to remember. Terminals are not remembered; they end with the quit.
+
 An agent without an `AgentSession` is **not** remembered: Auggie (no session
 flags), and an agent whose own `extra_args` pick the session (`--resume`,
 `--continue`, …) — a restore would put Podium's `--resume` next to the user's

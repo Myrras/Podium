@@ -3570,7 +3570,15 @@ impl Orchestrator {
     /// come and go with the app. The assistant's sub-agents count too —
     /// running ones are agent processes like any other, and a queued one is
     /// work the user asked for that the quit would drop.
+    ///
+    /// Always `false` with `remember_sessions` on: the user chose to have a
+    /// quit keep what is open (the shutdown capture remembers every running
+    /// agent), so asking first only made every quit a dialog that read as if
+    /// it would throw those sessions away.
     pub fn has_active_agents_or_terminals(&self) -> bool {
+        if self.agent_settings.get().remember_sessions {
+            return false;
+        }
         let inner = self.inner.lock().expect(LOCK_POISONED);
         inner.subagents.queued() > 0
             || inner.processes.values().any(|p| {
@@ -8266,6 +8274,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(more.state, SubagentPhase::Running);
+        orch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_quit_guard_stays_quiet_with_remember_sessions_on() {
+        let data = tempfile::tempdir().unwrap();
+        // No slot at all: a spawned sub-agent queues, which trips the guard.
+        let (orch, _) = sub_orch(data.path(), sub_config(0));
+        orch.spawn_subagent(SubagentKind::Lookup, "Summarise the week", None, None)
+            .await
+            .unwrap();
+        assert!(orch.has_active_agents_or_terminals());
+
+        // With the setting on, the quit just keeps what is open: no warning.
+        orch.set_agent_remember_sessions(true).unwrap();
+        assert!(!orch.has_active_agents_or_terminals());
+
+        orch.set_agent_remember_sessions(false).unwrap();
+        assert!(orch.has_active_agents_or_terminals());
         orch.shutdown().await;
     }
 
