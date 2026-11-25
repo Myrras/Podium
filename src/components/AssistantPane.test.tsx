@@ -91,6 +91,7 @@ describe("AssistantPane", () => {
     vi.mocked(openFileDialog).mockResolvedValue(null);
     useAssistantStore.setState({
       messages: [],
+      composer: "",
       busy: false,
       activity: null,
       autonomy: "confirm-destructive",

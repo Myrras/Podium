@@ -23,6 +23,10 @@ when it merges.
 - The assistant is silent by default: it no longer writes to the chat on its own and only answers what you ask.
 - Floor mode has no docked assistant pane; the title bar button opens the chat as a popover.
 
+### Fixed
+
+- Unsent text in the assistant input now survives closing and reopening the assistant.
+
 ### Removed
 
 - The Start my day button.

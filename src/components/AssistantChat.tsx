@@ -251,7 +251,8 @@ export function AssistantChat({
   const setEnabled = useAssistantStore((s) => s.setEnabled);
   const hydrate = useAssistantStore((s) => s.hydrate);
   const loadResponses = useAssistantStore((s) => s.loadResponses);
-  const [draft, setDraft] = useState("");
+  const draft = useAssistantStore((s) => s.composer);
+  const setDraft = useAssistantStore((s) => s.setComposer);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   // What the user has selected elsewhere in Podium, shown as chips and
@@ -346,7 +347,8 @@ export function AssistantChat({
   const [focusTick, setFocusTick] = useState(0);
   useEffect(() => {
     if (incoming === null) return;
-    setDraft((cur) => (cur ? `${cur}\n${incoming}` : incoming));
+    const cur = useAssistantStore.getState().composer;
+    setDraft(cur ? `${cur}\n${incoming}` : incoming);
     setHistoryIndex(null);
     setFocusTick((n) => n + 1);
     clearIncoming(null);

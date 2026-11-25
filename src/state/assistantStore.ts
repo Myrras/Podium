@@ -335,6 +335,10 @@ interface AssistantState {
   /** Text for the composer to take over (then cleared); `null` = none. */
   draft: string | null;
   setDraft: (text: string | null) => void;
+  /** Unsent composer text. Lives here so it outlives AssistantChat unmounting
+   *  when the popover closes; cleared only on send. */
+  composer: string;
+  setComposer: (text: string) => void;
 }
 
 let seq = 0;
@@ -374,6 +378,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   subagents: [],
   draft: null,
   setDraft: (draft) => set({ draft }),
+  composer: "",
+  setComposer: (composer) => set({ composer }),
   loadSubagents: async () => {
     const gen = subagentsSnapshotGen;
     try {

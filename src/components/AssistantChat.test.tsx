@@ -46,6 +46,24 @@ describe("AssistantChat", () => {
     expect(screen.getByLabelText("Message the assistant")).toBeInTheDocument();
   });
 
+  it("keeps unsent composer text across unmount and clears it on send", async () => {
+    const user = userEvent.setup();
+    const send = vi.fn(() => Promise.resolve(true));
+    useAssistantStore.setState({ send });
+    const first = renderChat();
+    await user.type(
+      screen.getByLabelText("Message the assistant"),
+      "half a thought",
+    );
+    first.unmount();
+    renderChat();
+    const box = screen.getByLabelText("Message the assistant");
+    expect(box).toHaveValue("half a thought");
+    await user.type(box, "{Enter}");
+    expect(send).toHaveBeenCalled();
+    expect(screen.getByLabelText("Message the assistant")).toHaveValue("");
+  });
+
   it("shows the off state instead of children, log and composer", () => {
     seed(false);
     renderChat();
