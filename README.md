@@ -359,10 +359,13 @@ they did.
 - **External sweep** — every 10 minutes by default, the sources you enabled
   (Slack, Teams — through your *own* MCP servers) are checked by a separate
   Haiku session told to only read, not by the assistant itself (Podium
-  cannot enforce that on your own MCP servers). The assistant only
-  gets a turn when that check found something that needs you; a quiet check
-  costs no assistant turn and leaves nothing in the chat. A found item shows
-  as one faint "Podium check" line in the log.
+  cannot enforce that on your own MCP servers). Each check lists every
+  message from the last 2 days that asks you something and has no reply from
+  you; each becomes a *Needs you* item on the Responses list (sender and
+  place), without a desktop notification. It leaves once you reply or it
+  ages out; a dismissed one stays away until a newer message arrives in that
+  conversation. Nothing goes into the chat, except one line if the check
+  keeps failing.
 - **Responses** — the assistant files a short *Needs you* or *FYI* item in a
   collapsible list pinned above the chat (agent, project, to-do, age), and
   only for things you actually need: an agent blocked on a question only you

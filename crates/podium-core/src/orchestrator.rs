@@ -1478,6 +1478,41 @@ impl Orchestrator {
             .reconcile("agent:", &live, |items| self.publish_responses(items))
     }
 
+    /// File the external sweep's full set of waiting messages, keyed
+    /// `msg:<source>:<conversation>:<thread>`, and drop every `msg:` item not
+    /// in it (replied to, or aged out). Same newest message: `Unchanged`, so
+    /// a dismissed item stays dismissed until a newer one arrives.
+    pub(crate) fn sync_message_responses(
+        &self,
+        messages: &[crate::sweep::WaitingMessage],
+    ) -> CoreResult<()> {
+        for message in messages {
+            let item = ResponseItem {
+                id: ResponseId::new(),
+                kind: ResponseKind::NeedsYou,
+                text: message.text.clone(),
+                project: None,
+                agent: None,
+                agent_color: None,
+                todo: None,
+                source: Some(message.place.clone()),
+                process_id: None,
+                todo_id: None,
+                created_at: Utc::now(),
+                key: message.key(),
+                fingerprint: message.newest.to_rfc3339(),
+                state: ResponseState::Open,
+                reason: ResponseReason::Message,
+                sender: Some(message.sender.clone()),
+            };
+            self.responses()
+                .upsert(item, |items| self.publish_responses(items))?;
+        }
+        let live: Vec<String> = messages.iter().map(|m| m.key()).collect();
+        self.responses()
+            .reconcile("msg:", &live, |items| self.publish_responses(items))
+    }
+
     /// Tick one Responses item off: dismissed, not deleted, so the same
     /// item filed again does not come back.
     pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {

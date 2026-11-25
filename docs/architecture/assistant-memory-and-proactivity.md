@@ -221,12 +221,9 @@ Podium `--mcp-config`** and runs in an empty directory of its own,
 it and the denied `mcp` dir from the assistant's cwd, the app data dir).
 The sweep runs in its own cwd (`sweep-workspace` under the app data dir), so
 Slack/Teams MCP servers must be user-scope; a local-scope server added from the
-app-data dir is invisible to it. Such a sweep has no Slack/Teams tools and still
-answers normally: it stays silent (`NOTHING_TO_REPORT`) or reports "no access"
-as a finding. It is not a failure, so the not-working notice never appears (the
-streak counts only spawn failures, a session ending mid-turn, timeouts and
-`is_error` results). The identity prompt asks it to name an unreachable source
-in one line instead of staying silent. Slack and Teams need no integration: the session inherits the user's own
+app-data dir is invisible to it. Such a sweep has no Slack/Teams tools: the
+prompt asks it to name the unreachable source in one plain line instead of
+JSON, which is an unreadable answer and so a failed sweep (see below). Slack and Teams need no integration: the session inherits the user's own
 user-scope MCP servers (`--strict-mcp-config` deliberately not passed, or
 they would be hidden), so this is `poll_prompt` wording plus a timer. That
 also loads the user's own `podium mcp-bridge` server (the agents' route:
@@ -246,59 +243,73 @@ lookup sub-agent, the sweep can still call them (Slack send, Teams
 post, …) without a prompt, and Podium cannot enforce its read-only wording
 on those; Haiku reading untrusted messages is also more injectable than the
 main assistant was.** Binary and cwd follow `configure_assistant`;
-`configure_sweep` (`SweepConfig`) also sets the turn timeout. It is spawned
-lazily on the first sweep and **kept alive between sweeps**, so "since you
-last looked" holds within a run; a session that died is respawned with
-`--resume <its session id>` (in memory only; dropped when a resumed spawn
-never comes up, whether the turn's write or read failed, or it hung before
-saying anything and timed out) and killed on
-shutdown. Each sweep is one turn read straight off its stdout (no output
-task, no events, no transcript): the `result` event's text is the answer (an empty one, or a turn cut off at
-the turn limit, is quiet; the last prose block is only the fallback for a
-normal end without `result` text). The hand-off words the notice from the
-sources enabled *then*, and `shutdown()` stops the sweep before the assistant.
+`configure_sweep` (`SweepConfig`) also sets the turn timeout. **Every sweep
+spawns a fresh session** (no `--resume`, no state between sweeps) and ends it
+afterwards: stdin is closed so the CLI can stop its MCP servers, then it is
+killed after `SESSION_EXIT_GRACE` (5 s); a failed or cut-short turn is killed
+at once. Each sweep is one turn read straight off its stdout (no output
+task, no events, no transcript): the `result` event's text is the answer (a
+turn cut off at the turn limit has none; the last prose block is only the
+fallback for a normal end without `result` text). The hand-off follows the
+settings *then*, and `shutdown()` stops the sweep before the assistant.
 **One sweep at a time** (`SweepManager::begin`, a busy flag held by
 `SweepRun` until the hand-off is done): the watcher runs it on its own task
 (weak orchestrator ref) and a tick that finds one still running is skipped.
-A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the child; the
-next sweep respawns it. Shutdown wakes a running turn at once (`Notify`),
+A turn over `SWEEP_TURN_TIMEOUT` (5 min, injectable) kills the child.
+Shutdown wakes a running turn at once (`Notify`),
 kills the child and counts as neither a finding nor a failure. Failures are
 logged at debug/warn without content.
 
 **A broken check must not look like a quiet one.** A spawn failure, a
-session that ends under the turn, a timeout or a turn the CLI ended with an
-error counts as a failed sweep (`FailureStreak`). After
+session that ends under the turn, a timeout, a turn the CLI ended with an
+error or an answer that cannot be read counts as a failed sweep
+(`FailureStreak`). After
 `FAILURES_BEFORE_NOTICE` (3) in a row the sweep returns
 `SweepOutcome::NotWorking(reason)` once, and the watcher hands the assistant
-`sweep::not_working_text` through the same `assistant_poll` path as a
-finding (a Podium-owned reason string, never CLI output); further failures
-are quiet until a sweep works again and fails three more times.
+`sweep::not_working_text` via `Orchestrator::assistant_poll` →
+`AssistantManager::poll` (a Podium-owned reason string, never CLI output);
+further failures are quiet until a sweep works again and fails three more
+times. That notice is the only thing the sweep ever puts in the chat. It is
+delivered as `PendingKind::Poll`: it leaves the same `Notice` row a nudge
+does (`record_before_write`, stored as a `nudge` row), so the panel folds it
+into one faint "Podium check" line.
 
-A reply carrying `NOTHING_TO_REPORT` on a line of its own
-(`assistant::says_nothing_to_report`, the same matcher as below), an empty
-one, an error or a timeout reaches **nobody**: the assistant gets no turn,
-the panel no row or event. A real finding is handed to the assistant as
-`[Podium] The routine check of <sources> found: <findings via quote_line,
-capped at 4000 chars>. Tell the user what needs them, following your
-Responses rules.` (`sweep::finding_text`), via `Orchestrator::assistant_poll`
-→ `AssistantManager::poll` — re-checking the proactivity switch and the
-poll settings first, since they may have changed during the sweep. With
-both sources off or proactivity off no sweep runs at all. That turn is
-delivered as `PendingKind::Poll`: unlike a proposal-outcome `Notice` it
-leaves the same `Notice` row a nudge does (`record_before_write`, stored as a
-`nudge` row), so the panel folds the turn and its actions into one faint
-"Podium check" line rather than mixing them with the user's own. Unlike
-nudges, polls are not merged or deduped in the queue.
+**The sweep is stateless and files Responses items itself.** Every sweep asks
+(`assistant::poll_prompt`, which carries the current time) for the *full* set
+of messages from the last `MESSAGE_WINDOW_DAYS` (2) days still waiting for the
+user — a message that asks the user something with no reply from them — as one
+strict JSON object:
+
+```json
+{"messages":[{"source":"slack","conversation":"<id>","thread":"<id or the conversation id>",
+  "sender":"<name>","place":"Slack, direct message","newest":"<RFC 3339>","text":"<short gist>"}]}
+```
+
+`sweep::parse_messages` reads it (from the first `{` to the last `}`, so a
+code fence or a line of prose around it is tolerated). A malformed entry
+(unknown source, missing field, bad time, an id over 200 chars) is dropped on
+its own, logged at debug without content; entries older than the window are
+dropped in code too. An answer with no readable `messages` array is a failed
+sweep and files and removes **nothing**, so a bad run never wipes the list.
+`sender`/`place` are clipped to 40 chars, `text` to 300.
+
+On hand-off (re-checking enabled, proactivity and the poll settings, and
+dropping entries of a source switched off since),
+`Orchestrator::sync_message_responses` upserts each as a `needsYou` item, key
+`msg:<source>:<conversation>:<thread>`, reason `message`, `sender`,
+`source` = place, fingerprint = `newest`, then `reconcile("msg:", live)`: a
+replied or aged-out conversation leaves the list. Same `newest` is
+`Unchanged` (nothing written, a dismissed item stays dismissed); a newer one
+is `Changed` and back to open. Message items never ping (the frontend skips
+reason `message`). With both sources off or proactivity off no sweep runs at
+all.
 
 ## The silence contract
 
-**The silence contract**: a sweep that found nothing must say nothing. The
-prompt instructs the sweep session to answer with exactly `NOTHING_TO_REPORT`,
-and the sweep drops such a reply before the assistant sees anything. The
-assistant's own stream applies the same rule to any nudge's answer: a `Message`
-carrying that sentinel **on a line of its own** — anywhere in the
-reply — is dropped before it is recorded or published: no chat row, no
-transcript row.
+**The silence contract**: a nudge that brings nothing must say nothing. The
+assistant's own stream drops any nudge's answer that is a `Message`
+carrying `NOTHING_TO_REPORT` **on a line of its own** — anywhere in the
+reply — before it is recorded or published: no chat row, no transcript row.
 
 It is deliberately not an exact-whole-message match: models keep prefixing the
 word with the very summary the prompt forbids ("Same messages as last
