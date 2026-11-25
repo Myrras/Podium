@@ -448,12 +448,8 @@ describe("AssistantPane", () => {
       ).toBeInTheDocument();
     });
 
-    it("keeps 'Start my day' while the transcript holds only activity rows", () => {
+    it("has no 'Start my day' button", () => {
       render(<AssistantPane />);
-      apply({ type: "notice", text: "[Podium] sweep" });
-      apply({ type: "tool", name: "Agent" });
-      expect(screen.getByLabelText("Start my day")).toBeInTheDocument();
-      apply({ type: "message", text: "hello" });
       expect(screen.queryByLabelText("Start my day")).toBeNull();
     });
 
@@ -698,15 +694,6 @@ describe("AssistantPane", () => {
       expect(
         screen.queryByRole("button", { name: "New activity ↓" }),
       ).not.toBeInTheDocument();
-    });
-
-    it("'Start my day' jumps to the bottom directly", async () => {
-      const user = userEvent.setup();
-      render(<AssistantPane />);
-      const top = stubLog(logOf(), 100);
-      fireEvent.scroll(logOf());
-      await user.click(screen.getByLabelText("Start my day"));
-      expect(top()).toBe(1000);
     });
 
     it("sending a message always jumps to the bottom", async () => {
@@ -1201,31 +1188,6 @@ describe("AssistantPane", () => {
 
       await user.keyboard("{ArrowUp}");
       expect(input).toHaveValue("typing");
-    });
-  });
-
-  describe("day start", () => {
-    it("shows the day-start button in the empty state and triggers it", async () => {
-      const user = userEvent.setup();
-      render(<AssistantPane />);
-
-      await user.click(screen.getByLabelText("Start my day"));
-
-      expect(assistantDayStart).toHaveBeenCalled();
-      // The turn shows at once, so the button is gone before the CLI answers
-      // — no window in which the click looks like it did nothing.
-      expect(screen.queryByLabelText("Start my day")).toBeNull();
-      expect(screen.getByText("Start my day")).toBeInTheDocument();
-      expect(screen.getByText("thinking…")).toBeInTheDocument();
-    });
-
-    it("hides the day-start button once there are messages", () => {
-      useAssistantStore.setState({
-        messages: [{ id: 1, role: "user", text: "hi" }],
-      });
-      render(<AssistantPane />);
-
-      expect(screen.queryByLabelText("Start my day")).toBeNull();
     });
   });
 

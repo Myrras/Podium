@@ -381,7 +381,7 @@ describe("SettingsModal — Assistant tab", () => {
     );
 
     const toggle = screen.getByRole("switch", {
-      name: "Let the assistant speak first",
+      name: "Desktop notifications",
     });
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
     fireEvent.click(toggle);
@@ -397,7 +397,7 @@ describe("SettingsModal — Assistant tab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
 
     const interval = await screen.findByLabelText(
-      "Sweep interval, in minutes (0 = off)",
+      "Check interval, in minutes (0 = off)",
     );
     expect(interval).toHaveValue(10);
 
