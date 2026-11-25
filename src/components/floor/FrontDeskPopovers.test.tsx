@@ -84,6 +84,8 @@ describe("FrontDeskPopovers", () => {
     expect(list()).toBeInTheDocument();
     expect(screen.getByText("What needs you")).toBeInTheDocument();
     expect(chat()).toBeNull();
+    // Text selected in the list is not assistant context (lib/selection.ts).
+    expect(list()!.closest("[data-assistant-pane]")).not.toBeNull();
   });
 
   it("opens the chat from the bot, with the bot's state line and controls", async () => {

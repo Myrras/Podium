@@ -34,7 +34,8 @@ export function FrontDeskPopovers() {
       flush
       onClose={closeDesk}
     >
-      <div className={styles.list}>
+      {/* As in the pane: selecting text here is reading, not picking context. */}
+      <div className={styles.list} data-assistant-pane="true">
         <ResponsesSection />
       </div>
     </Popover>
