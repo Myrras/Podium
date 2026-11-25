@@ -188,8 +188,7 @@ impl ResponseItem {
     /// waiting for the user, however much news arrives after it. An item
     /// about an agent is only replaced by another item about an agent — the
     /// same one, or (via the to-do) the agent that took the task over, e.g.
-    /// after `respawn_agent` — never by an agent-less note on its to-do such
-    /// as the lingering-to-do sweep's.
+    /// after `respawn_agent` — never by an agent-less note on its to-do.
     fn superseded_by(&self, newer: &ResponseItem) -> bool {
         if self.kind == ResponseKind::NeedsYou && newer.kind == ResponseKind::Fyi {
             return false;

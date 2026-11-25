@@ -18,12 +18,11 @@ podium/
 │  ├─ process/                 # ProcessKind/Status/Spec, pty.rs (engine), scrollback.rs, supervisor.rs
 │  ├─ agent/                   # AgentAdapter trait + claude.rs (ClaudeCodeAdapter) + auggie.rs (AuggieAdapter), McpConnectInfo, settings.rs (agents.json), session_memory.rs, cleanup.rs (exited-agent sweep), folder_trust.rs (pre-accepted trust for the assistant workspace)
 │  ├─ mcp/                     # built-in MCP server (mod.rs) + the 38 tools (tools.rs) + stdio bridge (bridge.rs)
-│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, nudge queue
+│  ├─ assistant.rs             # the personal assistant: headless Claude Code child, stream-json in/out, autonomy gate + proposals, transcript/memory store, pending queue
 │  ├─ subagent.rs              # the assistant's sub-agents: kinds, phases, cap + queue (SubagentBook), launch restrictions, nudge texts
 │  ├─ responses.rs             # the assistant's Responses list (ResponseItem + persistent ResponseStore)
-│  ├─ proactivity.rs           # EventBus watcher turning agent exits / stuck agents / lingering to-dos / a new day into assistant nudges
+│  ├─ proactivity.rs           # EventBus watcher filing waiting / crashed agents and Slack/Teams messages as Responses items
 │  ├─ sweep.rs                 # the external sweep's own headless Haiku session (Slack/Teams routine check); only findings reach the assistant
-│  ├─ triage.rs                # proactivity nudges: 60 s debounce + one-shot tool-less Haiku FORWARD/DROP triage before an assistant turn
 │  ├─ issues.rs                # the Git board: issues + PRs/MRs of a project's origin repo in Kanban columns (GitHub via `gh`, temporarily self-hosted GitLab)
 │  ├─ boards.rs                # persistent Git-board cache (BoardStore → boards.json, CachedBoard)
 │  ├─ worktree.rs              # Podium-managed git worktrees (create/list/remove under .podium/worktrees/)

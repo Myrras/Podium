@@ -1,5 +1,4 @@
-//! Personal-assistant commands: sending a turn, asking for the day-start
-//! summary, replaying the stored transcript, starting over, its memory, the
+//! Personal-assistant commands: sending a turn, replaying the stored transcript, starting over, its memory, the
 //! autonomy, proactivity, external-poll and
 //! message-queue settings, deciding on a proposed action, and managing the
 //! pending-input queue (edit/remove a waiting message, interrupt the running
@@ -40,15 +39,6 @@ pub async fn assistant_send(
         .orchestrator
         .assistant_send_with_attachments(&text, attachments)
         .await?)
-}
-
-/// Ask the assistant for a day-start summary (the panel's button). It goes in
-/// as a normal user turn, so it spawns the session, shows in the chat and
-/// respects the queue setting; the reply arrives as `assistant:event`
-/// payloads. Returns the same delivered-or-queued answer as `assistant_send`.
-#[tauri::command]
-pub async fn assistant_day_start(state: State<'_, AppState>) -> Result<bool, IpcError> {
-    Ok(state.orchestrator.assistant_day_start().await?)
 }
 
 /// The stored chat rows, oldest first — what the panel replays on startup.
@@ -144,8 +134,8 @@ pub async fn assistant_enabled_set(
     Ok(state.orchestrator.set_assistant_enabled(enabled).await?)
 }
 
-/// Whether Podium may nudge the assistant unprompted (agent finished, agent
-/// stuck, lingering to-dos, day-start summary).
+/// Whether Podium sends desktop notifications for Responses items and runs
+/// the external Slack/Teams sweep.
 #[tauri::command]
 pub async fn assistant_proactivity_get(state: State<'_, AppState>) -> Result<bool, IpcError> {
     Ok(state.orchestrator.assistant_proactivity())

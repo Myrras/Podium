@@ -95,15 +95,17 @@ Settings > General > Appearance > View.
   agent screen. The terminal icon opens a new terminal. **⋯** is the project menu:
   rename, colour, worktrees, Git board, Reload podium.yml, Remove project. **Add project...** is
   the last chip in the header.
-- **Front desk.** The assistant sits in the bottom-right corner of the map. Its
-  bot (or the title bar's assistant button) opens the chat above the desk; the
-  count opens the full list of what needs you. Esc inside closes it.
+- **Front desk.** The assistant sits in the bottom-right corner of the map with
+  a queue of what needs you. Hover an item for Reply, Park and Dismiss; click it
+  to fly to that agent. The count opens the full list, its bot (or the title
+  bar's assistant button) opens the chat above the desk. Esc inside closes it.
+  A desk shows a tick when its agent is ready to review, and sleeps while its
+  item is parked.
 - **Waypoints.** A room that needs you while out of view gets a marker on the edge
   of the map with an amber **?** (waiting agents) or red **!** (crashed) count;
   click it to fly there. Counts also show in the header, the chips and nameplates.
 - **Status bar.** A hint, the room's counts while one room is in view, or the
-  details of the hovered or selected agent. "Show on floor" in the assistant
-  moves the camera to an agent.
+  details of the hovered or selected agent.
 
 ### Processes, terminals and supervision
 
@@ -343,55 +345,48 @@ they did.
   cannot (a WSL backend, no Claude Code config yet) does the first one ask:
   open it from the list and answer "Yes, I trust this folder" once.
 - **Power switch** — the power button in the title bar (next to the assistant
-  button) turns the assistant off: no session, no nudges, no desktop
+  button) turns the assistant off: no session, no desktop
   notifications, and its running sub-agents are stopped. The panel then shows
   "The assistant is off" with a *Turn on* button; the choice is remembered.
 - **Memory** — a markdown file the assistant maintains itself and you can
   edit; it is the continuity between days, since each app launch starts with
   a blank conversation.
-- **Proactivity** — Podium speaks first when an agent exits, when an agent
-  looks stuck (silent for 5 minutes, escalating once after 10 with a
-  suggested answer, then silent until you type into that agent), and on a
-  6-hourly sweep for to-dos open longer than a week. These notes are
-  gathered for a minute and checked first by a small Haiku session with no
-  tools: only the ones worth your attention (a crash, a blocked agent,
-  finished work with something to look at) reach the assistant, together as
-  one turn. A routine finish or a repeat costs no assistant turn. If that
-  check fails, everything goes through as before. Reports agents send
-  themselves and sub-agent results always go straight to the assistant.
+- **Overview** — the assistant is silent by default: it never writes to the
+  chat on its own. What needs you is kept as a list, *Needs you* and *Parked*
+  (the Responses list, pinned above the chat; the front desk in Floor mode):
+  an agent waiting on you, an agent that crashed, an agent ready to review
+  (it reported back or finished its to-do), and Slack/Teams messages waiting
+  for you. Each row shows the agent's bot with its state; click it to go to the
+  agent. An item goes by itself when it is handled (the agent resumes, you
+  type into the agent, you reply to the message).
 - **External sweep** — every 10 minutes by default, the sources you enabled
   (Slack, Teams — through your *own* MCP servers) are checked by a separate
   Haiku session told to only read, not by the assistant itself (Podium
   cannot enforce that on your own MCP servers). Each check lists every
   message from the last 2 days that asks you something and has no reply from
-  you; each becomes a *Needs you* item on the Responses list (sender and
+  you; each becomes an item on the overview (sender and
   place), without a desktop notification. It leaves once you reply or it
-  ages out; a dismissed one stays away until a newer message arrives in that
-  conversation. Nothing goes into the chat, except one line if the check
+  ages out; a dismissed or parked one stays away until a newer message
+  arrives in that conversation. Nothing goes into the chat, except one line if the check
   keeps failing.
-- **Responses** — the assistant files a short *Needs you* or *FYI* item in a
-  collapsible list pinned above the chat (agent, project, to-do, age), and
-  only for things you actually need: an agent blocked on a question only you
-  can answer, a message from Slack/Teams/mail that asks you something, a
-  confirmation card for an action it proposes, finished work you asked for
-  (a result, a PR/MR link), or an agent that crashed. No "no change"
-  reminders, no agent that simply finished with nothing left for you. The
-  details stay in its chat reply. Tick an item off, or reply inline — the
-  reply goes to the assistant as your message and shows in the chat as a
-  one-line "Re: …". A newer item about the same agent or to-do replaces the
-  old one, and open items survive restarts and new conversations.
-- **Desktop notifications** — a new Responses item is the only thing that
-  notifies you (toast, system notification and sound), and only while Podium
-  is not in front with the assistant panel open. Several new items arrive as
-  one notification. Chat replies, confirmation cards and Podium's own
-  `[Podium]` nudges do not notify on their own.
+- **Park and dismiss** — **Dismiss** clears an item and it stays away after a
+  restart. **Park** ("Park until it changes") moves it to *Parked*: quiet and
+  not counted, until the agent or conversation changes, then it is open
+  again. Reply inline: the reply goes to the assistant as your message and
+  shows in the chat as a one-line "Re: …". Items survive restarts and new
+  conversations. The assistant itself only adds one when a sub-agent needs a
+  decision that is really yours, and a confirmation card for an action it
+  proposes shows up here too.
+- **Desktop notifications** — Settings → Assistant → Notifications → "Desktop
+  notifications". A crash, an agent ready to review and an agent asking a
+  question notify you (toast, system notification and sound), only while
+  Podium is not in front with the assistant open. Messages never notify; they
+  show in the overview. Chat replies never notify.
 - **The agent you are looking at stays quiet** — the assistant knows which
   agent you have open (the window is in front and its terminal is showing —
-  not covered by a to-do, scratchpad or the Git board). It does not nudge,
-  report or file items about that agent, so it never tells you what you are
+  not covered by a to-do, scratchpad or the Git board). It files
+  no items about that agent, so it never tells you what you are
   already reading. Switch away and it speaks again for anything new.
-- **Start my day** — one button for a prioritised summary of open work across
-  all projects.
 - **Queue** — one turn runs at a time; anything you send mid-turn waits, and
   can be edited, removed or pushed into the running turn.
 - **Push go-ahead** — tell the assistant a Claude Code agent may push, and
@@ -408,7 +403,7 @@ they did.
 - **Folded activity** — a run of actions is one collapsed line ("Ran 12
   actions · Slack, Podium, Notion, +2 ⚠ 1"); open it for each action with a count.
   Failures show as a ⚠ count, each with a clipped error inside (full text on hover), and Podium's own
-  nudges get a fainter line. The log keeps your scroll position while it
+  Podium's own notices get a fainter line. The log keeps your scroll position while it
   streams; a "New activity ↓" button (shown only when a new reply or notice arrives) jumps back to the bottom.
 - **Attachments** — drop, paste or pick files; images are inlined (shrunk to
   1568 px), text is inlined, everything else travels as a path.
@@ -484,7 +479,7 @@ you added by hand alone.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **General**   | View (**Project mode** or **Floor mode**), theme (**dark**, **light**, **retro**, **glass dark**, **glass light**), reduce motion, terminal font size and shell command, notification sound (including your own file); on Windows, the WSL backend distro and whether Windows-drive projects run natively |
 | **Agents**    | Default adapter, per-adapter command override and default args, how global and `podium.yml` args merge, "suggest worktree", "remember agent sessions" — when you quit Podium, each running Claude Code agent is resumed on its conversation (after a `/clear`, the one from after it, with the same limits as a restart) the next time its project opens, with its to-dos and model; off by default, not for agents whose own args pick the session, kept for 14 days, forgotten when turned off; "remove exited agents after" — minutes after its last exit that a finished, crashed or stopped agent is removed from the list, with its terminal and to-do links (default 5, `0` = never, at most 1440; terminals and services stay) |
-| **Assistant** | Autonomy mode, proactive nudges on/off, external polling interval + Slack/Teams, reset conversation (asks keep or stop when sub-agents are running)                                 |
+| **Assistant** | Autonomy mode, desktop notifications on/off, external polling interval + Slack/Teams, reset conversation (asks keep or stop when sub-agents are running)                                 |
 | **Issues**    | GitHub/GitLab setups for the Git board: name, URL (`http://` kept), `gh` account or GitLab token (stored in the OS keychain)          |
 | **MCP**       | One-click registration of the stdio bridge with Claude Code and Auggie, with an installed indicator and a copyable command             |
 

@@ -670,16 +670,6 @@ impl Orchestrator {
         self.assistant.nudge(text, mcp).await;
     }
 
-    /// [`assistant_nudge`](Self::assistant_nudge) for several texts at once:
-    /// one turn when the assistant is idle, texts already waiting skipped.
-    pub async fn assistant_nudge_all(&self, texts: Vec<String>) {
-        if !self.assistant_enabled() {
-            return;
-        }
-        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        self.assistant.nudge_all(texts, mcp).await;
-    }
-
     /// Hand the assistant what the external sweep found (the sweep itself
     /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
     /// session if there is none, and goes in as a `Poll` turn.
@@ -706,14 +696,6 @@ impl Orchestrator {
             .set_assistant_polling(polling)?
             .assistant
             .into())
-    }
-
-    /// Ask the assistant for a day-start summary (the panel's button). Goes
-    /// in as a normal user turn rather than a nudge: it is something the user
-    /// asked for, so it belongs in the transcript and always wants an answer.
-    pub async fn assistant_day_start(&self) -> CoreResult<bool> {
-        self.assistant_send(crate::assistant::DAY_START_PROMPT)
-            .await
     }
 
     /// Set up the personal assistant's own scope at `dir`
@@ -1186,9 +1168,7 @@ impl Orchestrator {
 
     /// The UI saw an input prompt on this agent's screen (a permission
     /// question, a credential request). Recorded so [`crate::proactivity`]
-    /// can tell the user *now* instead of waiting out its silence timer —
-    /// which is a blunt proxy: it cannot tell "waiting for you" from
-    /// "finished thinking". Anything that is not a running agent is ignored.
+    /// can file the agent as waiting on the user. Anything that is not a running agent is ignored.
     ///
     /// An agent blocked on a permission prompt cannot call
     /// `report_to_assistant` itself — it is blocked *inside* the harness that
@@ -1210,7 +1190,7 @@ impl Orchestrator {
     /// since. Output after the report means the prompt was answered (or
     /// misread), so the flag simply stops counting — no clearing needed. An
     /// agent that redraws its prompt would fall out the same way and land
-    /// back on the silence timer, which is the safe direction to fail.
+    /// back to not waiting, which is the safe direction to fail.
     pub fn agents_awaiting_input(&self) -> Vec<ProcessInfo> {
         let inner = self.inner.lock().expect(LOCK_POISONED);
         inner
@@ -4313,8 +4293,8 @@ impl Hub {
         }
     }
 
-    /// Tell the assistant how a sub-agent ended. Unlike proactivity's nudges
-    /// this is not behind the proactivity switch: the result is what the
+    /// Tell the assistant how a sub-agent ended. Not behind the
+    /// proactivity switch: the result is what the
     /// user asked the assistant for. Nothing is said once the app quits —
     /// a nudge would only start a fresh assistant session on the way out.
     async fn nudge(&self, text: String) {
@@ -4592,8 +4572,8 @@ impl Hub {
     /// Report Claude Code's folder-trust dialog on a sub-agent that just
     /// started, if it shows one within [`SubagentConfig::trust_window`], the
     /// way the UI reports a prompt it sees on screen
-    /// ([`Orchestrator::report_agent_waiting`]): the stuck-agent check then
-    /// raises it at its next tick instead of after its silence timer. The
+    /// ([`Orchestrator::report_agent_waiting`]): the watcher then
+    /// files it at its next tick. The
     /// folder is the assistant workspace — Podium's own — and the session
     /// runs in the background, so otherwise nobody would notice it waiting;
     /// the CLI keeps the answer for the folder, so only the first sub-agent

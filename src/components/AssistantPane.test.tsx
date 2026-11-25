@@ -14,7 +14,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("../ipc/commands", () => ({
   assistantSend: vi.fn(() => Promise.resolve(true)),
   assistantEnabledSet: vi.fn((v: boolean) => Promise.resolve(v)),
-  assistantDayStart: vi.fn(() => Promise.resolve(true)),
   assistantAutonomyGet: vi.fn(() => Promise.resolve("confirm-destructive")),
   assistantAutonomySet: vi.fn((mode: string) => Promise.resolve(mode)),
   assistantResolveProposal: vi.fn(() => Promise.resolve()),
@@ -40,7 +39,6 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
-  assistantDayStart,
   assistantEnabledSet,
   assistantInterrupt,
   assistantMemoryGet,
@@ -63,8 +61,6 @@ describe("AssistantPane", () => {
   beforeEach(() => {
     vi.mocked(assistantSend).mockReset();
     vi.mocked(assistantSend).mockResolvedValue(true);
-    vi.mocked(assistantDayStart).mockReset();
-    vi.mocked(assistantDayStart).mockResolvedValue(true);
     vi.mocked(assistantAutonomyGet).mockReset();
     vi.mocked(assistantAutonomyGet).mockResolvedValue("confirm-destructive");
     vi.mocked(assistantAutonomySet).mockReset();

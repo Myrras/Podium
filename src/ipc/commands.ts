@@ -710,16 +710,6 @@ export function assistantTranscript(): Promise<TranscriptEntry[]> {
 }
 
 /**
- * Send the day-start summary prompt as a normal user turn (spawning the
- * session if needed). Like {@link assistantSend}, the reply streams back as
- * `assistant:event`, not as this promise's value, and it resolves to whether
- * the prompt went straight in rather than onto the queue.
- */
-export function assistantDayStart(): Promise<boolean> {
-  return invoke("assistant_day_start");
-}
-
-/**
  * Drop the conversation (session, transcript and pending proposals) and start
  * fresh. The assistant's memory is kept, and so are its sub-agents unless
  * `stopSubagents` (their results then go to the new conversation).

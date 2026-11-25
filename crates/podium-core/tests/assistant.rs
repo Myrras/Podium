@@ -867,38 +867,13 @@ async fn a_nudge_with_nobody_chatting_starts_the_session_itself() {
     // rather than wait for the user to happen to type. (A fresh session is
     // not a stranger: every app start clears the conversation anyway, and
     // the memory file carries the continuity.)
-    orch.assistant_nudge_all(vec!["[Podium] Fix the login redirect".to_string()])
+    orch.assistant_nudge("[Podium] Fix the login redirect".to_string())
         .await;
 
     let notice = next_notice(&mut rx).await;
     assert!(notice.contains("Fix the login redirect"), "{notice}");
     // And it really ran a turn, unprompted.
     collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-    orch.shutdown().await;
-}
-
-#[tokio::test]
-async fn the_day_start_button_sends_a_real_user_turn() {
-    let (orch, _dir) = setup(FAKE_CLAUDE);
-    let mut rx = orch.subscribe_events();
-
-    // Nothing has been sent yet: unlike a nudge, this must spawn the session
-    // by itself and run a turn — that is the whole point of it being a
-    // button and not proactivity.
-    orch.assistant_day_start().await.expect("day start");
-    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-
-    let first = orch
-        .assistant_transcript()
-        .into_iter()
-        .next()
-        .expect("a transcript row");
-    assert_eq!(first.role, TranscriptRole::User);
-    // Prioritising with a reason, and asking rather than guessing, are what
-    // the summary is for.
-    assert!(first.text.contains("day-start summary"), "{}", first.text);
-    assert!(first.text.contains("picking up first"), "{}", first.text);
-    assert!(first.text.contains("ask me"), "{}", first.text);
     orch.shutdown().await;
 }
 
@@ -1362,93 +1337,6 @@ async fn nudges_that_piled_up_are_delivered_as_one_turn_ahead_of_the_user() {
 
     orch.shutdown().await;
 }
-
-#[tokio::test]
-async fn a_batch_of_nudges_on_an_idle_assistant_is_one_turn_minus_repeats() {
-    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
-    let mut rx = orch.subscribe_events();
-
-    orch.assistant_nudge_all(vec![
-        "[Podium] an agent finished".to_string(),
-        "[Podium] another agent crashed".to_string(),
-        "[Podium] an agent finished".to_string(),
-    ])
-    .await;
-    collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-
-    let lines = recorded_stdin(dir.path(), 1).await;
-    let text = lines[0]
-        .pointer("/message/content/0/text")
-        .and_then(|t| t.as_str())
-        .expect("text block");
-    assert_eq!(
-        text,
-        "[Podium] an agent finished\n\n[Podium] another agent crashed"
-    );
-    orch.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_batch_skips_a_nudge_that_is_already_waiting() {
-    let (orch, dir) = setup(RECORDS_STDIN_CLAUDE);
-    let mut rx = orch.subscribe_events();
-
-    orch.assistant_send("first").await.expect("send first");
-    orch.assistant_nudge("[Podium] an agent finished".to_string())
-        .await;
-    orch.assistant_nudge_all(vec![
-        "[Podium] an agent finished".to_string(),
-        "[Podium] another agent crashed".to_string(),
-    ])
-    .await;
-    for _ in 0..2 {
-        collect_until(&mut rx, |e| matches!(e, AssistantEvent::TurnEnd { .. })).await;
-    }
-
-    let lines = recorded_stdin(dir.path(), 2).await;
-    let merged = lines[1]
-        .pointer("/message/content/0/text")
-        .and_then(|t| t.as_str())
-        .expect("text block");
-    assert_eq!(merged.matches("an agent finished").count(), 1, "{merged}");
-    assert!(merged.contains("another agent crashed"), "{merged}");
-    orch.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_big_batch_while_busy_is_one_waiting_item_and_drops_nothing() {
-    let (orch, _dir) = setup(SPAWN_RECORDING_CLAUDE);
-    let mut rx = orch.subscribe_events();
-
-    // "slow" keeps the first turn running while the rest arrives.
-    orch.assistant_send("slow first").await.expect("send first");
-    orch.assistant_send("keep me").await.expect("queue user");
-    let batch: Vec<String> = (0..30)
-        .map(|i| format!("[Podium] agent {i} finished"))
-        .collect();
-    orch.assistant_nudge_all(batch).await;
-
-    let events = collect_until(
-        &mut rx,
-        |e| matches!(e, AssistantEvent::QueueChanged { items } if items.len() == 2),
-    )
-    .await;
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, AssistantEvent::QueueNotice { .. })),
-        "nothing was dropped: {events:?}"
-    );
-    let Some(AssistantEvent::QueueChanged { items }) = events.last() else {
-        panic!("{events:?}");
-    };
-    assert_eq!(items[0].text, "keep me");
-    assert!(items[1].text.contains("agent 0 finished"), "{items:?}");
-    assert!(items[1].text.contains("agent 29 finished"), "{items:?}");
-    orch.shutdown().await;
-}
-
-// -- attachments -------------------------------------------------------
 
 #[tokio::test]
 async fn an_image_attachment_reaches_the_childs_stdin_intact() {
@@ -2626,10 +2514,6 @@ async fn turning_the_assistant_off_kills_the_session_and_refuses_input() {
     let _ = std::fs::remove_file(dir.path().join("pid.txt"));
     assert!(matches!(
         orch.assistant_send("again").await,
-        Err(podium_core::CoreError::AssistantDisabled)
-    ));
-    assert!(matches!(
-        orch.assistant_day_start().await,
         Err(podium_core::CoreError::AssistantDisabled)
     ));
     orch.assistant_nudge("[Podium] something happened".to_string())

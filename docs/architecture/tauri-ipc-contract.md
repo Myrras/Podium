@@ -144,7 +144,6 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | Command                 | Args                                        | Returns           |
 | ----------------------- | ------------------------------------------- | ----------------- |
 | `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | `bool` — delivered, not queued (reply streams as `assistant:event`) |
-| `assistant_day_start`   | –                                           | `bool` — as `assistant_send` |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
 | `assistant_new_conversation` | `{ stopSubagents }` (false = sub-agents keep running into the new conversation) | – |
 | `assistant_subagents_list` | –                                         | `SubagentInfo[]` (oldest first; changes stream as `subagentsChanged`) |

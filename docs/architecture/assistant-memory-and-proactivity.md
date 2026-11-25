@@ -1,8 +1,11 @@
 # Assistant memory and proactivity
 
 How the personal assistant (see [assistant.md](assistant.md)) keeps its memory
-and how Podium speaks first. Proactivity lives in `proactivity.rs`; its setting
-`proactive` sits in the `assistant` block and defaults **on**.
+and how Podium keeps the user's overview (the Responses list). The assistant
+is **silent by default**: it never writes to the chat on its own account.
+The watcher lives in `proactivity.rs`; its setting `proactive` sits in the
+`assistant` block, defaults **on** and is the Settings → Assistant → Notifications →
+"Desktop notifications" switch.
 
 ## Memory
 
@@ -16,55 +19,37 @@ reaches a *running* session only on its next spawn.
 
 ## Proactivity
 
-**Proactivity** lets Podium speak first. One task watches the `EventBus` and,
-on a slow tick, the process/to-do state. The watcher holds only a weak
-reference, so it ends with the orchestrator. Switching the setting off
-silences all of it.
+One task watches the `EventBus` and, on a slow tick, the agents. It holds only
+a weak reference, so it ends with the orchestrator. It files **items** on the
+Responses list (see [assistant.md](assistant.md#responses)) and writes nothing
+to the chat. Agent items are filed whenever the assistant is on; `proactive`
+gates only desktop notifications (the frontend's call) and the external sweep.
 
-### Triggers
+### Items
 
-- An agent that exited (finished or crashed).
-- An agent the UI reported an input prompt on (`process_report_waiting` →
-  `Orchestrator::report_agent_waiting` / `agents_awaiting_input`).
-- A running agent that has printed nothing for 5 minutes, so it is probably
-  waiting on a question (`Orchestrator::idle_agents`, measured from the
-  scrollback's last append, or from the process start when it never printed).
-- A 6-hourly sweep for to-dos open longer than a week.
+| Item | Key | Reason | Filed when | Goes when |
+| ---- | --- | ------ | ---------- | --------- |
+| Agent waiting | `agent:<id>` | `question` | the agent waits on the user (Claude Code's own `waiting` report, else the prompt the UI saw: `process_report_waiting` → `report_agent_waiting` / `agents_awaiting_input`) | it stops waiting |
+| Agent crashed | `agent:<id>` | `crashed` | exit that was not a stop on request | restarted or removed |
+| Ready to review | `agent:<id>` | `review` | `report_to_assistant`, or the agent completing its to-do (`file_review_response`) | the user types into the agent, or it is removed |
+| Message | `msg:<source>:<conversation>:<thread>` | `message` | the external sweep (below) | replied or aged out |
 
-The prompt report and the silence timer share one dedupe record, and a
-reported prompt wins the wording, so a blocked agent is announced once — at
-the next tick rather than five minutes later. The silence timer stays as the
-backstop for agents whose terminal has never been opened, where there is no
-screen to read.
+The fingerprint is `question:<since>` / `crashed:<since>` / `review:<ms>` /
+the newest message's time, so re-filing the same episode is `Unchanged`:
+nothing is published and nothing pings. An agent the user is viewing gets
+none of the agent items. There is no silence timer, no escalation and no
+triage: the old nudges (silent agent, lingering to-dos, escalation, the
+Haiku FORWARD/DROP triage) and the "Start my day" button are gone.
 
-The **day-start summary** used to be a fourth trigger here. See
-[Day start](#day-start).
+### Notifications
 
-### Escalation
-
-That record then **escalates once, and stops**: an agent still blocked
-`escalate_after` later (default 10 minutes) is raised a second time. The
-wording asks the assistant to say which answer it would pick and why —
-something the user can wave through in a word — and, once that answer is
-agreed, to call `respawn_agent` (nothing can type into an agent's terminal).
-That is the cap, `MAX_RAISES = 2` per question: raising it every
-`escalate_after` for as long as the agent lived once produced a "no change"
-reply every ten minutes for hours.
-
-The record is kept **for as long as the agent lives**, not only while it looks
-stuck: an agent that prints one line and falls silent again is waiting on the
-same unanswered question, and re-reporting it from scratch is exactly the
-repetition this prevents.
-
-A **new question cycle** starts when the user types into the agent's terminal
-after the last raise. `Orchestrator::write_stdin` stamps
-`ManagedProcess.last_input` (`last_user_input`), and a tick that finds it
-newer than `Waiting.last` drops the record, so the next stall is raised from
-scratch. A write counts as the user typing unless it is a short escape
-sequence (at most 16 bytes starting with ESC — xterm.js's own focus reports
-and cursor/device-attribute replies, which would otherwise end the question
-on every window focus change). A lone arrow key is skipped too. Otherwise
-only the agent exiting (or vanishing) clears the record.
+Desktop notifications come from the Responses list only (frontend half:
+[Terminal & activity](terminal-and-activity.md#assistant-notifications)). A
+new item pings only for reason `crashed` or `review`, plus the existing prompt
+ping for a waiting agent (`notifyAgentWaiting`; the `question` item adds none,
+so there is one ping per episode). `message` items never ping. A proposal's
+`needsYou` item (below) pings. All of it is gated by the "Desktop
+notifications" setting (`proactive`).
 
 ### Viewing
 
@@ -75,11 +60,9 @@ non-agent). The flag lives on `ManagedProcess.viewing`, so a removed process
 drops it by itself, and `ProcessInfo.viewing` carries it to
 `list_processes`/`get_process_status`.
 
-Proactivity skips the viewed agent: no finished/crashed nudge, and no
-idle/waiting nudge. Its question is recorded as already raised instead
-(`Watcher::mark_seen`: one raise toward the cap, escalation clock restarted
-every tick it stays in view), so leaving the agent never fires a nudge at
-once.
+Proactivity skips the viewed agent: no item for it. Its waiting episode is
+recorded as seen instead (`Watcher::mark_seen`), so leaving the agent never
+files that question afterwards.
 
 - `add_response` for a `process_id` that is the viewed agent stores nothing
   and answers with a short "skipped, the user is viewing that agent" text (not
@@ -88,100 +71,6 @@ once.
   line appended telling the assistant not to mention it or file an item.
 - The identity prompt says the same of `viewing: true`. Reading the agent's
   output stays fine.
-
-### Nudges
-
-**Triage** (`triage.rs`, `TriageManager`): the watcher no longer hands a
-nudge straight to the assistant. `Watcher::nudge` pushes it
-(`Orchestrator::push_triage`, a `TriageItem { text, context, wants_output, process_id, needs_running }`) into a
-debounce buffer; the push into an empty buffer starts the one worker
-(`triage::run_worker`, weak orchestrator ref), which waits out
-`ProactivityConfig::triage_window` (60 s, injectable), takes the whole
-batch and classifies it in **one** Haiku call. Nudges arriving meanwhile
-wait for the next window, so one triage runs at a time; the worker retires
-under the buffer's lock (`take_batch`) when it finds it empty, after
-shutdown, or with proactivity off (that batch is dropped, and the next push
-starts a fresh worker at once), so no push is stranded. A drop guard
-releases the `worker` flag if the task dies mid-batch (panic, abort), and
-the buffer keeps the newest 50 nudges, so a dead worker can neither
-silence proactivity nor grow the buffer. The
-call is a **one-shot** headless child per batch, spawned like the sweep
-(login shell, `--cd` in WSL mode, `spawn_gated`, `hide_console_window`,
-stderr dropped): `exec claude -p --input-format stream-json --output-format
-stream-json --verbose --model haiku --tools '' --strict-mcp-config
---disable-slash-commands --safe-mode --no-session-persistence
---system-prompt <TRIAGE_IDENTITY>` — no built-in tools, no MCP server at
-all (strict with no `--mcp-config`), no skills/commands, no CLAUDE.md,
-hooks or plugins (`--safe-mode`; auth works as normal, unlike `--bare`,
-which needs an API key), and its own short system prompt instead of Claude
-Code's default. Measured on CLI 2.1.311: ~0.6k input tokens to start,
-against ~5.3k without `--safe-mode`. One turn is written, stdin closed,
-and every prose block of the turn read (newline-joined) until the `result`; the child is killed
-after. The prompt (`triage_prompt`) lists the last 10 forwarded nudges as
-context (memory only, so a repeat can be told from news) and the batch
-numbered from 1, all through `quote_line`; a "finished" nudge also carries
-the agent's ANSI-stripped last 30 output lines (`context`, cut to the last
-1500 characters with `truncate_tail` — the PR URL or question is at the
-end — never sent to the assistant), since the triage has no tool to read them.
-The watcher only sets `wants_output` on that item; `run_worker` reads the
-output (`proactivity::last_output`) right after `take_batch`, before
-classifying — not at exit time — so the batch has waited a window and the PTY
-reader has stored the final chunk, the watcher's event loop never sleeps per
-exited agent, and nothing is read for a batch dropped with proactivity off. The identity is
-the Responses rules cut down to two answers: FORWARD a crash/failure, a
-blocked or still-blocked agent, finished work with something for the user,
-lingering to-dos not already forwarded identically, anything unsure; DROP a
-routine finish with nothing left for the user, a "no change"/"still
-waiting" repeat, an identical lingering sweep; the escalation of a
-still-blocked agent (it asks for a pick and `respawn_agent`) is always
-forwarded, even when it resembles an earlier note. The reply must be one
-`<n>: FORWARD|DROP` line per nudge (`parse_verdicts`: case and whitespace
-aside, a bare code fence ignored; every number exactly once) — **anything
-else, a turn error, a timeout (`TRIAGE_TIMEOUT`, 90 s, `TriageConfig`) or a
-failed spawn forwards the whole batch**, so a nudge is never lost to
-triage, and each such fallback — an unparseable reply included
-(`try_parse_verdicts` returns `None`) — is logged at `warn` (batch size and a
-short reason, never output or reply text) so a CLI that rejects a flag is not a
-silent no-op; a full buffer evicting its oldest nudges is a `warn` too.
-The forwarded nudges go to the assistant together through
-`Orchestrator::assistant_nudge_all` (`AssistantManager::nudge_all`): texts
-already waiting in the queue and repeats within the batch are dropped, the
-rest is one nudge joined with a blank line, delivered as one turn when the
-assistant is idle and queued as that one joined item while a turn runs. The
-dedupe is partial: texts already waiting as a single nudge and repeats within
-the batch are dropped, but a batch already queued as one joined item is not
-matched by a later identical single nudge. Dropped ones are logged at debug
-as a count, never their text. At delivery each is checked again (`is_stale`), since the batch waited
-at least a window: a nudge about an agent the user is now viewing is dropped,
-and so is a stuck-agent one (`needs_running`) whose agent is gone or no
-longer running; a to-do sweep nudge has no `process_id` and is unaffected.
-The
-proactivity switch is checked at push, before the call and before
-delivery, so off means nothing runs. Shutdown (`TriageManager::shutdown`)
-wakes the worker mid-window or mid-call, which kills the child and drops
-the buffer; `Orchestrator::shutdown` calls it before killing the assistant,
-so a worker cannot start a session afterwards. Binary and cwd follow `configure_assistant`; `configure_triage`
-sets the timeout. Only the watcher's own nudges are triaged: an agent's
-`report_to_assistant`, sub-agent results and questions (`nudge_lasting`),
-proposal outcomes and user turns go straight to the assistant.
-
-Each forwarded nudge becomes a `[Podium] …` turn (consecutive waiting ones
-merged) plus a `notice` event, so the chat says why the assistant is speaking
-unprompted. Timings are injectable
-(`ProactivityConfig`) so tests run in milliseconds.
-
-A nudge **starts the session when there is none** (`ensure_session`, the same
-path `send` uses). Otherwise the user only learned an agent had finished
-whenever they next happened to type, which is how a weekend's worth of
-`[Podium]` lines came to arrive in one pile. This reverses the original
-phase-4 rule; the reasoning behind that rule ("a fresh session would not know
-what the nudge is about") no longer holds now that every launch starts blank
-and `assistant-memory.md` carries the context. A spawn that fails falls back
-to queuing, so a nudge is never lost.
-
-Because these are event-driven — Podium already sees an exit or a silent
-agent for free — **a quiet day costs no turns at all**, and with triage a day
-of routine finishes costs Haiku calls, not assistant turns.
 
 ### Unblocking a stuck agent
 
@@ -306,42 +195,16 @@ all.
 
 ## The silence contract
 
-**The silence contract**: a nudge that brings nothing must say nothing. The
-assistant's own stream drops any nudge's answer that is a `Message`
-carrying `NOTHING_TO_REPORT` **on a line of its own** — anywhere in the
-reply — before it is recorded or published: no chat row, no transcript row.
+A turn Podium starts for itself (a sub-agent result, a sweep notice) that
+brings nothing must say nothing. The assistant's own stream drops a
+`Message` carrying `NOTHING_TO_REPORT` **on a line of its own** — anywhere in
+the reply — before it is recorded or published. It is not an exact-match
+check: models prefix the word with the very summary the prompt forbids. A
+reply that quotes the sentinel mid-sentence is a real reply.
 
-It is deliberately not an exact-whole-message match: models keep prefixing the
-word with the very summary the prompt forbids ("Same messages as last
-check.\n\nNOTHING_TO_REPORT"), and matching exactly let all of that through as
-a notification — the noise this contract exists to prevent. A reply that
-quotes the sentinel *mid-sentence* while reporting something real is still a
-real reply.
-
-## Desktop notifications
-
-**Desktop notifications come from the Responses list only.** A chat reply, a
-proposal card and a `[Podium]` nudge never ping; a **new Responses item**
-does (see [Terminal & activity](terminal-and-activity.md#assistant-notifications) for the frontend
-half). So what the assistant may file *is* the notification policy, and the
-identity prompt spells it out.
-
-| Item | Filed only for |
-| ---- | -------------- |
-| `needsYou` | An agent blocked on a question only the user can answer (one item per question, replaced when the question changes). An external message (Slack/Teams/mail) that directly asks the user something. Never a manual step the user already knows about (merging a PR, `just install-signed`, testing a build). |
-| `fyi` | Finished work the user asked for that has something to look at (a result, a PR/MR URL, a posted review, the answer). An agent that crashed or failed. An external heads-up that asks nothing. An agent the assistant stopped or respawned on its own. |
-
-Never filed: "no change"/"still waiting" reminders or a repeat of an open
-item, a routine check that found nothing, lookup or sub-agent results it used
-itself, an agent that finished with nothing left for the user, or anything
-about the viewed agent. A nudge that brings nothing new about an agent already
-reported gets no new chat reply either. Unit tests pin the key phrases.
-
-The old `ACTION_REQUIRED` marker and `TurnEnd.notify` (with the
-`turn_from_user` bookkeeping that fed it) are gone. `take_action_required`
-stays, only to strip a stray marker an assistant writes out of habit before
-anything is recorded or published. A reply that is *only* the marker is
-dropped like a swallowed one.
+The old `ACTION_REQUIRED` marker and `TurnEnd.notify` are gone.
+`take_action_required` stays only to strip a stray marker before anything is
+recorded or published.
 
 ## Proposals file their own item
 
@@ -362,21 +225,6 @@ A pending proposal is also dropped when **its project closes**
 argument): confirming it later could only fail, so the card resolves itself
 with the reason and the assistant is told.
 
-## Day start
-
-The **day-start summary** is the panel's **"Start my day" button**
-(`assistant_day_start`, shown in the empty state). It used to be a proactivity
-trigger, but a nudge never spawns the CLI, so as a nudge it only surfaced
-whenever the user next happened to type — which is exactly the complaint that
-moved it.
-
-The button sends `DAY_START_PROMPT` through the ordinary `assistant_send` path
-instead: it spawns the session, shows as a user turn and respects the queue
-setting. It asks for open work across all projects *prioritised with a
-reason*, and to ask the user rather than guess when the to-dos and agents do
-not settle the order. There is deliberately no once-a-day lock — pressing it
-is explicit, so refusing would only annoy.
-
 ## Turning the assistant off
 
 `enabled` in the same `assistant` block (default on;
@@ -384,7 +232,7 @@ is explicit, so refusing would only annoy.
 the session is killed deliberately (no `exited`), proposals and their
 Responses items are dropped, the queue is dropped with its undelivered
 messages reported via `queueNotice`, and all sub-agents are stopped quietly.
-From then on `assistant_send`, `assistant_day_start` and
+From then on `assistant_send` and
 `assistant_response_reply` fail with `CoreError::AssistantDisabled`
 (`assistantDisabled`), nudges and the external sweep are dropped per call
 (`assistant_nudge` / `assistant_poll` and the manager's `deliver_own`), and
@@ -396,6 +244,6 @@ in an atomic, preset when the settings path is set, so startup honours it too.
 
 ## Settings
 
-**Settings → Assistant** holds the proactivity toggle plus the autonomy mode
+**Settings → Assistant → Notifications** holds the "Desktop notifications" toggle (`proactive`); **Settings → Assistant** holds the autonomy mode
 (the chat header keeps its own autonomy picker — both mirror the one stored
 value).

@@ -15,7 +15,6 @@ import { create } from "zustand";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
-  assistantDayStart,
   assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
@@ -296,8 +295,6 @@ interface AssistantState {
   saveMemory: (content: string) => Promise<void>;
   /** Send a turn; returns whether it was accepted (the input clears then). */
   send: (text: string, attachments?: Attachment[]) => Promise<boolean>;
-  /** Trigger the day-start summary as a normal user turn. */
-  dayStart: () => Promise<void>;
   /** Push a local notice (e.g. a client-side attachment-limit rejection). */
   pushNotice: (text: string) => void;
   /** Load the stored autonomy mode (on mount). */
@@ -535,25 +532,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         messages: [...s.messages, message("notice", err.message)],
       }));
       return false;
-    }
-  },
-  dayStart: async () => {
-    try {
-      // Echoed like `send`, and on the same delivered-or-queued answer: a
-      // user turn publishes no event of its own, so without the bubble the
-      // panel sits empty for the seconds the CLI takes to boot. The bubble is
-      // the button's own wording; the transcript keeps the longer prompt the
-      // backend actually sent. Queued instead, the waiting row covers it.
-      if (await assistantDayStart()) {
-        set((s) => ({
-          messages: [...s.messages, message("user", "Start my day")],
-          busy: true,
-        }));
-      }
-    } catch (e) {
-      set((s) => ({
-        messages: [...s.messages, message("notice", toIpcError(e).message)],
-      }));
     }
   },
   pushNotice: (text) =>
