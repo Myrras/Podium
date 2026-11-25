@@ -1438,8 +1438,9 @@ impl AssistantManager {
         } else {
             format!("{} {}", info.tool, info.summary)
         };
+        let id = ResponseId::new();
         let item = ResponseItem {
-            id: ResponseId::new(),
+            id,
             kind: ResponseKind::NeedsYou,
             text: truncate(
                 &format!("Confirm or reject: {what}"),
@@ -1453,14 +1454,18 @@ impl AssistantManager {
             process_id: None,
             todo_id: None,
             created_at: Utc::now(),
+            key: crate::responses::legacy_key(id, None, None),
+            fingerprint: String::new(),
+            state: Default::default(),
+            reason: Default::default(),
+            sender: None,
         };
-        let id = item.id;
         match self
             .store
             .responses()
-            .add(item, |items| publish_responses(&self.events, items))
+            .upsert(item, |items| publish_responses(&self.events, items))
         {
-            Ok(()) => Some(id),
+            Ok(_) => Some(id),
             Err(e) => {
                 tracing::warn!("could not file the proposal item: {e}");
                 None
@@ -1475,7 +1480,7 @@ impl AssistantManager {
             let _ = self
                 .store
                 .responses()
-                .remove(id, |items| publish_responses(&self.events, items));
+                .take(id, |items| publish_responses(&self.events, items));
         }
     }
 
@@ -3160,6 +3165,11 @@ mod tests {
             process_id: None,
             todo_id: None,
             created_at: Utc::now(),
+            key: "item:merged".to_string(),
+            fingerprint: String::new(),
+            state: Default::default(),
+            reason: Default::default(),
+            sender: None,
         };
         let json = serde_json::to_value(AssistantEvent::ResponsesChanged { items: vec![item] })
             .expect("serialize");
@@ -3616,6 +3626,11 @@ mod tests {
                 process_id: None,
                 todo_id: None,
                 created_at: Utc::now() - chrono::Duration::hours(3),
+                key: "item:stale".to_string(),
+                fingerprint: String::new(),
+                state: Default::default(),
+                reason: Default::default(),
+                sender: None,
             },
             |_| {},
         );
@@ -3631,8 +3646,17 @@ mod tests {
             process_id: None,
             todo_id: None,
             created_at: Utc::now(),
+            key: "item:pr".to_string(),
+            fingerprint: String::new(),
+            state: Default::default(),
+            reason: Default::default(),
+            sender: None,
         };
-        manager.store.responses().add(keep.clone(), |_| {}).unwrap();
+        manager
+            .store
+            .responses()
+            .upsert(keep.clone(), |_| {})
+            .unwrap();
         assert_eq!(manager.store.responses().list().len(), 3);
 
         manager.new_conversation(false).await;
@@ -3837,6 +3861,11 @@ mod tests {
             process_id: None,
             todo_id: None,
             created_at: Utc::now(),
+            key: format!("item:{question}"),
+            fingerprint: String::new(),
+            state: Default::default(),
+            reason: Default::default(),
+            sender: None,
         }
     }
 

@@ -85,6 +85,11 @@ function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
     processId: "proc-1",
     todoId: "todo-1",
     createdAt: "2026-01-01T10:00:00Z",
+    key: "process:proc-1",
+    fingerprint: "",
+    state: "open",
+    reason: "other",
+    sender: null,
     label: "Invoice export · Webshop · Export invoices",
     ...overrides,
   };

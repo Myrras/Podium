@@ -13,7 +13,7 @@ use tauri::State;
 use podium_core::assistant::AssistantPolling;
 use podium_core::{
     Attachment, AutonomyMode, LabelledResponse, PendingId, ProcessId, ProposalId, ResponseId,
-    SubagentInfo, TranscriptEntry,
+    ResponseState, SubagentInfo, TranscriptEntry,
 };
 
 use crate::error::IpcError;
@@ -255,13 +255,24 @@ pub async fn assistant_responses_list(
         .collect())
 }
 
-/// Mark one Responses item as read (removes it).
+/// Tick one Responses item off (dismissed: hidden, kept on disk).
 #[tauri::command]
 pub async fn assistant_response_dismiss(
     state: State<'_, AppState>,
     id: ResponseId,
 ) -> Result<(), IpcError> {
     state.orchestrator.dismiss_assistant_response(id)?;
+    Ok(())
+}
+
+/// Park, unpark (`open`) or dismiss one Responses item by key.
+#[tauri::command]
+pub async fn assistant_set_response_state(
+    app: State<'_, AppState>,
+    key: String,
+    state: ResponseState,
+) -> Result<(), IpcError> {
+    app.orchestrator.set_assistant_response_state(&key, state)?;
     Ok(())
 }
 

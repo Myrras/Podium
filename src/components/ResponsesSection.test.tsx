@@ -32,6 +32,11 @@ function item(overrides: Partial<ResponseItem> = {}): ResponseItem {
     processId: "proc-1",
     todoId: "todo-1",
     createdAt: new Date(NOW - 2 * 60_000).toISOString(),
+    key: "process:proc-1",
+    fingerprint: "",
+    state: "open",
+    reason: "other",
+    sender: null,
     label: "Checkout fix · Webshop · Fix the checkout loop",
     ...overrides,
   };

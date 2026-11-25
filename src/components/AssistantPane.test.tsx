@@ -227,6 +227,11 @@ describe("AssistantPane", () => {
         processId: "proc-1",
         todoId: null,
         createdAt: new Date().toISOString(),
+        key: "process:proc-1",
+        fingerprint: "",
+        state: "open",
+        reason: "other",
+        sender: null,
         label: "Search index · Docs site",
       },
     ]);

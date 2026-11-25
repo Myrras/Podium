@@ -33,7 +33,7 @@ use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 use crate::project::{self, ConfiguredProcess, ProjectSections};
-use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
+use crate::responses::{ResponseItem, ResponseKind, ResponseReason, ResponseState, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::subagent::{
     SubagentBook, SubagentConfig, SubagentInfo, SubagentKind, SubagentPhase, SubagentRecord,
@@ -1440,12 +1440,15 @@ impl Orchestrator {
             (Some(id), Some(project)) => self.todos.get(project.id, &project.root, id),
             _ => None,
         };
+        let id = ResponseId::new();
+        let text = crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS);
         let item = ResponseItem {
-            id: ResponseId::new(),
+            id,
             kind,
             // Capped like the list itself: the assistant writes these from
             // content it read, and the panel row is meant to be a line or two.
-            text: crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS),
+            fingerprint: format!("{kind:?}:{text}"),
+            text,
             // Names are capped like the to-do and source: they travel into
             // the label a reply carries back to the session.
             project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
@@ -1461,17 +1464,30 @@ impl Orchestrator {
             process_id,
             todo_id,
             created_at: Utc::now(),
+            key: crate::responses::legacy_key(id, process_id, todo_id),
+            state: ResponseState::Open,
+            reason: ResponseReason::Other,
+            sender: None,
         };
-        self.responses()
-            .add(item.clone(), |items| self.publish_responses(items))?;
+        // Unchanged (the same text re-filed, even after a tick) writes and
+        // announces nothing.
+        let (_, item) = self
+            .responses()
+            .upsert(item, |items| self.publish_responses(items))?;
         Ok(Some(item))
     }
 
-    /// Mark one Responses item as read: it is simply removed.
+    /// Tick one Responses item off: dismissed, not deleted, so the same
+    /// item filed again does not come back.
     pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
         self.responses()
-            .remove(id, |items| self.publish_responses(items))?;
-        Ok(())
+            .dismiss(id, |items| self.publish_responses(items))
+    }
+
+    /// Park, unpark (`Open`) or dismiss one Responses item by key.
+    pub fn set_assistant_response_state(&self, key: &str, state: ResponseState) -> CoreResult<()> {
+        self.responses()
+            .set_state(key, state, |items| self.publish_responses(items))
     }
 
     /// Answer one Responses item: `text` goes to the assistant as the user's
@@ -1491,7 +1507,7 @@ impl Orchestrator {
         }
         let item = self
             .responses()
-            .remove(id, |items| self.publish_responses(items))?;
+            .take(id, |items| self.publish_responses(items))?;
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         match self.assistant.send_reply(text, item.clone(), mcp).await {
             Ok(delivered) => Ok(delivered),

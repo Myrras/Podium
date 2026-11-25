@@ -35,6 +35,7 @@ import type {
   ProjectSections,
   RecentProject,
   ResponseItem,
+  ResponseState,
   ScratchpadId,
   ScratchpadInfo,
   SubagentInfo,
@@ -839,9 +840,17 @@ export function assistantResponsesList(): Promise<ResponseItem[]> {
   return invoke("assistant_responses_list");
 }
 
-/** Tick a Responses item off (it is removed). */
+/** Tick a Responses item off (dismissed: hidden, a re-file of the same item stays hidden). */
 export function assistantResponseDismiss(id: string): Promise<void> {
   return invoke("assistant_response_dismiss", { id });
+}
+
+/** Park, unpark (`open`) or dismiss a Responses item by key. */
+export function assistantSetResponseState(
+  key: string,
+  state: ResponseState,
+): Promise<void> {
+  return invoke("assistant_set_response_state", { key, state });
 }
 
 /**

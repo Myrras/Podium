@@ -60,7 +60,9 @@ pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 pub use project::ProjectSections;
-pub use responses::{LabelledResponse, ResponseItem, ResponseKind};
+pub use responses::{
+    LabelledResponse, ResponseItem, ResponseKind, ResponseReason, ResponseState, Upsert,
+};
 pub use scratchpad::ScratchpadInfo;
 pub use subagent::{
     SubagentConfig, SubagentInfo, SubagentKind, SubagentMeta, SubagentPhase, SubagentSpawned,
