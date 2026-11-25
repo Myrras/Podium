@@ -1311,13 +1311,34 @@ describe("AssistantPane", () => {
     });
   });
 
+  it("shows the house bot and state line in the header, no working dots", () => {
+    const { container } = render(<AssistantPane />);
+    const desk = container.querySelector("header [data-pose]");
+    expect(desk).toHaveAttribute("data-state", "idle");
+    expect(screen.getByText("Idle")).toBeInTheDocument();
+    act(() => useAssistantStore.setState({ busy: true }));
+    expect(desk).toHaveAttribute("data-state", "answering");
+    expect(screen.getByText("Answering")).toBeInTheDocument();
+    expect(container.querySelector(`.${styles.workingDots}`)).toBeNull();
+  });
+
+  it("shows the new empty-state text and composer placeholder", () => {
+    render(<AssistantPane />);
+    expect(
+      screen.getByText("Ask about your agents, projects or messages."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("Ask the assistant"),
+    ).toBeInTheDocument();
+  });
+
   it("shows a calm off state without the composer, and Turn on restores the panel", async () => {
     useAssistantStore.setState({ enabled: false });
     const user = userEvent.setup();
     render(<AssistantPane />);
 
     expect(screen.getByText("The assistant is off")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
+    expect(screen.queryByPlaceholderText("Ask the assistant")).toBeNull();
     expect(screen.queryByLabelText("Start my day")).toBeNull();
     // Header controls that need the assistant are not offered while off.
     expect(screen.queryByLabelText("Assistant memory")).toBeNull();
@@ -1328,7 +1349,7 @@ describe("AssistantPane", () => {
     expect(screen.getByLabelText("Autonomy")).toBeEnabled();
     expect(assistantEnabledSet).toHaveBeenCalledWith(true);
     expect(
-      await screen.findByPlaceholderText("Message the assistant…"),
+      await screen.findByPlaceholderText("Ask the assistant"),
     ).toBeInTheDocument();
     expect(screen.queryByText("The assistant is off")).toBeNull();
   });
