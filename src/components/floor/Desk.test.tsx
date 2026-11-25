@@ -11,6 +11,7 @@ import {
   UNTRACKED_ACTIVITY,
   useAgentActivityStore,
 } from "../../state/agentActivityStore";
+import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useProcessStore } from "../../state/processStore";
 import { Desk } from "./Desk";
@@ -41,6 +42,7 @@ const seed = (patch: Partial<typeof UNTRACKED_ACTIVITY>) =>
 
 beforeEach(() => {
   useAgentActivityStore.setState({ details: {}, activity: {} } as never);
+  useAssistantStore.setState({ responses: [] });
   useFloorStore.getState().reset();
   useProcessStore.setState({ activeProcessId: null } as never);
 });
@@ -219,5 +221,38 @@ describe("Desk", () => {
       />,
     );
     expect(s2.getByRole("button")).toHaveAttribute("title", "build, stopped");
+  });
+
+  const file = (state: string, reason: string) =>
+    useAssistantStore.setState({
+      responses: [{ key: "agent:p1", state, reason }],
+    } as never);
+
+  it("shows a check and 'ready to review' for a review item", () => {
+    seed({ activity: "idle" });
+    file("open", "review");
+    const { container, getByText } = render(<Desk process={proc()} />);
+    expect(getByText("ready to review")).toBeTruthy();
+    expect(container.textContent).toContain("✓");
+    expect(container.querySelector("[data-overlay=review]")).toBeTruthy();
+  });
+
+  it("makes a parked agent quiet: hollow ?, label, no Zs", () => {
+    seed({ activity: "waiting" });
+    file("parked", "question");
+    const { container, getByText } = render(<Desk process={proc()} />);
+    expect(getByText("parked")).toBeTruthy();
+    expect(container.textContent).toContain("?");
+    expect(container.querySelector("[class*=hollow]")).toBeTruthy();
+    expect(container.querySelector("[class*=zzz]")).toBeNull();
+    expect(container.querySelector("[data-overlay=parked]")).toBeTruthy();
+  });
+
+  it("rings the desk while it is the hovered one", () => {
+    const { getByRole } = render(<Desk process={proc()} />);
+    expect(getByRole("button")).not.toHaveAttribute("data-ring");
+    fireEvent.mouseEnter(getByRole("button"));
+    expect(useFloorStore.getState().hoverDesk).toBe("p1");
+    expect(getByRole("button")).toHaveAttribute("data-ring");
   });
 });
