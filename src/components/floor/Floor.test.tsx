@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -14,7 +14,17 @@ vi.mock("./FloorMap", () => ({ FloorMap: () => <div>Map</div> }));
 vi.mock("./FloorWaypoints", () => ({
   FloorWaypoints: () => <div>Waypoints</div>,
 }));
-vi.mock("./FrontDesk", () => ({ FrontDesk: () => <div>Front desk</div> }));
+vi.mock("./FrontDesk", () => ({
+  FrontDesk: (p: { onOpenChat: () => void; onOpenList: () => void }) => (
+    <div>
+      Front desk
+      <button onClick={p.onOpenChat}>Bot</button>
+      <button onClick={p.onOpenList}>Count</button>
+    </div>
+  ),
+}));
+// The real one closes without the real desk's anchors.
+vi.mock("./FrontDeskPopovers", () => ({ FrontDeskPopovers: () => null }));
 
 import { useFloorStore } from "../../state/floorStore";
 import { useIssueStore } from "../../state/issueStore";
@@ -73,6 +83,17 @@ describe("Floor", () => {
 
     act(() => useLayoutStore.setState({ openBoard: null }));
     expect(stopRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("wires the front desk: bot toggles the chat, count the list", () => {
+    render(<Floor />);
+    const desk = () => useFloorStore.getState().deskPopover;
+    fireEvent.click(screen.getByText("Bot"));
+    expect(desk()).toBe("chat");
+    fireEvent.click(screen.getByText("Count"));
+    expect(desk()).toBe("list");
+    fireEvent.click(screen.getByText("Count"));
+    expect(desk()).toBeNull();
   });
 
   it("resets the floor store on unmount", () => {

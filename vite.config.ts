@@ -17,9 +17,9 @@ export default defineConfig(async () => ({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
-    // Off elsewhere; AssistantPane.test.tsx imports its stylesheet `?raw`,
-    // which `css: false` would stub to an empty string.
-    css: { include: [/AssistantPane\.module\.css/] },
+    // Off elsewhere; AssistantPane.test.tsx imports the chat's stylesheet
+    // `?raw`, which `css: false` would stub to an empty string.
+    css: { include: [/AssistantChat\.module\.css/] },
     clearMocks: true,
     restoreMocks: true,
     // `exclude` replaces Vitest's defaults rather than extending them, so

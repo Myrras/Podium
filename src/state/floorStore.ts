@@ -11,6 +11,9 @@ import type {
   Size,
 } from "../lib/floor/types";
 
+/** The front desk's popovers: the chat (bot) and the overview list (count). */
+export type DeskPopover = "chat" | "list";
+
 interface FloorData {
   camera: Camera;
   /** The last camera change should transition. */
@@ -19,6 +22,8 @@ interface FloorData {
   /** What the camera frames; `null` after a manual pan or zoom. */
   focus: "all" | ProjectId | null;
   popover: FloorPopover | null;
+  /** The front desk's open popover; shares the one-popover rule with `popover`. */
+  deskPopover: DeskPopover | null;
   /** The process whose terminal is open in the modal. */
   terminalId: ProcessId | null;
   hoverDesk: ProcessId | null;
@@ -40,7 +45,12 @@ export interface FloorState extends FloorData {
   openPopover: (popover: FloorPopover) => void;
   setPopoverItem: (itemId: string | null) => void;
   closePopover: () => void;
-  /** Open a terminal in the modal; also closes the popover. */
+  /** Open a front desk popover, closing any other popover. */
+  openDesk: (desk: DeskPopover) => void;
+  closeDesk: () => void;
+  /** The bot, the count chip and the title-bar button: open, or close when open. */
+  toggleDesk: (desk: DeskPopover) => void;
+  /** Open a terminal in the modal; also closes the popovers. */
   openTerminal: (id: ProcessId) => void;
   closeTerminal: () => void;
   setHoverDesk: (id: ProcessId | null) => void;
@@ -58,6 +68,7 @@ const initial = (): FloorData => ({
   viewport: { w: 0, h: 0 },
   focus: null,
   popover: null,
+  deskPopover: null,
   terminalId: null,
   hoverDesk: null,
   agentModal: null,
@@ -76,11 +87,20 @@ export const useFloorStore = create<FloorState>((set) => ({
       moved: true,
     }),
   setViewport: (viewport) => set({ viewport }),
-  openPopover: (popover) => set({ popover }),
+  openPopover: (popover) => set({ popover, deskPopover: null }),
   setPopoverItem: (itemId) =>
     set((s) => (s.popover ? { popover: { ...s.popover, itemId } } : {})),
   closePopover: () => set({ popover: null }),
-  openTerminal: (terminalId) => set({ terminalId, popover: null }),
+  openDesk: (deskPopover) => set({ deskPopover, popover: null }),
+  closeDesk: () => set({ deskPopover: null }),
+  toggleDesk: (desk) =>
+    set((s) =>
+      s.deskPopover === desk
+        ? { deskPopover: null }
+        : { deskPopover: desk, popover: null },
+    ),
+  openTerminal: (terminalId) =>
+    set({ terminalId, popover: null, deskPopover: null }),
   closeTerminal: () => set({ terminalId: null }),
   setHoverDesk: (hoverDesk) => set({ hoverDesk }),
   setAgentModal: (agentModal) => set({ agentModal }),

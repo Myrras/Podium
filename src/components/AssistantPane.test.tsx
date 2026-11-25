@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import css from "./AssistantPane.module.css?raw";
+import css from "./AssistantChat.module.css?raw";
 
 // The file picker is a Tauri plugin: mocked so the picker button resolves
 // to fixture paths instead of opening a real dialog.
@@ -57,7 +57,7 @@ import {
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { AssistantPane } from "./AssistantPane";
-import styles from "./AssistantPane.module.css";
+import styles from "./AssistantChat.module.css";
 
 describe("AssistantPane", () => {
   beforeEach(() => {
@@ -1292,7 +1292,9 @@ describe("AssistantPane", () => {
 
     it("attaches a dropped text file inline, and reports one it cannot take", async () => {
       render(<AssistantPane />);
-      const pane = screen.getByLabelText("Personal assistant");
+      // The drop zone is the chat, which fills the pane.
+      const pane =
+        screen.getByLabelText("Personal assistant").firstElementChild!;
       const text = new File(["log line"], "run.log", { type: "text/plain" });
       const binary = new File([new Uint8Array([0, 1])], "archive.zip", {
         type: "application/zip",

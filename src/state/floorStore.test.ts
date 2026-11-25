@@ -60,6 +60,40 @@ describe("floorStore", () => {
     expect(useFloorStore.getState().terminalId).toBeNull();
   });
 
+  it("keeps one popover across the fixtures and the front desk", () => {
+    const s = useFloorStore.getState();
+    s.openPopover(popover);
+    s.openDesk("chat");
+    expect(useFloorStore.getState()).toMatchObject({
+      popover: null,
+      deskPopover: "chat",
+    });
+    s.openDesk("list");
+    expect(useFloorStore.getState().deskPopover).toBe("list");
+    s.openPopover(popover);
+    expect(useFloorStore.getState().deskPopover).toBeNull();
+    s.openDesk("chat");
+    s.openTerminal("proc-1");
+    expect(useFloorStore.getState().deskPopover).toBeNull();
+    s.openDesk("list");
+    s.closeDesk();
+    expect(useFloorStore.getState().deskPopover).toBeNull();
+  });
+
+  it("toggles a desk popover", () => {
+    const s = useFloorStore.getState();
+    s.openPopover(popover);
+    s.toggleDesk("chat");
+    expect(useFloorStore.getState()).toMatchObject({
+      popover: null,
+      deskPopover: "chat",
+    });
+    s.toggleDesk("list");
+    expect(useFloorStore.getState().deskPopover).toBe("list");
+    s.toggleDesk("list");
+    expect(useFloorStore.getState().deskPopover).toBeNull();
+  });
+
   it("reset drops everything", () => {
     const s = useFloorStore.getState();
     s.setViewport({ w: 800, h: 600 });

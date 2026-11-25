@@ -49,11 +49,6 @@
   background: var(--surface-hover);
 }
 
-/* AssistantDesk's own state line: shown under the baseline instead. */
-.bot > span > span:last-child {
-  display: none;
-}
-
 .queue {
   display: flex;
   flex-wrap: wrap;
@@ -137,6 +132,11 @@
 .q:hover .card,
 .q:focus-within .card {
   display: block;
+}
+
+/* A desk popover is open above: the hover cards would cover it. */
+.fd[data-pop] .card {
+  display: none;
 }
 
 .cardIn {
