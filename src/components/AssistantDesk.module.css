@@ -5,9 +5,9 @@
   min-width: 0;
 }
 
-/* Asleep frame at full colour; the bot's "needs" state would show the raised arm. */
-.desk[data-pose="asleep"] [data-state] > i {
-  transform: translateX(-75%);
+/* Still frame 0 (eyes open, no motion) at full colour; "needs" would show the raised arm. */
+.desk[data-pose="still"] [data-state] > i {
+  transform: translateX(0);
 }
 
 .desk[data-state="off"] [data-state] {

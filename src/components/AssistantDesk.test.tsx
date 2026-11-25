@@ -7,11 +7,11 @@ const pose = (c: HTMLElement) => c.querySelector("[data-pose]")!;
 
 describe("AssistantDesk", () => {
   it.each([
-    ["idle", 0, "Idle", "asleep"],
+    ["idle", 0, "Idle", "still"],
     ["answering", 0, "Answering", "typing"],
     ["answering", 2, "Looking things up with 2 helpers", "typing"],
     ["waiting", 0, "Waiting for your OK", "arm"],
-    ["off", 0, "Off", "asleep"],
+    ["off", 0, "Off", "still"],
   ] as const)("%s with %i helpers", (state, helpers, line, p) => {
     const { container } = render(
       <AssistantDesk state={state} helpers={helpers} />,
@@ -28,6 +28,20 @@ describe("AssistantDesk", () => {
     expect(container.querySelector('[data-state="working"]')).not.toBeNull();
     rerender(<AssistantDesk state="idle" helpers={0} />);
     expect(container.querySelector('[data-state="working"]')).toBeNull();
+  });
+
+  it("keeps eyes open and still when idle or off, animating only while answering", () => {
+    const { container, rerender } = render(
+      <AssistantDesk state="idle" helpers={0} />,
+    );
+    // The still pose is never the asleep frames (75% = frames 6-7, closed eyes).
+    expect(pose(container)).toHaveAttribute("data-pose", "still");
+    expect(container.querySelector('[data-state="working"]')).toBeNull();
+    rerender(<AssistantDesk state="off" helpers={0} />);
+    expect(pose(container)).toHaveAttribute("data-pose", "still");
+    expect(container.querySelector('[data-state="working"]')).toBeNull();
+    rerender(<AssistantDesk state="answering" helpers={0} />);
+    expect(container.querySelector('[data-state="working"]')).not.toBeNull();
   });
 
   it("caps helpers at 3 minis and then shows +N", () => {

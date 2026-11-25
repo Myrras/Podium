@@ -56,8 +56,8 @@ export function deskLine(state: AssistantDeskState, helpers: number): string {
 }
 
 const POSE = {
-  idle: "asleep",
-  off: "asleep",
+  idle: "still",
+  off: "still",
   answering: "typing",
   waiting: "arm",
 } as const;
@@ -86,7 +86,7 @@ export function AssistantDesk({
       style={{ "--h": `${size}px` } as CSSProperties}
     >
       {/* "needs" is the bot's raised-arm frame; the CSS swaps it for the
-          asleep frame (the bot's own idle look is grey and ghosted). */}
+          still frame 0 (eyes open, hands down) when not working. */}
       <Bot
         color={HOUSE_COLOR}
         state={state === "answering" ? "working" : "needs"}
