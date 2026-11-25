@@ -237,6 +237,16 @@ describe("Desk", () => {
     expect(container.querySelector("[data-overlay=review]")).toBeTruthy();
   });
 
+  it("lets a live needs state win over a review item", () => {
+    seed({ activity: "waiting" });
+    file("open", "review");
+    const { container, getByText } = render(<Desk process={proc()} />);
+    expect(getByText("waiting")).toBeTruthy();
+    expect(container.textContent).toContain("?");
+    expect(container.textContent).not.toContain("✓");
+    expect(container.querySelector("[data-overlay]")).toBeNull();
+  });
+
   it("makes a parked agent quiet: hollow ?, label, no Zs", () => {
     seed({ activity: "waiting" });
     file("parked", "question");

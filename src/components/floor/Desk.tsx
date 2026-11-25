@@ -60,6 +60,10 @@ export function Desk({
   const parked = overlay === "parked";
   // A parked agent shows the asleep bot, whatever it is really doing.
   const state = parked ? "idle" : deskState(process, act);
+  // The live state is the truth: review shows only when nothing needs you or crashed.
+  const review =
+    overlay === "review" && state !== "needs" && state !== "crashed";
+  const shown = parked ? "parked" : review ? "review" : null;
   const ps = pillState(process.status, process.kind.kind, act);
   const stopped =
     terminal && (ps === "exited" || ps === "crashed" || ps === "notStarted");
@@ -71,7 +75,7 @@ export function Desk({
       : "terminal"
     : parked
       ? "parked"
-      : overlay === "review"
+      : review
         ? "ready to review"
         : state === "ended" || state === "crashed"
           ? state
@@ -88,7 +92,7 @@ export function Desk({
         type="button"
         className={styles.desk}
         data-state={terminal ? "terminal" : state}
-        data-overlay={overlay ?? undefined}
+        data-overlay={shown ?? undefined}
         data-ring={ringed || undefined}
         data-working={working || undefined}
         data-active={active || undefined}
@@ -142,7 +146,7 @@ export function Desk({
               ?
             </span>
           )}
-          {overlay === "review" && !terminal && (
+          {review && !terminal && (
             <span
               className={`${styles.mark} ${styles.check}`}
               aria-hidden="true"
@@ -150,14 +154,12 @@ export function Desk({
               ✓
             </span>
           )}
-          {state === "needs" && !terminal && !overlay && (
+          {state === "needs" && !terminal && (
             <span className={`${styles.mark} ${styles.ask}`} aria-hidden="true">
               ?
             </span>
           )}
-          {(terminal
-            ? stopped && ps === "crashed"
-            : state === "crashed" && !overlay) && (
+          {(terminal ? stopped && ps === "crashed" : state === "crashed") && (
             <span
               className={`${styles.mark} ${styles.bang}`}
               aria-hidden="true"
