@@ -78,7 +78,9 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 `Floor` → `FloorHeader`, then `GitBoard` (when `openBoard` is set) or `FloorMap`
 + `FloorWaypoints` + `FrontDesk`, then `FloorStatusBar`, `FloorPopovers`,
 `FrontDeskPopovers` (anchored on `data-desk="<chat|list>"`: `ResponsesSection`,
-or `AssistantChat` with its controls in the popover header), `FloorTerminalModal`,
+or `AssistantChat` with its controls in the popover header; after its first open
+the chat popover stays mounted, hidden and inert via `Popover`'s `open={false}`,
+so reopening keeps log, scroll and state without refetching), `FloorTerminalModal`,
 `FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
 
 - The camera never goes through React state: `FloorMap` subscribes to the store

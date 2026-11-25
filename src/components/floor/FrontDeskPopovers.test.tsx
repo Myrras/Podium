@@ -105,7 +105,7 @@ describe("FrontDeskPopovers", () => {
     await user.click(screen.getByRole("button", { name: "Open chat" }));
     await user.click(screen.getByRole("button", { name: "1 needs you" }));
     expect(list()).toBeInTheDocument();
-    expect(chat()).toBeNull();
+    expect(chat()).not.toBeVisible();
 
     // A fixture popover replaces the desk's.
     act(() =>
@@ -128,8 +128,35 @@ describe("FrontDeskPopovers", () => {
     expect(chat()).toBeInTheDocument();
 
     fireEvent.keyDown(chat()!, { key: "Escape" });
-    expect(chat()).toBeNull();
+    expect(chat()).not.toBeVisible();
     expect(useFloorStore.getState().deskPopover).toBeNull();
+  });
+
+  it("keeps the chat mounted while closed, hidden and inert, so reopening is instant", async () => {
+    const user = userEvent.setup();
+    renderDesk();
+    const bot = screen.getByRole("button", { name: "Open chat" });
+    await user.click(bot);
+    const input = chat();
+    expect(input).toBeVisible();
+
+    fireEvent.keyDown(input!, { key: "Escape" });
+    const popover = input!.closest<HTMLElement>('[role="group"]')!;
+    expect(popover).not.toBeVisible();
+    expect(popover).toHaveAttribute("inert");
+
+    // The hidden chat's outside-click handler is off: a click in the list keeps it open.
+    await user.click(screen.getByRole("button", { name: "1 needs you" }));
+    fireEvent.mouseDown(list()!);
+    expect(useFloorStore.getState().deskPopover).toBe("list");
+
+    await user.click(bot);
+    expect(chat()).toBe(input);
+    expect(chat()).toBeVisible();
+    expect(popover).not.toHaveAttribute("inert");
+    // Mounted once: the chat's loads ran on the first open only.
+    expect(useAssistantStore.getState().loadResponses).toHaveBeenCalledTimes(1);
+    expect(useAssistantStore.getState().loadAutonomy).toHaveBeenCalledTimes(1);
   });
 
   it("takes over a handed-over draft in the chat", () => {

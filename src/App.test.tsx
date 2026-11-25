@@ -320,7 +320,7 @@ describe("App — Floor mode", () => {
 
     await user.click(toggle);
     expect(useFloorStore.getState().deskPopover).toBeNull();
-    expect(screen.queryByLabelText("Message the assistant")).toBeNull();
+    expect(screen.getByLabelText("Message the assistant")).not.toBeVisible();
     expect(useLayoutStore.getState().assistantOpen).toBe(true);
   });
 

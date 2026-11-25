@@ -83,6 +83,7 @@ export function Popover({
   width = 360,
   flush = false,
   follow,
+  open = true,
   children,
 }: {
   anchor: HTMLElement | null;
@@ -98,6 +99,11 @@ export function Popover({
   flush?: boolean;
   /** What the anchor moves with (the Floor camera); without it, only resizes re-place. */
   follow?: Follow;
+  /**
+   * False keeps it mounted but hidden and inert (no handlers, no focus), so
+   * its content keeps its state, scroll and loads for the next open.
+   */
+  open?: boolean;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -116,7 +122,7 @@ export function Popover({
   // by frame for its --dur-4 transition (MOTION.slow), then the loop stops.
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!anchor || !el) return;
+    if (!open || !anchor || !el) return;
     let last = "";
     let raf = 0;
     let until = 0;
@@ -160,21 +166,24 @@ export function Popover({
       off?.();
       window.removeEventListener("resize", place);
       ro?.disconnect();
+      // Closed (open → false) or re-placing: hidden until the next place().
+      el.style.visibility = "hidden";
     };
-  }, [anchor, follow]);
+  }, [anchor, follow, open]);
 
   // Focus in, so Esc works right after the click on the fixture; hand it back on close.
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!anchor || !el) return;
+    if (!open || !anchor || !el) return;
     if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
     return () => {
       if (el.contains(document.activeElement) && anchor.isConnected)
         anchor.focus?.({ preventScroll: true });
     };
-  }, [anchor]);
+  }, [anchor, open]);
 
   useEffect(() => {
+    if (!open) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Element;
       // Modals opened from inside a popover are portalled to body;
@@ -189,9 +198,9 @@ export function Popover({
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [anchor]);
+  }, [anchor, open]);
 
-  if (!anchor) return null;
+  if (open && !anchor) return null;
 
   return createPortal(
     <div
@@ -199,6 +208,7 @@ export function Popover({
       className={styles.popover}
       role="group"
       tabIndex={-1}
+      inert={!open}
       style={{ width, visibility: "hidden" }}
       onKeyDown={(e) => {
         // Skip Esc an inline editor already used, or that bubbled from a portalled modal.

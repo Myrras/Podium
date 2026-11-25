@@ -26,6 +26,7 @@ when it merges.
 ### Fixed
 
 - Unsent text in the assistant input now survives closing and reopening the assistant.
+- The assistant chat on the Floor opens instantly with the existing conversation instead of reloading.
 
 ### Removed
 
