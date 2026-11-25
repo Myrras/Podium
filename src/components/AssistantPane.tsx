@@ -249,7 +249,6 @@ export function AssistantPane() {
   const enabled = useAssistantStore((s) => s.enabled);
   const setEnabled = useAssistantStore((s) => s.setEnabled);
   const hydrate = useAssistantStore((s) => s.hydrate);
-  const dayStart = useAssistantStore((s) => s.dayStart);
   const loadResponses = useAssistantStore((s) => s.loadResponses);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const width = useLayoutStore((s) => s.assistantWidth);
@@ -556,18 +555,6 @@ export function AssistantPane() {
                   Ask for anything across your projects — to-dos, agents, an
                   overview.
                 </p>
-                <button
-                  type="button"
-                  className={styles.confirmBtn}
-                  aria-label="Start my day"
-                  title="Get a summary of what's open across your projects"
-                  onClick={() => {
-                    scrollToBottom();
-                    void dayStart();
-                  }}
-                >
-                  Start my day
-                </button>
               </div>
             )}
             {groups.map((g, i) =>
