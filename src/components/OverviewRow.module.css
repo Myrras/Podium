@@ -32,22 +32,22 @@
   background: color-mix(in srgb, var(--text-faint) 12%, transparent);
 }
 
-.row[data-reason="question"] .pad {
+.pad[data-reason="question"] {
   background: var(--warning);
 }
 
-.row[data-reason="review"] .pad {
+.pad[data-reason="review"] {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* Review and other rest on the first frame: no typing. */
-.row[data-reason="review"] .pad i,
-.row[data-reason="other"] .pad i {
+.pad[data-reason="review"] i,
+.pad[data-reason="other"] i {
   animation: none;
 }
 
 /* A new question waves three beats, then holds its arm up. */
-.row[data-reason="question"]:not([data-parked]) .pad i {
+.pad[data-reason="question"]:not([data-parked]) i {
   animation: wave var(--dur-beat) steps(2) 3;
 }
 
@@ -66,18 +66,18 @@
   line-height: 1;
 }
 
-.row[data-reason="question"] .mark {
+.pad[data-reason="question"] .mark {
   background: var(--needs-bg);
   color: var(--needs-fg);
   box-shadow: 0 0 0 2px var(--bg);
 }
 
-.row[data-reason="crashed"] .mark {
+.pad[data-reason="crashed"] .mark {
   background: var(--danger);
   color: var(--accent-contrast);
 }
 
-.row[data-reason="review"] .mark {
+.pad[data-reason="review"] .mark {
   background: var(--accent);
   color: var(--accent-contrast);
 }

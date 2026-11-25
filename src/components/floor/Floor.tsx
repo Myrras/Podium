@@ -17,6 +17,7 @@ import { FloorPopovers } from "./FloorPopovers";
 import { FloorStatusBar } from "./FloorStatusBar";
 import { FloorTerminalModal } from "./FloorTerminalModal";
 import { FloorWaypoints } from "./FloorWaypoints";
+import { FrontDesk } from "./FrontDesk";
 import styles from "./Floor.module.css";
 
 /** Keeps the open board fresh, as GitButton does in Project mode (no GitButton is mounted here). */
@@ -55,6 +56,7 @@ export function Floor() {
         <div className={styles.mapArea}>
           <FloorMap />
           <FloorWaypoints />
+          <FrontDesk />
         </div>
       )}
       <FloorStatusBar />
