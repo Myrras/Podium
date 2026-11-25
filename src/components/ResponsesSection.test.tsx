@@ -5,10 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The store imports the IPC layer; nothing here should reach it, since the
 // row actions are replaced with spies below.
 vi.mock("../ipc/commands", () => ({}));
-vi.mock("../lib/floor/camera", () => ({ showAgent: vi.fn() }));
+// Rooms need full process fixtures; the rows only read a bot variant from them.
+vi.mock("../lib/floor/rooms", () => ({
+  useRooms: () => [],
+  roomOf: () => null,
+}));
 
 import type { ProcessInfo, ResponseItem } from "../ipc/types";
-import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
@@ -54,7 +57,6 @@ describe("ResponsesSection", () => {
     unparkResponse.mockClear();
     replyResponse.mockClear();
     replyResponse.mockResolvedValue(true);
-    vi.mocked(showAgent).mockClear();
     useLayoutStore.setState({ mode: "project" });
     useProcessStore.setState({
       processes: [{ id: "proc-1" } as ProcessInfo],
@@ -83,42 +85,20 @@ describe("ResponsesSection", () => {
     });
   });
 
-  it("renders each item with its context, kind and age", () => {
+  it("renders each item with its name, place and age", () => {
     render(<ResponsesSection />);
 
     expect(screen.getByRole("button", { name: /Needs you/ })).toHaveTextContent(
       "2",
     );
     expect(screen.getByText("Checkout fix")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Webshop · Fix the checkout loop/),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("Needs you")).toHaveLength(2);
+    expect(screen.getByText("Webshop")).toBeInTheDocument();
     expect(screen.getByText("2m")).toBeInTheDocument();
     // No agent or project: the source stands in for them.
     expect(screen.getByText("Slack")).toBeInTheDocument();
-    expect(screen.getByText("FYI")).toBeInTheDocument();
     expect(screen.getByText("3h")).toBeInTheDocument();
-  });
-
-  it("shows the agent on the floor, only in Floor mode and with a process id", async () => {
-    const { rerender } = render(<ResponsesSection />);
-    expect(screen.queryByRole("button", { name: "Show on floor" })).toBeNull();
-
-    act(() => useLayoutStore.setState({ mode: "floor" }));
-    rerender(<ResponsesSection />);
-    // Only the first item has a process id.
-    const buttons = screen.getAllByRole("button", { name: "Show on floor" });
-    expect(buttons).toHaveLength(1);
-    await userEvent.click(buttons[0]);
-    expect(showAgent).toHaveBeenCalledWith("proc-1");
-  });
-
-  it("hides Show on floor once the agent's process is gone", () => {
-    useLayoutStore.setState({ mode: "floor" });
-    render(<ResponsesSection />);
-    expect(screen.getByRole("button", { name: "Show on floor" })).toBeTruthy();
-    act(() => useProcessStore.setState({ processes: [] }));
+    // No kind tag and no Show on floor button any more.
+    expect(screen.queryByText("FYI")).toBeNull();
     expect(screen.queryByRole("button", { name: "Show on floor" })).toBeNull();
   });
 
@@ -153,10 +133,11 @@ describe("ResponsesSection", () => {
     const parked = screen.getByRole("button", { name: /Parked/ });
     expect(parked).toHaveTextContent("1");
     expect(parked).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Later.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^parked /)).not.toBeInTheDocument();
 
     await user.click(parked);
-    expect(screen.getByText("Later.")).toBeInTheDocument();
+    // A parked row is one line: name and "parked <age>", no text.
+    expect(screen.getByText(/^parked /)).toBeInTheDocument();
   });
 
   it("still shows the empty message next to a parked group", () => {

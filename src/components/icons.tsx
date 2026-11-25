@@ -69,6 +69,7 @@ import {
   SlidersHorizontal,
   Tag,
   Trash2,
+  Undo2,
   SkipForward,
   ExternalLink,
   GitBranch,
@@ -112,6 +113,9 @@ export const AttachIcon = icon(Paperclip, { size: 15 });
 export const ImageAttachmentIcon = icon(ImageGlyph, { size: 14 });
 export const FileAttachmentIcon = icon(FileGlyph, { size: 14 });
 export const ReplyIcon = icon(Reply);
+// Overview rows: park until it changes, and bring a parked item back.
+export const ParkIcon = icon(Moon);
+export const BringBackIcon = icon(Undo2);
 
 // Sidebar entities: agents, spawned processes, terminals, to-dos, projects.
 export const AgentIcon = icon(Bot);
