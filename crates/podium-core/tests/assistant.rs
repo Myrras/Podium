@@ -1873,7 +1873,7 @@ async fn a_sweep_that_keeps_failing_tells_the_assistant_once() {
 }
 
 #[tokio::test]
-async fn the_external_sweep_stays_off_without_a_source_or_without_proactivity() {
+async fn the_external_sweep_stays_off_without_a_source() {
     // Both sources off: nothing to look at, so nothing to ask.
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
@@ -1890,23 +1890,20 @@ async fn the_external_sweep_stays_off_without_a_source_or_without_proactivity() 
         "swept with no source enabled"
     );
     orch.shutdown().await;
+}
 
-    // Sources on, but the user switched Podium's unprompted speaking off.
+#[tokio::test]
+async fn the_external_sweep_runs_with_desktop_notifications_off() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let orch = Arc::new(setup_in(dir.path(), ARGV_RECORDING_CLAUDE));
+    let orch = Arc::new(setup_in(
+        dir.path(),
+        &sweep_fake(&sweep_says(NOTHING_WAITING)),
+    ));
+    // `proactive` only gates desktop notifications now.
     orch.set_assistant_proactivity(false).expect("switch off");
-    orch.set_assistant_polling(AssistantPolling {
-        interval_minutes: 1,
-        slack: true,
-        teams: true,
-    })
-    .expect("set polling");
+    slack_every_tick(&orch);
     podium_core::proactivity::spawn(&orch, fast_polling());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !dir.path().join("argv.txt").exists(),
-        "swept while proactivity is off"
-    );
+    recorded_lines(dir.path(), "sweep-stdin.jsonl", 1).await;
     orch.shutdown().await;
 }
 

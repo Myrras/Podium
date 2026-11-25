@@ -31,6 +31,10 @@ const LOCK_POISONED: &str = "response store lock poisoned";
 // ponytail: flat cap, oldest dropped.
 pub const MAX_ITEMS: usize = 100;
 
+/// How a review item filed by `complete_todo` starts. The agent's own summary
+/// (`report_to_assistant`) says more, so it is never replaced by this.
+pub(crate) const COMPLETED_TODO: &str = "Completed to-do: ";
+
 /// Whether an item asks something of the user or only keeps them posted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -257,38 +261,39 @@ impl ResponseStore {
     /// (dismissed first). Returns what happened and the item as listed.
     pub fn upsert(
         &self,
-        mut item: ResponseItem,
+        item: ResponseItem,
         changed: impl FnOnce(&[ResponseItem]),
     ) -> CoreResult<(Upsert, ResponseItem)> {
+        upsert_locked(&mut self.inner.lock().expect(LOCK_POISONED), item, changed)
+    }
+
+    /// File a "ready to review" item. While one with the same key is still
+    /// listed (open or parked), only its text changes — id, fingerprint and
+    /// state kept — so a second report on the same work (`complete_todo`,
+    /// then `report_to_assistant`) is not announced as news. The newer text
+    /// wins, except that a bare [`COMPLETED_TODO`] never replaces a summary.
+    pub fn upsert_review(
+        &self,
+        item: ResponseItem,
+        changed: impl FnOnce(&[ResponseItem]),
+    ) -> CoreResult<()> {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        let existing = inner.items.iter().find(|o| o.key == item.key);
-        if let Some(old) = existing.filter(|o| o.fingerprint == item.fingerprint) {
-            return Ok((Upsert::Unchanged, old.clone()));
-        }
-        let mut outcome = if existing.is_some() {
-            Upsert::Changed
-        } else {
-            Upsert::New
+        let Some(index) = inner.items.iter().position(|o| {
+            o.key == item.key
+                && o.reason == ResponseReason::Review
+                && o.state != ResponseState::Dismissed
+        }) else {
+            return upsert_locked(&mut inner, item, changed).map(|_| ());
         };
+        let old = &inner.items[index].text;
+        if *old == item.text
+            || (item.text.starts_with(COMPLETED_TODO) && !old.starts_with(COMPLETED_TODO))
+        {
+            return Ok(());
+        }
         let mut items = inner.items.clone();
-        items.retain(|old| !old.replaced_by(&item));
-        // An assistant key can stay held by an item it does not replace (an
-        // FYI beside an open question): keep keys unique.
-        if items.iter().any(|o| o.key == item.key) {
-            item.key = legacy_key(item.id, None, None);
-            outcome = Upsert::New;
-        }
-        item.state = ResponseState::Open;
-        items.insert(0, item.clone());
-        while items.len() > MAX_ITEMS {
-            let at = items
-                .iter()
-                .rposition(|i| i.state == ResponseState::Dismissed)
-                .unwrap_or(items.len() - 1);
-            items.remove(at);
-        }
-        commit(&mut inner, items, changed)?;
-        Ok((outcome, item))
+        items[index].text = item.text;
+        commit(&mut inner, items, changed)
     }
 
     /// Park, unpark (`Open`) or dismiss the item with `key`.
@@ -417,6 +422,41 @@ impl ResponseStore {
     }
 }
 
+fn upsert_locked(
+    inner: &mut Inner,
+    mut item: ResponseItem,
+    changed: impl FnOnce(&[ResponseItem]),
+) -> CoreResult<(Upsert, ResponseItem)> {
+    let existing = inner.items.iter().find(|o| o.key == item.key);
+    if let Some(old) = existing.filter(|o| o.fingerprint == item.fingerprint) {
+        return Ok((Upsert::Unchanged, old.clone()));
+    }
+    let mut outcome = if existing.is_some() {
+        Upsert::Changed
+    } else {
+        Upsert::New
+    };
+    let mut items = inner.items.clone();
+    items.retain(|old| !old.replaced_by(&item));
+    // An assistant key can stay held by an item it does not replace (an
+    // FYI beside an open question): keep keys unique.
+    if items.iter().any(|o| o.key == item.key) {
+        item.key = legacy_key(item.id, None, None);
+        outcome = Upsert::New;
+    }
+    item.state = ResponseState::Open;
+    items.insert(0, item.clone());
+    while items.len() > MAX_ITEMS {
+        let at = items
+            .iter()
+            .rposition(|i| i.state == ResponseState::Dismissed)
+            .unwrap_or(items.len() - 1);
+        items.remove(at);
+    }
+    commit(inner, items, changed)?;
+    Ok((outcome, item))
+}
+
 fn load(path: &std::path::Path) -> Vec<ResponseItem> {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -427,6 +467,16 @@ fn load(path: &std::path::Path) -> Vec<ResponseItem> {
     });
     for i in items.iter_mut().filter(|i| i.key.is_empty()) {
         i.key = legacy_key(i.id, i.process_id, i.todo_id);
+    }
+    // A file from before keys can derive one key twice (an FYI beside an open
+    // question about the same agent): the newest keeps it, the rest get their own.
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|&a, &b| items[b].created_at.cmp(&items[a].created_at));
+    let mut seen = std::collections::HashSet::new();
+    for i in order {
+        if !seen.insert(items[i].key.clone()) {
+            items[i].key = legacy_key(items[i].id, None, None);
+        }
     }
     items
 }
@@ -644,6 +694,84 @@ mod tests {
         assert_eq!(list[0].state, ResponseState::Open);
         assert_eq!(list[0].reason, ResponseReason::Other);
         assert_eq!(list[0].sender, None);
+    }
+
+    #[test]
+    fn duplicate_keys_in_an_old_file_are_split_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("assistant-responses.json");
+        let agent = ProcessId::new();
+        let (question, fyi) = (ResponseId::new(), ResponseId::new());
+        // An FYI filed beside the open question, both keyed by the agent.
+        std::fs::write(
+            &file,
+            format!(
+                r#"[{{"id":"{fyi}","kind":"fyi","text":"tests green","project":null,
+                "agent":null,"agentColor":null,"todo":null,"source":null,
+                "processId":"{agent}","todoId":null,"createdAt":"2026-01-02T00:00:00Z"}},
+                {{"id":"{question}","kind":"needsYou","text":"merge now?","project":null,
+                "agent":null,"agentColor":null,"todo":null,"source":null,
+                "processId":"{agent}","todoId":null,"createdAt":"2026-01-01T00:00:00Z"}}]"#
+            ),
+        )
+        .unwrap();
+        let store = ResponseStore::new();
+        store.set_path(file);
+        let list = store.list();
+        assert_eq!(list[0].key, format!("process:{agent}"), "newest keeps it");
+        assert_eq!(list[1].key, format!("item:{question}"));
+    }
+
+    fn review(key: &str, text: &str) -> ResponseItem {
+        ResponseItem {
+            reason: ResponseReason::Review,
+            text: text.to_string(),
+            ..keyed(key, &format!("review:{text}"))
+        }
+    }
+
+    #[test]
+    fn a_second_review_updates_the_open_one_in_place() {
+        let store = ResponseStore::new();
+        store
+            .upsert_review(review("agent:a", "Completed to-do: Fix login"), |_| {})
+            .unwrap();
+        store
+            .set_state("agent:a", ResponseState::Parked, |_| {})
+            .unwrap();
+        let first = store.list()[0].clone();
+
+        // The summary replaces the bare "Completed to-do"; id, fingerprint
+        // and state stay, so nothing reads as new.
+        store
+            .upsert_review(review("agent:a", "Login fixed, tests green."), |_| {})
+            .unwrap();
+        let list = store.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].text, "Login fixed, tests green.");
+        assert_eq!(list[0].id, first.id);
+        assert_eq!(list[0].fingerprint, first.fingerprint);
+        assert_eq!(list[0].state, ResponseState::Parked);
+
+        // A later "Completed to-do" does not overwrite the summary.
+        store
+            .upsert_review(review("agent:a", "Completed to-do: Fix login"), |_| {
+                panic!("no change")
+            })
+            .unwrap();
+        assert_eq!(store.list()[0].text, "Login fixed, tests green.");
+
+        // Dismissed: the next review is news again.
+        store
+            .set_state("agent:a", ResponseState::Dismissed, |_| {})
+            .unwrap();
+        store
+            .upsert_review(review("agent:a", "Second round done."), |_| {})
+            .unwrap();
+        let list = store.list();
+        assert_eq!(list.len(), 1);
+        assert_ne!(list[0].id, first.id);
+        assert_eq!(list[0].state, ResponseState::Open);
     }
 
     #[test]

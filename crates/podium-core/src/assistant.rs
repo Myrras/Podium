@@ -353,7 +353,7 @@ pub struct AssistantPolling {
 
 impl AssistantPolling {
     /// Whether the sweep should run at all: an interval and something to look
-    /// at. (The `proactive` switch is checked separately, by the nudge path.)
+    /// at. (`proactive` only gates desktop notifications, not the sweep.)
     pub fn is_active(&self) -> bool {
         self.interval_minutes > 0 && (self.slack || self.teams)
     }

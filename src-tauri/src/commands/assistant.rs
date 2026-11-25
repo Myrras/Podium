@@ -245,16 +245,6 @@ pub async fn assistant_responses_list(
         .collect())
 }
 
-/// Tick one Responses item off (dismissed: hidden, kept on disk).
-#[tauri::command]
-pub async fn assistant_response_dismiss(
-    state: State<'_, AppState>,
-    id: ResponseId,
-) -> Result<(), IpcError> {
-    state.orchestrator.dismiss_assistant_response(id)?;
-    Ok(())
-}
-
 /// Park, unpark (`open`) or dismiss one Responses item by key.
 #[tauri::command]
 pub async fn assistant_set_response_state(

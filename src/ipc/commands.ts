@@ -202,9 +202,9 @@ export function processActivity(): Promise<Record<ProcessId, OutputActivity>> {
 }
 
 /**
- * Tell the backend this agent is sitting on an input prompt, so the assistant
- * hears about it now rather than after the watcher's silence timer. Called
- * once per prompt episode, from the activity monitor that already detects it.
+ * Tell the backend this agent is sitting on an input prompt, so the watcher
+ * files it as a "needs you" item at its next tick. Called once per prompt
+ * episode, from the activity monitor that already detects it.
  */
 export function processReportWaiting(processId: ProcessId): Promise<void> {
   return invoke("process_report_waiting", { processId });
@@ -828,11 +828,6 @@ export function assistantInterrupt(): Promise<void> {
 /** The assistant's Responses list, newest first. */
 export function assistantResponsesList(): Promise<ResponseItem[]> {
   return invoke("assistant_responses_list");
-}
-
-/** Tick a Responses item off (dismissed: hidden, a re-file of the same item stays hidden). */
-export function assistantResponseDismiss(id: string): Promise<void> {
-  return invoke("assistant_response_dismiss", { id });
 }
 
 /** Park, unpark (`open`) or dismiss a Responses item by key. */

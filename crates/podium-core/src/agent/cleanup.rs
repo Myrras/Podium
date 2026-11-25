@@ -13,8 +13,8 @@
 //! clock again. The setting is read on every tick, so a change applies to
 //! the next sweep without a restart.
 //!
-//! The assistant's exit nudge is published with the exit itself, minutes
-//! before this removal, so it is never lost to it.
+//! The exit (what files a crash item) is published with the exit itself,
+//! minutes before this removal, so it is never lost to it.
 
 use std::sync::Arc;
 use std::time::Duration;

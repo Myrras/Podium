@@ -110,7 +110,7 @@ async fn an_exited_agent_goes_after_the_window_and_terminals_and_services_stay()
     assert!(exited(status_of(&orch, terminal)));
     assert!(exited(status_of(&orch, service)));
 
-    // The exit — what the assistant's exit nudge reacts to — is published
+    // The exit — what a crash item is filed from — is published
     // before the removal.
     let mut exit_at = None;
     let mut removed_at = None;
