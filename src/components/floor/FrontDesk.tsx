@@ -69,7 +69,9 @@ export function FrontDesk({
         >
           {n ? `${n} ${n === 1 ? "needs" : "need"} you` : "Nothing needs you"}
         </button>
-        <span className={styles.state}>{deskLine(state, helpers)}</span>
+        <span className={styles.state} title={deskLine(state, helpers)}>
+          {deskLine(state, helpers)}
+        </span>
       </div>
     </div>
   );

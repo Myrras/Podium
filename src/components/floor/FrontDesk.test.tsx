@@ -115,6 +115,10 @@ describe("FrontDesk", () => {
     expect(
       container.querySelector('[title="Checking Slack and Teams"]'),
     ).not.toBeNull();
+    expect(screen.getByText("Checking Slack & Teams")).toHaveAttribute(
+      "title",
+      "Checking Slack & Teams",
+    );
     expect(container.querySelector('[data-state="working"]')).not.toBeNull();
     unmount();
 

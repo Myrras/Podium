@@ -26,6 +26,7 @@ when it merges.
 
 ### Fixed
 
+- The Floor's front desk stays compact: its items sit under the assistant and it no longer widens while the assistant works.
 - Unsent text in the assistant input now survives closing and reopening the assistant.
 - The assistant chat on the Floor opens instantly with the existing conversation instead of reloading.
 - The assistant's pixel bot no longer closes its eyes; it stays still and alert, and only moves its eyes and hands while it is working.
