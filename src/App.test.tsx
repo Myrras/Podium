@@ -172,7 +172,7 @@ describe("App", () => {
       enabled: false,
     });
     expect(await screen.findByText("The assistant is off")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
+    expect(screen.queryByPlaceholderText("Ask the assistant")).toBeNull();
 
     assistant.setResult = true;
     expect(power).toHaveAttribute("aria-pressed", "false");
@@ -182,7 +182,7 @@ describe("App", () => {
       enabled: true,
     });
     expect(
-      await screen.findByPlaceholderText("Message the assistant…"),
+      await screen.findByPlaceholderText("Ask the assistant"),
     ).toBeInTheDocument();
   });
 
