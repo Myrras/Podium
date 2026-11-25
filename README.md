@@ -90,11 +90,14 @@ Settings > General > Appearance > View.
   and **Close agent** ask first too. **×** hides the modal and keeps the process
   running. Click the agent's name to rename it; **Resume** is in the header, and
   **Next: _name_** steps through waiting agents. There are no answer buttons: type the answer.
-- **Nameplate.** **+** starts an agent: with the assistant on and its panel open
-  it drafts a prompt there, otherwise (or with Cmd/Ctrl held) it opens the New
+- **Nameplate.** **+** starts an agent: with the assistant on it drafts a prompt
+  in the front desk's chat, otherwise (or with Cmd/Ctrl held) it opens the New
   agent screen. The terminal icon opens a new terminal. **⋯** is the project menu:
   rename, colour, worktrees, Git board, Reload podium.yml, Remove project. **Add project...** is
   the last chip in the header.
+- **Front desk.** The assistant sits in the bottom-right corner of the map. Its
+  bot (or the title bar's assistant button) opens the chat above the desk; the
+  count opens the full list of what needs you. Esc inside closes it.
 - **Waypoints.** A room that needs you while out of view gets a marker on the edge
   of the map with an amber **?** (waiting agents) or red **!** (crashed) count;
   click it to fly there. Counts also show in the header, the chips and nameplates.

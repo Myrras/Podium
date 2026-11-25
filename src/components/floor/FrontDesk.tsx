@@ -1,7 +1,8 @@
 /**
  * The assistant on the floor: a desk pinned to the bottom-right corner of the
  * map (it does not pan or zoom). The house bot opens the chat, the queue holds
- * every open Responses item, and the count opens the full list.
+ * every open Responses item, and the count opens the full list; both open as
+ * popovers above the desk (`FrontDeskPopovers`, anchored on `data-desk`).
  */
 
 import { useEffect, useState } from "react";
@@ -27,13 +28,14 @@ export function FrontDesk({
 }) {
   const responses = useAssistantStore((s) => s.responses);
   const { state, helpers } = useAssistantDesk();
+  const desk = useFloorStore((s) => s.deskPopover);
   const open = responses
     .filter((r) => r.state === "open")
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const n = open.length;
 
   return (
-    <div className={styles.fd}>
+    <div className={styles.fd} data-pop={desk ?? undefined}>
       <div className={styles.plate}>Front desk</div>
       <div className={styles.top}>
         <button
@@ -41,9 +43,11 @@ export function FrontDesk({
           className={styles.bot}
           aria-label="Open chat"
           title="Open chat"
+          data-desk="chat"
+          aria-expanded={desk === "chat"}
           onClick={onOpenChat}
         >
-          <AssistantDesk state={state} helpers={helpers} size={48} />
+          <AssistantDesk state={state} helpers={helpers} size={48} hideLine />
         </button>
         <div className={styles.queue}>
           {open.slice(0, MAX_QUEUE).map((item) => (
@@ -59,6 +63,8 @@ export function FrontDesk({
           type="button"
           className={styles.count}
           data-n={n}
+          data-desk="list"
+          aria-expanded={desk === "list"}
           onClick={onOpenList}
         >
           {n ? `${n} ${n === 1 ? "needs" : "need"} you` : "Nothing needs you"}

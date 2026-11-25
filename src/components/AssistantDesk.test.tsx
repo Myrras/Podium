@@ -43,6 +43,11 @@ describe("AssistantDesk", () => {
     expect(screen.queryByTitle(/helpers/)).toBeNull();
   });
 
+  it("leaves the state line to the host with hideLine", () => {
+    render(<AssistantDesk state="waiting" helpers={0} hideLine />);
+    expect(screen.queryByText("Waiting for your OK")).toBeNull();
+  });
+
   it("uses the singular for one helper", () => {
     expect(deskLine("answering", 1)).toBe("Looking things up with 1 helper");
   });

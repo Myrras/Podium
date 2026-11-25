@@ -66,11 +66,14 @@ export function AssistantDesk({
   state,
   helpers,
   size = 48,
+  hideLine = false,
   children,
 }: {
   state: AssistantDeskState;
   helpers: number;
   size?: number;
+  /** The host shows the state line itself (the front desk, under its baseline). */
+  hideLine?: boolean;
   /** Shown above the state line (the pane's title). */
   children?: ReactNode;
 }) {
@@ -101,10 +104,14 @@ export function AssistantDesk({
           {helpers > MAX_HELPERS && <b>+{helpers - MAX_HELPERS}</b>}
         </span>
       )}
-      <span className={styles.text}>
-        {children}
-        <span className={styles.line}>{deskLine(state, helpers)}</span>
-      </span>
+      {(children || !hideLine) && (
+        <span className={styles.text}>
+          {children}
+          {!hideLine && (
+            <span className={styles.line}>{deskLine(state, helpers)}</span>
+          )}
+        </span>
+      )}
     </span>
   );
 }

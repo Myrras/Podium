@@ -71,6 +71,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 import userEvent from "@testing-library/user-event";
 
 import { useAssistantStore } from "./state/assistantStore";
+import { useFloorStore } from "./state/floorStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useToastStore } from "./state/toastStore";
 import App from "./App";
@@ -306,9 +307,21 @@ describe("App — Floor mode", () => {
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
     expect(screen.queryByLabelText("Resize assistant")).toBeNull();
 
-    // The title-bar button does not bring the docked pane back.
-    await user.click(screen.getByLabelText("Assistant"));
+    // The title-bar button opens the front desk's chat, not the docked pane;
+    // a second click closes it again.
+    const toggle = screen.getByLabelText("Assistant");
+    await user.click(toggle);
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+    expect(useFloorStore.getState().deskPopover).toBe("chat");
+    expect(
+      await screen.findByLabelText("Message the assistant"),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(toggle);
+    expect(useFloorStore.getState().deskPopover).toBeNull();
+    expect(screen.queryByLabelText("Message the assistant")).toBeNull();
+    expect(useLayoutStore.getState().assistantOpen).toBe(true);
   });
 
   it("keeps the assistant pane in Project mode", () => {

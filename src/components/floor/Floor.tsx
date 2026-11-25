@@ -18,6 +18,7 @@ import { FloorStatusBar } from "./FloorStatusBar";
 import { FloorTerminalModal } from "./FloorTerminalModal";
 import { FloorWaypoints } from "./FloorWaypoints";
 import { FrontDesk } from "./FrontDesk";
+import { FrontDeskPopovers } from "./FrontDeskPopovers";
 import styles from "./Floor.module.css";
 
 /** Keeps the open board fresh, as GitButton does in Project mode (no GitButton is mounted here). */
@@ -31,6 +32,7 @@ function BoardRefresh({ projectId }: { projectId: ProjectId }) {
 
 export function Floor() {
   const openBoard = useLayoutStore((s) => s.openBoard);
+  const toggleDesk = useFloorStore((s) => s.toggleDesk);
 
   useEffect(() => () => useFloorStore.getState().reset(), []);
   // A board or sub-agent left open in Project mode must not open over a fresh
@@ -56,11 +58,15 @@ export function Floor() {
         <div className={styles.mapArea}>
           <FloorMap />
           <FloorWaypoints />
-          <FrontDesk />
+          <FrontDesk
+            onOpenChat={() => toggleDesk("chat")}
+            onOpenList={() => toggleDesk("list")}
+          />
         </div>
       )}
       <FloorStatusBar />
       <FloorPopovers />
+      <FrontDeskPopovers />
       <FloorTerminalModal />
       <FloorAgentModals />
     </>

@@ -26,7 +26,13 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   reset). The first fit skips when `moved` is set; it checks the flag, not the
   camera object, because StrictMode's simulated unmount runs `reset()`.
   `setCamera` defaults to `focus: null, animate: false`; `openTerminal` closes
-  the popover.
+  the popovers.
+- `floorStore.deskPopover` (`"chat" | "list" | null`): the front desk's
+  popover. `openDesk`/`toggleDesk` clear `popover` and `openPopover` clears
+  `deskPopover`, so one popover is open at a time. The bot, the count chip,
+  the title bar's assistant button (`toggleDesk("chat")`, marked
+  `data-popover-keep` so its mousedown does not close the chat first) and the
+  nameplate + (`startAgentIn`: `setDraft` then `openDesk("chat")`) open them.
 - The pinned desk is `processStore.activeProcessId`; the open modal is
   `floorStore.terminalId`.
 
@@ -70,7 +76,9 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 ## Components
 
 `Floor` → `FloorHeader`, then `GitBoard` (when `openBoard` is set) or `FloorMap`
-+ `FloorWaypoints`, then `FloorStatusBar`, `FloorPopovers`, `FloorTerminalModal`,
++ `FloorWaypoints` + `FrontDesk`, then `FloorStatusBar`, `FloorPopovers`,
+`FrontDeskPopovers` (anchored on `data-desk="<chat|list>"`: `ResponsesSection`,
+or `AssistantChat` with its controls in the popover header), `FloorTerminalModal`,
 `FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
 
 - The camera never goes through React state: `FloorMap` subscribes to the store
