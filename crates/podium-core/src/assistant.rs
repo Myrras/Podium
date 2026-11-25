@@ -25,7 +25,7 @@
 //! triggers one), starting the session when there is none — so an agent that
 //! finished is reported when it finishes, not whenever the user next happens
 //! to type. A nudge whose answer carries [`NOTHING_TO_REPORT`] on a line of
-//! its own is swallowed, so a sweep that found nothing stays silent.
+//! its own is swallowed, so a nudge that brings nothing stays silent.
 //!
 //! Only one turn is ever in flight at a time. A nudge and a proposal-outcome
 //! notice (`notify`) — Podium's own inputs — always route through one
@@ -407,20 +407,34 @@ pub(crate) fn poll_sources(polling: AssistantPolling) -> &'static str {
 }
 
 /// The turn the external sweep sends — to its own Haiku session
-/// ([`crate::sweep`]), never to the assistant. It names only the enabled
-/// sources, and spells out the silence contract: nothing to act on means
-/// exactly [`NOTHING_TO_REPORT`], which Podium swallows. Nothing else is
-/// needed to reach Slack/Teams — the sweep session inherits the user's own
-/// MCP servers (`--strict-mcp-config` is deliberately not passed), so this is
-/// wording, not an integration.
-pub fn poll_prompt(polling: AssistantPolling) -> String {
+/// ([`crate::sweep`]), never to the assistant. Stateless: every sweep asks
+/// for the full set of messages still waiting for the user over the last
+/// [`MESSAGE_WINDOW_DAYS`](crate::sweep::MESSAGE_WINDOW_DAYS) days before
+/// `now`, as strict JSON that [`crate::sweep::parse_messages`] reads. It
+/// names only the enabled sources. Nothing else is needed to reach
+/// Slack/Teams — the sweep session inherits the user's own MCP servers
+/// (`--strict-mcp-config` is deliberately not passed), so this is wording,
+/// not an integration.
+pub fn poll_prompt(polling: AssistantPolling, now: DateTime<Utc>) -> String {
     let sources = poll_sources(polling);
+    let days = crate::sweep::MESSAGE_WINDOW_DAYS;
+    let now = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     format!(
-        "[Podium] Routine check: look at {sources} for messages to the user since you last \
-         looked, and judge whether any of them actually need the user to act or answer. If \
-         something does, say what it is and what it needs, in a line or two. If nothing does, \
-         reply with exactly {NOTHING_TO_REPORT} and nothing else — no greeting, no \
-         explanation, no summary of what you checked."
+        "[Podium] Routine check. It is now {now}. Look at {sources} and list every message \
+         from the last {days} days that is still waiting for the user: it asks the user \
+         something (a question, a request, a review) and the user has not replied to it \
+         since. Leave out anything the user already answered, anything that asks nothing, and \
+         the user's own messages. List each conversation or thread once, with its newest \
+         waiting message. Reply with exactly one JSON object and nothing else (no code \
+         fence, no prose):\n\
+         {{\"messages\":[{{\"source\":\"slack\" or \"teams\",\"conversation\":\"<channel or \
+         chat id>\",\"thread\":\"<thread id, or the conversation id when it is not in a \
+         thread>\",\"sender\":\"<who asks>\",\"place\":\"<where, e.g. Slack, direct message \
+         or Teams, #release>\",\"newest\":\"<RFC 3339 time of the newest waiting \
+         message>\",\"text\":\"<what they need, in one short line>\"}}]}}\n\
+         The conversation and thread ids must be exactly the ids the Slack/Teams tools \
+         return. When nothing is waiting, reply {{\"messages\":[]}}. If a source cannot be \
+         read, reply with one plain line saying which instead of JSON."
     )
 }
 
@@ -1981,8 +1995,8 @@ fn is_nothing_to_report(event: &AssistantEvent) -> bool {
 }
 
 /// Whether `text` carries [`NOTHING_TO_REPORT`] on a line of its own — the
-/// matcher behind [`is_nothing_to_report`], shared with [`crate::sweep`].
-pub(crate) fn says_nothing_to_report(text: &str) -> bool {
+/// matcher behind [`is_nothing_to_report`].
+fn says_nothing_to_report(text: &str) -> bool {
     text.lines().any(|line| line.trim() == NOTHING_TO_REPORT)
 }
 

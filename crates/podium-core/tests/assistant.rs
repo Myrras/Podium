@@ -160,9 +160,8 @@ done
 /// A fake CLI that plays both sessions, told apart by `--model haiku`: as the
 /// external sweep it records its argv (`sweep-argv.txt`), its `--resume` id
 /// per spawn (`sweep-spawns.txt`, `-` when none) and every turn
-/// (`sweep-stdin.jsonl`, plus that spawn's `--resume` id per turn in
-/// `sweep-turns.txt`), then runs `sweep_turn` — shell code that sees the
-/// turn number in `$n` and `$resume` — to answer; as the assistant it records
+/// (`sweep-stdin.jsonl`), then runs `sweep_turn` — shell code that sees the
+/// turn number in `$n` — to answer; as the assistant it records
 /// every turn in `stdin.jsonl` and answers `ok`. Files are replaced through a
 /// temp file so a reader never sees half a line.
 fn sweep_fake(sweep_turn: &str) -> String {
@@ -191,7 +190,6 @@ case " $* " in
     while IFS= read -r line; do
       n=$((n + 1))
       record sweep-stdin.jsonl "$line"
-      record sweep-turns.txt "$resume"
       {sweep_turn}
     done
     ;;
@@ -1623,12 +1621,15 @@ async fn a_reply_that_merely_mentions_the_sentinel_is_a_real_reply() {
     orch.shutdown().await;
 }
 
+/// The sweep's empty answer, as shell for `sweep_says`.
+const NOTHING_WAITING: &str = r#"{\"messages\":[]}"#;
+
 #[tokio::test]
 async fn the_external_sweep_asks_about_the_enabled_sources() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(
         dir.path(),
-        &sweep_fake(&sweep_says("NOTHING_TO_REPORT")),
+        &sweep_fake(&sweep_says(NOTHING_WAITING)),
     ));
     slack_every_tick(&orch);
     podium_core::proactivity::spawn(&orch, fast_polling());
@@ -1636,37 +1637,33 @@ async fn the_external_sweep_asks_about_the_enabled_sources() {
     // The sweep's own session gets the question.
     let lines = recorded_lines(dir.path(), "sweep-stdin.jsonl", 1).await;
     let text = turn_text(&lines[0]);
-    assert!(text.contains("Slack"), "{text}");
+    assert!(text.contains("Look at Slack and list"), "{text}");
     assert!(
-        !text.contains("Teams"),
+        !text.contains("Microsoft Teams"),
         "disabled source asked about: {text}"
     );
-    // The silence contract must be spelled out, or a quiet sweep still talks.
-    assert!(text.contains("NOTHING_TO_REPORT"), "{text}");
+    // The full set, as JSON, every time: no "since you last looked".
+    assert!(text.contains("from the last 2 days"), "{text}");
+    assert!(text.contains(r#"{"messages":[{"source":"#), "{text}");
+    assert!(text.contains(r#"reply {"messages":[]}"#), "{text}");
+    assert!(!text.contains("last looked"), "{text}");
     orch.shutdown().await;
 }
 
 #[tokio::test]
-async fn the_sweep_runs_on_haiku_in_its_own_session_and_a_quiet_one_reaches_nobody() {
+async fn the_sweep_runs_on_haiku_in_a_fresh_session_and_a_quiet_one_reaches_nobody() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // The summary in front of the sentinel is what models keep adding.
     let orch = Arc::new(setup_in(
         dir.path(),
-        &sweep_fake(&sweep_says(
-            "Checked #ops and #general.\\n\\nNOTHING_TO_REPORT",
-        )),
+        &sweep_fake(&sweep_says(NOTHING_WAITING)),
     ));
     let mut rx = orch.subscribe_events();
     slack_every_tick(&orch);
     podium_core::proactivity::spawn(&orch, fast_polling());
 
-    // Three sweeps done, in one session that stayed up between them.
-    recorded_lines(dir.path(), "sweep-stdin.jsonl", 3).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("sweep-spawns.txt")).expect("spawns"),
-        "-\n"
-    );
+    // Three sweeps done, each in a session of its own, none resumed.
+    let spawns = recorded_lines(dir.path(), "sweep-spawns.txt", 3).await;
+    assert!(spawns.iter().all(|s| s == "-"), "{spawns:?}");
     let argv: Vec<String> = std::fs::read_to_string(dir.path().join("sweep-argv.txt"))
         .expect("sweep argv")
         .lines()
@@ -1717,7 +1714,7 @@ async fn the_sweep_runs_on_haiku_in_its_own_session_and_a_quiet_one_reaches_nobo
     // In an empty directory of its own, not the app data dir.
     assert!(dir.path().join("sweep-workspace").is_dir());
 
-    // The assistant never started, and nothing reached the panel.
+    // The assistant never started, nothing reached the panel, nothing filed.
     assert!(
         !dir.path().join("stdin.jsonl").exists(),
         "a quiet sweep reached the assistant"
@@ -1729,46 +1726,104 @@ async fn the_sweep_runs_on_haiku_in_its_own_session_and_a_quiet_one_reaches_nobo
         );
     }
     assert!(orch.assistant_transcript().is_empty());
+    assert!(orch.assistant_responses().is_empty());
     orch.shutdown().await;
 }
 
+/// Shell for `sweep_fake`: answer sweep number `$k` (counted over all
+/// sessions) with `reply-$k.jsonl` once the test has written it.
+const SWEEP_ANSWERS_FROM_FILES: &str = r#"k=$(wc -l < "$dir/sweep-stdin.jsonl" | tr -d ' ')
+      while [ ! -f "$dir/reply-$k.jsonl" ]; do sleep 0.02; done
+      cat "$dir/reply-$k.jsonl""#;
+
+/// Answer sweep `k` with `answer` (the sweep model's closing text), then
+/// wait until it has been handed off: the next sweep has started, which it
+/// only does once this one's items are filed.
+async fn sweep_answers(dir: &Path, k: usize, answer: &str) {
+    let line = serde_json::json!({
+        "type": "result", "subtype": "success", "is_error": false, "result": answer,
+    });
+    let tmp = dir.join("reply.tmp");
+    std::fs::write(&tmp, format!("{line}\n")).expect("write reply");
+    std::fs::rename(&tmp, dir.join(format!("reply-{k}.jsonl"))).expect("place reply");
+    recorded_lines(dir, "sweep-stdin.jsonl", k + 1).await;
+}
+
+/// The sweep's JSON answer listing one waiting Slack DM per `(sender,
+/// conversation, newest)`.
+fn waiting_dms(entries: &[(&str, &str, chrono::DateTime<chrono::Utc>)]) -> String {
+    let messages: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(sender, conversation, newest)| {
+            serde_json::json!({
+                "source": "slack",
+                "conversation": conversation,
+                "thread": conversation,
+                "sender": sender,
+                "place": "Slack, direct message",
+                "newest": newest.to_rfc3339(),
+                "text": "Can you approve the deploy?",
+            })
+        })
+        .collect();
+    serde_json::json!({ "messages": messages }).to_string()
+}
+
 #[tokio::test]
-async fn a_sweep_finding_becomes_one_poll_turn_for_the_assistant() {
+async fn waiting_messages_become_responses_items_that_follow_the_sweep() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let first = sweep_says("Ada in #ops asks you to approve the deploy.");
-    let quiet = sweep_says("NOTHING_TO_REPORT");
-    let orch = Arc::new(setup_in(
-        dir.path(),
-        &sweep_fake(&format!(
-            "if [ \"$n\" = 1 ]; then\n      {first}\n      else\n      {quiet}\n      fi"
-        )),
-    ));
-    let mut rx = orch.subscribe_events();
+    let orch = Arc::new(setup_in(dir.path(), &sweep_fake(SWEEP_ANSWERS_FROM_FILES)));
     slack_every_tick(&orch);
     podium_core::proactivity::spawn(&orch, fast_polling());
+    let now = chrono::Utc::now();
+    let asked = now - chrono::Duration::hours(1);
+    let stale = now - chrono::Duration::days(3);
+    let ada = [("Ada", "D0FAKE1", asked), ("Linus", "D0FAKE2", stale)];
 
-    let notice = next_notice(&mut rx).await;
-    assert!(notice.contains("routine check of Slack found"), "{notice}");
-    assert!(notice.contains("Ada in #ops"), "{notice}");
+    // A new message: one item, with who and where. The stale one is cut off.
+    sweep_answers(dir.path(), 1, &waiting_dms(&ada)).await;
+    let items = orch.assistant_responses();
+    assert_eq!(items.len(), 1, "{items:?}");
+    let item = &items[0];
+    assert_eq!(item.key, "msg:slack:D0FAKE1:D0FAKE1");
+    assert_eq!(item.kind, ResponseKind::NeedsYou);
+    assert_eq!(item.reason, ResponseReason::Message);
+    assert_eq!(item.sender.as_deref(), Some("Ada"));
+    assert_eq!(item.source.as_deref(), Some("Slack, direct message"));
+    assert_eq!(item.text, "Can you approve the deploy?");
+    let first = item.id;
 
-    // Later sweeps found nothing: still exactly one assistant turn, and it
-    // is the finding, never the sweep's own question.
-    recorded_lines(dir.path(), "sweep-stdin.jsonl", 3).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let turns = recorded_lines(dir.path(), "stdin.jsonl", 1).await;
-    assert_eq!(turns.len(), 1, "{turns:?}");
-    let text = turn_text(&turns[0]);
-    assert_eq!(
-        text,
-        "[Podium] The routine check of Slack found: \"Ada in #ops asks you to approve the \
-         deploy.\". Tell the user what needs them, following your Responses rules."
-    );
-    assert!(!text.contains("Routine check: look at"), "{text}");
-    // A Podium row, so the panel folds it like any other sweep.
-    assert!(orch
-        .assistant_transcript()
-        .iter()
-        .any(|r| r.role == TranscriptRole::Nudge && r.text == text));
+    // The same answer again: unchanged, the very same item.
+    sweep_answers(dir.path(), 2, &waiting_dms(&ada)).await;
+    let items = orch.assistant_responses();
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].id, first);
+
+    // Dismissed, then the same message again: it stays dismissed.
+    orch.dismiss_assistant_response(first).expect("dismiss");
+    sweep_answers(dir.path(), 3, &waiting_dms(&ada)).await;
+    assert!(orch.assistant_responses().is_empty());
+
+    // A newer message in that conversation: back, open.
+    let newer = [("Ada", "D0FAKE1", asked + chrono::Duration::minutes(10))];
+    sweep_answers(dir.path(), 4, &waiting_dms(&newer)).await;
+    let items = orch.assistant_responses();
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_ne!(items[0].id, first);
+    let back = items[0].id;
+
+    // An answer that cannot be read touches nothing and says nothing.
+    sweep_answers(dir.path(), 5, "Slack is unreachable (not signed in).").await;
+    let items = orch.assistant_responses();
+    assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), [back]);
+
+    // Replied to: gone.
+    sweep_answers(dir.path(), 6, r#"{"messages":[]}"#).await;
+    assert!(orch.assistant_responses().is_empty());
+
+    // None of it reached the chat.
+    assert!(!dir.path().join("stdin.jsonl").exists());
+    assert!(orch.assistant_transcript().is_empty());
     orch.shutdown().await;
 }
 
@@ -1783,12 +1838,17 @@ fn sweep_config(dir: &Path, turn_timeout: Duration) -> SweepConfig {
 }
 
 #[tokio::test]
-async fn a_hung_sweep_is_killed_and_resumed_by_the_next_one() {
+async fn a_hung_sweep_is_killed_and_the_next_one_runs() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let found = sweep_says("Grace in Teams asks for the Q3 numbers.");
-    // The first spawn hangs, whatever it was started with: told by the spawn
-    // count, so a timeout that beats a slow login shell cannot make the second
-    // spawn hang too.
+    let found = sweep_says(
+        r#"{\"messages\":[{\"source\":\"teams\",\"conversation\":\"19:fake\",\"sender\":\"Grace\",\"place\":\"Teams, chat\",\"newest\":\"NEWEST\",\"text\":\"Q3 numbers?\"}]}"#,
+    )
+    .replace(
+        "NEWEST",
+        &(chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339(),
+    );
+    // The first spawn hangs: told by the spawn count, so a timeout that beats
+    // a slow login shell cannot make the second spawn hang too.
     let orch = Arc::new(setup_in(
         dir.path(),
         &sweep_fake(&format!(
@@ -1796,36 +1856,31 @@ async fn a_hung_sweep_is_killed_and_resumed_by_the_next_one() {
              if [ \"$spawns\" = 1 ]; then\n      sleep 30\n      else\n      {found}\n      fi"
         )),
     ));
-    // The timeout runs from the turn's start, which includes the login shell
-    // starting the fake CLI, so on a slow runner it can fire before the CLI
-    // has said anything (and then there is no session id to resume): see the
-    // assertion below.
     orch.configure_sweep(sweep_config(dir.path(), Duration::from_secs(2)));
-    let mut rx = orch.subscribe_events();
-    slack_every_tick(&orch);
+    orch.set_assistant_polling(AssistantPolling {
+        interval_minutes: 1,
+        slack: false,
+        teams: true,
+    })
+    .expect("set polling");
     podium_core::proactivity::spawn(&orch, fast_polling());
 
     // The first session hangs past the timeout and is killed; the next sweep
-    // picks its conversation back up and finds something.
-    let notice = next_notice(&mut rx).await;
-    assert!(notice.contains("Grace in Teams"), "{notice}");
+    // starts fresh and files what it found.
+    let item = timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Some(item) = orch.assistant_responses().into_iter().next() {
+                return item;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the second sweep files its message");
+    assert_eq!(item.key, "msg:teams:19:fake:19:fake");
+    assert_eq!(item.sender.as_deref(), Some("Grace"));
     let spawns = recorded_lines(dir.path(), "sweep-spawns.txt", 2).await;
-    // Only one sweep at a time: the ticks during the hang were skipped, so
-    // the hung session saw at most one turn (none when the timeout beat a
-    // slow login shell to it).
-    let turns = recorded_lines(dir.path(), "sweep-turns.txt", 1).await;
-    let hung_turns = turns.iter().filter(|t| *t == "-").count();
-    assert!(hung_turns <= 1, "{turns:?}");
-    // The fake says its session id before it reads a turn, so a hung session
-    // that saw its turn had announced itself well before the timeout, and the
-    // next spawn resumes it. One the timeout beat to the first word has no id
-    // to resume: the next spawn is fresh (and answers, by spawn count).
-    let expected = if hung_turns == 1 {
-        "sweep-session"
-    } else {
-        "-"
-    };
-    assert_eq!(spawns[..2], ["-", expected], "{turns:?}");
+    assert!(spawns.iter().all(|s| s == "-"), "{spawns:?}");
     orch.shutdown().await;
 }
 
@@ -1891,61 +1946,20 @@ async fn shutting_down_during_a_sweep_kills_it_and_forwards_nothing() {
 }
 
 #[tokio::test]
-async fn a_finding_handed_over_after_shutdown_starts_no_assistant_session() {
+async fn a_sweep_notice_handed_over_after_shutdown_starts_no_assistant_session() {
     let dir = tempfile::tempdir().expect("tempdir");
     let orch = Arc::new(setup_in(
         dir.path(),
-        &sweep_fake(&sweep_says("NOTHING_TO_REPORT")),
+        &sweep_fake(&sweep_says(NOTHING_WAITING)),
     ));
     orch.shutdown().await;
 
     // A sweep that finished in the window around shutdown.
-    orch.assistant_poll("[Podium] The routine check of Slack found: \"x\".".to_string())
+    orch.assistant_poll("[Podium] The routine check of Slack is not working.".to_string())
         .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!dir.path().join("stdin.jsonl").exists());
     assert!(orch.assistant_transcript().is_empty());
-}
-
-#[tokio::test]
-async fn a_sweep_turn_ending_on_narration_reaches_nobody() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    // The last prose block is narration before a tool call; the turn closes
-    // with an empty result.
-    let orch = Arc::new(setup_in(
-        dir.path(),
-        &sweep_fake(
-            r#"printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check Slack"},{"type":"tool_use","name":"slack"}]}}'
-      echo '{"type":"result","subtype":"success","is_error":false,"result":""}'"#,
-        ),
-    ));
-    slack_every_tick(&orch);
-    podium_core::proactivity::spawn(&orch, fast_polling());
-
-    recorded_lines(dir.path(), "sweep-stdin.jsonl", 2).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!dir.path().join("stdin.jsonl").exists());
-    assert!(orch.assistant_transcript().is_empty());
-    orch.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_resumed_sweep_that_never_comes_up_is_replaced_by_a_fresh_one() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    // A fresh spawn dies mid-turn, after announcing its session; a resumed
-    // one exits before it says anything (a pruned session id).
-    let orch = Arc::new(setup_in(
-        dir.path(),
-        &sweep_fake_with("if [ \"$resume\" != - ]; then exit 0; fi", "exit 0"),
-    ));
-    slack_every_tick(&orch);
-    podium_core::proactivity::spawn(&orch, fast_polling());
-
-    // Fresh, then the resume of its id (which fails), then fresh again: the
-    // dead id was dropped, not retried forever.
-    let spawns = recorded_lines(dir.path(), "sweep-spawns.txt", 3).await;
-    assert_eq!(spawns[..3], ["-", "sweep-session", "-"]);
-    orch.shutdown().await;
 }
 
 #[tokio::test]

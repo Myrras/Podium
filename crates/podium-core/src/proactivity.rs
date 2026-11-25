@@ -20,14 +20,15 @@
 //!
 //! There is a second, slower lane: every `poll_interval_minutes` (default 10,
 //! 0 = off) the user's enabled external sources — Slack, Microsoft Teams —
-//! are checked for anything that needs them. The check runs on Haiku in a
-//! session of its own ([`crate::sweep`]), not in the assistant's: it reaches
-//! those sources through the user's *own* MCP servers; Podium contributes the
-//! timer and the wording, no integration. A sweep that found nothing answers
-//! with the [`NOTHING_TO_REPORT`](crate::assistant::NOTHING_TO_REPORT)
-//! sentinel and the assistant never hears of it; only a real finding becomes
-//! an assistant turn. One sweep runs at a time: a tick while one still runs
-//! is skipped.
+//! are checked for messages still waiting for the user. The check runs on
+//! Haiku in a session of its own ([`crate::sweep`]), not in the assistant's:
+//! it reaches those sources through the user's *own* MCP servers. It is
+//! stateless: every sweep returns the full set, each becomes an item keyed
+//! `msg:<source>:<conversation>:<thread>` (reason `message`, fingerprint the
+//! newest message's time), and every `msg:` item not in the set goes. A sweep
+//! that failed files and removes nothing. Nothing of it reaches the chat but
+//! the one notice when the check keeps failing. One sweep runs at a time: a
+//! tick while one still runs is skipped.
 //!
 //! Agent items are filed whenever the assistant is on; the `proactive`
 //! setting only gates desktop notifications (the frontend's call) and the
@@ -108,18 +109,6 @@ pub fn spawn(orchestrator: &Arc<Orchestrator>, config: ProactivityConfig) {
     });
 }
 
-/// What the assistant is told of a finished sweep, worded for `polling` (the
-/// sources enabled when it is handed over); `None` for a quiet one.
-fn sweep_notice(polling: AssistantPolling, outcome: SweepOutcome) -> Option<String> {
-    match outcome {
-        SweepOutcome::Quiet => None,
-        SweepOutcome::Finding(found) => Some(crate::sweep::finding_text(polling, &found)),
-        // A check that keeps failing looks exactly like a quiet one, so it is
-        // raised once (the sweep session counts the streak).
-        SweepOutcome::NotWorking(reason) => Some(crate::sweep::not_working_text(polling, reason)),
-    }
-}
-
 /// Whether Podium may file agent items right now: whenever the assistant is
 /// on. `proactive` only gates the desktop notification, which the frontend
 /// decides, so the list stays complete with it off.
@@ -159,8 +148,8 @@ impl Asking {
 
 impl Watcher {
     /// Run the external sweep in its own session, unless the user switched
-    /// proactivity off, and hand the assistant what it found — if anything.
-    /// It runs on its own task (a sweep may take minutes), one at a time: a
+    /// proactivity off, and file what it found on the Responses list. It
+    /// runs on its own task (a sweep may take minutes), one at a time: a
     /// tick while one still runs is skipped.
     fn poll(&self, orchestrator: &Orchestrator, polling: AssistantPolling) {
         if !orchestrator.assistant_proactivity() || !orchestrator.assistant_enabled() {
@@ -171,20 +160,36 @@ impl Watcher {
         };
         let weak = self.weak.clone();
         tokio::spawn(async move {
-            let outcome = sweep.run(&poll_prompt(polling)).await;
+            let outcome = sweep.run(&poll_prompt(polling, Utc::now())).await;
             let not_working = matches!(outcome, SweepOutcome::NotWorking(_));
             let mut delivered = false;
             if let Some(orchestrator) = weak.upgrade() {
-                // The settings may have changed while the sweep ran: the
-                // notice is worded from what is on *now*, so it never names
-                // a source the user has since switched off (a finding that
-                // came from that source cannot be told apart, and is worded
-                // the same).
+                // The settings may have changed while the sweep ran: what is
+                // filed, and the notice's wording, follow what is on *now*.
                 let polling_now = orchestrator.assistant_polling();
-                if orchestrator.assistant_proactivity() && polling_now.is_active() {
-                    if let Some(text) = sweep_notice(polling_now, outcome) {
-                        orchestrator.assistant_poll(text).await;
-                        delivered = true;
+                if orchestrator.assistant_enabled()
+                    && orchestrator.assistant_proactivity()
+                    && polling_now.is_active()
+                {
+                    match outcome {
+                        SweepOutcome::Quiet => {}
+                        SweepOutcome::Messages(mut messages) => {
+                            // A source switched off since: none of its items.
+                            messages.retain(|m| match m.source {
+                                "slack" => polling_now.slack,
+                                _ => polling_now.teams,
+                            });
+                            if let Err(e) = orchestrator.sync_message_responses(&messages) {
+                                tracing::warn!("could not update the message items: {e}");
+                            }
+                        }
+                        // A check that keeps failing looks exactly like a
+                        // quiet one, so it is raised once, in the chat.
+                        SweepOutcome::NotWorking(reason) => {
+                            let text = crate::sweep::not_working_text(polling_now, reason);
+                            orchestrator.assistant_poll(text).await;
+                            delivered = true;
+                        }
                     }
                 }
             }
@@ -376,35 +381,6 @@ fn exit_code(code: Option<i32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_sweep_notice_names_only_the_sources_enabled_when_it_is_handed_over() {
-        let both = AssistantPolling {
-            interval_minutes: 10,
-            slack: true,
-            teams: true,
-        };
-        let slack_only = AssistantPolling {
-            teams: false,
-            ..both
-        };
-        let finding = || SweepOutcome::Finding("Ada asks for the Q3 numbers".to_string());
-        let text = sweep_notice(slack_only, finding()).expect("a finding");
-        assert!(text.contains("routine check of Slack found"), "{text}");
-        assert!(!text.contains("Teams"), "{text}");
-        assert_eq!(
-            sweep_notice(both, finding()).as_deref(),
-            Some(crate::sweep::finding_text(both, "Ada asks for the Q3 numbers").as_str())
-        );
-        let down = sweep_notice(slack_only, SweepOutcome::NotWorking("it took too long"))
-            .expect("a notice");
-        assert!(
-            down.contains("routine check of Slack is not working"),
-            "{down}"
-        );
-        assert!(!down.contains("Slack and Microsoft Teams"), "{down}");
-        assert_eq!(sweep_notice(both, SweepOutcome::Quiet), None);
-    }
 
     #[test]
     fn an_exit_without_a_code_is_still_reported() {
