@@ -23,7 +23,7 @@ vi.mock("../ipc/commands", () => ({
   assistantNewConversation: vi.fn(() => Promise.resolve()),
   assistantTranscript: vi.fn(() => Promise.resolve([])),
   assistantResponsesList: vi.fn(() => Promise.resolve([])),
-  assistantResponseDismiss: vi.fn(() => Promise.resolve()),
+  assistantSetResponseState: vi.fn(() => Promise.resolve()),
   assistantResponseReply: vi.fn(() => Promise.resolve(true)),
   assistantSubagentsList: vi.fn(() => Promise.resolve([])),
   assistantSubagentStop: vi.fn(() => Promise.resolve()),
@@ -46,7 +46,7 @@ import {
   assistantQueueEdit,
   assistantQueueRemove,
   assistantQueueSendNow,
-  assistantResponseDismiss,
+  assistantSetResponseState,
   assistantResponseReply,
   assistantNewConversation,
   assistantResponsesList,
@@ -88,7 +88,7 @@ function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
     key: "process:proc-1",
     fingerprint: "",
     state: "open",
-    reason: "other",
+    reason: "question",
     sender: null,
     label: "Invoice export · Webshop · Export invoices",
     ...overrides,
@@ -138,8 +138,8 @@ describe("assistantStore", () => {
     beforeEach(() => {
       vi.mocked(assistantResponsesList).mockReset();
       vi.mocked(assistantResponsesList).mockResolvedValue([]);
-      vi.mocked(assistantResponseDismiss).mockReset();
-      vi.mocked(assistantResponseDismiss).mockResolvedValue(undefined);
+      vi.mocked(assistantSetResponseState).mockReset();
+      vi.mocked(assistantSetResponseState).mockResolvedValue(undefined);
       vi.mocked(assistantResponseReply).mockReset();
       vi.mocked(assistantResponseReply).mockResolvedValue(true);
     });
@@ -173,8 +173,11 @@ describe("assistantStore", () => {
     it("dismisses optimistically and reloads the backend's list on failure", async () => {
       useAssistantStore.setState({ responses: [responseItem()] });
 
-      await useAssistantStore.getState().dismissResponse("r-1");
-      expect(assistantResponseDismiss).toHaveBeenCalledWith("r-1");
+      await useAssistantStore.getState().dismissResponse("process:proc-1");
+      expect(assistantSetResponseState).toHaveBeenCalledWith(
+        "process:proc-1",
+        "dismissed",
+      );
       expect(useAssistantStore.getState().responses).toEqual([]);
 
       // Superseded meanwhile: the backend now holds a newer item, and the
@@ -182,16 +185,51 @@ describe("assistantStore", () => {
       const newer = responseItem({ id: "r-2", text: "newer" });
       useAssistantStore.setState({ responses: [responseItem()] });
       vi.mocked(assistantResponsesList).mockResolvedValueOnce([newer]);
-      vi.mocked(assistantResponseDismiss).mockRejectedValueOnce({
+      vi.mocked(assistantSetResponseState).mockRejectedValueOnce({
         kind: "responseNotFound",
         message: "no such item",
       });
-      await useAssistantStore.getState().dismissResponse("r-1");
+      await useAssistantStore.getState().dismissResponse("process:proc-1");
       expect(useAssistantStore.getState().responses).toEqual([newer]);
       expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
         role: "notice",
         text: "no such item",
       });
+    });
+
+    it("parks and brings back an item by key", async () => {
+      useAssistantStore.setState({ responses: [responseItem()] });
+
+      await useAssistantStore.getState().parkResponse("process:proc-1");
+      expect(assistantSetResponseState).toHaveBeenLastCalledWith(
+        "process:proc-1",
+        "parked",
+      );
+      expect(useAssistantStore.getState().responses[0].state).toBe("parked");
+
+      await useAssistantStore.getState().unparkResponse("process:proc-1");
+      expect(assistantSetResponseState).toHaveBeenLastCalledWith(
+        "process:proc-1",
+        "open",
+      );
+      expect(useAssistantStore.getState().responses[0].state).toBe("open");
+    });
+
+    it("pings only for question, crashed and review items", async () => {
+      await useAssistantStore.getState().loadResponses();
+      const apply = (items: ResponseItem[]) =>
+        useAssistantStore.getState().apply({ type: "responsesChanged", items });
+      apply([
+        responseItem({ id: "m", reason: "message" }),
+        responseItem({ id: "o", reason: "other" }),
+      ]);
+      expect(notifyAssistant).not.toHaveBeenCalled();
+
+      for (const reason of ["question", "crashed", "review"] as const) {
+        notifyAssistant.mockClear();
+        apply([responseItem({ id: `n-${reason}`, reason })]);
+        expect(notifyAssistant).toHaveBeenCalledOnce();
+      }
     });
 
     it("adds a reply row when the reply is delivered", async () => {

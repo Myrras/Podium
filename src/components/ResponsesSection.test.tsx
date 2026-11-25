@@ -43,11 +43,15 @@ function item(overrides: Partial<ResponseItem> = {}): ResponseItem {
 }
 
 const dismissResponse = vi.fn(() => Promise.resolve());
+const parkResponse = vi.fn(() => Promise.resolve());
+const unparkResponse = vi.fn(() => Promise.resolve());
 const replyResponse = vi.fn(() => Promise.resolve(true));
 
 describe("ResponsesSection", () => {
   beforeEach(() => {
     dismissResponse.mockClear();
+    parkResponse.mockClear();
+    unparkResponse.mockClear();
     replyResponse.mockClear();
     replyResponse.mockResolvedValue(true);
     vi.mocked(showAgent).mockClear();
@@ -73,6 +77,8 @@ describe("ResponsesSection", () => {
         }),
       ],
       dismissResponse,
+      parkResponse,
+      unparkResponse,
       replyResponse,
     });
   });
@@ -80,14 +86,14 @@ describe("ResponsesSection", () => {
   it("renders each item with its context, kind and age", () => {
     render(<ResponsesSection />);
 
-    expect(screen.getByRole("button", { name: /Responses/ })).toHaveTextContent(
+    expect(screen.getByRole("button", { name: /Needs you/ })).toHaveTextContent(
       "2",
     );
     expect(screen.getByText("Checkout fix")).toBeInTheDocument();
     expect(
       screen.getByText(/Webshop · Fix the checkout loop/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Needs you")).toBeInTheDocument();
+    expect(screen.getAllByText("Needs you")).toHaveLength(2);
     expect(screen.getByText("2m")).toBeInTheDocument();
     // No agent or project: the source stands in for them.
     expect(screen.getByText("Slack")).toBeInTheDocument();
@@ -124,16 +130,71 @@ describe("ResponsesSection", () => {
     expect(screen.getByText("Fix the loop").textContent).toBe("Fix the loop");
   });
 
-  it("renders nothing when there are no items", () => {
+  it("always renders, with an empty message when nothing is open", () => {
     useAssistantStore.setState({ responses: [] });
-    const { container } = render(<ResponsesSection />);
-    expect(container).toBeEmptyDOMElement();
+    render(<ResponsesSection />);
+    expect(screen.getByText("Nothing needs you.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Parked/ })).toBeNull();
+  });
+
+  it("groups open and parked items, parked collapsed by default", async () => {
+    const user = userEvent.setup();
+    useAssistantStore.setState({
+      responses: [
+        item(),
+        item({ id: "r-9", key: "k-9", state: "parked", text: "Later." }),
+      ],
+    });
+    render(<ResponsesSection />);
+
+    expect(screen.getByRole("button", { name: /Needs you/ })).toHaveTextContent(
+      "1",
+    );
+    const parked = screen.getByRole("button", { name: /Parked/ });
+    expect(parked).toHaveTextContent("1");
+    expect(parked).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Later.")).not.toBeInTheDocument();
+
+    await user.click(parked);
+    expect(screen.getByText("Later.")).toBeInTheDocument();
+  });
+
+  it("still shows the empty message next to a parked group", () => {
+    useAssistantStore.setState({ responses: [item({ state: "parked" })] });
+    render(<ResponsesSection />);
+    expect(screen.getByText("Nothing needs you.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Parked/ })).toBeInTheDocument();
+  });
+
+  it("parks, brings back and dismisses by key", async () => {
+    const user = userEvent.setup();
+    useAssistantStore.setState({
+      responses: [
+        item(),
+        item({ id: "r-9", key: "k-9", state: "parked", text: "Later." }),
+      ],
+    });
+    render(<ResponsesSection />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Park until it changes" }),
+    );
+    expect(parkResponse).toHaveBeenCalledWith("process:proc-1");
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(dismissResponse).toHaveBeenCalledWith("process:proc-1");
+
+    await user.click(screen.getByRole("button", { name: /Parked/ }));
+    await user.click(screen.getByRole("button", { name: "Bring back" }));
+    expect(unparkResponse).toHaveBeenCalledWith("k-9");
+    const dismiss = screen.getAllByRole("button", { name: "Dismiss" });
+    await user.click(dismiss[1]);
+    expect(dismissResponse).toHaveBeenLastCalledWith("k-9");
   });
 
   it("collapses and expands the list", async () => {
     const user = userEvent.setup();
     render(<ResponsesSection />);
-    const header = screen.getByRole("button", { name: /Responses/ });
+    const header = screen.getByRole("button", { name: /Needs you/ });
 
     await user.click(header);
     expect(header).toHaveAttribute("aria-expanded", "false");
@@ -141,14 +202,6 @@ describe("ResponsesSection", () => {
 
     await user.click(header);
     expect(screen.getByText("Checkout fix")).toBeInTheDocument();
-  });
-
-  it("ticks an item off", async () => {
-    const user = userEvent.setup();
-    render(<ResponsesSection />);
-
-    await user.click(screen.getAllByLabelText("Mark as read")[0]);
-    expect(dismissResponse).toHaveBeenCalledWith("r-1");
   });
 
   it("sends a reply to the item it answers", async () => {
