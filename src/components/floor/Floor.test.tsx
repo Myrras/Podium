@@ -14,6 +14,7 @@ vi.mock("./FloorMap", () => ({ FloorMap: () => <div>Map</div> }));
 vi.mock("./FloorWaypoints", () => ({
   FloorWaypoints: () => <div>Waypoints</div>,
 }));
+vi.mock("./FrontDesk", () => ({ FrontDesk: () => <div>Front desk</div> }));
 
 import { useFloorStore } from "../../state/floorStore";
 import { useIssueStore } from "../../state/issueStore";
@@ -32,10 +33,13 @@ beforeEach(() => {
 });
 
 describe("Floor", () => {
-  it("shows map and waypoints in one box", () => {
+  it("shows map, waypoints and the front desk in one box", () => {
     render(<Floor />);
     expect(screen.getByText("Map").parentElement).toBe(
       screen.getByText("Waypoints").parentElement,
+    );
+    expect(screen.getByText("Front desk").parentElement).toBe(
+      screen.getByText("Map").parentElement,
     );
     expect(screen.queryByText(/Board of/)).toBeNull();
   });

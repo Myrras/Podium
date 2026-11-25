@@ -295,13 +295,27 @@ describe("App — Floor mode", () => {
     expect(screen.getByLabelText("Resize sidebar")).toBeInTheDocument();
   });
 
-  it("replaces sidebar and work area with the Floor, keeping the assistant", () => {
+  it("replaces sidebar, work area and assistant pane with the Floor and its front desk", async () => {
     useLayoutStore.setState({ mode: "floor", assistantOpen: true });
+    const user = userEvent.setup();
     render(<App />);
     expect(screen.queryByText("Welcome to Podium")).toBeNull();
     expect(screen.queryByLabelText("Resize sidebar")).toBeNull();
     expect(screen.getByRole("main")).toBeInTheDocument();
+    expect(screen.getByText("Front desk")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+    expect(screen.queryByLabelText("Resize assistant")).toBeNull();
+
+    // The title-bar button does not bring the docked pane back.
+    await user.click(screen.getByLabelText("Assistant"));
+    expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+  });
+
+  it("keeps the assistant pane in Project mode", () => {
+    useLayoutStore.setState({ mode: "project", assistantOpen: true });
+    render(<App />);
     expect(screen.getByLabelText("Personal assistant")).toBeInTheDocument();
+    expect(screen.queryByText("Front desk")).toBeNull();
   });
 
   it("keeps the app-level subscriptions in Floor mode", async () => {

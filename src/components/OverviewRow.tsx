@@ -28,7 +28,7 @@ import styles from "./OverviewRow.module.css";
 
 // Pose, mark and word per reason: state is never colour alone.
 // Review and other rest on frame 0 ("working" with its typing stopped in CSS).
-const LOOK: Record<
+export const LOOK: Record<
   ResponseReason,
   { pose: DeskState; mark?: string; word?: string }
 > = {
@@ -40,6 +40,66 @@ const LOOK: Record<
 };
 
 const trimmed = (s: string | null) => s?.trim() || null;
+
+/** Who the item is from; blank name parts are dropped, as `ResponseItem::label` does. */
+export function itemName(item: ResponseItem): string {
+  return (
+    (item.reason === "message" ? trimmed(item.sender) : trimmed(item.agent)) ??
+    trimmed(item.todo) ??
+    trimmed(item.project) ??
+    trimmed(item.source) ??
+    "Assistant"
+  );
+}
+
+/** Where the item comes from: the source for messages, else the project. */
+export function itemPlace(item: ResponseItem): string | null {
+  return item.reason === "message"
+    ? trimmed(item.source)
+    : (trimmed(item.project) ?? trimmed(item.source));
+}
+
+/** The agent's bot on a state pad with its mark, or the note sprite for a message. */
+export function OverviewAvatar({
+  item,
+  size = 32,
+}: {
+  item: ResponseItem;
+  size?: number;
+}) {
+  const rooms = useRooms();
+  const parked = item.state === "parked";
+  const look = LOOK[item.reason];
+  const variant = item.processId
+    ? (roomOf(item.processId, rooms)?.variants[item.processId] ?? 0)
+    : 0;
+  return (
+    <span
+      className={styles.pad}
+      data-reason={item.reason}
+      data-parked={parked || undefined}
+    >
+      {item.reason === "message" ? (
+        <span className={styles.note} aria-hidden="true">
+          <i style={{ backgroundImage: noteSheet() }} />
+        </span>
+      ) : (
+        <Bot
+          color={item.agentColor}
+          state={parked ? "idle" : look.pose}
+          seed={item.processId ?? item.key}
+          size={size}
+          variant={variant}
+        />
+      )}
+      {!parked && look.mark && (
+        <b className={styles.mark} aria-hidden="true">
+          {look.mark}
+        </b>
+      )}
+    </span>
+  );
+}
 
 export function OverviewRow({
   item,
@@ -60,7 +120,6 @@ export function OverviewRow({
   const hasProcess = useProcessStore((s) =>
     s.processes.some((p) => p.id === item.processId),
   );
-  const rooms = useRooms();
   // Focused only when the user opens the reply box — never on mount, or a
   // row that replaced one with an open draft would steal focus from
   // whatever the user is typing in now.
@@ -79,19 +138,8 @@ export function OverviewRow({
   const parked = item.state === "parked";
   const isMessage = item.reason === "message";
   const look = LOOK[item.reason];
-  // Blank name parts are dropped, as `ResponseItem::label` does.
-  const name =
-    (isMessage ? trimmed(item.sender) : trimmed(item.agent)) ??
-    trimmed(item.todo) ??
-    trimmed(item.project) ??
-    trimmed(item.source) ??
-    "Assistant";
-  const place = isMessage
-    ? trimmed(item.source)
-    : (trimmed(item.project) ?? trimmed(item.source));
-  const variant = item.processId
-    ? (roomOf(item.processId, rooms)?.variants[item.processId] ?? 0)
-    : 0;
+  const name = itemName(item);
+  const place = itemPlace(item);
   const age = formatRelativeTime(item.createdAt, new Date(), {
     compact: true,
   });
@@ -112,28 +160,7 @@ export function OverviewRow({
     if (sent) setDraft(null);
   }
 
-  const avatar = (
-    <span className={styles.pad}>
-      {isMessage ? (
-        <span className={styles.note} aria-hidden="true">
-          <i style={{ backgroundImage: noteSheet() }} />
-        </span>
-      ) : (
-        <Bot
-          color={item.agentColor}
-          state={parked ? "idle" : look.pose}
-          seed={item.processId ?? item.key}
-          size={parked ? 16 : 32}
-          variant={variant}
-        />
-      )}
-      {!parked && look.mark && (
-        <b className={styles.mark} aria-hidden="true">
-          {look.mark}
-        </b>
-      )}
-    </span>
-  );
+  const avatar = <OverviewAvatar item={item} size={parked ? 16 : 32} />;
 
   const dismiss = (
     <button

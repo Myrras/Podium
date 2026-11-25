@@ -340,8 +340,11 @@ export default function App() {
             className={styles.settingsBtn}
             aria-label="Assistant"
             title="Assistant"
-            aria-pressed={assistantOpen}
-            onClick={() => setAssistantOpen(!assistantOpen)}
+            aria-pressed={assistantOpen && mode !== "floor"}
+            // shortcut: does nothing in Floor mode (the front desk replaces the pane) until it opens the desk's chat.
+            onClick={() => {
+              if (mode !== "floor") setAssistantOpen(!assistantOpen);
+            }}
           >
             <AssistantIcon size={16} />
           </button>
@@ -423,7 +426,8 @@ export default function App() {
             </main>
           </>
         )}
-        {assistantOpen && (
+        {/* In Floor mode the assistant is the front desk on the map, not a pane. */}
+        {assistantOpen && mode !== "floor" && (
           <>
             <div
               className={styles.sidebarResizer}
