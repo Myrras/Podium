@@ -3,6 +3,7 @@ import {
   botSheet,
   miniSheet,
   monitorSheet,
+  noteSheet,
   shade,
   terminalDeskSheet,
 } from "./sprites";
@@ -17,6 +18,7 @@ describe("sprites", () => {
       miniSheet("#58a6ff"),
       monitorSheet(),
       terminalDeskSheet(),
+      noteSheet(),
     ]) {
       expect(v).toMatch(/^url\("data:image\/svg\+xml,/);
       expect(svg(v)).toContain("crispEdges");
@@ -26,6 +28,7 @@ describe("sprites", () => {
     expect(svg(botSheet("#58a6ff"))).toContain('width="128" height="16"');
     expect(svg(miniSheet("#58a6ff"))).toContain('width="16" height="8"');
     expect(svg(monitorSheet())).toContain('width="16" height="8"');
+    expect(svg(noteSheet())).toContain('width="16" height="16"');
   });
   it("uses the body colour and its shades, and caches", () => {
     const v = botSheet("#3fb950");

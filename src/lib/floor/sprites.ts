@@ -205,6 +205,25 @@ const TROWS = [
   ".D............D.",
   ".D............D.",
 ];
+// 16x16 note (a Slack/Teams message), one frame. m outline, p paper, k text lines.
+const NROWS = [
+  "................",
+  "..mmmmmmmmmmmm..",
+  ".mppppppppppppm.",
+  ".mppppppppppppm.",
+  ".mppkkkkkkkkppm.",
+  ".mppppppppppppm.",
+  ".mppkkkkkkppppm.",
+  ".mppppppppppppm.",
+  ".mppkkkkppppppm.",
+  ".mppppppppppppm.",
+  "..mmmppmmmmmmm..",
+  "....mppm........",
+  "....mpm.........",
+  "....mm..........",
+  "................",
+  "................",
+];
 
 const cache = new Map<string, string>();
 
@@ -283,3 +302,5 @@ export const miniSheet = (color: string): string =>
 export const monitorSheet = (): string => sheet("mon", SROWS, SFR, SCREEN);
 export const terminalDeskSheet = (): string =>
   sheet("term", TROWS, [[], []], { ...SCREEN, ...DESK });
+export const noteSheet = (): string =>
+  sheet("note", NROWS, [[]], { m: "#57606a", p: "#eef1f4", k: "#8b949e" });
