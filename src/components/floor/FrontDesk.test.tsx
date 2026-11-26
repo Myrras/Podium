@@ -220,7 +220,8 @@ describe("FrontDesk", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("has no Reply on a message", () => {
+  it("gives a message only Reply and Done", async () => {
+    const user = userEvent.setup();
     seed([
       item(1, {
         reason: "message",
@@ -234,8 +235,13 @@ describe("FrontDesk", () => {
     const card = within(
       screen.getByRole("button", { name: "Dana" }).parentElement!,
     );
-    expect(card.queryByRole("button", { name: "Reply" })).toBeNull();
-    expect(card.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    expect(card.getByRole("button", { name: "Reply" })).toBeInTheDocument();
+    expect(
+      card.queryByRole("button", { name: "Park until it changes" }),
+    ).toBeNull();
+    expect(card.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    await user.click(card.getByRole("button", { name: "Done: mark as read" }));
+    expect(dismissResponse).toHaveBeenCalledWith("msg:slack:c1:t1");
   });
 
   it("opens chat from the bot and the list from the count", async () => {

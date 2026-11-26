@@ -169,8 +169,8 @@ export function OverviewRow({
     <button
       type="button"
       className={styles.iconBtn}
-      aria-label="Dismiss"
-      title="Dismiss"
+      aria-label={isMessage ? "Done: mark as read" : "Dismiss"}
+      title={isMessage ? "Done: mark as read" : "Dismiss"}
       onClick={() => {
         setDraft(null);
         void dismissResponse(item.key);
@@ -180,7 +180,29 @@ export function OverviewRow({
     </button>
   );
 
-  const actions = parked ? (
+  const reply = (
+    <button
+      type="button"
+      className={styles.iconBtn}
+      aria-label="Reply"
+      title="Reply"
+      aria-pressed={draft !== null}
+      onClick={() => {
+        focusOnOpen.current = draft === null;
+        setDraft(draft === null ? "" : null);
+      }}
+    >
+      <ReplyIcon />
+    </button>
+  );
+
+  // A message is only answered or done: no Park, and a parked one gets the same.
+  const actions = isMessage ? (
+    <>
+      {reply}
+      {dismiss}
+    </>
+  ) : parked ? (
     <>
       <button
         type="button"
@@ -195,21 +217,7 @@ export function OverviewRow({
     </>
   ) : (
     <>
-      {!isMessage && (
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label="Reply"
-          title="Reply"
-          aria-pressed={draft !== null}
-          onClick={() => {
-            focusOnOpen.current = draft === null;
-            setDraft(draft === null ? "" : null);
-          }}
-        >
-          <ReplyIcon />
-        </button>
-      )}
+      {reply}
       <button
         type="button"
         className={styles.iconBtn}
