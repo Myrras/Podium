@@ -123,7 +123,7 @@
   color: var(--text);
 }
 
-/* Process actions: Restart, Close. */
+/* Process actions: Restart. */
 .group {
   display: flex;
   align-items: center;
@@ -131,25 +131,13 @@
   flex-shrink: 0;
 }
 
-/* Quiet text buttons, as tall as the icon buttons. */
-.close,
+/* Quiet text button, as tall as the icon buttons. */
 .next {
   height: var(--sp-5);
   padding: 0 var(--sp-2);
   background: transparent;
   border-color: transparent;
   color: var(--text-muted);
-}
-
-.close {
-  flex-shrink: 0;
-}
-
-.close:hover:not(:disabled),
-.close:focus-visible {
-  background: var(--danger-bg);
-  border-color: transparent;
-  color: var(--danger);
 }
 
 .divider {

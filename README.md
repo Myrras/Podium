@@ -85,11 +85,12 @@ Settings > General > Appearance > View.
   hides its fixture. Drag the corner of an open to-do or scratchpad, or of
   the terminal or Git board modal, to resize it; the size is kept for next time.
 - **Terminal.** A click on a desk or service opens its terminal in a modal over the
-  floor. Esc goes to the terminal, so it does not close the modal: use the
-  close button or click beside it. The modal has one header bar (the terminal's own) with the
-  terminal's state. Stop is an icon at the far left and asks first; **Close terminal**
-  and **Close agent** ask first too. **×** hides the modal and keeps the process
-  running. Click the agent's name to rename it; **Resume** is in the header, and
+  floor. Esc goes to the terminal, so it does not close the modal: click
+  beside it to hide it. The modal has one header bar (the terminal's own) with the
+  terminal's state. Stop is an icon at the far left and asks first; **×** closes
+  the agent or terminal (stops and removes it) and asks first; Shift + click skips the
+  question. Click beside the modal to hide it and keep the process running (services
+  only hide). Click the agent's name to rename it; **Resume** is in the header, and
   **Next: _name_** steps through waiting agents. There are no answer buttons: type the answer.
 - **Nameplate.** **+** starts an agent: with the assistant on and its panel open
   it adds the project as assistant context, otherwise (or with Cmd/Ctrl held) it opens the New
