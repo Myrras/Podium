@@ -98,7 +98,6 @@ export function ScratchpadAgentModal({
   return (
     <Modal
       open={open}
-      sizeKey="scratchpad-agent"
       title={
         scratchpadIds.length > 1
           ? `Start agent on ${scratchpadIds.length} scratchpads`

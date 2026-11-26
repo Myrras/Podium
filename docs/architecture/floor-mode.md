@@ -110,8 +110,7 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   `terminals`). Services show only when the project has any.
 - To-do and scratchpad popovers fill the `Popover` header and footer through
   `PopoverSlot`. They pass `sizeKey` (`todos`, `scratchpads`; the terminal
-  modal's card uses `terminal`; `Modal` takes `sizeKey` too: `new-agent`,
-  `scratchpad-agent`): CSS `resize: both`, and `useSavedSize`
+  modal's card uses `terminal`): CSS `resize: both`, and `useSavedSize`
   (`lib/useSavedSize.ts`) restores the size saved in localStorage
   (`podium.size.<key>`) when it fits the window and saves each dragged size.
   An inline width or height marks a user size, so `Popover` sets its default

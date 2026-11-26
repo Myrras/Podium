@@ -83,7 +83,7 @@ Settings > General > Appearance > View.
   commands** changes the saved ones. Right-click a pinboard note, a notebook, a
   rack light or a popover row for its menu. A section hidden for the project
   hides its fixture. Drag the corner of the to-dos or scratchpads popover, or of
-  the terminal, Git board or New agent modal, to resize it; the size is kept for next time.
+  the terminal or Git board modal, to resize it; the size is kept for next time.
 - **Terminal.** A click on a desk or service opens its terminal in a modal over the
   floor. Esc goes to the terminal, so it does not close the modal: use the
   close button or click beside it. The modal has one header bar (the terminal's own) with the
