@@ -69,10 +69,14 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 
 ## Components
 
-`Floor` → `FloorHeader`, then `GitBoard` (when `openBoard` is set) or `FloorMap`
-+ `FloorWaypoints`, then `FloorStatusBar`, `FloorPopovers`, `FloorTerminalModal`,
-`FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
+`Floor` → `FloorHeader`, `FloorMap` + `FloorWaypoints`, then `FloorStatusBar`,
+`FloorPopovers`, `FloorTerminalModal`, `FloorBoardModal`, `FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
 
+- The Git board (`openBoard`) is `FloorBoardModal`: a portal overlay like the
+  terminal modal, with `BoardRefresh` and `GitBoard` in a card sized by
+  `useSavedSize("board")`. The map stays mounted behind it. Esc closes it unless
+  the search field handled it (`preventDefault`); `FloorMap` and `FloorHeader`
+  ignore Esc while it is open.
 - The camera never goes through React state: `FloorMap` subscribes to the store
   and writes the world layer's `transform`, `--z` and `data-far` (z < 0.4;
   labels hide with `:global([data-far])`). Only transform and opacity animate;

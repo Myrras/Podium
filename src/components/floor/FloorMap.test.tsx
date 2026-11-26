@@ -39,6 +39,7 @@ vi.mock("./Room", () => ({
 }));
 
 import { useFloorStore } from "../../state/floorStore";
+import { useLayoutStore } from "../../state/layoutStore";
 import { FloorMap } from "./FloorMap";
 
 const map = () => screen.getByRole("region", { name: "Floor map" });
@@ -175,6 +176,10 @@ describe("FloorMap", () => {
     fireEvent.keyDown(map(), { key: "Escape" });
     useFloorStore.setState({ popover: null, terminalId: "t1" as never });
     fireEvent.keyDown(map(), { key: "Escape" });
+    useFloorStore.setState({ terminalId: null });
+    act(() => useLayoutStore.setState({ openBoard: { projectId: "p1" } }));
+    fireEvent.keyDown(map(), { key: "Escape" });
+    act(() => useLayoutStore.setState({ openBoard: null }));
     expect(jumpTo).not.toHaveBeenCalled();
   });
 

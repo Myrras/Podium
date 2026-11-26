@@ -96,6 +96,12 @@ describe("FloorHeader", () => {
     vi.mocked(jumpTo).mockClear();
     act(() => useFloorStore.setState({ terminalId: "t1" }));
     fireEvent.keyDown(header, { key: "Escape" });
+    act(() => {
+      useFloorStore.setState({ terminalId: null });
+      useLayoutStore.setState({ openBoard: { projectId: "p1" } });
+    });
+    fireEvent.keyDown(header, { key: "Escape" });
+    act(() => useLayoutStore.setState({ openBoard: null }));
     expect(jumpTo).not.toHaveBeenCalled();
   });
 
