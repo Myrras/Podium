@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { ProcessInfo } from "../../ipc/types";
@@ -30,7 +30,6 @@ import {
 import {
   CircleStopIcon,
   CloseIcon,
-  DeleteIcon,
   NextIcon,
   RestartIcon,
   RunIcon,
@@ -88,6 +87,11 @@ export function FloorTerminalModal() {
     if (name !== null) void renameProcess(shown.id, name);
   };
   const actions = subagent ? null : processActions(shown);
+  // Services and sub-agents cannot be closed here: × only hides them.
+  const closeKind = subagent ? null : shown.kind.kind;
+  const closing = closeKind === "agent" || closeKind === "terminal";
+  const closeLabel = closeKind === "agent" ? "Close agent" : "Close terminal";
+  const closeNow = () => closeProcess(shown.id);
 
   return createPortal(
     <div
@@ -121,9 +125,17 @@ export function FloorTerminalModal() {
               {!subagent && <NextNeedsYou currentId={shown.id} />}
               <IconButton
                 className={styles.hide}
-                label={`Hide ${shown.name}`}
-                title="Hide (keeps running)"
-                onClick={close}
+                label={closing ? closeLabel : `Hide ${shown.name}`}
+                title={
+                  closing
+                    ? `${closeLabel} (Shift: no confirmation)`
+                    : "Hide (keeps running)"
+                }
+                onClick={(e) => {
+                  if (!closing) close();
+                  else if (e.shiftKey) closeNow();
+                  else setConfirm({ ...closeConfirm(shown), run: closeNow });
+                }}
               >
                 <CloseIcon />
               </IconButton>
@@ -142,7 +154,7 @@ export function FloorTerminalModal() {
 
   /**
    * Stop while active, else Resume (agents) or Start; Restart for running
-   * terminals and services; Close for agents and terminals in any state.
+   * terminals and services.
    */
   function processActions(p: ProcessInfo): {
     lifecycle: ReactNode;
@@ -152,7 +164,6 @@ export function FloorTerminalModal() {
     const active = isActive(p.status);
     const start = kind === "agent" ? "Resume" : "Start";
     const restart = active && kind !== "agent";
-    const closable = kind !== "service";
     return {
       lifecycle: active ? (
         <IconButton
@@ -176,7 +187,7 @@ export function FloorTerminalModal() {
           <RunIcon />
         </IconButton>
       ),
-      process: (restart || closable) && (
+      process: restart && (
         <>
           {restart && (
             <IconButton
@@ -186,26 +197,6 @@ export function FloorTerminalModal() {
             >
               <RestartIcon />
             </IconButton>
-          )}
-          {closable && (
-            <button
-              type="button"
-              className={styles.close}
-              title={
-                kind === "agent"
-                  ? "Stop and remove the desk"
-                  : "Stop and remove, with its output"
-              }
-              onClick={() =>
-                setConfirm({
-                  ...closeConfirm(p),
-                  run: () => closeProcess(p.id),
-                })
-              }
-            >
-              <DeleteIcon />
-              {kind === "agent" ? "Close agent" : "Close terminal"}
-            </button>
           )}
         </>
       ),
@@ -224,7 +215,7 @@ function IconButton({
 }: {
   label: string;
   title: string;
-  onClick: () => void;
+  onClick: (e: MouseEvent) => void;
   className?: string;
   children: ReactNode;
 }) {

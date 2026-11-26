@@ -130,7 +130,7 @@ so reopening keeps log, scroll and state without refetching), `FloorTerminalModa
   offers it only outside one. The Commands popover (`CommandsFixturePopover`) lists commands
   with a search field (arrow keys, Enter) and has Edit commands in the header.
 - Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
-  modal shows the state and Close terminal (after a confirmation); the nameplate's Git board icon calls `openBoardInWorkArea` and its terminal icon calls
+  modal shows the state; × closes it (after a confirmation); the nameplate's Git board icon calls `openBoardInWorkArea` and its terminal icon calls
   `newTerminal`.
 
 ## Esc and terminal rules
@@ -161,9 +161,10 @@ so reopening keeps log, scroll and state without refetching), `FloorTerminalModa
   agent/terminal (`closeProcess`) reads the current process when it runs, calls
   `processStop` while it is active, keeps the process and its modal (toast)
   when the stop fails, and otherwise calls `removeProcess` and then hides the
-  modal. × hides
-  the modal and keeps the process running; `Next: <name>` opens the next
-  waiting agent. Stop, Close terminal and Close agent ask first in a confirm
+  modal. × closes the agent or
+  terminal (Shift skips the confirm; services and sub-agents only hide); a click
+  beside the card hides the modal and keeps the process running; `Next: <name>` opens the next
+  waiting agent. Stop and × (close) ask first in a confirm
   dialog inside the card (Esc only cancels it).
 
 ## Not built
