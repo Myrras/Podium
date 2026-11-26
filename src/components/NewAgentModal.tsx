@@ -125,6 +125,7 @@ export function NewAgentModal({
   return (
     <Modal
       open={open}
+      sizeKey="new-agent"
       title={
         todoIds && todoIds.length > 0 ? "Start agent on to-do" : "New agent"
       }
