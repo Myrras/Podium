@@ -6712,13 +6712,18 @@ mod tests {
         }
     }
 
-    /// Whether process `pid` still runs (`kill -0`).
+    /// Whether process `pid` still runs (signal 0). A syscall, not a `kill`
+    /// child: forking one took up to ~300 ms on a loaded runner, past
+    /// [`LIVE_SESSION_TIMEOUT`], so a stop gave up on the record it reads.
+    #[cfg(unix)]
     fn alive(pid: u32) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    /// The tests that need it are ignored on Windows.
+    #[cfg(not(unix))]
+    fn alive(_pid: u32) -> bool {
+        false
     }
 
     /// The pid of running agent `id`.
