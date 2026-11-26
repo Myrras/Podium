@@ -64,7 +64,7 @@ export function TodoFixturePopover({
     <Popover
       follow={followCamera}
       anchor={anchor}
-      sizeKey="todos"
+      sizeKey={itemId ? "todo" : undefined}
       title={itemId ? undefined : "To-dos"}
       count={itemId ? undefined : openCount}
       width={itemId ? 520 : 380}

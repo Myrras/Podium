@@ -53,7 +53,7 @@ function renderPopover(itemId: string | null) {
 }
 
 beforeEach(() => {
-  localStorage.removeItem("podium.size.scratchpads");
+  localStorage.removeItem("podium.size.scratchpad");
   useFloorStore.setState(initialFloor, true);
   useScratchpadStore.setState(
     {
@@ -182,9 +182,37 @@ describe("ScratchpadFixturePopover", () => {
     expect(screen.queryByRole("button", { name: /full ?screen/i })).toBeNull();
   });
 
+  it("the list is not resizable, an open item is", () => {
+    const { rerender } = renderPopover(null);
+    expect(screen.getByRole("group")).not.toHaveAttribute("data-resizable");
+    localStorage.setItem(
+      "podium.size.scratchpad",
+      JSON.stringify({ w: 640, h: 500 }),
+    );
+    rerender(
+      <ScratchpadFixturePopover
+        projectId="p1"
+        itemId="a"
+        anchor={document.body}
+      />,
+    );
+    expect(screen.getByRole("group").style.width).toBe("640px");
+    rerender(
+      <ScratchpadFixturePopover
+        projectId="p1"
+        itemId={null}
+        anchor={document.body}
+      />,
+    );
+    const list = screen.getByRole("group");
+    expect(list).not.toHaveAttribute("data-resizable");
+    expect(list.style.width).toBe("");
+    expect(list).not.toHaveAttribute("data-sized");
+  });
+
   it("is resizable and opens at the size it was last given", () => {
     localStorage.setItem(
-      "podium.size.scratchpads",
+      "podium.size.scratchpad",
       JSON.stringify({ w: 640, h: 500 }),
     );
     renderPopover("a");

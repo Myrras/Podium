@@ -36,7 +36,8 @@ export function saveSize(key: string, size: Size): void {
  * gets the size saved under `key` (when that fits the window) and each size it
  * is dragged to is saved. The element must not set an inline width or height
  * itself: one marks a size the user chose. `data-sized` is set while it has one.
- * Without `key` it does nothing.
+ * Without `key` it does nothing. The returned cleanup (key change or unmount)
+ * clears the inline size, so a reused element does not keep it.
  */
 export function useSavedSize(key: string | undefined) {
   return useCallback(
@@ -49,15 +50,22 @@ export function useSavedSize(key: string | undefined) {
         el.dataset.sized = "";
       }
       // jsdom has no ResizeObserver.
-      if (typeof ResizeObserver === "undefined") return;
-      const ro = new ResizeObserver(() => {
-        // Content and window changes leave the inline size alone; a drag sets it.
-        if (!el.style.width && !el.style.height) return;
-        el.dataset.sized = "";
-        saveSize(key, { w: el.offsetWidth, h: el.offsetHeight });
-      });
-      ro.observe(el);
-      return () => ro.disconnect();
+      const ro =
+        typeof ResizeObserver === "undefined"
+          ? null
+          : new ResizeObserver(() => {
+              // Content and window changes leave the inline size alone; a drag sets it.
+              if (!el.style.width && !el.style.height) return;
+              el.dataset.sized = "";
+              saveSize(key, { w: el.offsetWidth, h: el.offsetHeight });
+            });
+      ro?.observe(el);
+      return () => {
+        ro?.disconnect();
+        el.style.removeProperty("width");
+        el.style.removeProperty("height");
+        delete el.dataset.sized;
+      };
     },
     [key],
   );
