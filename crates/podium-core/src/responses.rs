@@ -135,6 +135,11 @@ pub fn legacy_key(
     }
 }
 
+/// Podium's own item about an agent (`agent:<processId>`).
+fn is_agent(key: &str) -> bool {
+    key.starts_with("agent:")
+}
+
 fn is_legacy(key: &str) -> bool {
     ["process:", "todo:", "item:"]
         .iter()
@@ -351,6 +356,11 @@ impl ResponseStore {
     }
 
     /// Take one item off the list by id (a reply; see [`restore`](Self::restore)).
+    /// An agent's item stays behind dismissed instead: the watcher re-files
+    /// the same waiting episode every tick, and only a dismissed item with
+    /// that fingerprint keeps the re-file `Unchanged` (out of sight). A
+    /// dismissed agent item cannot be taken again, so a double submit still
+    /// finds nothing.
     pub fn take(
         &self,
         id: ResponseId,
@@ -360,10 +370,16 @@ impl ResponseStore {
         let index = inner
             .items
             .iter()
-            .position(|i| i.id == id)
+            .position(|i| i.id == id && !(is_agent(&i.key) && i.state == ResponseState::Dismissed))
             .ok_or(CoreError::ResponseNotFound)?;
         let mut items = inner.items.clone();
-        let item = items.remove(index);
+        let item = if is_agent(&items[index].key) {
+            let item = items[index].clone();
+            items[index].state = ResponseState::Dismissed;
+            item
+        } else {
+            items.remove(index)
+        };
         commit(&mut inner, items, changed)?;
         Ok(item)
     }
@@ -388,6 +404,14 @@ impl ResponseStore {
     /// which is the one the user should see.
     pub fn restore(&self, item: ResponseItem, changed: impl FnOnce(&[ResponseItem])) {
         let mut inner = self.inner.lock().expect(LOCK_POISONED);
+        // An agent's item `take` left dismissed: open it again in place. A
+        // newer item with its key would have dropped it, so it is current.
+        if let Some(left) = inner.items.iter_mut().find(|i| i.id == item.id) {
+            left.state = item.state;
+            let _ = save(inner.path.as_deref(), &inner.items);
+            changed(&visible(&inner.items));
+            return;
+        }
         // Only a *newer* item can have replaced it: an older one that sits
         // beside it (a question next to the FYI being restored, an agent's
         // item next to a sweep note on its to-do) was never its replacement.
@@ -952,6 +976,37 @@ mod tests {
             store.take(gone, |_| panic!("nothing changed")),
             Err(CoreError::ResponseNotFound)
         ));
+    }
+
+    #[test]
+    fn a_replied_agent_item_stays_out_of_sight_until_it_changes() {
+        let store = ResponseStore::new();
+        let id = add(&store, keyed("agent:7", "question:1"))[0].id;
+        let mut announced = vec![keyed("x", "x")];
+        let taken = store.take(id, |l| announced = l.to_vec()).unwrap();
+        assert_eq!(taken.state, ResponseState::Open);
+        assert!(announced.is_empty());
+        // A double submit finds nothing; the watcher's re-file of the same
+        // episode is `Unchanged` and stays hidden.
+        assert!(matches!(
+            store.take(id, |_| panic!("nothing changed")),
+            Err(CoreError::ResponseNotFound)
+        ));
+        let (outcome, _) = store
+            .upsert(keyed("agent:7", "question:1"), |_| {})
+            .unwrap();
+        assert_eq!(outcome, Upsert::Unchanged);
+        assert!(store.list().is_empty());
+        // A send that failed opens it again, in place.
+        store.restore(taken, |_| {});
+        assert_eq!(store.list()[0].id, id);
+        // A new question comes back open.
+        store.take(id, |_| {}).unwrap();
+        let (outcome, _) = store
+            .upsert(keyed("agent:7", "question:2"), |_| {})
+            .unwrap();
+        assert_eq!(outcome, Upsert::Changed);
+        assert_eq!(store.list().len(), 1);
     }
 
     #[test]

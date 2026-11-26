@@ -30,9 +30,9 @@ call).
 
 | Item | Key | Reason | Filed when | Goes when |
 | ---- | --- | ------ | ---------- | --------- |
-| Agent waiting | `agent:<id>` | `question` | the agent waits on the user (Claude Code's own `waiting` report, else the prompt the UI saw: `process_report_waiting` → `report_agent_waiting` / `agents_awaiting_input`) | it stops waiting (only a `question` item goes; a review filed meanwhile stays) |
-| Agent crashed | `agent:<id>` | `crashed` | exit that was not a stop on request | restarted or removed |
-| Ready to review | `agent:<id>` | `review` | `report_to_assistant`, or the agent completing its to-do (`file_review_response`) | the user types into the agent, or it is removed |
+| Agent waiting | `agent:<id>` | `question` | the agent waits on the user (Claude Code's own `waiting` report, else the prompt the UI saw: `process_report_waiting` → `report_agent_waiting` / `agents_awaiting_input`) | it stops waiting (only a `question` item goes; a review filed meanwhile stays); dismissed at once when the user opens, types into or replies to it |
+| Agent crashed | `agent:<id>` | `crashed` | exit that was not a stop on request | restarted or removed; dismissed at once when the user opens it |
+| Ready to review | `agent:<id>` | `review` | `report_to_assistant`, or the agent completing its to-do (`file_review_response`) | the user types into the agent, or it is removed; dismissed at once when the user opens it |
 | Message | `msg:<source>:<conversation>:<thread>` | `message` | the external sweep (below) | replied or aged out |
 
 A second review while the first is still listed (open or parked), e.g.
@@ -41,6 +41,24 @@ A second review while the first is still listed (open or parked), e.g.
 once. The newer text wins, but a bare "Completed to-do: …" never replaces an
 agent's summary. Agent item text is clipped to `MAX_RESPONSE_TEXT_CHARS`, like
 the assistant's own items.
+
+**Opening or answering an agent takes its item off at once**, not on the
+watcher's next tick (30 s). Every path dismisses (soft), so the item stays
+on disk with its fingerprint and the watcher re-filing the same episode is
+`Unchanged`, out of sight; a new question (new `since`), crash or review has a
+new fingerprint and comes back open:
+
+- opening: the row or front-desk figure click calls `dismissResponse` for an
+  `agent:` key (the assistant's own items stay), and `set_viewing` dismisses
+  the viewed agent's item (any other way of opening it);
+- typing into the agent: `write_stdin` removes a review and dismisses the
+  rest. The watcher counts a wait as a new question only when it **began
+  after** the typing (`agents_awaiting_input`'s report time, or `now -
+  state_ms` of Claude Code's `waiting`); an answered prompt still on screen
+  keeps its episode, so its item stays dismissed;
+- a reply from the row: `ResponseStore::take` leaves an agent item behind
+  dismissed instead of removing it, `restore` opens it again in place (see
+  [assistant.md](assistant.md#dismissing-and-replying)).
 
 **Known limit: agent items do not survive a Podium restart.** Process ids are
 new on every run, so the first tick's `reconcile_agent_responses` drops every
@@ -72,9 +90,9 @@ non-agent). The flag lives on `ManagedProcess.viewing`, so a removed process
 drops it by itself, and `ProcessInfo.viewing` carries it to
 `list_processes`/`get_process_status`.
 
-Proactivity skips the viewed agent: no item for it. Its waiting episode is
-recorded as seen instead (`Watcher::mark_seen`), so leaving the agent never
-files that question afterwards.
+Proactivity skips the viewed agent: no item for it. `set_viewing` dismisses
+its item at once; on the next tick its waiting episode is recorded as seen
+(`Asking::seen`), so leaving the agent never files that question afterwards.
 
 - `add_response` for a `process_id` that is the viewed agent stores nothing
   and answers with a short "skipped, the user is viewing that agent" text (not

@@ -163,11 +163,20 @@ describe("FrontDesk", () => {
     expect(useFloorStore.getState().hoverDesk).toBeNull();
   });
 
-  it("goes to the agent on a figure click", async () => {
+  it("goes to the agent on a figure click and dismisses its item", async () => {
     seed([item(1)]);
     render(<FrontDesk />);
     await userEvent.click(screen.getByRole("button", { name: "Agent 1" }));
     expect(showAgent).toHaveBeenCalledWith("proc-1");
+    expect(dismissResponse).toHaveBeenCalledWith("agent:proc-1");
+  });
+
+  it("keeps the assistant's own item about an agent on a figure click", async () => {
+    seed([item(1, { key: "process:proc-1", reason: "other" })]);
+    render(<FrontDesk />);
+    await userEvent.click(screen.getByRole("button", { name: "Agent 1" }));
+    expect(showAgent).toHaveBeenCalledWith("proc-1");
+    expect(dismissResponse).not.toHaveBeenCalled();
   });
 
   it("parks, dismisses and replies from the card with the item", async () => {

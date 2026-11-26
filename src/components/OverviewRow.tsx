@@ -1,8 +1,8 @@
 /**
  * One row of the assistant's overview ("Needs you" / "Parked"): the agent's
  * own bot on a pad, a mark and a state word that agree with its pose, and the
- * item's text. Clicking the row goes to the agent; the actions take the
- * age's place on hover or focus.
+ * item's text. Clicking the row goes to the agent (and dismisses Podium's own
+ * item about it); the actions take the age's place on hover or focus.
  */
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
@@ -149,6 +149,9 @@ export function OverviewRow({
     if (!processId) return;
     if (onFloor) showAgent(processId);
     else useProcessStore.getState().setActiveProcess(processId);
+    // Opening the agent handles Podium's item about it; the backend keeps it
+    // dismissed until the agent asks something new.
+    if (item.key.startsWith("agent:")) void dismissResponse(item.key);
   }
 
   async function send() {

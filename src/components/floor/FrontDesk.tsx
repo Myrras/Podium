@@ -128,7 +128,12 @@ function Figure({ item }: { item: ResponseItem }) {
         type="button"
         className={styles.fig}
         aria-label={name}
-        onClick={() => pid && showAgent(pid)}
+        onClick={() => {
+          if (!pid) return;
+          showAgent(pid);
+          // Opening the agent handles Podium's item about it (see OverviewRow).
+          if (item.key.startsWith("agent:")) void dismissResponse(item.key);
+        }}
       >
         <OverviewAvatar item={item} size={32} />
       </button>

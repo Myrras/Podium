@@ -1194,7 +1194,10 @@ impl Orchestrator {
     /// misread), so the flag simply stops counting — no clearing needed. An
     /// agent that redraws its prompt would fall out the same way and land
     /// back to not waiting, which is the safe direction to fail.
-    pub fn agents_awaiting_input(&self) -> Vec<ProcessInfo> {
+    ///
+    /// Each comes with when its prompt was reported, so a prompt that was
+    /// already up when the user typed is told apart from a new one.
+    pub fn agents_awaiting_input(&self) -> HashMap<ProcessId, Instant> {
         let inner = self.inner.lock().expect(LOCK_POISONED);
         inner
             .processes
@@ -1206,7 +1209,7 @@ impl Orchestrator {
                 let last = p.scrollback.lock().expect(LOCK_POISONED).last_append_at();
                 match last {
                     Some(last) if last > since => None,
-                    _ => process_info_in(&inner, *id),
+                    _ => Some((*id, since)),
                 }
             })
             .collect()
@@ -1229,10 +1232,23 @@ impl Orchestrator {
     /// is always cleared, so at most one process is ever viewed. Shown as
     /// [`ProcessInfo::viewing`], and read by [`crate::proactivity`] and
     /// `add_response` so the assistant stays quiet about that agent.
+    ///
+    /// Opening an agent handles its Responses item, so it is dismissed at
+    /// once rather than on the watcher's next tick.
     pub fn set_viewing(&self, id: Option<ProcessId>) {
-        let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        for (pid, p) in inner.processes.iter_mut() {
-            p.viewing = id == Some(*pid) && matches!(p.spec.kind, ProcessKind::Agent { .. });
+        let viewed = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let mut viewed = None;
+            for (pid, p) in inner.processes.iter_mut() {
+                p.viewing = id == Some(*pid) && matches!(p.spec.kind, ProcessKind::Agent { .. });
+                if p.viewing {
+                    viewed = Some(*pid);
+                }
+            }
+            viewed
+        };
+        if let Some(id) = viewed {
+            self.dismiss_agent_response(id);
         }
     }
 
@@ -1481,6 +1497,21 @@ impl Orchestrator {
         );
         self.responses()
             .upsert_review(item, |items| self.publish_responses(items))
+    }
+
+    /// The user opened or answered this agent: dismiss Podium's item about
+    /// it. Soft, so the watcher re-filing the same episode (fingerprint) is
+    /// `Unchanged` and stays out of sight; a new question or crash has a new
+    /// fingerprint and comes back open. No item is fine.
+    fn dismiss_agent_response(&self, id: ProcessId) {
+        match self.responses().set_state(
+            &agent_response_key(id),
+            ResponseState::Dismissed,
+            |items| self.publish_responses(items),
+        ) {
+            Ok(()) | Err(CoreError::ResponseNotFound) => {}
+            Err(e) => tracing::warn!("could not dismiss an agent's Responses item: {e}"),
+        }
     }
 
     /// Drop Podium's own item about this agent, if there is one.
@@ -3939,11 +3970,12 @@ impl Orchestrator {
         }
         pty.write(bytes)?;
         if is_user_input(bytes) {
-            // The user took it from here: a "ready to review" item is done.
-            // Not worth failing the keystroke over.
+            // The user took it from here: a "ready to review" item is done,
+            // a question answered. Not worth failing the keystroke over.
             if let Err(e) = self.remove_agent_response_for(id, ResponseReason::Review) {
                 tracing::warn!("could not clear an agent's review item: {e}");
             }
+            self.dismiss_agent_response(id);
             if let Some(p) = self
                 .inner
                 .lock()
@@ -7720,10 +7752,11 @@ mod tests {
         orch.shutdown().await;
     }
 
-    /// Typing into an agent clears its "ready to review" item, not a question.
+    /// Typing into an agent clears its "ready to review" item and answers a
+    /// question: dismissed, so the same episode re-filed stays out of sight.
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(windows, ignore = "runs `cat` in a PTY")]
-    async fn user_input_removes_a_review_item_but_not_a_question() {
+    async fn user_input_removes_a_review_item_and_dismisses_a_question() {
         let dir = tempfile::tempdir().unwrap();
         let orch = Orchestrator::new();
         let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
@@ -7747,8 +7780,18 @@ mod tests {
             "Waiting for your input.".to_string(),
         )
         .unwrap();
-        orch.write_stdin(id, b"ok\r").await.unwrap();
         assert_eq!(orch.assistant_responses().len(), 1);
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert!(orch.assistant_responses().is_empty());
+        orch.file_agent_response(
+            &info,
+            ResponseKind::NeedsYou,
+            ResponseReason::Question,
+            "question:1".to_string(),
+            "Waiting for your input.".to_string(),
+        )
+        .unwrap();
+        assert!(orch.assistant_responses().is_empty());
         orch.shutdown().await;
     }
 

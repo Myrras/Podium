@@ -144,15 +144,16 @@ describe("OverviewRow", () => {
     expect(setActiveProcess).not.toHaveBeenCalled();
   });
 
-  it("opens the agent on click in Project mode", async () => {
+  it("opens the agent on click in Project mode and dismisses its item", async () => {
     const user = userEvent.setup();
     renderRow(item());
     await user.click(screen.getByText("Rebase on main or merge?"));
     expect(setActiveProcess).toHaveBeenCalledWith("proc-1");
     expect(showAgent).not.toHaveBeenCalled();
+    expect(dismissResponse).toHaveBeenCalledWith("agent:proc-1");
   });
 
-  it("moves the floor to the agent on Enter in Floor mode", async () => {
+  it("moves the floor to the agent on Enter in Floor mode and dismisses its item", async () => {
     const user = userEvent.setup();
     useLayoutStore.setState({ mode: "floor" });
     const { container } = renderRow(item());
@@ -160,6 +161,15 @@ describe("OverviewRow", () => {
     await user.keyboard("{Enter}");
     expect(showAgent).toHaveBeenCalledWith("proc-1");
     expect(setActiveProcess).not.toHaveBeenCalled();
+    expect(dismissResponse).toHaveBeenCalledWith("agent:proc-1");
+  });
+
+  it("keeps the assistant's own item about an agent when opening it", async () => {
+    const user = userEvent.setup();
+    renderRow(item({ key: "process:proc-1", reason: "other" }));
+    await user.click(screen.getByText("Rebase on main or merge?"));
+    expect(setActiveProcess).toHaveBeenCalledWith("proc-1");
+    expect(dismissResponse).not.toHaveBeenCalled();
   });
 
   it("goes nowhere once the agent's process is gone, and has no Show on floor", async () => {

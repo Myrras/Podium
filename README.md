@@ -99,7 +99,7 @@ Settings > General > Appearance > View.
   the last chip in the header.
 - **Front desk.** The assistant sits in the bottom-right corner of the map with
   a queue of what needs you. Hover an item for Reply, Park and Dismiss; click it
-  to fly to that agent. The count opens the full list, its bot (or the title
+  to fly to that agent (which takes the item off the queue). The count opens the full list, its bot (or the title
   bar's assistant button) opens the chat above the desk. Esc inside closes it.
   A desk shows a tick when its agent is ready to review, and sleeps while its
   item is parked. While the assistant checks Slack and Teams, its bot reads
@@ -361,7 +361,9 @@ they did.
   (it reported back or finished its to-do), and Slack/Teams messages waiting
   for you. Each row shows the agent's bot with its state; click it to go to the
   agent. An item goes by itself when it is handled (the agent resumes, you
-  type into the agent, you reply to the message).
+  reply to the message). An agent's item leaves the list at once when you open
+  the agent, type into it or reply to the item, and comes back only when the
+  agent asks something new, crashes or reports back again.
 - **External sweep** — every 10 minutes by default, the sources you enabled
   (Slack, Teams — through your *own* MCP servers) are checked by a separate
   Haiku session told to only read, not by the assistant itself (Podium

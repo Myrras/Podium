@@ -9,7 +9,9 @@
 //!   screen, [`Orchestrator::agents_awaiting_input`]) becomes an item keyed
 //!   `agent:<processId>`, reason `question`. It goes when the agent stops
 //!   waiting. The agent the user is viewing gets none: they are looking at it,
-//!   and that question stays unfiled after they leave.
+//!   and that question stays unfiled after they leave. Opening or typing into
+//!   an agent dismisses its item at once (soft, in the orchestrator), so the
+//!   same episode re-filed here stays out of sight.
 //! - an agent that crashed (not a stop on request) becomes the same key with
 //!   reason `crashed`. It goes when the agent is restarted or removed.
 //!
@@ -294,15 +296,21 @@ impl Watcher {
         // left; restarts and crashes are handled as they happen (`on_event`).
         orchestrator
             .reconcile_agent_responses(&processes.iter().map(|p| p.id).collect::<Vec<_>>())?;
-        // What each waiting agent waits for, when its provider says.
-        let mut waiting: HashMap<ProcessId, Option<String>> = orchestrator
+        // What each waiting agent waits for, when its provider says, and
+        // when that wait began (the later of the two sources).
+        let now = Instant::now();
+        let mut waiting: HashMap<ProcessId, (Option<String>, Instant)> = orchestrator
             .agents_awaiting_input()
             .into_iter()
-            .map(|p| (p.id, None))
+            .map(|(id, since)| (id, (None, since)))
             .collect();
         for (id, activity) in orchestrator.output_activity() {
             if activity.state == Some(ReportedState::Waiting) {
-                waiting.insert(id, activity.waiting_for);
+                let began = now
+                    .checked_sub(Duration::from_millis(activity.state_ms.unwrap_or(0)))
+                    .unwrap_or(now);
+                let began = waiting.get(&id).map_or(began, |(_, ui)| began.max(*ui));
+                waiting.insert(id, (activity.waiting_for, began));
             }
         }
         let ended: Vec<ProcessId> = self
@@ -318,7 +326,7 @@ impl Watcher {
         }
         let active = active(orchestrator);
         for process in processes {
-            let Some(asks) = waiting.remove(&process.id) else {
+            let Some((asks, began)) = waiting.remove(&process.id) else {
                 continue;
             };
             if !matches!(process.kind, ProcessKind::Agent { .. })
@@ -336,11 +344,13 @@ impl Watcher {
                 continue;
             }
             let asking = self.asking.entry(process.id).or_insert_with(Asking::new);
-            // Typing into the agent answers it: still waiting after that is
-            // a new question (a second prompt between two ticks).
+            // Typing into the agent answers it (`write_stdin` dismisses the
+            // item). A wait that began after the typing is a new question (a
+            // second prompt between two ticks); one from before is the
+            // answered prompt still on screen, so its item stays dismissed.
             if orchestrator
                 .last_user_input(process.id)
-                .is_some_and(|typed| typed > asking.at)
+                .is_some_and(|typed| typed > asking.at && began > typed)
             {
                 *asking = Asking::new();
             }
@@ -434,6 +444,77 @@ mod tests {
         watcher.asking.insert(id, Asking::new());
         watcher.check_agents(&orch).unwrap();
         assert!(orch.assistant_responses().is_empty());
+        orch.shutdown().await;
+    }
+
+    /// Typing into an agent or opening it takes its question off the list at
+    /// once. The next tick leaves it off while the answered prompt is still
+    /// up; a prompt that comes after the typing is a new question.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "runs `stty` and `sleep` in a PTY")]
+    async fn answering_or_opening_an_agent_clears_its_question_until_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Arc::new(Orchestrator::new());
+        orch.set_assistant_enabled(true).await.unwrap();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = orch
+            .add_process(
+                project,
+                crate::process::ProcessSpec {
+                    name: "fix-login".to_string(),
+                    // No echo and nothing read: typing leaves the prompt "up".
+                    command: "stty -echo; sleep 30".to_string(),
+                    cwd: dir.path().to_path_buf(),
+                    env: Vec::new(),
+                    kind: ProcessKind::Agent {
+                        adapter: "claude-code".to_string(),
+                    },
+                    restart_policy: crate::process::RestartPolicy::Never,
+                    color: None,
+                },
+            )
+            .await
+            .unwrap();
+        orch.start_process(id).await.unwrap();
+        let mut watcher = Watcher {
+            weak: Arc::downgrade(&orch),
+            config: ProactivityConfig::default(),
+            asking: HashMap::new(),
+            last_poll: Instant::now(),
+        };
+        let pause = || tokio::time::sleep(Duration::from_millis(20));
+        // Let the shell settle so no late output reads as an answer.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let questions = || {
+            orch.assistant_responses()
+                .into_iter()
+                .filter(|i| i.reason == ResponseReason::Question)
+                .count()
+        };
+
+        orch.report_agent_waiting(id);
+        watcher.check_agents(&orch).unwrap();
+        assert_eq!(questions(), 1);
+
+        // Typed an answer: gone at once, and not back while the prompt is up.
+        pause().await;
+        orch.write_stdin(id, b"y").await.unwrap();
+        assert_eq!(questions(), 0);
+        watcher.check_agents(&orch).unwrap();
+        assert_eq!(questions(), 0);
+
+        // A prompt after the typing is a new question.
+        pause().await;
+        orch.report_agent_waiting(id);
+        watcher.check_agents(&orch).unwrap();
+        assert_eq!(questions(), 1);
+
+        // Opened: gone at once, and not back after leaving it.
+        orch.set_viewing(Some(id));
+        assert_eq!(questions(), 0);
+        orch.set_viewing(None);
+        watcher.check_agents(&orch).unwrap();
+        assert_eq!(questions(), 0);
         orch.shutdown().await;
     }
 

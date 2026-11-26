@@ -4312,7 +4312,7 @@ async fn a_sub_agent_on_the_folder_trust_dialog_is_reported_and_never_answered()
         .process_id;
     // Flagged as waiting on the user, like a prompt seen on screen…
     wait_for("the trust dialog to be reported", || {
-        orch.agents_awaiting_input().iter().any(|p| p.id == id)
+        orch.agents_awaiting_input().contains_key(&id)
     })
     .await;
     // …and nothing was typed into it: the fake's `read` still waits.
@@ -4349,7 +4349,7 @@ async fn a_permission_prompt_beside_the_trust_words_is_not_reported_as_one() {
     .expect("the prompt is drawn");
     // Past the whole trust window (3 s here).
     sleep(Duration::from_millis(3500)).await;
-    assert!(!orch.agents_awaiting_input().iter().any(|p| p.id == id));
+    assert!(!orch.agents_awaiting_input().contains_key(&id));
     let out = orch.tail_text(id, 4096).await.expect("tail");
     assert!(!out.contains("typed:"), "nothing typed: {out}");
 

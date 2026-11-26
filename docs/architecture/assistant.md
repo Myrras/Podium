@@ -428,6 +428,12 @@ on the `AssistantStore`: the queue code needs it. `restore` skips an item a
 keeps the 100-item cap by dropping the oldest other item, never the restored
 one.
 
+An agent's item (`agent:` key) is not removed by `take` but left dismissed:
+the watcher re-files the same waiting episode every tick, and only the
+dismissed item keeps that `Unchanged`, out of sight. A dismissed agent item
+cannot be taken again (the double-submit guard), and `restore` finds it by id
+and opens it in place.
+
 ### Labels and the panel
 
 The label is the non-empty parts of agent · project · to-do · source, or
