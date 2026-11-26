@@ -64,6 +64,14 @@ describe("FloorBoardModal", () => {
     expect(useLayoutStore.getState().openBoard).toBeNull();
   });
 
+  it("takes focus when it opens, so Esc closes it", () => {
+    render(<FloorBoardModal />);
+    open();
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(useLayoutStore.getState().openBoard).toBeNull();
+  });
+
   it("opens at its saved size, or the default when that no longer fits", () => {
     localStorage.setItem("podium.size.board", '{"w":700,"h":500}');
     const { unmount } = render(<FloorBoardModal />);

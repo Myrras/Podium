@@ -29,6 +29,13 @@ export function FloorBoardModal() {
   const clearOpenBoard = useLayoutStore((s) => s.clearOpenBoard);
   const overlay = useRef<HTMLDivElement>(null);
   const sized = useSavedSize("board");
+  const projectId = openBoard?.projectId;
+  // Esc needs focus inside the card: take it when the board opens.
+  useEffect(() => {
+    const card = overlay.current?.firstElementChild as HTMLElement | null;
+    if (card && !card.contains(document.activeElement))
+      card.focus({ preventScroll: true });
+  }, [projectId]);
   if (!openBoard) return null;
 
   const close = () => {
@@ -51,6 +58,7 @@ export function FloorBoardModal() {
         role="dialog"
         aria-modal="true"
         aria-label="Git board"
+        tabIndex={-1}
         onKeyDown={(e) => {
           trapTab(e);
           // The search field handles (and prevents) its own Esc.
