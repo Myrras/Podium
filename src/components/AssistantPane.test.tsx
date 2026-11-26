@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useProjectStore } from "../state/projectStore";
+import { useSelectionStore } from "../lib/selection";
 import css from "./AssistantPane.module.css?raw";
 
 // The file picker is a Tauri plugin: mocked so the picker button resolves
@@ -120,6 +122,27 @@ describe("AssistantPane", () => {
     expect(input).toHaveFocus();
     expect(input.selectionStart).toBe(input.value.length);
     expect(useAssistantStore.getState().draft).toBeNull();
+  });
+
+  it("shows a dismissed project chip again and focuses on a focus request", async () => {
+    useProjectStore.setState({
+      projects: [{ id: "p1", name: "Webshop", root: "/fake/webshop" }],
+    } as never);
+    useSelectionStore.setState({
+      text: "",
+      items: [{ kind: "project", projectId: "p1", id: "p1" }],
+    });
+    const user = userEvent.setup();
+    render(<AssistantPane />);
+    await user.click(
+      screen.getByLabelText("Remove Project: Webshop from context"),
+    );
+    expect(screen.queryByText("Project: Webshop")).toBeNull();
+
+    act(() => useAssistantStore.getState().requestFocus());
+    expect(screen.getByText("Project: Webshop")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message the assistant")).toHaveFocus();
+    useSelectionStore.setState({ items: [] });
   });
 
   it("appends a handed-over draft on a new line when the composer has text", async () => {

@@ -92,7 +92,7 @@ Settings > General > Appearance > View.
   running. Click the agent's name to rename it; **Resume** is in the header, and
   **Next: _name_** steps through waiting agents. There are no answer buttons: type the answer.
 - **Nameplate.** **+** starts an agent: with the assistant on and its panel open
-  it drafts a prompt there, otherwise (or with Cmd/Ctrl held) it opens the New
+  it adds the project as assistant context, otherwise (or with Cmd/Ctrl held) it opens the New
   agent screen. The board icon opens the Git board and the terminal icon a new terminal. **⋯** is the project menu:
   rename, colour, worktrees, Git board (a modal over the floor; Esc or a click beside it closes it), Reload podium.yml, Remove project. **Add project...** is
   the last chip in the header.

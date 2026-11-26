@@ -4,10 +4,11 @@
  * an oversized text selection is dropped.
  */
 
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useLayoutStore } from "../state/layoutStore";
+import { useProjectStore } from "../state/projectStore";
 import { useProcessStore } from "../state/processStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
 import { useTodoStore } from "../state/todoStore";
@@ -58,6 +59,22 @@ describe("useAssistantContext", () => {
     });
 
     const { result } = renderHook(() => useAssistantContext());
+    expect(result.current).toEqual([]);
+  });
+
+  it("offers a selected project as a chip, and drops it once it is gone", () => {
+    useProjectStore.setState({
+      projects: [{ id: PROJECT, name: "Webshop", root: "/fake/webshop" }],
+    } as never);
+    useSelectionStore.setState({
+      items: [{ kind: "project", projectId: PROJECT, id: PROJECT }],
+    });
+    const { result } = renderHook(() => useAssistantContext());
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0].label).toBe("Project: Webshop");
+    expect(result.current[0].text).toContain("/fake/webshop");
+
+    act(() => useProjectStore.setState({ projects: [] }));
     expect(result.current).toEqual([]);
   });
 

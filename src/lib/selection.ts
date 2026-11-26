@@ -26,7 +26,7 @@ const MAX_SELECTION_CHARS = 100_000;
 
 /** A sidebar row the user has Cmd/Ctrl+clicked. */
 export interface SelectedItem {
-  kind: "todo" | "scratchpad" | "process";
+  kind: "todo" | "scratchpad" | "process" | "project";
   projectId: string;
   id: string;
 }
