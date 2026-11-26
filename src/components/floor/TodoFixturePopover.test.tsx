@@ -66,6 +66,28 @@ describe("TodoFixturePopover", () => {
     expect(useFloorStore.getState().popover?.itemId).toBe("t1");
   });
 
+  it("only an open item is resizable and restores its size", () => {
+    localStorage.setItem("podium.size.todo", '{"w":640,"h":500}');
+    const { rerender } = open(null);
+    expect(screen.getByRole("group")).not.toHaveAttribute("data-resizable");
+    const again = (itemId: string | null) =>
+      rerender(
+        <TodoFixturePopover
+          projectId={P}
+          itemId={itemId}
+          anchor={document.body}
+        />,
+      );
+    again("t1");
+    const el = screen.getByRole("group");
+    expect(el).toHaveAttribute("data-resizable");
+    expect(el.style.width).toBe("640px");
+    again(null);
+    expect(el).not.toHaveAttribute("data-resizable");
+    expect(el.style.width).toBe("");
+    localStorage.removeItem("podium.size.todo");
+  });
+
   it("shows the item with a Back link that returns to the list", () => {
     open("t1");
     fireEvent.click(screen.getByRole("button", { name: /Back to to-dos/ }));

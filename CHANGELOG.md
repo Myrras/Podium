@@ -12,7 +12,7 @@ when it merges.
 
 ### Added
 
-- Floor mode: a map with a room per project and a desk per agent, with to-dos, scratchpads, commands and services as fixtures on each room's wall, right-click menus, the agent's terminal in a modal with a single header bar (stop icon at the left; stop, close terminal and close agent ask first), and markers at the edge for rooms that need you. The Git board opens in a modal over the floor. The to-dos and scratchpads popovers and the terminal and Git board modals resize from their corner and remember their size. Choose it on first start or in Settings > General > View; Project mode stays as it was.
+- Floor mode: a map with a room per project and a desk per agent, with to-dos, scratchpads, commands and services as fixtures on each room's wall, right-click menus, the agent's terminal in a modal with a single header bar (stop icon at the left; stop, close terminal and close agent ask first), and markers at the edge for rooms that need you. The Git board opens in a modal over the floor. The an open to-do or scratchpad and the terminal and Git board modals resize from their corner and remember their size. Choose it on first start or in Settings > General > View; Project mode stays as it was.
 
 ## [3.4.0] - 2026-11-13
 

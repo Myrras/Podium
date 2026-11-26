@@ -1,6 +1,7 @@
+import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { loadSize } from "./useSavedSize";
+import { loadSize, useSavedSize } from "./useSavedSize";
 
 describe("loadSize", () => {
   beforeEach(() => localStorage.removeItem("podium.size.k"));
@@ -18,5 +19,19 @@ describe("loadSize", () => {
   it("returns a size that fits", () => {
     localStorage.setItem("podium.size.k", '{"w":300,"h":200}');
     expect(loadSize("k")).toEqual({ w: 300, h: 200 });
+  });
+});
+
+describe("useSavedSize", () => {
+  it("cleanup clears the inline size", () => {
+    localStorage.setItem("podium.size.k", '{"w":300,"h":200}');
+    const { result } = renderHook(() => useSavedSize("k"));
+    const el = document.createElement("div");
+    const cleanup = result.current(el) as () => void;
+    expect(el.style.width).toBe("300px");
+    cleanup();
+    expect(el.style.width).toBe("");
+    expect(el.style.height).toBe("");
+    expect(el).not.toHaveAttribute("data-sized");
   });
 });
