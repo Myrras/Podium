@@ -10,6 +10,8 @@ when it merges.
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-11-26
+
 ### Fixed
 
 - Remember agent sessions now also restores agents that were stopped or idle when you quit, not only running ones.
