@@ -2,17 +2,19 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { Rect, Size } from "../lib/floor/types";
 import { MOTION } from "../lib/motion";
+import { useSavedSize } from "../lib/useSavedSize";
 import { clampToViewport, type Follow, MARGIN } from "../lib/viewport";
 import { CaretIcon, CloseIcon } from "./icons";
 import styles from "./Popover.module.css";
@@ -84,6 +86,7 @@ export function Popover({
   flush = false,
   follow,
   open = true,
+  sizeKey,
   children,
 }: {
   anchor: HTMLElement | null;
@@ -104,9 +107,23 @@ export function Popover({
    * its content keeps its state, scroll and loads for the next open.
    */
   open?: boolean;
+  /** Makes it user-resizable; the last size is kept under this key (`useSavedSize`). */
+  sizeKey?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const sized = useSavedSize(sizeKey);
+  const setRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      ref.current = el;
+      const off = sized(el);
+      return () => {
+        ref.current = null;
+        off?.();
+      };
+    },
+    [sized],
+  );
   const [header, setHeader] = useState<HTMLElement | null>(null);
   const [footer, setFooter] = useState<HTMLElement | null>(null);
   // Every close blurs a focused field first, so its own onBlur commit runs.
@@ -204,12 +221,16 @@ export function Popover({
 
   return createPortal(
     <div
-      ref={ref}
+      ref={setRef}
       className={styles.popover}
       role="group"
       tabIndex={-1}
       inert={!open}
-      style={{ width, visibility: "hidden" }}
+      data-resizable={sizeKey !== undefined || undefined}
+      // A variable, not `width`: an inline size is one the user dragged (useSavedSize).
+      style={
+        { "--popover-w": `${width}px`, visibility: "hidden" } as CSSProperties
+      }
       onKeyDown={(e) => {
         // Skip Esc an inline editor already used, or that bubbled from a portalled modal.
         if (

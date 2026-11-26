@@ -12,7 +12,7 @@ when it merges.
 
 ### Added
 
-- Floor mode: a map with a room per project and a desk per agent, with to-dos, scratchpads, commands and services as fixtures on each room's wall, right-click menus, the agent's terminal in a modal with a single header bar (stop icon at the left; stop, close terminal and close agent ask first), and markers at the edge for rooms that need you. Choose it on first start or in Settings > General > View; Project mode stays as it was.
+- Floor mode: a map with a room per project and a desk per agent, with to-dos, scratchpads, commands and services as fixtures on each room's wall, right-click menus, the agent's terminal in a modal with a single header bar (stop icon at the left; stop, close terminal and close agent ask first), and markers at the edge for rooms that need you. The Git board opens in a modal over the floor. The to-dos and scratchpads popovers and the terminal, Git board and New agent modals resize from their corner and remember their size. Choose it on first start or in Settings > General > View; Project mode stays as it was.
 - The assistant keeps an overview of what needs you, in *Needs you* and *Parked*: agents waiting on you, crashed, or ready to review, and Slack and Teams messages from the last 2 days still waiting for a reply. Rows show the agent's bot with its state; click one to go to the agent.
 - Park an item until it changes, or dismiss it; both survive a restart.
 - Floor mode: a front desk in the corner with the assistant's bot and a queue of open items (Reply, Park, Dismiss), and desks that show agents ready to review or parked.

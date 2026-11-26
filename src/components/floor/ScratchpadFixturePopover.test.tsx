@@ -53,6 +53,7 @@ function renderPopover(itemId: string | null) {
 }
 
 beforeEach(() => {
+  localStorage.removeItem("podium.size.scratchpads");
   useFloorStore.setState(initialFloor, true);
   useScratchpadStore.setState(
     {
@@ -174,37 +175,23 @@ describe("ScratchpadFixturePopover", () => {
     const header = document.querySelector("header") as HTMLElement;
     expect(header).toContainElement(screen.getByLabelText("Scratchpad title"));
     const footer = document.querySelector("footer") as HTMLElement;
-    for (const name of ["Start agent on this", "Full screen", "Archive"])
+    for (const name of ["Start agent on this", "Archive"])
       expect(footer).toContainElement(screen.getByRole("button", { name }));
     expect(screen.queryByLabelText("Close scratchpad")).toBeNull();
-
-    // Full screen covers the popover, so the pane takes its own header back.
-    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
-    expect(screen.getByLabelText("Exit fullscreen")).toBeInTheDocument();
-    expect(header).not.toContainElement(
-      screen.getByLabelText("Scratchpad title"),
-    );
+    // The popover resizes instead of going full screen.
+    expect(screen.queryByRole("button", { name: /full ?screen/i })).toBeNull();
   });
 
-  it("full_screen_pane_stays_inside_the_popover_and_re_docks", () => {
+  it("is resizable and opens at the size it was last given", () => {
+    localStorage.setItem(
+      "podium.size.scratchpads",
+      JSON.stringify({ w: 640, h: 500 }),
+    );
     renderPopover("a");
     const popover = screen.getByRole("group");
-    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
-
-    // Popover.module.css drops the popover's backdrop-filter via :has(), so
-    // the fixed pane covers the window instead of the popover.
-    const pane = document.querySelector("[data-fullscreen]");
-    expect(popover).toContainElement(pane as HTMLElement);
-    expect(popover.matches(":has([data-fullscreen])")).toBe(true);
-
-    fireEvent.click(screen.getByLabelText("Exit fullscreen"));
-    expect(document.querySelector("[data-fullscreen]")).toBeNull();
-    expect(popover.matches(":has([data-fullscreen])")).toBe(false);
-    expect(document.querySelector("header")).toContainElement(
-      screen.getByLabelText("Scratchpad title"),
-    );
-    expect(document.querySelector("footer")).toContainElement(
-      screen.getByRole("button", { name: "Full screen" }),
-    );
+    expect(popover).toHaveAttribute("data-resizable");
+    expect(popover.style.width).toBe("640px");
+    expect(popover.style.height).toBe("500px");
+    expect(popover).toHaveAttribute("data-sized");
   });
 });

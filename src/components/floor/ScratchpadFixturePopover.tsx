@@ -35,6 +35,7 @@ export function ScratchpadFixturePopover({
     <Popover
       follow={followCamera}
       anchor={anchor}
+      sizeKey="scratchpads"
       title={itemId ? undefined : "Scratchpads"}
       count={itemId ? undefined : count}
       width={itemId ? 520 : 380}

@@ -1,10 +1,11 @@
 /** A small, accessible modal dialog (overlay + centered card). */
 
-import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { MOTION, usePresence } from "../lib/motion";
+import { useSavedSize } from "../lib/useSavedSize";
 import { CloseIcon } from "./icons";
 import styles from "./Modal.module.css";
 
@@ -19,6 +20,8 @@ interface ModalProps {
   tone?: "default" | "danger" | "warning";
   /** Card width — a px number or any CSS width (e.g. `"min(960px, 94vw)"`). */
   width?: number | string;
+  /** Makes it user-resizable; the last size is kept under this key (`useSavedSize`). */
+  sizeKey?: string;
 }
 
 export function Modal({
@@ -29,8 +32,21 @@ export function Modal({
   footer,
   tone = "default",
   width = 460,
+  sizeKey,
 }: ModalProps) {
   const cardRef = useRef<HTMLDivElement>(null);
+  const sized = useSavedSize(sizeKey);
+  const setRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      cardRef.current = el;
+      const off = sized(el);
+      return () => {
+        cardRef.current = null;
+        off?.();
+      };
+    },
+    [sized],
+  );
   // Keep the dialog mounted while it animates closed (see `usePresence`).
   const { mounted, state } = usePresence(open, MOTION.base);
 
@@ -64,14 +80,20 @@ export function Modal({
       }}
     >
       <div
-        ref={cardRef}
+        ref={setRef}
         className={styles.card}
         data-state={state}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        style={{ width }}
+        data-resizable={sizeKey !== undefined || undefined}
+        // A variable, not `width`: an inline size is one the user dragged (useSavedSize).
+        style={
+          {
+            "--modal-w": typeof width === "number" ? `${width}px` : width,
+          } as CSSProperties
+        }
       >
         <header className={`${styles.header} ${styles[tone]}`}>
           <h2 className={styles.title}>{title}</h2>

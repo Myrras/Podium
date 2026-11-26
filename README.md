@@ -82,7 +82,8 @@ Settings > General > Appearance > View.
   field, arrow keys and Enter); **Edit
   commands** changes the saved ones. Right-click a pinboard note, a notebook, a
   rack light or a popover row for its menu. A section hidden for the project
-  hides its fixture.
+  hides its fixture. Drag the corner of the to-dos or scratchpads popover, or of
+  the terminal, Git board or New agent modal, to resize it; the size is kept for next time.
 - **Terminal.** A click on a desk or service opens its terminal in a modal over the
   floor. Esc goes to the terminal, so it does not close the modal: use the
   close button or click beside it. The modal has one header bar (the terminal's own) with the
@@ -93,7 +94,7 @@ Settings > General > Appearance > View.
 - **Nameplate.** **+** starts an agent: with the assistant on it drafts a prompt
   in the front desk's chat, otherwise (or with Cmd/Ctrl held) it opens the New
   agent screen. The terminal icon opens a new terminal. **⋯** is the project menu:
-  rename, colour, worktrees, Git board, Reload podium.yml, Remove project. **Add project...** is
+  rename, colour, worktrees, Git board (a modal over the floor; Esc or a click beside it closes it), Reload podium.yml, Remove project. **Add project...** is
   the last chip in the header.
 - **Front desk.** The assistant sits in the bottom-right corner of the map with
   a queue of what needs you. Hover an item for Reply, Park and Dismiss; click it

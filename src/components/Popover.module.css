@@ -4,6 +4,7 @@
   left: 0;
   top: 0;
   z-index: 900;
+  width: var(--popover-w);
   max-width: calc(100vw - 12px);
   max-height: calc(100vh - 12px);
   display: flex;
@@ -24,14 +25,26 @@
     linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
 }
 
-/* A fullscreen child (scratchpad) is position: fixed; backdrop-filter and
-   transform would make this popover its containing block. The theme prefix
-   outranks `:root[data-theme="glass-*"] .glass` in global.css, which a bare
-   `.popover:has()` loses to, so the pane folded into the popover. */
-:global(:root[data-theme^="glass"]) .popover:has([data-fullscreen]) {
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  transform: none;
+/* sizeKey: the native corner handle; the min size keeps header and footer usable. */
+.popover[data-resizable] {
+  resize: both;
+  overflow: hidden;
+  min-width: 280px;
+  min-height: 160px;
+}
+
+/* Once dragged or restored to a size, the body and its content fill it. */
+.popover[data-sized] .body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.popover[data-sized] .body > * {
+  flex: 1 1 auto;
+  height: auto;
+  max-height: none;
 }
 
 /* One bar: back, title and count, the content's actions (slot), ×.

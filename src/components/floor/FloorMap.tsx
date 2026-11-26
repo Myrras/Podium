@@ -11,6 +11,7 @@ import { FAR_Z, GRID, zoomAt } from "../../lib/floor/geometry";
 import { useFloorData, useRooms } from "../../lib/floor/rooms";
 import type { Camera } from "../../lib/floor/types";
 import { useFloorStore } from "../../state/floorStore";
+import { useLayoutStore } from "../../state/layoutStore";
 import { Room } from "./Room";
 import styles from "./FloorMap.module.css";
 
@@ -141,7 +142,8 @@ export function FloorMap() {
 
   const onKeyDown = (e: KeyboardEvent) => {
     const { popover, terminalId } = useFloorStore.getState();
-    if (e.key === "Escape" && !popover && !terminalId) jumpTo("all");
+    const board = useLayoutStore.getState().openBoard;
+    if (e.key === "Escape" && !popover && !terminalId && !board) jumpTo("all");
   };
 
   return (

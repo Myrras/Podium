@@ -16,6 +16,7 @@ export function FloorHeader() {
   const blocked = useFloorStore(
     (s) => s.popover !== null || s.terminalId !== null,
   );
+  const boardOpen = useLayoutStore((s) => s.openBoard !== null);
   const openProjectDialog = useProjectStore((s) => s.openProjectDialog);
 
   const needs = rooms.reduce((n, r) => n + r.needs, 0);
@@ -23,7 +24,7 @@ export function FloorHeader() {
   const working = rooms.reduce((n, r) => n + r.working, 0);
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && !blocked) jumpTo("all");
+    if (e.key === "Escape" && !blocked && !boardOpen) jumpTo("all");
   };
   const addProject = () => void openProjectDialog();
 

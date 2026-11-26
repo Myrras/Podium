@@ -75,14 +75,19 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 
 ## Components
 
-`Floor` → `FloorHeader`, then `GitBoard` (when `openBoard` is set) or `FloorMap`
-+ `FloorWaypoints` + `FrontDesk`, then `FloorStatusBar`, `FloorPopovers`,
+`Floor` → `FloorHeader`, `FloorMap` + `FloorWaypoints` + `FrontDesk`, then
+`FloorStatusBar`, `FloorPopovers`,
 `FrontDeskPopovers` (anchored on `data-desk="<chat|list>"`: `ResponsesSection`,
 or `AssistantChat` with its controls in the popover header; after its first open
 the chat popover stays mounted, hidden and inert via `Popover`'s `open={false}`,
 so reopening keeps log, scroll and state without refetching), `FloorTerminalModal`,
-`FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
+`FloorBoardModal`, `FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
 
+- The Git board (`openBoard`) is `FloorBoardModal`: a portal overlay like the
+  terminal modal, with `BoardRefresh` and `GitBoard` in a card sized by
+  `useSavedSize("board")`. The map stays mounted behind it. Esc closes it unless
+  the search field handled it (`preventDefault`); `FloorMap` and `FloorHeader`
+  ignore Esc while it is open.
 - The camera never goes through React state: `FloorMap` subscribes to the store
   and writes the world layer's `transform`, `--z` and `data-far` (z < 0.4;
   labels hide with `:global([data-far])`). Only transform and opacity animate;
@@ -115,7 +120,14 @@ so reopening keeps log, scroll and state without refetching), `FloorTerminalModa
 - A section hidden in `ProjectInfo.sections` hides its fixture (Commands follows
   `terminals`). Services show only when the project has any.
 - To-do and scratchpad popovers fill the `Popover` header and footer through
-  `PopoverSlot`. The Commands popover (`CommandsFixturePopover`) lists commands
+  `PopoverSlot`. They pass `sizeKey` (`todos`, `scratchpads`; the terminal
+  modal's card uses `terminal`; `Modal` takes `sizeKey` too: `new-agent`,
+  `scratchpad-agent`): CSS `resize: both`, and `useSavedSize`
+  (`lib/useSavedSize.ts`) restores the size saved in localStorage
+  (`podium.size.<key>`) when it fits the window and saves each dragged size.
+  An inline width or height marks a user size, so `Popover` sets its default
+  width through `--popover-w`. No fullscreen in a popover: the scratchpad pane
+  offers it only outside one. The Commands popover (`CommandsFixturePopover`) lists commands
   with a search field (arrow keys, Enter) and has Edit commands in the header.
 - Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
   modal shows the state and Close terminal (after a confirmation); the nameplate's terminal icon calls

@@ -5,12 +5,10 @@
 
 import { useEffect, useLayoutEffect, useState } from "react";
 
-import type { ProjectId } from "../../ipc/types";
 import { useFloorStore } from "../../state/floorStore";
-import { useIssueStore } from "../../state/issueStore";
 import { useLayoutStore } from "../../state/layoutStore";
-import { GitBoard } from "../GitBoard";
 import { FloorAgentModals } from "./FloorAgentModals";
+import { FloorBoardModal } from "./FloorBoardModal";
 import { FloorHeader } from "./FloorHeader";
 import { FloorMap } from "./FloorMap";
 import { FloorPopovers } from "./FloorPopovers";
@@ -21,17 +19,7 @@ import { FrontDesk } from "./FrontDesk";
 import { FrontDeskPopovers } from "./FrontDeskPopovers";
 import styles from "./Floor.module.css";
 
-/** Keeps the open board fresh, as GitButton does in Project mode (no GitButton is mounted here). */
-function BoardRefresh({ projectId }: { projectId: ProjectId }) {
-  const startAutoRefresh = useIssueStore((s) => s.startAutoRefresh);
-  const loadOverview = useIssueStore((s) => s.loadOverview);
-  useEffect(() => startAutoRefresh(projectId), [projectId, startAutoRefresh]);
-  useEffect(() => void loadOverview(), [loadOverview]);
-  return null;
-}
-
 export function Floor() {
-  const openBoard = useLayoutStore((s) => s.openBoard);
   const toggleDesk = useFloorStore((s) => s.toggleDesk);
 
   useEffect(() => () => useFloorStore.getState().reset(), []);
@@ -49,25 +37,19 @@ export function Floor() {
   return (
     <>
       <FloorHeader />
-      {openBoard ? (
-        <>
-          <BoardRefresh projectId={openBoard.projectId} />
-          <GitBoard key={openBoard.projectId} projectId={openBoard.projectId} />
-        </>
-      ) : (
-        <div className={styles.mapArea}>
-          <FloorMap />
-          <FloorWaypoints />
-          <FrontDesk
-            onOpenChat={() => toggleDesk("chat")}
-            onOpenList={() => toggleDesk("list")}
-          />
-        </div>
-      )}
+      <div className={styles.mapArea}>
+        <FloorMap />
+        <FloorWaypoints />
+        <FrontDesk
+          onOpenChat={() => toggleDesk("chat")}
+          onOpenList={() => toggleDesk("list")}
+        />
+      </div>
       <FloorStatusBar />
       <FloorPopovers />
       <FrontDeskPopovers />
       <FloorTerminalModal />
+      <FloorBoardModal />
       <FloorAgentModals />
     </>
   );

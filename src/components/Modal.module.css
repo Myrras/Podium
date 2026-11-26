@@ -24,12 +24,27 @@
   box-shadow:
     inset 0 1px 0 var(--glass-hi),
     var(--shadow-lg);
+  width: var(--modal-w);
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
   outline: none;
   transform-origin: center;
+}
+
+/* sizeKey: the native corner handle; the min size keeps header and footer usable. */
+.card[data-resizable] {
+  resize: both;
+  overflow: hidden;
+  min-width: min(320px, calc(100vw - 32px));
+  min-height: 200px;
+}
+
+/* Once dragged or restored to a size, the body fills it. */
+.card[data-sized] .body {
+  flex: 1;
+  min-height: 0;
 }
 
 .card[data-state="open"] {

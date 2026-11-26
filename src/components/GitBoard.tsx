@@ -213,6 +213,7 @@ export function GitBoard({ projectId }: { projectId: ProjectId }) {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
+              e.preventDefault(); // keeps a surrounding modal open
               setQuery("");
               e.currentTarget.blur();
             }

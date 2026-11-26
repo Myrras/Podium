@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { ProcessInfo } from "../../ipc/types";
@@ -16,6 +16,7 @@ import {
   useAgentActivityStore,
 } from "../../state/agentActivityStore";
 import { useAssistantStore } from "../../state/assistantStore";
+import { useSavedSize } from "../../lib/useSavedSize";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
@@ -36,30 +37,8 @@ import {
 } from "../icons";
 import { blurWithin } from "../Popover";
 import { TerminalPane } from "../TerminalPane";
+import { trapTab } from "./trapTab";
 import styles from "./FloorTerminalModal.module.css";
-
-const FOCUSABLE =
-  'button:not([disabled]), input, textarea, [href], [tabindex]:not([tabindex="-1"])';
-
-// Tab stays inside the element it is bound to. A focused terminal never gets
-// here: xterm cancels Tab (and Esc) itself and sends it to the PTY.
-function trapTab(e: KeyboardEvent<HTMLDivElement>) {
-  if (e.key !== "Tab" || e.defaultPrevented) return;
-  const items = Array.from(
-    e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE),
-  );
-  if (items.length === 0) return;
-  const first = items[0];
-  const last = items[items.length - 1];
-  const at = document.activeElement;
-  if (e.shiftKey && (at === first || !e.currentTarget.contains(at))) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && (at === last || !e.currentTarget.contains(at))) {
-    e.preventDefault();
-    first.focus();
-  }
-}
 
 export function FloorTerminalModal() {
   const terminalId = useFloorStore((s) => s.terminalId);
@@ -77,6 +56,7 @@ export function FloorTerminalModal() {
   const restartProcess = useProcessStore((s) => s.restartProcess);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const overlay = useRef<HTMLDivElement>(null);
+  const sized = useSavedSize("terminal");
   // A question about one process never carries over to the next one shown.
   const [askedFor, setAskedFor] = useState({ terminalId, openSubagentId });
   if (
@@ -119,6 +99,7 @@ export function FloorTerminalModal() {
       }}
     >
       <div
+        ref={sized}
         className={styles.card}
         role="dialog"
         aria-modal="true"

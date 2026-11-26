@@ -14,11 +14,17 @@
   background: color-mix(in srgb, var(--floor-screen) 40%, transparent);
 }
 
-/* A definite height: TerminalPane's .pane is flex: 1; min-height: 0. */
+/* A definite height: TerminalPane's .pane is flex: 1; min-height: 0.
+   Resizable from its corner (useSavedSize keeps the size); xterm refits on resize. */
 .card {
   composes: glass from global;
   width: min(1100px, 100vw - 64px);
   height: min(720px, 100vh - 96px);
+  min-width: 420px;
+  min-height: 240px;
+  max-width: calc(100vw - 12px);
+  max-height: calc(100vh - 12px);
+  resize: both;
   display: flex;
   flex-direction: column;
   overflow: hidden;
