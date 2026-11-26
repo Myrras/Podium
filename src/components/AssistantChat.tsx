@@ -16,6 +16,7 @@ import {
   contextAttachment,
   useAssistantContext,
 } from "../lib/assistantContext";
+import { useSelectionStore } from "../lib/selection";
 import { textPreview } from "../lib/textPreview";
 import type { ChatMessage, ChatProposal } from "../state/assistantStore";
 import { useAssistantStore } from "../state/assistantStore";
@@ -433,6 +434,18 @@ export function AssistantChat({
     scrollToBottom();
     const toSend = attachments;
     setAttachments([]);
+    // A project from the + button is a one-shot attachment: drop it once sent.
+    const sentProjects = activeContext
+      .filter((c) => c.key.startsWith("project:"))
+      .map((c) => c.key);
+    if (sentProjects.length > 0) {
+      useSelectionStore.setState((s) => ({
+        items: s.items.filter(
+          (i) =>
+            i.kind !== "project" || !sentProjects.includes(`project:${i.id}`),
+        ),
+      }));
+    }
     // Files the user picked come first: with both past the backend's
     // per-message cap, the explicit attachment outranks the ambient context.
     await send(caption, [

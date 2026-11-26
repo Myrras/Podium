@@ -127,4 +127,26 @@ describe("AssistantChat", () => {
     expect(screen.getByLabelText("Message the assistant")).toHaveFocus();
     useSelectionStore.setState({ items: [] });
   });
+
+  it("sends the project context once and drops its chip afterwards", async () => {
+    useProjectStore.setState({
+      projects: [{ id: "p1", name: "Webshop", root: "/fake/webshop" }],
+    } as never);
+    useSelectionStore.setState({
+      text: "",
+      items: [{ kind: "project", projectId: "p1", id: "p1" }],
+    });
+    const send = vi.fn(() => Promise.resolve(true));
+    useAssistantStore.setState({ send });
+    const user = userEvent.setup();
+    renderChat();
+    const input = screen.getByLabelText("Message the assistant");
+    await user.type(input, "one{Enter}");
+    expect(send).toHaveBeenLastCalledWith("one", [
+      expect.objectContaining({ kind: "text", name: "Project: Webshop" }),
+    ]);
+    expect(screen.queryByText("Project: Webshop")).toBeNull();
+    await user.type(input, "two{Enter}");
+    expect(send).toHaveBeenLastCalledWith("two", []);
+  });
 });
