@@ -99,7 +99,8 @@ describe("OverviewRow", () => {
       expect(screen.queryByText(t)).toBeNull();
   });
 
-  it("shows a message's sender and its place, without Reply", () => {
+  it("shows a message's sender and its place, with only Reply and Done", async () => {
+    const user = userEvent.setup();
     renderRow(
       item({
         reason: "message",
@@ -113,7 +114,28 @@ describe("OverviewRow", () => {
     );
     expect(screen.getByText("Alex Example")).toBeInTheDocument();
     expect(screen.getByText("Slack, direct message")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
+    expect(
+      screen.getAllByRole("button").map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Reply", "Done: mark as read"]);
+    await user.click(
+      screen.getByRole("button", { name: "Done: mark as read" }),
+    );
+    expect(dismissResponse).toHaveBeenCalledWith("msg:slack:d1:t1");
+  });
+
+  it("keeps Reply and Done on a parked message", () => {
+    renderRow(
+      item({
+        reason: "message",
+        state: "parked",
+        processId: null,
+        sender: "Alex Example",
+        key: "msg:slack:d1:t1",
+      }),
+    );
+    expect(
+      screen.getAllByRole("button").map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Reply", "Done: mark as read"]);
   });
 
   it("shows a parked item on one line with its own actions", async () => {

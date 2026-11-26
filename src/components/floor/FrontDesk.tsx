@@ -193,32 +193,36 @@ function Figure({ item }: { item: ResponseItem }) {
             </div>
           )}
           <div className={styles.acts}>
+            <button
+              type="button"
+              className={styles.iconBtn}
+              aria-label="Reply"
+              title="Reply"
+              aria-pressed={draft !== null}
+              onClick={() => setDraft(draft === null ? "" : null)}
+            >
+              <ReplyIcon />
+            </button>
             {item.reason !== "message" && (
               <button
                 type="button"
                 className={styles.iconBtn}
-                aria-label="Reply"
-                title="Reply"
-                aria-pressed={draft !== null}
-                onClick={() => setDraft(draft === null ? "" : null)}
+                aria-label="Park until it changes"
+                title="Park until it changes"
+                onClick={() => void parkResponse(item.key)}
               >
-                <ReplyIcon />
+                <ParkIcon />
               </button>
             )}
             <button
               type="button"
               className={styles.iconBtn}
-              aria-label="Park until it changes"
-              title="Park until it changes"
-              onClick={() => void parkResponse(item.key)}
-            >
-              <ParkIcon />
-            </button>
-            <button
-              type="button"
-              className={styles.iconBtn}
-              aria-label="Dismiss"
-              title="Dismiss"
+              aria-label={
+                item.reason === "message" ? "Done: mark as read" : "Dismiss"
+              }
+              title={
+                item.reason === "message" ? "Done: mark as read" : "Dismiss"
+              }
               onClick={() => void dismissResponse(item.key)}
             >
               <CheckIcon />

@@ -98,7 +98,7 @@ Settings > General > Appearance > View.
   rename, colour, worktrees, Git board (a modal over the floor; Esc or a click beside it closes it), Reload podium.yml, Remove project. **Add project...** is
   the last chip in the header.
 - **Front desk.** The assistant sits in the bottom-right corner of the map with
-  a queue of what needs you. Hover an item for Reply, Park and Dismiss; click it
+  a queue of what needs you. Hover an item for Reply, Park and Dismiss (a message: Reply or Done); click it
   to fly to that agent (which takes the item off the queue). The count opens the full list, its bot (or the title
   bar's assistant button) opens the chat above the desk. Esc inside closes it.
   A desk shows a tick when its agent is ready to review, and sleeps while its
@@ -374,7 +374,9 @@ they did.
   ages out; a dismissed or parked one stays away until a newer message
   arrives in that conversation. Nothing goes into the chat, except one line if the check
   keeps failing.
-- **Park and dismiss** — **Dismiss** clears an item and it stays away after a
+- **Park and dismiss** — A Slack or Teams message only has **Reply** and
+  **Done** (marks it as read here, not in Slack or Teams; it stays away until a
+  newer message arrives). **Dismiss** clears an item and it stays away after a
   restart. **Park** ("Park until it changes") moves it to *Parked*: quiet and
   not counted, until the agent or conversation changes, then it is open
   again. Reply inline: the reply goes to the assistant as your message and
