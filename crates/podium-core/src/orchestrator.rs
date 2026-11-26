@@ -3926,7 +3926,7 @@ impl Orchestrator {
 
     /// Stop every running process (SIGTERM its group now, SIGKILL after the
     /// grace period) and cancel all pending supervised restarts. With
-    /// `remember_sessions` on, running agents' session ids are captured first
+    /// `remember_sessions` on, agents' session ids are captured first
     /// (see [`Self::capture_agent_sessions`]) so the next open can resume them.
     pub async fn shutdown(&self) {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
@@ -3963,9 +3963,10 @@ impl Orchestrator {
         }
     }
 
-    /// Remember each running agent's current CLI session ([`AgentSession`]:
+    /// Remember each agent's current CLI session ([`AgentSession`]:
     /// the id it was launched or last restarted on) for the next open of its
-    /// project, with the to-dos/scratchpads it owns and the args it was
+    /// project, whatever its status (running, stopped, exited or crashed, as
+    /// long as it is still in the list), with the to-dos/scratchpads it owns and the args it was
     /// started with. An agent without a Podium-assigned session — an adapter
     /// that cannot resume (Auggie), or one whose own args pick the session
     /// (`--resume`, `--continue`, …) — is not remembered.
@@ -3996,9 +3997,6 @@ impl Orchestrator {
                     let ProcessKind::Agent { adapter } = &p.spec.kind else {
                         return None;
                     };
-                    if !matches!(p.status, ProcessStatus::Running { .. }) {
-                        return None;
-                    }
                     let session = p.session.as_ref()?;
                     Some((
                         p.seq,
@@ -6729,6 +6727,43 @@ mod tests {
         let listed = restarted.session_memory.list(&root);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].session_id, session);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "POSIX shell in MemoryAdapter")]
+    async fn a_stopped_agent_is_remembered_and_restored_too() {
+        let (data, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = dunce::canonicalize(project.path()).unwrap();
+        let adapter = MemoryAdapter::new(false);
+        let orch = memory_orch(data.path(), adapter.clone());
+        orch.set_agent_remember_sessions(true).unwrap();
+        let id = orch.open_project(root.clone()).await.unwrap();
+        let agent = spawn_memory_agent(&orch, id, "idle-agent", Vec::new(), None).await;
+        orch.stop_process(agent).await.unwrap();
+        while !orch
+            .list_processes(Some(id))
+            .iter()
+            .any(|p| p.id == agent && matches!(p.status, ProcessStatus::Exited { .. }))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        orch.shutdown().await;
+        let listed = orch.session_memory.list(&root);
+        assert_eq!(listed.len(), 1, "an agent that is not running is kept");
+        assert_eq!(listed[0].name, "idle-agent");
+
+        adapter.store(&listed[0].session_id);
+        let restarted = memory_orch(data.path(), adapter);
+        let id = restarted.open_project(root).await.unwrap();
+        let procs = restarted.list_processes(Some(id));
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].name, "idle-agent");
+        let session = listed[0].session_id.clone();
+        wait_for_launch(&restarted, procs[0].id, |flag, s| {
+            flag == "--resume" && s == session
+        })
+        .await;
+        restarted.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

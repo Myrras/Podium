@@ -79,7 +79,8 @@ Session memory (`agent/session_memory.rs`, setting `remember_sessions` in
 ### Capture at shutdown
 
 `Orchestrator::shutdown()` is the only place a session is captured. Each
-still-running agent with an `AgentSession` is remembered under that session's
+agent in the list with an `AgentSession` is remembered, whatever its status
+(running, stopped, exited or crashed), under that session's
 **current id** — the Podium-assigned `--session-id`, or the one its last
 restart moved it to. An entry holds:
 
