@@ -117,8 +117,8 @@ Each entry is respawned through the restart path. `spawn_agent_inner` with
 `AgentSpawn.resume_session_id` sets the new process's `AgentSession.id` to the
 remembered id and hands `restart_launch(…, stored = true)` — the `--resume`
 line, no prompt — to `do_start`. A resume that crashes within
-`RESUME_FAILURE_WINDOW` gets `resume_failed` and its next start is fresh,
-exactly as for a restart.
+`RESUME_FAILURE_WINDOW` (5 s; `SupervisorConfig::resume_failure_window`)
+gets `resume_failed` and its next start is fresh, exactly as for a restart.
 
 An entry is skipped before that when:
 

@@ -69,11 +69,6 @@ const SUBAGENT_MANAGED: &str = "this is one of the assistant's sub-agents, which
 const TRUST_POLL: Duration = Duration::from_millis(200);
 const TRUST_TAIL_BYTES: usize = 8 * 1024;
 
-/// A resumed agent that crashes within this long after starting is taken to
-/// have failed to resume (the CLI refusing the session), so its next start is
-/// fresh instead of the same `--resume` again.
-const RESUME_FAILURE_WINDOW: Duration = Duration::from_secs(5);
-
 /// Read-only snapshot of an open project, for listing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,8 +200,9 @@ struct AgentSession {
     id: String,
     /// The current run resumed `id` (rather than starting it fresh).
     resumed: bool,
-    /// Resuming `id` crashed right away (see [`RESUME_FAILURE_WINDOW`]), so
-    /// it is not tried again: the next start is fresh.
+    /// Resuming `id` crashed right away (see
+    /// [`SupervisorConfig::resume_failure_window`]), so it is not tried
+    /// again: the next start is fresh.
     resume_failed: bool,
 }
 
@@ -5491,15 +5487,21 @@ fn apply_live_session(inner: &mut Inner, probe: &LiveProbe, live: String) {
     }
 }
 
-/// Whether an agent run that just exited was a resume that failed: it
-/// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
 /// The Responses key of Podium's own item about an agent.
 fn agent_response_key(id: ProcessId) -> String {
     format!("agent:{id}")
 }
 
-fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
-    session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
+/// Whether an agent run that just exited was a resume that failed: it
+/// crashed within `window` ([`SupervisorConfig::resume_failure_window`]) of
+/// starting.
+fn resume_failed(
+    session: &AgentSession,
+    crashed: bool,
+    ran_for: Option<Duration>,
+    window: Duration,
+) -> bool {
+    session.resumed && crashed && ran_for.is_some_and(|d| d < window)
 }
 
 /// Tell the UI the to-dos/scratchpads an agent owns changed state: their
@@ -5561,7 +5563,7 @@ fn make_exit_handler(
             p.status = status.clone();
             let ran_for = p.started_at.take().map(|s| s.elapsed());
             if let Some(session) = p.session.as_mut() {
-                if resume_failed(session, crashed, ran_for) {
+                if resume_failed(session, crashed, ran_for, supervisor.resume_failure_window) {
                     session.resume_failed = true;
                 }
             }
@@ -5721,7 +5723,10 @@ mod tests {
             resume_failed: false,
         };
         let quick = Some(Duration::from_secs(1));
-        let long = Some(RESUME_FAILURE_WINDOW + Duration::from_secs(1));
+        let window = crate::process::supervisor::RESUME_FAILURE_WINDOW;
+        let long = Some(window + Duration::from_secs(1));
+        let resume_failed =
+            |s: &AgentSession, crashed, ran_for| resume_failed(s, crashed, ran_for, window);
         assert!(resume_failed(&session(true), true, quick));
         assert!(
             !resume_failed(&session(true), false, quick),
@@ -6749,7 +6754,15 @@ mod tests {
 
     /// An orchestrator on `adapter`, persisting under `data`.
     fn memory_orch(data: &Path, adapter: Arc<MemoryAdapter>) -> Orchestrator {
-        let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter]));
+        // A failed resume is timed from the launch, so the agent's login
+        // shell starting up counts: on a loaded runner that alone can take
+        // the default 5 s, and the run would no longer count as failed.
+        let supervisor = SupervisorConfig {
+            resume_failure_window: Duration::from_secs(120),
+            ..SupervisorConfig::default()
+        };
+        let orch = Orchestrator::with_supervisor_config(supervisor)
+            .with_adapters(AdapterRegistry::new(vec![adapter]));
         orch.set_agent_settings_path(data.join("agents.json"));
         orch.set_session_memory_path(data.join("session_memory.json"));
         orch.set_todos_path(data.join("todos.json"));
@@ -6943,20 +6956,13 @@ mod tests {
         let id = orch.open_project(root.clone()).await.unwrap();
         let agent = orch.list_processes(Some(id))[0].id;
         // The resume exits at once, so the restart path's failure window
-        // marks it, exactly as for a restarted agent.
-        let resume_failed = || {
-            orch.inner.lock().unwrap().processes[&agent]
-                .session
-                .as_ref()
-                .is_some_and(|s| s.resume_failed)
-        };
-        for _ in 0..200 {
-            if resume_failed() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        assert!(resume_failed());
+        // marks it, exactly as for a restarted agent — by the time the exit
+        // handler has set `Exited`, under the same lock.
+        wait_for_exit(&orch, agent).await;
+        assert!(orch.inner.lock().unwrap().processes[&agent]
+            .session
+            .as_ref()
+            .is_some_and(|s| s.resume_failed));
         orch.start_process(agent).await.unwrap();
         wait_for_launch(&orch, agent, |flag, s| {
             flag == "--session-id" && s != SESS_1

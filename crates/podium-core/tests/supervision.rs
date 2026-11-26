@@ -24,6 +24,7 @@ fn fast_supervisor() -> SupervisorConfig {
         breaker_window: Duration::from_secs(60),
         breaker_max_restarts: 3,
         backoff_reset_after: Duration::from_secs(60),
+        ..SupervisorConfig::default()
     }
 }
 

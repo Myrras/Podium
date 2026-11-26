@@ -9,9 +9,14 @@ use std::time::{Duration, Instant};
 
 use tokio::task::AbortHandle;
 
+/// A resumed agent that crashes within this long after starting is taken to
+/// have failed to resume (the CLI refusing the session), so its next start is
+/// fresh instead of the same `--resume` again.
+pub const RESUME_FAILURE_WINDOW: Duration = Duration::from_secs(5);
+
 /// Timing knobs for the supervisor. Defaults: 500ms → 30s exponential
 /// backoff, breaker at 5 restarts per rolling 60s window, backoff reset once
-/// a process stays running for 60s.
+/// a process stays running for 60s, [`RESUME_FAILURE_WINDOW`].
 #[derive(Debug, Clone, Copy)]
 pub struct SupervisorConfig {
     /// First restart delay; doubles on each attempt.
@@ -24,6 +29,8 @@ pub struct SupervisorConfig {
     pub breaker_max_restarts: usize,
     /// A process running at least this long resets the backoff to the base.
     pub backoff_reset_after: Duration,
+    /// See [`RESUME_FAILURE_WINDOW`].
+    pub resume_failure_window: Duration,
 }
 
 impl Default for SupervisorConfig {
@@ -34,6 +41,7 @@ impl Default for SupervisorConfig {
             breaker_window: Duration::from_secs(60),
             breaker_max_restarts: 5,
             backoff_reset_after: Duration::from_secs(60),
+            resume_failure_window: RESUME_FAILURE_WINDOW,
         }
     }
 }
@@ -132,6 +140,7 @@ mod tests {
             breaker_window: Duration::from_secs(60),
             breaker_max_restarts: 5,
             backoff_reset_after: Duration::from_secs(60),
+            resume_failure_window: RESUME_FAILURE_WINDOW,
         }
     }
 
