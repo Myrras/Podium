@@ -105,7 +105,13 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 - A section hidden in `ProjectInfo.sections` hides its fixture (Commands follows
   `terminals`). Services show only when the project has any.
 - To-do and scratchpad popovers fill the `Popover` header and footer through
-  `PopoverSlot`. The Commands popover (`CommandsFixturePopover`) lists commands
+  `PopoverSlot`. They pass `sizeKey` (`todos`, `scratchpads`; the terminal
+  modal's card uses `terminal`): CSS `resize: both`, and `useSavedSize`
+  (`lib/useSavedSize.ts`) restores the size saved in localStorage
+  (`podium.size.<key>`) when it fits the window and saves each dragged size.
+  An inline width or height marks a user size, so `Popover` sets its default
+  width through `--popover-w`. No fullscreen in a popover: the scratchpad pane
+  offers it only outside one. The Commands popover (`CommandsFixturePopover`) lists commands
   with a search field (arrow keys, Enter) and has Edit commands in the header.
 - Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
   modal shows the state and Close terminal (after a confirmation); the nameplate's terminal icon calls

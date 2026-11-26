@@ -127,6 +127,7 @@ const names = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.removeItem("podium.size.terminal");
   useFloorStore.setState(useFloorStore.getInitialState(), true);
   useLayoutStore.setState({ openSubagent: null });
   useAssistantStore.setState({ subagents: [] });
@@ -140,6 +141,22 @@ describe("FloorTerminalModal", () => {
   it("renders nothing while no terminal is open", () => {
     render(<FloorTerminalModal />);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens at its saved size, or the default when that no longer fits", () => {
+    localStorage.setItem("podium.size.terminal", '{"w":700,"h":500}');
+    const { unmount } = render(<FloorTerminalModal />);
+    open("a1");
+    expect(screen.getByRole("dialog").style.width).toBe("700px");
+    expect(screen.getByRole("dialog").style.height).toBe("500px");
+    unmount();
+
+    localStorage.setItem(
+      "podium.size.terminal",
+      JSON.stringify({ w: 700, h: window.innerHeight }),
+    );
+    render(<FloorTerminalModal />);
+    expect(screen.getByRole("dialog").style.width).toBe("");
   });
 
   it("shows the process's pane and closes with × or a click beside it", () => {

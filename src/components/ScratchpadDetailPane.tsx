@@ -66,7 +66,7 @@ export function ScratchpadDetailPane({
   onClose?: () => void;
   /** Hides the table of contents and gives the pane a fixed height. */
   compact?: boolean;
-  /** In a Floor popover: actions placed before Full screen and Archive in its footer. */
+  /** In a Floor popover: actions placed before Archive in its footer. */
   footerActions?: ReactNode;
 }) {
   const scratchpad = useScratchpadStore((s) =>
@@ -93,8 +93,8 @@ export function ScratchpadDetailPane({
   const [editor, setEditor] = useState<Editor | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   // In a Floor popover the title moves into its header and the actions into
-  // its footer; fullscreen covers the popover, so it keeps the full header.
-  const docked = useInPopover() && !fullscreen;
+  // its footer; no fullscreen there, the popover resizes instead.
+  const docked = useInPopover();
   // "On this page" outline of the current document's H2/H3 headings — keyed
   // off the live `editor` instance, so it starts empty until the editor is
   // ready and resets automatically on every remount (App keys this pane by
@@ -369,7 +369,7 @@ export function ScratchpadDetailPane({
       data-compact={compact || undefined}
       data-docked={docked || undefined}
       onKeyDown={(e) => {
-        // Esc leaves full screen first; it does not close a popover around it.
+        // Esc leaves full screen first.
         if (fullscreen && e.key === "Escape" && !e.defaultPrevented) {
           e.preventDefault();
           e.stopPropagation();
@@ -382,9 +382,6 @@ export function ScratchpadDetailPane({
           <PopoverSlot name="header">{titleRow}</PopoverSlot>
           <PopoverSlot name="footer">
             {footerActions}
-            <button type="button" onClick={() => setFullscreen(true)}>
-              Full screen
-            </button>
             <button
               type="button"
               onClick={() =>

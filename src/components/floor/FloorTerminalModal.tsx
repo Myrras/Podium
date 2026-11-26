@@ -16,6 +16,7 @@ import {
   useAgentActivityStore,
 } from "../../state/agentActivityStore";
 import { useAssistantStore } from "../../state/assistantStore";
+import { useSavedSize } from "../../lib/useSavedSize";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
@@ -77,6 +78,7 @@ export function FloorTerminalModal() {
   const restartProcess = useProcessStore((s) => s.restartProcess);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const overlay = useRef<HTMLDivElement>(null);
+  const sized = useSavedSize("terminal");
   // A question about one process never carries over to the next one shown.
   const [askedFor, setAskedFor] = useState({ terminalId, openSubagentId });
   if (
@@ -119,6 +121,7 @@ export function FloorTerminalModal() {
       }}
     >
       <div
+        ref={sized}
         className={styles.card}
         role="dialog"
         aria-modal="true"

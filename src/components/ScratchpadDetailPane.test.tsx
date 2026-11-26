@@ -458,7 +458,20 @@ describe("ScratchpadDetailPane", () => {
     expect(updateTitle).toHaveBeenCalledTimes(1);
   });
 
-  it("Esc leaves full screen; out of it, Esc closes the popover", () => {
+  it("Esc leaves full screen", () => {
+    seed();
+    render(
+      <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />,
+    );
+    fireEvent.click(screen.getByLabelText("Fullscreen"));
+    expect(document.querySelector("[data-fullscreen]")).not.toBeNull();
+
+    const content = screen.getByLabelText("Scratchpad content");
+    expect(fireEvent.keyDown(content, { key: "Escape" })).toBe(false);
+    expect(document.querySelector("[data-fullscreen]")).toBeNull();
+  });
+
+  it("in a popover: no full screen, Esc closes the popover", () => {
     seed();
     const anchor = document.createElement("button");
     document.body.append(anchor);
@@ -468,14 +481,7 @@ describe("ScratchpadDetailPane", () => {
         <ScratchpadDetailPane projectId={PROJECT} scratchpadId={SCRATCHPAD} />
       </Popover>,
     );
-    const pane = () => document.querySelector("[data-fullscreen]");
-    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
-    expect(pane()).not.toBeNull();
-
-    const content = screen.getByLabelText("Scratchpad content");
-    expect(fireEvent.keyDown(content, { key: "Escape" })).toBe(false);
-    expect(pane()).toBeNull();
-    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /full ?screen/i })).toBeNull();
 
     fireEvent.keyDown(screen.getByLabelText("Scratchpad content"), {
       key: "Escape",

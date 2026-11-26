@@ -15,7 +15,7 @@
 }
 
 /* Inside the Floor popover: no parent gives it a height. */
-.pane[data-compact]:not([data-fullscreen]) {
+.pane[data-compact] {
   height: 420px;
 }
 
