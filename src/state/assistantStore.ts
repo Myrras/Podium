@@ -345,6 +345,9 @@ interface AssistantState {
    *  when the popover closes; cleared only on send. */
   composer: string;
   setComposer: (text: string) => void;
+  /** Bumped to ask the composer for focus (the floor's + button). */
+  focusRequest: number;
+  requestFocus: () => void;
 }
 
 let seq = 0;
@@ -387,6 +390,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   setDraft: (draft) => set({ draft }),
   composer: "",
   setComposer: (composer) => set({ composer }),
+  focusRequest: 0,
+  requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
   loadSubagents: async () => {
     const gen = subagentsSnapshotGen;
     try {

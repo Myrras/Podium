@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +7,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(() => Promise.resolve(null)),
 }));
 
+import { useSelectionStore } from "../lib/selection";
+import { useProjectStore } from "../state/projectStore";
 import { useAssistantStore } from "../state/assistantStore";
 import { AssistantChat } from "./AssistantChat";
 import { Popover } from "./Popover";
@@ -103,5 +105,26 @@ describe("AssistantChat", () => {
     expect(screen.getByText("first")).toBeInTheDocument();
     expect(editPending).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("shows a dismissed project chip again and focuses on a focus request", async () => {
+    useProjectStore.setState({
+      projects: [{ id: "p1", name: "Webshop", root: "/fake/webshop" }],
+    } as never);
+    useSelectionStore.setState({
+      text: "",
+      items: [{ kind: "project", projectId: "p1", id: "p1" }],
+    });
+    const user = userEvent.setup();
+    renderChat();
+    await user.click(
+      screen.getByLabelText("Remove Project: Webshop from context"),
+    );
+    expect(screen.queryByText("Project: Webshop")).toBeNull();
+
+    act(() => useAssistantStore.getState().requestFocus());
+    expect(screen.getByText("Project: Webshop")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message the assistant")).toHaveFocus();
+    useSelectionStore.setState({ items: [] });
   });
 });

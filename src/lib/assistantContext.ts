@@ -14,6 +14,7 @@
  */
 
 import type { Attachment } from "../ipc/types";
+import { useProjectStore } from "../state/projectStore";
 import { useProcessStore } from "../state/processStore";
 import { useScratchpadStore } from "../state/scratchpadStore";
 import { useTodoStore } from "../state/todoStore";
@@ -42,6 +43,7 @@ export function useAssistantContext(): ContextItem[] {
   const scratchpadsByProject = useScratchpadStore(
     (s) => s.scratchpadsByProject,
   );
+  const projects = useProjectStore((s) => s.projects);
   const selectedText = useSelectionStore((s) => s.text);
 
   const items: ContextItem[] = [];
@@ -54,6 +56,7 @@ export function useAssistantContext(): ContextItem[] {
       processes,
       todosByProject,
       scratchpadsByProject,
+      projects,
     });
     if (item) items.push(item);
   }
@@ -72,6 +75,7 @@ export function useAssistantContext(): ContextItem[] {
 function describe(
   sel: SelectedItem,
   stores: {
+    projects: ReturnType<typeof useProjectStore.getState>["projects"];
     processes: ReturnType<typeof useProcessStore.getState>["processes"];
     todosByProject: ReturnType<typeof useTodoStore.getState>["todosByProject"];
     scratchpadsByProject: ReturnType<
@@ -100,6 +104,16 @@ function describe(
       key: `scratchpad:${sel.id}`,
       label: `Scratchpad: ${pad.title}`,
       text: `The user has this scratchpad selected in Podium: "${pad.title}" — scratchpad id ${sel.id}, project id ${sel.projectId}.`,
+    };
+  }
+
+  if (sel.kind === "project") {
+    const project = stores.projects.find((p) => p.id === sel.id);
+    if (!project) return null;
+    return {
+      key: `project:${sel.id}`,
+      label: `Project: ${project.name}`,
+      text: `The user has this project selected in Podium: "${project.name}" — project id ${sel.id}, root ${project.root}.`,
     };
   }
 

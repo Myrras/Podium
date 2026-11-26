@@ -353,6 +353,14 @@ export function AssistantChat({
     setFocusTick((n) => n + 1);
     clearIncoming(null);
   }, [incoming, clearIncoming]);
+  // The + button asks for focus after adding its project as context: show a
+  // dismissed project chip again and focus the composer.
+  const focusRequest = useAssistantStore((s) => s.focusRequest);
+  useEffect(() => {
+    if (focusRequest === 0) return;
+    setDismissed((d) => d.filter((k) => !k.startsWith("project:")));
+    setFocusTick((n) => n + 1);
+  }, [focusRequest]);
   useEffect(() => {
     const el = inputRef.current;
     if (focusTick === 0 || !el) return;

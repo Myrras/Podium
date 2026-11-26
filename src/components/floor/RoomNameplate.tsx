@@ -9,7 +9,7 @@ import type { Rect, RoomModel } from "../../lib/floor/types";
 import { newTerminal } from "../../lib/terminals";
 import { useFloorStore } from "../../state/floorStore";
 import { useLayoutStore } from "../../state/layoutStore";
-import { TerminalIcon } from "../icons";
+import { BoardIcon, TerminalIcon } from "../icons";
 import { ProjectBadge } from "../ProjectBadge";
 import styles from "./RoomNameplate.module.css";
 
@@ -144,6 +144,19 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
       >
         +
       </button>
+      {project.sections.issues && (
+        <button
+          type="button"
+          className={styles.btn}
+          aria-label={`Git board of ${project.name}`}
+          title="Git board"
+          onClick={() =>
+            useLayoutStore.getState().openBoardInWorkArea(project.id)
+          }
+        >
+          <BoardIcon />
+        </button>
+      )}
       {project.sections.terminals && (
         <button
           type="button"

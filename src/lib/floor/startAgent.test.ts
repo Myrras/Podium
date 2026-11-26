@@ -6,6 +6,7 @@ import type { ProjectInfo } from "../../ipc/types";
 import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
 import { useProjectStore } from "../../state/projectStore";
+import { useSelectionStore } from "../selection";
 import { startAgentIn } from "./startAgent";
 
 const project = { id: "proj-1", name: "Webshop" } as ProjectInfo;
@@ -16,13 +17,17 @@ describe("startAgentIn", () => {
     useFloorStore.getState().reset();
     useAssistantStore.setState({ enabled: true, draft: null });
     useProjectStore.setState({ activeProjectId: null });
+    useSelectionStore.setState({ text: "", items: [] });
   });
 
-  it("drafts a prompt in the desk's chat and opens it when the assistant is on", () => {
+  it("adds the project as context once, with no draft, and opens the desk's chat when the assistant is on", () => {
     startAgentIn(project, plain);
-    expect(useAssistantStore.getState().draft).toBe(
-      "Start an agent in Webshop on ",
-    );
+    startAgentIn(project, plain);
+    expect(useSelectionStore.getState().items).toEqual([
+      { kind: "project", projectId: "proj-1", id: "proj-1" },
+    ]);
+    expect(useAssistantStore.getState().draft).toBeNull();
+    expect(useAssistantStore.getState().focusRequest).toBe(2);
     expect(useFloorStore.getState().deskPopover).toBe("chat");
     expect(useFloorStore.getState().agentModal).toBeNull();
     expect(useProjectStore.getState().activeProjectId).toBe("proj-1");
@@ -40,6 +45,7 @@ describe("startAgentIn", () => {
     });
     expect(useAssistantStore.getState().draft).toBeNull();
     expect(useFloorStore.getState().deskPopover).toBeNull();
+    expect(useSelectionStore.getState().items).toEqual([]);
     expect(useProjectStore.getState().activeProjectId).toBe("proj-1");
   });
 });

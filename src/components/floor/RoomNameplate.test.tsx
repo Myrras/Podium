@@ -110,6 +110,26 @@ describe("RoomNameplate", () => {
     expect(screen.queryByRole("button", { name: /New terminal/ })).toBeNull();
   });
 
+  it("has a Git board button that opens the board without jumping", () => {
+    const openBoard = vi.fn();
+    useLayoutStore.setState({ openBoardInWorkArea: openBoard });
+    const room = {
+      ...a,
+      project: { ...a.project, sections: { issues: true } },
+    } as RoomModel;
+    render(<RoomNameplate room={room} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Git board of Proj a" }),
+    );
+    expect(openBoard).toHaveBeenCalledWith("a");
+    expect(jumpTo).not.toHaveBeenCalled();
+  });
+
+  it("hides the Git board button when issues are off", () => {
+    render(<RoomNameplate room={a} />);
+    expect(screen.queryByRole("button", { name: /Git board/ })).toBeNull();
+  });
+
   it("keeps the full name on hover, also when ellipsised", () => {
     render(<RoomNameplate room={a} />);
     expect(screen.getByText("Proj a").title).toBe("Proj a");
