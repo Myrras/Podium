@@ -1,5 +1,6 @@
 /* Pinned to the corner of the map area; outside the world layer, so it neither pans nor zooms. */
 .fd {
+  composes: glass from global;
   position: absolute;
   right: var(--sp-4);
   bottom: var(--sp-4);
@@ -7,7 +8,7 @@
   /* Fixed width: it must not grow with the state text, helpers or queue. */
   width: 208px;
   max-width: calc(100% - 2 * var(--sp-4));
-  background: var(--surface);
+  background: var(--pop-surface);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   box-shadow: var(--shadow-md);
@@ -18,7 +19,7 @@
   left: 0;
   bottom: calc(100% + 4px);
   padding: 2px var(--sp-2);
-  background: var(--surface-2);
+  background: var(--pop-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-size: var(--fs-sm);
@@ -143,11 +144,20 @@
 }
 
 .cardIn {
+  composes: glass from global;
   padding: var(--sp-2) var(--sp-3);
-  background: var(--surface);
+  background: var(--pop-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
+}
+
+/* Glass: the translucent fill left the floor showing through; lay it over the solid canvas, like Popover. */
+:global(:root[data-theme^="glass"]) .fd,
+:global(:root[data-theme^="glass"]) .cardIn,
+:global(:root[data-theme^="glass"]) .plate {
+  background:
+    linear-gradient(var(--pop-surface), var(--pop-surface)), var(--canvas);
 }
 
 .l1 {
