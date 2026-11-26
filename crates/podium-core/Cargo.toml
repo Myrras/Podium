@@ -20,7 +20,7 @@ portable-pty = "0.9"
 # `podium.yml` project configuration.
 serde_yaml_ng = "0.10"
 # Shell-safe quoting for agent launch command lines.
-shlex = "1"
+shlex = "2"
 # Built-in MCP server. rmcp is pinned exactly (API churn); all rmcp usage is
 # isolated to `src/mcp/`.
 rmcp = { version = "=1.8.0", features = ["server", "macros", "transport-streamable-http-server"] }
