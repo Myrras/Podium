@@ -291,6 +291,8 @@ interface AssistantState {
   /** Bring a parked item back. */
   unparkResponse: (key: string) => Promise<void>;
   dismissResponse: (key: string) => Promise<void>;
+  /** Opening an agent handles its open "ready to review" item; asking and crashed stay. */
+  handleAgentOpened: (processId: ProcessId) => void;
   /** Reply to a Responses item; returns whether it was accepted. */
   replyResponse: (id: string, text: string) => Promise<boolean>;
   /** Replay the persisted transcript into the log (once, on mount). */
@@ -446,6 +448,17 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   parkResponse: (key) => setResponseState(key, "parked", set, get),
   unparkResponse: (key) => setResponseState(key, "open", set, get),
   dismissResponse: (key) => setResponseState(key, "dismissed", set, get),
+  handleAgentOpened: (processId) => {
+    for (const r of get().responses) {
+      if (
+        r.processId === processId &&
+        r.reason === "review" &&
+        r.state === "open" &&
+        r.key.startsWith("agent:")
+      )
+        void get().dismissResponse(r.key);
+    }
+  },
   replyResponse: async (id, text) => {
     const trimmed = text.trim();
     if (!trimmed) return false;

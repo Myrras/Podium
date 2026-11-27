@@ -203,6 +203,27 @@ describe("assistantStore", () => {
       });
     });
 
+    it("handleAgentOpened dismisses only the agent's open review item", () => {
+      const review = responseItem({ key: "agent:proc-1" });
+      const asking = responseItem({
+        id: "r-2",
+        key: "agent:proc-2",
+        processId: "proc-2",
+        reason: "question",
+      });
+      useAssistantStore.setState({ responses: [review, asking] });
+      vi.mocked(assistantSetResponseState).mockClear();
+
+      useAssistantStore.getState().handleAgentOpened("proc-2");
+      expect(assistantSetResponseState).not.toHaveBeenCalled();
+
+      useAssistantStore.getState().handleAgentOpened("proc-1");
+      expect(assistantSetResponseState).toHaveBeenCalledWith(
+        "agent:proc-1",
+        "dismissed",
+      );
+    });
+
     it("parks and brings back an item by key", async () => {
       useAssistantStore.setState({ responses: [responseItem()] });
 

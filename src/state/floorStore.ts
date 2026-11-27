@@ -10,6 +10,7 @@ import type {
   ScratchpadAgentModalRequest,
   Size,
 } from "../lib/floor/types";
+import { useAssistantStore } from "./assistantStore";
 
 /** The front desk's popovers: the chat (bot) and the overview list (count). */
 export type DeskPopover = "chat" | "list";
@@ -99,8 +100,10 @@ export const useFloorStore = create<FloorState>((set) => ({
         ? { deskPopover: null }
         : { deskPopover: desk, popover: null },
     ),
-  openTerminal: (terminalId) =>
-    set({ terminalId, popover: null, deskPopover: null }),
+  openTerminal: (terminalId) => {
+    useAssistantStore.getState().handleAgentOpened(terminalId);
+    set({ terminalId, popover: null, deskPopover: null });
+  },
   closeTerminal: () => set({ terminalId: null }),
   setHoverDesk: (hoverDesk) => set({ hoverDesk }),
   setAgentModal: (agentModal) => set({ agentModal }),

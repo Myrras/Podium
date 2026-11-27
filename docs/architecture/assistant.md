@@ -434,6 +434,11 @@ dismissed item keeps that `Unchanged`, out of sight. A dismissed agent item
 cannot be taken again (the double-submit guard), and `restore` finds it by id
 and opens it in place.
 
+Opening an agent in the UI clears its open `review` item (the blue tick):
+`assistantStore.handleAgentOpened`, called from `floorStore.openTerminal` and
+`processStore.setActiveProcess`, so every path (overview, front desk, desk,
+sidebar) is covered. `question` and `crashed` items stay.
+
 ### Labels and the panel
 
 The label is the non-empty parts of agent · project · to-do · source, or

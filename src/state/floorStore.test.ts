@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useAssistantStore } from "./assistantStore";
 import { useFloorStore } from "./floorStore";
 
 const popover = { projectId: "proj-1", kind: "todos", itemId: null } as const;
@@ -7,6 +8,14 @@ const popover = { projectId: "proj-1", kind: "todos", itemId: null } as const;
 beforeEach(() => useFloorStore.getState().reset());
 
 describe("floorStore", () => {
+  it("openTerminal tells the assistant the agent was opened", () => {
+    const spy = vi.fn();
+    useAssistantStore.setState({ handleAgentOpened: spy });
+    useFloorStore.getState().openTerminal("proc-1");
+    expect(spy).toHaveBeenCalledWith("proc-1");
+    expect(useFloorStore.getState().terminalId).toBe("proc-1");
+  });
+
   it("starts at the defaults", () => {
     const s = useFloorStore.getState();
     expect(s.camera).toEqual({ x: 0, y: 0, z: 1 });
