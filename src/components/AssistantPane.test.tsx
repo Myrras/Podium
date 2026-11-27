@@ -2,9 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useProjectStore } from "../state/projectStore";
-import { useSelectionStore } from "../lib/selection";
-import css from "./AssistantPane.module.css?raw";
+import css from "./AssistantChat.module.css?raw";
 
 // The file picker is a Tauri plugin: mocked so the picker button resolves
 // to fixture paths instead of opening a real dialog.
@@ -16,7 +14,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("../ipc/commands", () => ({
   assistantSend: vi.fn(() => Promise.resolve(true)),
   assistantEnabledSet: vi.fn((v: boolean) => Promise.resolve(v)),
-  assistantDayStart: vi.fn(() => Promise.resolve(true)),
   assistantAutonomyGet: vi.fn(() => Promise.resolve("confirm-destructive")),
   assistantAutonomySet: vi.fn((mode: string) => Promise.resolve(mode)),
   assistantResolveProposal: vi.fn(() => Promise.resolve()),
@@ -42,7 +39,6 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
-  assistantDayStart,
   assistantEnabledSet,
   assistantInterrupt,
   assistantMemoryGet,
@@ -59,14 +55,12 @@ import {
 import { useAssistantStore } from "../state/assistantStore";
 import { useLayoutStore } from "../state/layoutStore";
 import { AssistantPane } from "./AssistantPane";
-import styles from "./AssistantPane.module.css";
+import styles from "./AssistantChat.module.css";
 
 describe("AssistantPane", () => {
   beforeEach(() => {
     vi.mocked(assistantSend).mockReset();
     vi.mocked(assistantSend).mockResolvedValue(true);
-    vi.mocked(assistantDayStart).mockReset();
-    vi.mocked(assistantDayStart).mockResolvedValue(true);
     vi.mocked(assistantAutonomyGet).mockReset();
     vi.mocked(assistantAutonomyGet).mockResolvedValue("confirm-destructive");
     vi.mocked(assistantAutonomySet).mockReset();
@@ -97,6 +91,7 @@ describe("AssistantPane", () => {
     vi.mocked(openFileDialog).mockResolvedValue(null);
     useAssistantStore.setState({
       messages: [],
+      composer: "",
       busy: false,
       activity: null,
       autonomy: "confirm-destructive",
@@ -122,27 +117,6 @@ describe("AssistantPane", () => {
     expect(input).toHaveFocus();
     expect(input.selectionStart).toBe(input.value.length);
     expect(useAssistantStore.getState().draft).toBeNull();
-  });
-
-  it("shows a dismissed project chip again and focuses on a focus request", async () => {
-    useProjectStore.setState({
-      projects: [{ id: "p1", name: "Webshop", root: "/fake/webshop" }],
-    } as never);
-    useSelectionStore.setState({
-      text: "",
-      items: [{ kind: "project", projectId: "p1", id: "p1" }],
-    });
-    const user = userEvent.setup();
-    render(<AssistantPane />);
-    await user.click(
-      screen.getByLabelText("Remove Project: Webshop from context"),
-    );
-    expect(screen.queryByText("Project: Webshop")).toBeNull();
-
-    act(() => useAssistantStore.getState().requestFocus());
-    expect(screen.getByText("Project: Webshop")).toBeInTheDocument();
-    expect(screen.getByLabelText("Message the assistant")).toHaveFocus();
-    useSelectionStore.setState({ items: [] });
   });
 
   it("appends a handed-over draft on a new line when the composer has text", async () => {
@@ -250,6 +224,11 @@ describe("AssistantPane", () => {
         processId: "proc-1",
         todoId: null,
         createdAt: new Date().toISOString(),
+        key: "process:proc-1",
+        fingerprint: "",
+        state: "open",
+        reason: "other",
+        sender: null,
         label: "Search index · Docs site",
       },
     ]);
@@ -466,12 +445,8 @@ describe("AssistantPane", () => {
       ).toBeInTheDocument();
     });
 
-    it("keeps 'Start my day' while the transcript holds only activity rows", () => {
+    it("has no 'Start my day' button", () => {
       render(<AssistantPane />);
-      apply({ type: "notice", text: "[Podium] sweep" });
-      apply({ type: "tool", name: "Agent" });
-      expect(screen.getByLabelText("Start my day")).toBeInTheDocument();
-      apply({ type: "message", text: "hello" });
       expect(screen.queryByLabelText("Start my day")).toBeNull();
     });
 
@@ -716,15 +691,6 @@ describe("AssistantPane", () => {
       expect(
         screen.queryByRole("button", { name: "New activity ↓" }),
       ).not.toBeInTheDocument();
-    });
-
-    it("'Start my day' jumps to the bottom directly", async () => {
-      const user = userEvent.setup();
-      render(<AssistantPane />);
-      const top = stubLog(logOf(), 100);
-      fireEvent.scroll(logOf());
-      await user.click(screen.getByLabelText("Start my day"));
-      expect(top()).toBe(1000);
     });
 
     it("sending a message always jumps to the bottom", async () => {
@@ -1222,31 +1188,6 @@ describe("AssistantPane", () => {
     });
   });
 
-  describe("day start", () => {
-    it("shows the day-start button in the empty state and triggers it", async () => {
-      const user = userEvent.setup();
-      render(<AssistantPane />);
-
-      await user.click(screen.getByLabelText("Start my day"));
-
-      expect(assistantDayStart).toHaveBeenCalled();
-      // The turn shows at once, so the button is gone before the CLI answers
-      // — no window in which the click looks like it did nothing.
-      expect(screen.queryByLabelText("Start my day")).toBeNull();
-      expect(screen.getByText("Start my day")).toBeInTheDocument();
-      expect(screen.getByText("thinking…")).toBeInTheDocument();
-    });
-
-    it("hides the day-start button once there are messages", () => {
-      useAssistantStore.setState({
-        messages: [{ id: 1, role: "user", text: "hi" }],
-      });
-      render(<AssistantPane />);
-
-      expect(screen.queryByLabelText("Start my day")).toBeNull();
-    });
-  });
-
   describe("attachments", () => {
     it("attaches picked files as absolute paths and sends them with the turn", async () => {
       const user = userEvent.setup();
@@ -1348,7 +1289,9 @@ describe("AssistantPane", () => {
 
     it("attaches a dropped text file inline, and reports one it cannot take", async () => {
       render(<AssistantPane />);
-      const pane = screen.getByLabelText("Personal assistant");
+      // The drop zone is the chat, which fills the pane.
+      const pane =
+        screen.getByLabelText("Personal assistant").firstElementChild!;
       const text = new File(["log line"], "run.log", { type: "text/plain" });
       const binary = new File([new Uint8Array([0, 1])], "archive.zip", {
         type: "application/zip",
@@ -1367,13 +1310,34 @@ describe("AssistantPane", () => {
     });
   });
 
+  it("shows the house bot and state line in the header, no working dots", () => {
+    const { container } = render(<AssistantPane />);
+    const desk = container.querySelector("header [data-pose]");
+    expect(desk).toHaveAttribute("data-state", "idle");
+    expect(screen.getByText("Idle")).toBeInTheDocument();
+    act(() => useAssistantStore.setState({ busy: true }));
+    expect(desk).toHaveAttribute("data-state", "answering");
+    expect(screen.getByText("Answering")).toBeInTheDocument();
+    expect(container.querySelector(`.${styles.workingDots}`)).toBeNull();
+  });
+
+  it("shows the new empty-state text and composer placeholder", () => {
+    render(<AssistantPane />);
+    expect(
+      screen.getByText("Ask about your agents, projects or messages."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("Ask the assistant"),
+    ).toBeInTheDocument();
+  });
+
   it("shows a calm off state without the composer, and Turn on restores the panel", async () => {
     useAssistantStore.setState({ enabled: false });
     const user = userEvent.setup();
     render(<AssistantPane />);
 
     expect(screen.getByText("The assistant is off")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
+    expect(screen.queryByPlaceholderText("Ask the assistant")).toBeNull();
     expect(screen.queryByLabelText("Start my day")).toBeNull();
     // Header controls that need the assistant are not offered while off.
     expect(screen.queryByLabelText("Assistant memory")).toBeNull();
@@ -1384,7 +1348,7 @@ describe("AssistantPane", () => {
     expect(screen.getByLabelText("Autonomy")).toBeEnabled();
     expect(assistantEnabledSet).toHaveBeenCalledWith(true);
     expect(
-      await screen.findByPlaceholderText("Message the assistant…"),
+      await screen.findByPlaceholderText("Ask the assistant"),
     ).toBeInTheDocument();
     expect(screen.queryByText("The assistant is off")).toBeNull();
   });

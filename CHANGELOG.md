@@ -13,6 +13,28 @@ when it merges.
 ### Added
 
 - Floor mode: a map with a room per project and a desk per agent, with to-dos, scratchpads, commands and services as fixtures on each room's wall, right-click menus, the agent's terminal in a modal with a single header bar (stop icon at the left; stop asks first; × closes the agent or terminal and asks first, Shift skips that; a click beside it hides the modal), and markers at the edge for rooms that need you. The Git board opens in a modal over the floor, also from a Git board button on each room's nameplate. An open to-do or scratchpad, the terminal modal and the Git board modal resize from their corner and remember their size. Choose it on first start or in Settings > General > View; Project mode stays as it was.
+- The assistant keeps an overview of what needs you, in *Needs you* and *Parked*: agents waiting on you, crashed, or ready to review, and Slack and Teams messages from the last 2 days still waiting for a reply. Rows show the agent's bot with its state; click one to go to the agent. An agent's item leaves the list once you open the agent or answer it, and comes back only when it asks something new.
+- Park an agent's item until it changes, or dismiss it; both survive a restart. A message only has Reply and Done.
+- Floor mode: a front desk in the corner with the assistant's bot and a queue of open items (Reply, Park, Dismiss; messages: Reply or Done), and desks that show agents ready to review or parked. In Floor mode the title bar's Assistant button is gone and the assistant's power button sits on the front desk.
+- Settings > Assistant > Desktop notifications: notify when an agent asks a question, crashed or is ready to review. Messages never notify.
+- The assistant's bot reads through letters while it checks Slack and Teams.
+
+### Changed
+
+- The assistant is silent by default: it no longer writes to the chat on its own and only answers what you ask.
+- Floor mode has no docked assistant pane; the title bar button opens the chat as a popover.
+
+### Fixed
+
+- The Floor's front desk stays compact: its items sit under the assistant and it no longer widens while the assistant works.
+- Unsent text in the assistant input now survives closing and reopening the assistant.
+- The assistant chat on the Floor opens instantly with the existing conversation instead of reloading.
+- The assistant's pixel bot no longer closes its eyes; it stays still and alert, and only moves its eyes and hands while it is working.
+
+### Removed
+
+- The Start my day button.
+- The assistant's nudges about silent agents, escalations and lingering to-dos.
 
 ## [3.4.1] - 2026-11-26
 

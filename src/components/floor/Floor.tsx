@@ -15,9 +15,13 @@ import { FloorPopovers } from "./FloorPopovers";
 import { FloorStatusBar } from "./FloorStatusBar";
 import { FloorTerminalModal } from "./FloorTerminalModal";
 import { FloorWaypoints } from "./FloorWaypoints";
+import { FrontDesk } from "./FrontDesk";
+import { FrontDeskPopovers } from "./FrontDeskPopovers";
 import styles from "./Floor.module.css";
 
 export function Floor() {
+  const toggleDesk = useFloorStore((s) => s.toggleDesk);
+
   useEffect(() => () => useFloorStore.getState().reset(), []);
   // A board or sub-agent left open in Project mode must not open over a fresh
   // floor: cleared before the first paint, with nothing mounted until then.
@@ -36,9 +40,14 @@ export function Floor() {
       <div className={styles.mapArea}>
         <FloorMap />
         <FloorWaypoints />
+        <FrontDesk
+          onOpenChat={() => toggleDesk("chat")}
+          onOpenList={() => toggleDesk("list")}
+        />
       </div>
       <FloorStatusBar />
       <FloorPopovers />
+      <FrontDeskPopovers />
       <FloorTerminalModal />
       <FloorBoardModal />
       <FloorAgentModals />

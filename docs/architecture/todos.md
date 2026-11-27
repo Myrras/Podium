@@ -64,7 +64,7 @@ Terminals and services are never touched. A restart puts the agent back to
 running, and its next exit writes a new `at`, so the clock runs from the latest
 exit.
 
-The exit nudge is published with the exit, long before the removal. A Responses
+The exit (what files a crash item) is published with it, long before the removal. A Responses
 item keeps the names it resolved at add time, so a removed process id there
 breaks nothing (a later `get_process_output` or `respawn_agent` on it answers
 `ProcessNotFound`). The frontend's `applyRemoved` already disposes the terminal

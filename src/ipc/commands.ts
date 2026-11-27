@@ -35,6 +35,7 @@ import type {
   ProjectSections,
   RecentProject,
   ResponseItem,
+  ResponseState,
   ScratchpadId,
   ScratchpadInfo,
   SubagentInfo,
@@ -201,9 +202,9 @@ export function processActivity(): Promise<Record<ProcessId, OutputActivity>> {
 }
 
 /**
- * Tell the backend this agent is sitting on an input prompt, so the assistant
- * hears about it now rather than after the watcher's silence timer. Called
- * once per prompt episode, from the activity monitor that already detects it.
+ * Tell the backend this agent is sitting on an input prompt, so the watcher
+ * files it as a "needs you" item at its next tick. Called once per prompt
+ * episode, from the activity monitor that already detects it.
  */
 export function processReportWaiting(processId: ProcessId): Promise<void> {
   return invoke("process_report_waiting", { processId });
@@ -709,16 +710,6 @@ export function assistantTranscript(): Promise<TranscriptEntry[]> {
 }
 
 /**
- * Send the day-start summary prompt as a normal user turn (spawning the
- * session if needed). Like {@link assistantSend}, the reply streams back as
- * `assistant:event`, not as this promise's value, and it resolves to whether
- * the prompt went straight in rather than onto the queue.
- */
-export function assistantDayStart(): Promise<boolean> {
-  return invoke("assistant_day_start");
-}
-
-/**
  * Drop the conversation (session, transcript and pending proposals) and start
  * fresh. The assistant's memory is kept, and so are its sub-agents unless
  * `stopSubagents` (their results then go to the new conversation).
@@ -839,9 +830,12 @@ export function assistantResponsesList(): Promise<ResponseItem[]> {
   return invoke("assistant_responses_list");
 }
 
-/** Tick a Responses item off (it is removed). */
-export function assistantResponseDismiss(id: string): Promise<void> {
-  return invoke("assistant_response_dismiss", { id });
+/** Park, unpark (`open`) or dismiss a Responses item by key. */
+export function assistantSetResponseState(
+  key: string,
+  state: ResponseState,
+): Promise<void> {
+  return invoke("assistant_set_response_state", { key, state });
 }
 
 /**

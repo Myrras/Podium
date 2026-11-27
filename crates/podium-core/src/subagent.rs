@@ -553,7 +553,7 @@ impl SubagentRecord {
 /// second layer: its Podium calls go to the lookup route
 /// ([`crate::mcp::LOOKUP_PATH`]), which serves and runs nothing else. A full
 /// sub-agent keeps the normal prompts: one waiting on a shell command is
-/// reported like a stuck agent, and the user answers it in its terminal.
+/// reported like any waiting agent, and the user answers it in its terminal.
 ///
 /// Both kinds load only the user's own settings (`--setting-sources user`):
 /// all sub-agents share one working directory, and its project or local
@@ -731,7 +731,7 @@ fn plain_arg_value(value: &str) -> bool {
 /// "… create …") anywhere beside it, and no sign the session got going
 /// ([`session_started`]). The assistant workspace is a folder Podium made
 /// for itself, so its first sub-agent would otherwise sit on that question
-/// unnoticed until the silence timer; seen here, it is reported at once.
+/// unnoticed; seen here, it is reported at once.
 /// Podium only ever *reports* it — the dialog focuses "No, exit" and refuses
 /// a keypress that comes too soon, so it is the user's to answer.
 pub fn shows_trust_prompt(screen: &str) -> bool {

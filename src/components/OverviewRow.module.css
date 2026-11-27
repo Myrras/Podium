@@ -1,0 +1,316 @@
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--surface-2);
+  animation: rowIn var(--dur-2) var(--ease-out);
+}
+
+.row[tabindex] {
+  cursor: pointer;
+}
+
+.row:hover,
+.row:focus-within {
+  background: var(--surface-hover);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Pad, bot and mark: the same vocabulary as the desks on the floor. */
+.pad {
+  position: relative;
+  align-self: start;
+  display: block;
+  padding: var(--sp-1);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+}
+
+.pad[data-reason="question"] {
+  background: var(--warning);
+}
+
+.pad[data-reason="review"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Review and other rest on the first frame: no typing. */
+.pad[data-reason="review"] i,
+.pad[data-reason="other"] i {
+  animation: none;
+}
+
+/* A new question waves three beats, then holds its arm up. */
+.pad[data-reason="question"]:not([data-parked]) i {
+  animation: wave var(--dur-beat) steps(2) 3;
+}
+
+.mark {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pad[data-reason="question"] .mark {
+  background: var(--needs-bg);
+  color: var(--needs-fg);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.pad[data-reason="crashed"] .mark {
+  background: var(--danger);
+  color: var(--accent-contrast);
+}
+
+.pad[data-reason="review"] .mark {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.note {
+  display: block;
+  width: 32px;
+  height: 32px;
+}
+
+.note > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.l1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.age {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.l2 {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.l2 b {
+  font-weight: 600;
+}
+
+.row[data-reason="question"] .l2 b {
+  color: var(--warning);
+}
+
+.row[data-reason="crashed"] .l2 b {
+  color: var(--danger);
+}
+
+.row[data-reason="review"] .l2 b {
+  color: var(--accent);
+}
+
+.text {
+  margin: 3px 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  user-select: text;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Parked: one quiet line with a small sleeping bot. */
+.row[data-parked] {
+  align-items: center;
+  padding-block: 6px;
+}
+
+.row[data-parked] .pad {
+  padding: 0;
+  background: none;
+}
+
+.row[data-parked] .note {
+  width: 16px;
+  height: 16px;
+  opacity: 0.45;
+  filter: saturate(0.2);
+}
+
+.row[data-parked] .who {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* The actions take the age's place, never covering the text. */
+.acts {
+  position: absolute;
+  top: 5px;
+  right: var(--sp-2);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+}
+
+.row:hover .acts,
+.row:focus-within .acts {
+  opacity: 1;
+}
+
+.row:hover .age,
+.row:focus-within .age {
+  visibility: hidden;
+}
+
+.row:hover .l1,
+.row:focus-within .l1 {
+  padding-right: calc(var(--n, 3) * 26px - 30px);
+}
+
+@media (hover: none) {
+  .acts {
+    position: static;
+    opacity: 1;
+    grid-column: 2;
+    margin-top: var(--sp-1);
+  }
+
+  .row .age {
+    visibility: visible;
+  }
+
+  .row .l1 {
+    padding-right: 0;
+  }
+}
+
+.iconBtn {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.iconBtn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.iconBtn[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+.replyRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+.replyInput {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.replyInput:focus {
+  outline: none;
+}
+
+.sendBtn {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: var(--radius-md);
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.sendBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.sendBtn:disabled {
+  background: var(--surface-2);
+  color: var(--text-faint);
+}
+
+@keyframes rowIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+/* Frames 4 and 5: arm up, arm waving. */
+@keyframes wave {
+  from {
+    transform: translateX(-50%);
+  }
+
+  to {
+    transform: translateX(-75%);
+  }
+}

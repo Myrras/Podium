@@ -33,7 +33,7 @@ use crate::process::scrollback::{OutputActivity, ScrollbackBuffer};
 use crate::process::supervisor::{RestartState, SupervisorConfig};
 use crate::process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 use crate::project::{self, ConfiguredProcess, ProjectSections};
-use crate::responses::{ResponseItem, ResponseKind, ResponseStore};
+use crate::responses::{ResponseItem, ResponseKind, ResponseReason, ResponseState, ResponseStore};
 use crate::scratchpad::{ScratchpadInfo, ScratchpadStore};
 use crate::subagent::{
     SubagentBook, SubagentConfig, SubagentInfo, SubagentKind, SubagentPhase, SubagentRecord,
@@ -41,7 +41,6 @@ use crate::subagent::{
 };
 use crate::sweep::{SweepConfig, SweepManager, SweepRun};
 use crate::todo::{TodoInfo, TodoStore};
-use crate::triage::{TriageConfig, TriageItem, TriageManager};
 use crate::worktree::WorktreeInfo;
 
 /// Capacity (in chunks) of each process's raw-output broadcast channel.
@@ -69,11 +68,6 @@ const SUBAGENT_MANAGED: &str = "this is one of the assistant's sub-agents, which
 /// prompt, and how much of it (see [`Hub::watch_trust_prompt`]).
 const TRUST_POLL: Duration = Duration::from_millis(200);
 const TRUST_TAIL_BYTES: usize = 8 * 1024;
-
-/// A resumed agent that crashes within this long after starting is taken to
-/// have failed to resume (the CLI refusing the session), so its next start is
-/// fresh instead of the same `--resume` again.
-const RESUME_FAILURE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Read-only snapshot of an open project, for listing.
 #[derive(Debug, Clone, Serialize)]
@@ -206,8 +200,9 @@ struct AgentSession {
     id: String,
     /// The current run resumed `id` (rather than starting it fresh).
     resumed: bool,
-    /// Resuming `id` crashed right away (see [`RESUME_FAILURE_WINDOW`]), so
-    /// it is not tried again: the next start is fresh.
+    /// Resuming `id` crashed right away (see
+    /// [`SupervisorConfig::resume_failure_window`]), so it is not tried
+    /// again: the next start is fresh.
     resume_failed: bool,
 }
 
@@ -353,9 +348,6 @@ pub struct Orchestrator {
     assistant_toggle: tokio::sync::Mutex<()>,
     /// The external sweep's own Haiku session ([`crate::sweep`]).
     sweep: Arc<SweepManager>,
-    /// The proactivity nudges' debounce buffer and Haiku triage
-    /// ([`crate::triage`]).
-    triage: Arc<TriageManager>,
     /// The sub-agents' cap and timings.
     subagent_config: SubagentConfig,
     /// Whether the sub-agent driver runs yet — started on the first spawn.
@@ -384,7 +376,6 @@ impl Orchestrator {
             assistant: Arc::new(AssistantManager::new(events.clone())),
             assistant_toggle: tokio::sync::Mutex::new(()),
             sweep: Arc::new(SweepManager::new()),
-            triage: Arc::new(TriageManager::new()),
             events,
             supervisor,
             adapters: AdapterRegistry::default(),
@@ -463,8 +454,6 @@ impl Orchestrator {
     pub fn configure_assistant(&self, config: AssistantConfig) {
         self.sweep
             .set_launch(config.command.clone(), config.cwd.clone());
-        self.triage
-            .set_launch(config.command.clone(), config.cwd.clone());
         self.assistant.configure(config);
     }
 
@@ -475,29 +464,13 @@ impl Orchestrator {
         self.sweep.configure(config);
     }
 
-    /// Point the nudge triage's session at a binary / cwd and set its
-    /// timeout (tests shrink it). [`Self::configure_assistant`] already sets
-    /// the binary and cwd, so call this after it.
-    pub fn configure_triage(&self, config: TriageConfig) {
-        self.triage.configure(config);
-    }
-
-    /// The nudge triage ([`crate::triage`]), for its worker.
-    pub(crate) fn triage(&self) -> Arc<TriageManager> {
-        Arc::clone(&self.triage)
-    }
-
-    /// Buffer a proactivity nudge for triage instead of handing it to the
-    /// assistant at once; `true` when the caller must start the triage
-    /// worker ([`crate::triage::start_worker`]).
-    pub(crate) fn push_triage(&self, item: TriageItem) -> bool {
-        self.triage.push(item)
-    }
-
     /// Claim the one external-sweep slot; `None` while a sweep still runs
-    /// (that tick is skipped) or after shutdown. See [`crate::sweep`].
+    /// (that tick is skipped) or after shutdown. See [`crate::sweep`]. The
+    /// run announces itself ([`AssistantEvent::Sweeping`]) until it drops.
     pub fn begin_external_sweep(&self) -> Option<SweepRun> {
-        self.sweep.begin()
+        self.sweep
+            .begin()
+            .map(|run| run.announce(self.events.clone()))
     }
 
     /// Send a chat turn to the personal assistant, spawning its session on
@@ -696,16 +669,6 @@ impl Orchestrator {
         self.assistant.nudge(text, mcp).await;
     }
 
-    /// [`assistant_nudge`](Self::assistant_nudge) for several texts at once:
-    /// one turn when the assistant is idle, texts already waiting skipped.
-    pub async fn assistant_nudge_all(&self, texts: Vec<String>) {
-        if !self.assistant_enabled() {
-            return;
-        }
-        let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
-        self.assistant.nudge_all(texts, mcp).await;
-    }
-
     /// Hand the assistant what the external sweep found (the sweep itself
     /// runs in its own session, [`crate::sweep`]). Like a nudge it starts the
     /// session if there is none, and goes in as a `Poll` turn.
@@ -732,14 +695,6 @@ impl Orchestrator {
             .set_assistant_polling(polling)?
             .assistant
             .into())
-    }
-
-    /// Ask the assistant for a day-start summary (the panel's button). Goes
-    /// in as a normal user turn rather than a nudge: it is something the user
-    /// asked for, so it belongs in the transcript and always wants an answer.
-    pub async fn assistant_day_start(&self) -> CoreResult<bool> {
-        self.assistant_send(crate::assistant::DAY_START_PROMPT)
-            .await
     }
 
     /// Set up the personal assistant's own scope at `dir`
@@ -1174,32 +1129,6 @@ impl Orchestrator {
             .collect()
     }
 
-    /// Running agents that have printed nothing for at least `min_idle` —
-    /// what [`crate::proactivity`] reads as "probably waiting on input".
-    pub fn idle_agents(&self, min_idle: Duration) -> Vec<ProcessInfo> {
-        let now = Instant::now();
-        let inner = self.inner.lock().expect(LOCK_POISONED);
-        inner
-            .processes
-            .iter()
-            .filter(|(_, p)| matches!(p.spec.kind, ProcessKind::Agent { .. }))
-            .filter(|(_, p)| matches!(p.status, ProcessStatus::Running { .. }))
-            .filter_map(|(id, p)| {
-                // An agent that never printed anything is measured from its
-                // start, so a session stuck on its first prompt still counts.
-                let last = p
-                    .scrollback
-                    .lock()
-                    .expect(LOCK_POISONED)
-                    .last_append_at()
-                    .or(p.started_at)?;
-                (now.duration_since(last) >= min_idle)
-                    .then(|| process_info_in(&inner, *id))
-                    .flatten()
-            })
-            .collect()
-    }
-
     /// How recently and how steadily each running process has been printing,
     /// keyed by process id — what the UI polls for its "working…" indicator.
     /// Read off the scrollback, so it covers processes whose terminal was
@@ -1238,9 +1167,7 @@ impl Orchestrator {
 
     /// The UI saw an input prompt on this agent's screen (a permission
     /// question, a credential request). Recorded so [`crate::proactivity`]
-    /// can tell the user *now* instead of waiting out its silence timer —
-    /// which is a blunt proxy: it cannot tell "waiting for you" from
-    /// "finished thinking". Anything that is not a running agent is ignored.
+    /// can file the agent as waiting on the user. Anything that is not a running agent is ignored.
     ///
     /// An agent blocked on a permission prompt cannot call
     /// `report_to_assistant` itself — it is blocked *inside* the harness that
@@ -1262,8 +1189,11 @@ impl Orchestrator {
     /// since. Output after the report means the prompt was answered (or
     /// misread), so the flag simply stops counting — no clearing needed. An
     /// agent that redraws its prompt would fall out the same way and land
-    /// back on the silence timer, which is the safe direction to fail.
-    pub fn agents_awaiting_input(&self) -> Vec<ProcessInfo> {
+    /// back to not waiting, which is the safe direction to fail.
+    ///
+    /// Each comes with when its prompt was reported, so a prompt that was
+    /// already up when the user typed is told apart from a new one.
+    pub fn agents_awaiting_input(&self) -> HashMap<ProcessId, Instant> {
         let inner = self.inner.lock().expect(LOCK_POISONED);
         inner
             .processes
@@ -1275,7 +1205,7 @@ impl Orchestrator {
                 let last = p.scrollback.lock().expect(LOCK_POISONED).last_append_at();
                 match last {
                     Some(last) if last > since => None,
-                    _ => process_info_in(&inner, *id),
+                    _ => Some((*id, since)),
                 }
             })
             .collect()
@@ -1298,10 +1228,23 @@ impl Orchestrator {
     /// is always cleared, so at most one process is ever viewed. Shown as
     /// [`ProcessInfo::viewing`], and read by [`crate::proactivity`] and
     /// `add_response` so the assistant stays quiet about that agent.
+    ///
+    /// Opening an agent handles its Responses item, so it is dismissed at
+    /// once rather than on the watcher's next tick.
     pub fn set_viewing(&self, id: Option<ProcessId>) {
-        let mut inner = self.inner.lock().expect(LOCK_POISONED);
-        for (pid, p) in inner.processes.iter_mut() {
-            p.viewing = id == Some(*pid) && matches!(p.spec.kind, ProcessKind::Agent { .. });
+        let viewed = {
+            let mut inner = self.inner.lock().expect(LOCK_POISONED);
+            let mut viewed = None;
+            for (pid, p) in inner.processes.iter_mut() {
+                p.viewing = id == Some(*pid) && matches!(p.spec.kind, ProcessKind::Agent { .. });
+                if p.viewing {
+                    viewed = Some(*pid);
+                }
+            }
+            viewed
+        };
+        if let Some(id) = viewed {
+            self.dismiss_agent_response(id);
         }
     }
 
@@ -1440,12 +1383,15 @@ impl Orchestrator {
             (Some(id), Some(project)) => self.todos.get(project.id, &project.root, id),
             _ => None,
         };
+        let id = ResponseId::new();
+        let text = crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS);
         let item = ResponseItem {
-            id: ResponseId::new(),
+            id,
             kind,
             // Capped like the list itself: the assistant writes these from
             // content it read, and the panel row is meant to be a line or two.
-            text: crate::assistant::truncate(text, MAX_RESPONSE_TEXT_CHARS),
+            fingerprint: format!("{kind:?}:{text}"),
+            text,
             // Names are capped like the to-do and source: they travel into
             // the label a reply carries back to the session.
             project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
@@ -1461,17 +1407,196 @@ impl Orchestrator {
             process_id,
             todo_id,
             created_at: Utc::now(),
+            key: crate::responses::legacy_key(id, process_id, todo_id),
+            state: ResponseState::Open,
+            reason: ResponseReason::Other,
+            sender: None,
         };
-        self.responses()
-            .add(item.clone(), |items| self.publish_responses(items))?;
+        // Unchanged (the same text re-filed, even after a tick) writes and
+        // announces nothing.
+        let (_, item) = self
+            .responses()
+            .upsert(item, |items| self.publish_responses(items))?;
         Ok(Some(item))
     }
 
-    /// Mark one Responses item as read: it is simply removed.
+    /// File Podium's own item about an agent, keyed `agent:<id>`: a question
+    /// it waits on or a crash ([`crate::proactivity`]). A re-file with the
+    /// same fingerprint is `Unchanged` and publishes nothing, so the UI only
+    /// notifies about news.
+    pub(crate) fn file_agent_response(
+        &self,
+        process: &ProcessInfo,
+        kind: ResponseKind,
+        reason: ResponseReason,
+        fingerprint: String,
+        text: String,
+    ) -> CoreResult<()> {
+        let item = self.agent_response_item(process, kind, reason, fingerprint, text);
+        self.responses()
+            .upsert(item, |items| self.publish_responses(items))
+            .map(|_| ())
+    }
+
+    fn agent_response_item(
+        &self,
+        process: &ProcessInfo,
+        kind: ResponseKind,
+        reason: ResponseReason,
+        fingerprint: String,
+        text: String,
+    ) -> ResponseItem {
+        let project = self
+            .list_projects()
+            .into_iter()
+            .find(|p| p.id == process.project_id);
+        ResponseItem {
+            id: ResponseId::new(),
+            kind,
+            // Capped like the assistant's own items: an agent's summary is
+            // its own text, and the row is meant to be a line or two.
+            text: crate::assistant::truncate(&text, MAX_RESPONSE_TEXT_CHARS),
+            project: project.map(|p| crate::assistant::truncate(&p.name, 40)),
+            agent: Some(crate::assistant::truncate(&process.name, 40)),
+            agent_color: process.color.clone(),
+            todo: None,
+            source: None,
+            process_id: Some(process.id),
+            todo_id: None,
+            created_at: Utc::now(),
+            key: agent_response_key(process.id),
+            fingerprint,
+            state: ResponseState::Open,
+            reason,
+            sender: None,
+        }
+    }
+
+    /// File a "ready to review" item for an agent, unless the user is
+    /// looking at it. `text` is the agent's summary. A second filing while
+    /// the first is still listed only updates its text (see
+    /// [`ResponseStore::upsert_review`]), so it notifies once.
+    pub(crate) fn file_review_response(
+        &self,
+        process: &ProcessInfo,
+        text: String,
+    ) -> CoreResult<()> {
+        if process.viewing {
+            return Ok(());
+        }
+        let item = self.agent_response_item(
+            process,
+            ResponseKind::Fyi,
+            ResponseReason::Review,
+            format!("review:{}", Utc::now().timestamp_millis()),
+            text,
+        );
+        self.responses()
+            .upsert_review(item, |items| self.publish_responses(items))
+    }
+
+    /// The user opened or answered this agent: dismiss Podium's item about
+    /// it. Soft, so the watcher re-filing the same episode (fingerprint) is
+    /// `Unchanged` and stays out of sight; a new question or crash has a new
+    /// fingerprint and comes back open. No item is fine.
+    fn dismiss_agent_response(&self, id: ProcessId) {
+        match self.responses().set_state(
+            &agent_response_key(id),
+            ResponseState::Dismissed,
+            |items| self.publish_responses(items),
+        ) {
+            Ok(()) | Err(CoreError::ResponseNotFound) => {}
+            Err(e) => tracing::warn!("could not dismiss an agent's Responses item: {e}"),
+        }
+    }
+
+    /// Drop Podium's own item about this agent, if there is one.
+    pub(crate) fn remove_agent_response(&self, id: ProcessId) -> CoreResult<()> {
+        self.responses().remove(&agent_response_key(id), |items| {
+            self.publish_responses(items)
+        })
+    }
+
+    /// Drop Podium's own item about this agent only if it is there for
+    /// `reason`: a question that ended must not take a fresh review with it.
+    pub(crate) fn remove_agent_response_for(
+        &self,
+        id: ProcessId,
+        reason: ResponseReason,
+    ) -> CoreResult<()> {
+        let key = agent_response_key(id);
+        self.responses().remove_where(
+            |i| i.key == key && i.reason == reason,
+            |items| self.publish_responses(items),
+        )
+    }
+
+    /// Drop Podium's own agent items for every process not in `live`.
+    pub(crate) fn reconcile_agent_responses(&self, live: &[ProcessId]) -> CoreResult<()> {
+        let live: Vec<String> = live.iter().map(|id| agent_response_key(*id)).collect();
+        self.responses()
+            .reconcile("agent:", &live, |items| self.publish_responses(items))
+    }
+
+    /// File the external sweep's full set of waiting messages, keyed
+    /// `msg:<source>:<conversation>:<thread>`, and drop every `msg:` item not
+    /// in it (replied to, or aged out) — except a dismissed one whose newest
+    /// message is under 2 days old, so a sweep that misses it once does not
+    /// bring it back. Same newest message: `Unchanged`, so a dismissed item
+    /// stays dismissed until a newer one arrives.
+    pub(crate) fn sync_message_responses(
+        &self,
+        messages: &[crate::sweep::WaitingMessage],
+    ) -> CoreResult<()> {
+        for message in messages {
+            let item = ResponseItem {
+                id: ResponseId::new(),
+                kind: ResponseKind::NeedsYou,
+                text: message.text.clone(),
+                project: None,
+                agent: None,
+                agent_color: None,
+                todo: None,
+                source: Some(message.place.clone()),
+                process_id: None,
+                todo_id: None,
+                created_at: Utc::now(),
+                key: message.key(),
+                fingerprint: message.newest.to_rfc3339(),
+                state: ResponseState::Open,
+                reason: ResponseReason::Message,
+                sender: Some(message.sender.clone()),
+            };
+            self.responses()
+                .upsert(item, |items| self.publish_responses(items))?;
+        }
+        let live: Vec<String> = messages.iter().map(|m| m.key()).collect();
+        // A dismissed thread one sweep missed is kept while its newest message
+        // is recent, so finding it again (same newest) leaves it dismissed.
+        let keep_until = Utc::now() - chrono::Duration::days(2);
+        self.responses().remove_where(
+            |i| {
+                i.key.starts_with("msg:")
+                    && !live.contains(&i.key)
+                    && !(i.state == ResponseState::Dismissed
+                        && DateTime::parse_from_rfc3339(&i.fingerprint)
+                            .is_ok_and(|newest| newest > keep_until))
+            },
+            |items| self.publish_responses(items),
+        )
+    }
+
+    /// Tick one Responses item off: dismissed, not deleted, so the same
+    /// item filed again does not come back.
     pub fn dismiss_assistant_response(&self, id: ResponseId) -> CoreResult<()> {
         self.responses()
-            .remove(id, |items| self.publish_responses(items))?;
-        Ok(())
+            .dismiss(id, |items| self.publish_responses(items))
+    }
+
+    /// Park, unpark (`Open`) or dismiss one Responses item by key.
+    pub fn set_assistant_response_state(&self, key: &str, state: ResponseState) -> CoreResult<()> {
+        self.responses()
+            .set_state(key, state, |items| self.publish_responses(items))
     }
 
     /// Answer one Responses item: `text` goes to the assistant as the user's
@@ -1491,7 +1616,7 @@ impl Orchestrator {
         }
         let item = self
             .responses()
-            .remove(id, |items| self.publish_responses(items))?;
+            .take(id, |items| self.publish_responses(items))?;
         let mcp = self.mcp.lock().expect(LOCK_POISONED).clone();
         match self.assistant.send_reply(text, item.clone(), mcp).await {
             Ok(delivered) => Ok(delivered),
@@ -3841,6 +3966,12 @@ impl Orchestrator {
         }
         pty.write(bytes)?;
         if is_user_input(bytes) {
+            // The user took it from here: a "ready to review" item is done,
+            // a question answered. Not worth failing the keystroke over.
+            if let Err(e) = self.remove_agent_response_for(id, ResponseReason::Review) {
+                tracing::warn!("could not clear an agent's review item: {e}");
+            }
+            self.dismiss_agent_response(id);
             if let Some(p) = self
                 .inner
                 .lock()
@@ -3932,9 +4063,7 @@ impl Orchestrator {
         self.inner.lock().expect(LOCK_POISONED).shutting_down = true;
         // The sweep first: one that finishes while the assistant is already
         // gone would hand it a finding and start a new assistant child that
-        // nothing kills. A triage worker likewise must not deliver to an
-        // assistant session after it has been killed.
-        self.triage.shutdown();
+        // nothing kills.
         self.sweep.shutdown().await;
         self.assistant.shutdown().await;
         if self.agent_settings.get().remember_sessions {
@@ -4232,8 +4361,8 @@ impl Hub {
         }
     }
 
-    /// Tell the assistant how a sub-agent ended. Unlike proactivity's nudges
-    /// this is not behind the proactivity switch: the result is what the
+    /// Tell the assistant how a sub-agent ended. Not behind the
+    /// proactivity switch: the result is what the
     /// user asked the assistant for. Nothing is said once the app quits —
     /// a nudge would only start a fresh assistant session on the way out.
     async fn nudge(&self, text: String) {
@@ -4511,8 +4640,8 @@ impl Hub {
     /// Report Claude Code's folder-trust dialog on a sub-agent that just
     /// started, if it shows one within [`SubagentConfig::trust_window`], the
     /// way the UI reports a prompt it sees on screen
-    /// ([`Orchestrator::report_agent_waiting`]): the stuck-agent check then
-    /// raises it at its next tick instead of after its silence timer. The
+    /// ([`Orchestrator::report_agent_waiting`]): the watcher then
+    /// files it at its next tick. The
     /// folder is the assistant workspace — Podium's own — and the session
     /// runs in the background, so otherwise nobody would notice it waiting;
     /// the CLI keeps the answer for the folder, so only the first sub-agent
@@ -5358,10 +5487,21 @@ fn apply_live_session(inner: &mut Inner, probe: &LiveProbe, live: String) {
     }
 }
 
+/// The Responses key of Podium's own item about an agent.
+fn agent_response_key(id: ProcessId) -> String {
+    format!("agent:{id}")
+}
+
 /// Whether an agent run that just exited was a resume that failed: it
-/// crashed within [`RESUME_FAILURE_WINDOW`] of starting.
-fn resume_failed(session: &AgentSession, crashed: bool, ran_for: Option<Duration>) -> bool {
-    session.resumed && crashed && ran_for.is_some_and(|d| d < RESUME_FAILURE_WINDOW)
+/// crashed within `window` ([`SupervisorConfig::resume_failure_window`]) of
+/// starting.
+fn resume_failed(
+    session: &AgentSession,
+    crashed: bool,
+    ran_for: Option<Duration>,
+    window: Duration,
+) -> bool {
+    session.resumed && crashed && ran_for.is_some_and(|d| d < window)
 }
 
 /// Tell the UI the to-dos/scratchpads an agent owns changed state: their
@@ -5423,7 +5563,7 @@ fn make_exit_handler(
             p.status = status.clone();
             let ran_for = p.started_at.take().map(|s| s.elapsed());
             if let Some(session) = p.session.as_mut() {
-                if resume_failed(session, crashed, ran_for) {
+                if resume_failed(session, crashed, ran_for, supervisor.resume_failure_window) {
                     session.resume_failed = true;
                 }
             }
@@ -5583,7 +5723,10 @@ mod tests {
             resume_failed: false,
         };
         let quick = Some(Duration::from_secs(1));
-        let long = Some(RESUME_FAILURE_WINDOW + Duration::from_secs(1));
+        let window = crate::process::supervisor::RESUME_FAILURE_WINDOW;
+        let long = Some(window + Duration::from_secs(1));
+        let resume_failed =
+            |s: &AgentSession, crashed, ran_for| resume_failed(s, crashed, ran_for, window);
         assert!(resume_failed(&session(true), true, quick));
         assert!(
             !resume_failed(&session(true), false, quick),
@@ -6574,13 +6717,18 @@ mod tests {
         }
     }
 
-    /// Whether process `pid` still runs (`kill -0`).
+    /// Whether process `pid` still runs (signal 0). A syscall, not a `kill`
+    /// child: forking one took up to ~300 ms on a loaded runner, past
+    /// [`LIVE_SESSION_TIMEOUT`], so a stop gave up on the record it reads.
+    #[cfg(unix)]
     fn alive(pid: u32) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    /// The tests that need it are ignored on Windows.
+    #[cfg(not(unix))]
+    fn alive(_pid: u32) -> bool {
+        false
     }
 
     /// The pid of running agent `id`.
@@ -6606,7 +6754,15 @@ mod tests {
 
     /// An orchestrator on `adapter`, persisting under `data`.
     fn memory_orch(data: &Path, adapter: Arc<MemoryAdapter>) -> Orchestrator {
-        let orch = Orchestrator::new().with_adapters(AdapterRegistry::new(vec![adapter]));
+        // A failed resume is timed from the launch, so the agent's login
+        // shell starting up counts: on a loaded runner that alone can take
+        // the default 5 s, and the run would no longer count as failed.
+        let supervisor = SupervisorConfig {
+            resume_failure_window: Duration::from_secs(120),
+            ..SupervisorConfig::default()
+        };
+        let orch = Orchestrator::with_supervisor_config(supervisor)
+            .with_adapters(AdapterRegistry::new(vec![adapter]));
         orch.set_agent_settings_path(data.join("agents.json"));
         orch.set_session_memory_path(data.join("session_memory.json"));
         orch.set_todos_path(data.join("todos.json"));
@@ -6800,20 +6956,13 @@ mod tests {
         let id = orch.open_project(root.clone()).await.unwrap();
         let agent = orch.list_processes(Some(id))[0].id;
         // The resume exits at once, so the restart path's failure window
-        // marks it, exactly as for a restarted agent.
-        let resume_failed = || {
-            orch.inner.lock().unwrap().processes[&agent]
-                .session
-                .as_ref()
-                .is_some_and(|s| s.resume_failed)
-        };
-        for _ in 0..200 {
-            if resume_failed() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        assert!(resume_failed());
+        // marks it, exactly as for a restarted agent — by the time the exit
+        // handler has set `Exited`, under the same lock.
+        wait_for_exit(&orch, agent).await;
+        assert!(orch.inner.lock().unwrap().processes[&agent]
+            .session
+            .as_ref()
+            .is_some_and(|s| s.resume_failed));
         orch.start_process(agent).await.unwrap();
         wait_for_launch(&orch, agent, |flag, s| {
             flag == "--session-id" && s != SESS_1
@@ -7647,6 +7796,144 @@ mod tests {
         }
         assert!(todos_changed, "the owner's to-dos are re-listed on restart");
         orch.shutdown().await;
+    }
+
+    /// Typing into an agent clears its "ready to review" item and answers a
+    /// question: dismissed, so the same episode re-filed stays out of sight.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "runs `cat` in a PTY")]
+    async fn user_input_removes_a_review_item_and_dismisses_a_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut spec = spec_of(agent_kind(), dir.path());
+        spec.command = "cat".to_string();
+        let id = orch.add_process(project, spec).await.unwrap();
+        orch.start_process(id).await.unwrap();
+        let info = orch.process_info(id).unwrap();
+
+        orch.file_review_response(&info, "Done.".to_string())
+            .unwrap();
+        assert_eq!(orch.assistant_responses().len(), 1);
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert!(orch.assistant_responses().is_empty());
+
+        orch.file_agent_response(
+            &info,
+            ResponseKind::NeedsYou,
+            ResponseReason::Question,
+            "question:1".to_string(),
+            "Waiting for your input.".to_string(),
+        )
+        .unwrap();
+        assert_eq!(orch.assistant_responses().len(), 1);
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert!(orch.assistant_responses().is_empty());
+        orch.file_agent_response(
+            &info,
+            ResponseKind::NeedsYou,
+            ResponseReason::Question,
+            "question:1".to_string(),
+            "Waiting for your input.".to_string(),
+        )
+        .unwrap();
+        assert!(orch.assistant_responses().is_empty());
+        orch.shutdown().await;
+    }
+
+    /// A keystroke never fails because the review item could not be cleared.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(windows, ignore = "runs `cat` in a PTY")]
+    async fn user_input_survives_a_failed_review_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let orch = Orchestrator::new();
+        orch.set_responses_path(data.join("assistant-responses.json"));
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let mut spec = spec_of(agent_kind(), dir.path());
+        spec.command = "cat".to_string();
+        let id = orch.add_process(project, spec).await.unwrap();
+        orch.start_process(id).await.unwrap();
+        orch.file_review_response(&orch.process_info(id).unwrap(), "Done.".to_string())
+            .unwrap();
+        // A file where the data dir should be: every later write fails.
+        std::fs::remove_dir_all(&data).unwrap();
+        std::fs::write(&data, "").unwrap();
+
+        orch.write_stdin(id, b"ok\r").await.unwrap();
+        assert!(orch.last_user_input(id).is_some());
+        assert_eq!(orch.assistant_responses().len(), 1);
+        orch.shutdown().await;
+    }
+
+    /// `complete_todo` then `report_to_assistant`: one item, one ping, the
+    /// summary's text, clipped like any item.
+    #[tokio::test]
+    async fn a_second_review_filing_keeps_the_item_and_clips_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let orch = Orchestrator::new();
+        let project = orch.open_project(dir.path().to_path_buf()).await.unwrap();
+        let id = orch
+            .add_process(project, spec_of(agent_kind(), dir.path()))
+            .await
+            .unwrap();
+        let info = orch.process_info(id).unwrap();
+        orch.file_review_response(&info, "Completed to-do: Fix login".to_string())
+            .unwrap();
+        let first = orch.assistant_responses()[0].clone();
+
+        let long = "x".repeat(MAX_RESPONSE_TEXT_CHARS + 50);
+        orch.file_review_response(&info, long).unwrap();
+        let items = orch.assistant_responses();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, first.id);
+        assert_eq!(items[0].fingerprint, first.fingerprint);
+        assert_eq!(items[0].text.chars().count(), MAX_RESPONSE_TEXT_CHARS + 1);
+        assert!(items[0].text.ends_with('…'));
+    }
+
+    fn waiting(conversation: &str, newest: DateTime<Utc>) -> crate::sweep::WaitingMessage {
+        crate::sweep::WaitingMessage {
+            source: "slack",
+            conversation: conversation.to_string(),
+            thread: conversation.to_string(),
+            sender: "Ada".to_string(),
+            place: "Slack, direct message".to_string(),
+            newest,
+            text: "Can you approve the deploy?".to_string(),
+        }
+    }
+
+    /// A dismissed thread one sweep missed stays dismissed when found again;
+    /// it is dropped only once its newest message is over 2 days old.
+    #[test]
+    fn a_dismissed_message_missed_by_one_sweep_stays_dismissed() {
+        let orch = Orchestrator::new();
+        let recent = waiting("D0FAKE1", Utc::now() - chrono::Duration::hours(1));
+        let old = waiting("D0FAKE2", Utc::now() - chrono::Duration::days(3));
+        let open = waiting("D0FAKE3", Utc::now() - chrono::Duration::hours(1));
+        orch.sync_message_responses(&[recent.clone(), old.clone(), open.clone()])
+            .unwrap();
+        for m in [&recent, &old] {
+            orch.set_assistant_response_state(&m.key(), ResponseState::Dismissed)
+                .unwrap();
+        }
+        // Still on disk (dismissing again is a no-op), or gone (not found).
+        let stored = |key: &str| {
+            orch.set_assistant_response_state(key, ResponseState::Dismissed)
+                .is_ok()
+        };
+
+        // A sweep that misses all three: the open one and the stale
+        // dismissed one go, the recent dismissed one is kept.
+        orch.sync_message_responses(&[]).unwrap();
+        assert!(stored(&recent.key()));
+        assert!(!stored(&old.key()));
+        assert!(!stored(&open.key()));
+
+        // Found again with the same newest message: still dismissed.
+        orch.sync_message_responses(&[recent]).unwrap();
+        assert!(orch.assistant_responses().is_empty());
     }
 
     const WINDOW: Duration = Duration::from_secs(5 * 60);

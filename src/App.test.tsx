@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom leaves `navigator.platform` empty, so pin the platform explicitly;
@@ -71,6 +71,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 import userEvent from "@testing-library/user-event";
 
 import { useAssistantStore } from "./state/assistantStore";
+import { useFloorStore } from "./state/floorStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useToastStore } from "./state/toastStore";
 import App from "./App";
@@ -172,7 +173,7 @@ describe("App", () => {
       enabled: false,
     });
     expect(await screen.findByText("The assistant is off")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Message the assistant…")).toBeNull();
+    expect(screen.queryByPlaceholderText("Ask the assistant")).toBeNull();
 
     assistant.setResult = true;
     expect(power).toHaveAttribute("aria-pressed", "false");
@@ -182,7 +183,7 @@ describe("App", () => {
       enabled: true,
     });
     expect(
-      await screen.findByPlaceholderText("Message the assistant…"),
+      await screen.findByPlaceholderText("Ask the assistant"),
     ).toBeInTheDocument();
   });
 
@@ -295,13 +296,39 @@ describe("App — Floor mode", () => {
     expect(screen.getByLabelText("Resize sidebar")).toBeInTheDocument();
   });
 
-  it("replaces sidebar and work area with the Floor, keeping the assistant", () => {
+  it("replaces sidebar, work area and assistant pane with the Floor and its front desk", async () => {
     useLayoutStore.setState({ mode: "floor", assistantOpen: true });
+    const user = userEvent.setup();
     render(<App />);
     expect(screen.queryByText("Welcome to Podium")).toBeNull();
     expect(screen.queryByLabelText("Resize sidebar")).toBeNull();
     expect(screen.getByRole("main")).toBeInTheDocument();
+    expect(screen.getByText("Front desk")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+    expect(screen.queryByLabelText("Resize assistant")).toBeNull();
+
+    // Both assistant buttons live on the front desk in Floor mode.
+    expect(screen.queryByLabelText("Assistant")).toBeNull();
+    expect(screen.getByRole("button", { name: "Assistant power" })).toBe(
+      within(screen.getByText("Front desk").parentElement!).getByRole(
+        "button",
+        { name: "Assistant power" },
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "Open chat" }));
+    expect(useFloorStore.getState().deskPopover).toBe("chat");
+    expect(useLayoutStore.getState().assistantOpen).toBe(true);
+  });
+
+  it("keeps the assistant pane in Project mode", () => {
+    useLayoutStore.setState({ mode: "project", assistantOpen: true });
+    render(<App />);
     expect(screen.getByLabelText("Personal assistant")).toBeInTheDocument();
+    expect(screen.queryByText("Front desk")).toBeNull();
+    expect(screen.getByLabelText("Assistant")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Assistant power" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the app-level subscriptions in Floor mode", async () => {

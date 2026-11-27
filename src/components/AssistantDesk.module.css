@@ -1,0 +1,100 @@
+.desk {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+/* Still frame 0 (eyes open, no motion) at full colour; "needs" would show the raised arm. */
+.desk[data-pose="still"] [data-state] > i {
+  transform: translateX(0);
+}
+
+/* Reading the Slack/Teams sweep: two letters held up below the eyes; the
+   front one is lifted off and put back. Rest pose = 0%/100%, so the
+   reduced-motion guard leaves it still. */
+.letters {
+  position: absolute;
+  left: calc(var(--h) * 5 / 16);
+  bottom: calc(var(--h) / 4);
+  width: calc(var(--h) * 3 / 8);
+  height: calc(var(--h) * 3 / 8);
+  pointer-events: none;
+}
+
+.letters > i {
+  position: absolute;
+  inset: 0;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+
+.letters > i:first-child {
+  transform: translate(-2px, -1px);
+}
+
+.letters > i:last-child {
+  animation: shuffle calc(var(--dur-beat) * 2) var(--ease-in-out) infinite;
+}
+
+@keyframes shuffle {
+  0%,
+  45%,
+  100% {
+    transform: translate(0, 0);
+    opacity: 1;
+  }
+
+  70% {
+    transform: translate(3px, -4px) rotate(8deg);
+    opacity: 0;
+  }
+
+  71% {
+    transform: translate(0, 2px);
+    opacity: 0;
+  }
+}
+
+.desk[data-state="off"] [data-state] {
+  opacity: 0.45;
+  filter: saturate(0.2);
+}
+
+.helpers {
+  display: inline-flex;
+  align-items: flex-end;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* The mini sprite is 32px; shown at 16px beside the bot. */
+.mini {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: hidden;
+}
+
+.mini > span {
+  transform: scale(0.5);
+  transform-origin: top left;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-left: var(--sp-1);
+  align-self: center;
+}
+
+.line {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.desk[data-state="waiting"] .line {
+  color: var(--warning);
+}

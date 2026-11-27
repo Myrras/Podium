@@ -2,18 +2,16 @@
  * The assistant's Responses list, pinned above the chat log: the one-line
  * essentials of agent updates ("needs you" / "FYI") the assistant filed, so
  * they can be ticked off or answered without scrolling back through the
- * conversation. Workspace-wide, persisted by the backend, hidden when empty.
+ * conversation. Workspace-wide, persisted by the backend, always shown: what
+ * needs the user, and a collapsed group of parked items.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { ResponseItem } from "../ipc/types";
-import { formatRelativeTime } from "../lib/dateFormat";
-import { showAgent } from "../lib/floor/camera";
 import { useAssistantStore } from "../state/assistantStore";
-import { useLayoutStore } from "../state/layoutStore";
-import { useProcessStore } from "../state/processStore";
-import { AgentIcon, CaretIcon, CheckIcon, ReplyIcon, SendIcon } from "./icons";
+import { CaretIcon } from "./icons";
+import { OverviewRow } from "./OverviewRow";
 import styles from "./ResponsesSection.module.css";
 
 /**
@@ -69,6 +67,7 @@ function placeDrafts(
 export function ResponsesSection() {
   const responses = useAssistantStore((s) => s.responses);
   const [open, setOpen] = useState(true);
+  const [parkedOpen, setParkedOpen] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   // One tick for the whole section re-renders every row's age.
   const [, setTick] = useState(0);
@@ -98,7 +97,21 @@ export function ResponsesSection() {
     });
   }
 
-  if (responses.length === 0) return null;
+  const needsYou = responses.filter((r) => r.state === "open");
+  const parked = responses.filter((r) => r.state === "parked");
+
+  const rows = (list: ResponseItem[]) => (
+    <ul className={styles.list}>
+      {list.map((item) => (
+        <OverviewRow
+          key={item.id}
+          item={item}
+          draft={placed.get(item.id)?.text ?? null}
+          setDraft={(text) => setDraftOf(item, text)}
+        />
+      ))}
+    </ul>
+  );
 
   return (
     <section className={styles.section} aria-label="Responses">
@@ -111,166 +124,34 @@ export function ResponsesSection() {
         <span className={styles.caret} data-open={open}>
           <CaretIcon />
         </span>
-        Responses
-        <span className={styles.count}>{responses.length}</span>
+        Needs you
+        {needsYou.length > 0 && (
+          <span className={styles.count}>{needsYou.length}</span>
+        )}
       </button>
-      {open && (
-        <ul className={styles.list}>
-          {responses.map((item) => (
-            <ResponseRow
-              key={item.id}
-              item={item}
-              draft={placed.get(item.id)?.text ?? null}
-              setDraft={(text) => setDraftOf(item, text)}
-            />
-          ))}
-        </ul>
+      {open &&
+        (needsYou.length === 0 ? (
+          <p className={styles.clear}>Nothing needs you.</p>
+        ) : (
+          rows(needsYou)
+        ))}
+      {parked.length > 0 && (
+        <>
+          <button
+            type="button"
+            className={`${styles.header} ${styles.parkedHeader}`}
+            aria-expanded={parkedOpen}
+            onClick={() => setParkedOpen(!parkedOpen)}
+          >
+            <span className={styles.caret} data-open={parkedOpen}>
+              <CaretIcon />
+            </span>
+            Parked
+            <span className={styles.plainCount}>{parked.length}</span>
+          </button>
+          {parkedOpen && rows(parked)}
+        </>
       )}
     </section>
-  );
-}
-
-function ResponseRow({
-  item,
-  draft,
-  setDraft,
-}: {
-  item: ResponseItem;
-  /** The reply being typed, `null` while the reply box is closed. */
-  draft: string | null;
-  setDraft: (text: string | null) => void;
-}) {
-  const dismissResponse = useAssistantStore((s) => s.dismissResponse);
-  const replyResponse = useAssistantStore((s) => s.replyResponse);
-  const onFloor = useLayoutStore((s) => s.mode === "floor");
-  // A removed agent has no desk to show.
-  const hasProcess = useProcessStore((s) =>
-    s.processes.some((p) => p.id === item.processId),
-  );
-  // Focused only when the user opens the reply box — never on mount, or a
-  // row that replaced one with an open draft would steal focus from
-  // whatever the user is typing in now.
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const focusOnOpen = useRef(false);
-  useEffect(() => {
-    if (focusOnOpen.current && inputRef.current) {
-      focusOnOpen.current = false;
-      inputRef.current.focus();
-    }
-  });
-  // Enter and the Send button both submit; ignore a second one while the
-  // first is in flight.
-  const [sending, setSending] = useState(false);
-  // The parts `ResponseItem::label` is made of. Blank ones are dropped as it
-  // does; the row's `white-space: nowrap` already collapses whitespace runs
-  // (a newline in a name) the way it does per part.
-  const agent = item.agent?.trim();
-  const context = [item.project, item.todo, item.source].filter((p) =>
-    p?.trim(),
-  );
-
-  async function send() {
-    if (!draft?.trim() || sending) return;
-    setSending(true);
-    // Keep the draft when the reply is refused (the store logged why).
-    const sent = await replyResponse(item.id, draft);
-    setSending(false);
-    if (sent) setDraft(null);
-  }
-
-  return (
-    <li className={styles.row}>
-      <span
-        className={styles.dot}
-        style={
-          item.agentColor
-            ? ({ "--session-color": item.agentColor } as React.CSSProperties)
-            : undefined
-        }
-      />
-      <div className={styles.body}>
-        <div className={styles.meta}>
-          <span className={styles.who}>
-            {agent && <span className={styles.agent}>{agent}</span>}
-            {context.length > 0 &&
-              `${agent ? " · " : ""}${context.join(" · ")}`}
-          </span>
-          <span className={styles.kind} data-kind={item.kind}>
-            {item.kind === "needsYou" ? "Needs you" : "FYI"}
-          </span>
-          <span className={styles.age} title={item.createdAt}>
-            {formatRelativeTime(item.createdAt, new Date(), { compact: true })}
-          </span>
-        </div>
-        <span className={styles.text}>{item.text}</span>
-        {draft !== null && (
-          <div className={styles.replyRow}>
-            <textarea
-              className={styles.replyInput}
-              rows={2}
-              ref={inputRef}
-              value={draft}
-              aria-label="Reply text"
-              placeholder="Reply to the assistant…"
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
-                } else if (e.key === "Escape") {
-                  setDraft(null);
-                }
-              }}
-            />
-            <button
-              type="button"
-              className={styles.sendBtn}
-              aria-label="Send reply"
-              title="Send reply"
-              disabled={!draft.trim() || sending}
-              onClick={() => void send()}
-            >
-              <SendIcon />
-            </button>
-          </div>
-        )}
-      </div>
-      {onFloor && item.processId && hasProcess && (
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label="Show on floor"
-          title="Show on floor"
-          onClick={() => item.processId && showAgent(item.processId)}
-        >
-          <AgentIcon />
-        </button>
-      )}
-      <button
-        type="button"
-        className={styles.iconBtn}
-        aria-label="Reply"
-        title="Reply"
-        aria-pressed={draft !== null}
-        onClick={() => {
-          focusOnOpen.current = draft === null;
-          setDraft(draft === null ? "" : null);
-        }}
-      >
-        <ReplyIcon />
-      </button>
-      <button
-        type="button"
-        className={styles.iconBtn}
-        aria-label="Mark as read"
-        title="Mark as read"
-        onClick={() => {
-          setDraft(null);
-          void dismissResponse(item.id);
-        }}
-      >
-        <CheckIcon />
-      </button>
-    </li>
   );
 }

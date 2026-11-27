@@ -37,6 +37,24 @@
   background: color-mix(in srgb, var(--text-faint) 12%, transparent);
 }
 
+.desk[data-overlay="review"] .pad {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.desk[data-overlay="parked"] .pad {
+  background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+}
+
+/* Parked: the bot is ghosted. */
+.desk[data-overlay="parked"] .pad > :first-child {
+  opacity: 0.45;
+  filter: saturate(0.2);
+}
+
+.desk[data-ring] {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
 /* A stopped terminal: grey art, like an ended agent. */
 .desk[data-stopped] .pad > :first-child {
   opacity: 0.45;
@@ -118,6 +136,17 @@
 .ask {
   background: var(--needs-bg);
   color: var(--needs-fg);
+}
+
+.check {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.hollow {
+  border: 2px solid var(--text-faint);
+  color: var(--text-faint);
+  box-sizing: border-box;
 }
 
 .bang {

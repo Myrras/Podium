@@ -11,6 +11,7 @@ vi.mock("../lib/terminalRegistry", () => ({ disposeTerminal: vi.fn() }));
 import { processRemove } from "../ipc/commands";
 import type { ProcessInfo } from "../ipc/types";
 import { disposeTerminal } from "../lib/terminalRegistry";
+import { useAssistantStore } from "./assistantStore";
 import { useProcessStore } from "./processStore";
 import { toastError } from "./toastStore";
 
@@ -73,5 +74,14 @@ describe("processStore.removeProcess", () => {
       false,
     );
     expect(toastError).toHaveBeenCalledWith("Could not remove process", "x");
+  });
+});
+
+describe("processStore.setActiveProcess", () => {
+  it("tells the assistant the agent was opened", () => {
+    const spy = vi.fn();
+    useAssistantStore.setState({ handleAgentOpened: spy });
+    useProcessStore.getState().setActiveProcess("proc-1");
+    expect(spy).toHaveBeenCalledWith("proc-1");
   });
 });

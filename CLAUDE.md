@@ -97,8 +97,8 @@ The shared skeleton (workspace shape, `justfile`, the CI callers, config files, 
 Shipped and current (v1.1.x). The counts are the source of truth: keep them in sync when you add a command or MCP tool.
 
 - ✅ **`podium-core`**: the whole domain, with the built-in MCP server (axum + rmcp streamable-HTTP, bearer auth, 38 tools). Zero Tauri dependency; unit and real-PTY/MCP integration tests on plain `cargo test`.
-- ✅ **Tauri IPC layer** (`src-tauri`): **101 commands**, per-attach terminal `Channel` streaming, global-event forwarder, locked-down CSP.
-- ✅ **Frontend** (`src/`): sidebar, work-area views, xterm.js terminals outside React, assistant chat panel, Zustand stores, typed IPC wrappers over all 101 commands.
+- ✅ **Tauri IPC layer** (`src-tauri`): **102 commands**, per-attach terminal `Channel` streaming, global-event forwarder, locked-down CSP.
+- ✅ **Frontend** (`src/`): sidebar, work-area views, xterm.js terminals outside React, assistant chat panel, Zustand stores, typed IPC wrappers over all 102 commands.
 
 ## Tech stack
 

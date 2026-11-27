@@ -29,7 +29,6 @@ pub mod scratchpad;
 pub mod subagent;
 pub mod sweep;
 pub mod todo;
-pub mod triage;
 pub mod worktree;
 
 pub use activity::ReportedState;
@@ -60,12 +59,13 @@ pub use process::scrollback::OutputActivity;
 pub use process::supervisor::SupervisorConfig;
 pub use process::{ProcessInfo, ProcessKind, ProcessSpec, ProcessStatus, RestartPolicy};
 pub use project::ProjectSections;
-pub use responses::{LabelledResponse, ResponseItem, ResponseKind};
+pub use responses::{
+    LabelledResponse, ResponseItem, ResponseKind, ResponseReason, ResponseState, Upsert,
+};
 pub use scratchpad::ScratchpadInfo;
 pub use subagent::{
     SubagentConfig, SubagentInfo, SubagentKind, SubagentMeta, SubagentPhase, SubagentSpawned,
 };
 pub use sweep::SweepConfig;
 pub use todo::{TodoComment, TodoInfo, TodoLink};
-pub use triage::TriageConfig;
 pub use worktree::WorktreeInfo;

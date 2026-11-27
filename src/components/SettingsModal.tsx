@@ -2,7 +2,7 @@
  * App settings dialog with four tabs: General (appearance, terminal, and on
  * Windows the WSL backend), Agents
  * (per-adapter command override + default arguments, the argument merge
- * mode, and when exited agents are removed), Assistant (autonomy mode, proactive nudges, external polling), and
+ * mode, and when exited agents are removed), Assistant (autonomy mode, desktop notifications, external polling), and
  * MCP (one-click registration of the stdio bridge with external clients like
  * Claude Code and Auggie).
  */
@@ -315,10 +315,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
 /**
  * Assistant tab: the same autonomy setting the chat panel's header exposes
- * (both mirror the one persisted value), whether Podium may nudge the
- * assistant unprompted, whether a message you send mid-turn waits its turn
- * or goes straight in, and the proactive external-source (Slack/Teams)
- * polling sweep's interval and per-source toggles.
+ * (both mirror the one persisted value), desktop notifications, and the
+ * external-source (Slack/Teams) check's interval and per-source toggles.
  */
 function AssistantTab() {
   const autonomy = useAssistantStore((s) => s.autonomy);
@@ -376,10 +374,10 @@ function AssistantTab() {
       </section>
 
       <section className={styles.section}>
-        <h3 className={styles.sectionLabel}>Proactivity</h3>
+        <h3 className={styles.sectionLabel}>Notifications</h3>
         <SettingToggle
-          label="Let the assistant speak first"
-          help="When on, it reports agents that finished, crashed or look stuck, sweeps for lingering to-dos, and gives a day-start summary."
+          label="Desktop notifications"
+          help="Desktop notifications when an agent asks a question, crashes or is ready to review. Messages never notify; they show in Responses. Does not affect the Slack/Teams check."
           value={proactive}
           onChange={(enabled) => void setProactivity(enabled)}
         />
@@ -388,13 +386,12 @@ function AssistantTab() {
       <section className={styles.section}>
         <h3 className={styles.sectionLabel}>External polling</h3>
         <small className={styles.rowHelp}>
-          Periodically sweeps the sources below and only speaks up when
-          something needs your action. Each sweep runs in a separate Haiku
-          session, so a shorter interval costs proportionally more.
+          Checks the sources below on a timer. Anything that needs you shows up
+          in Responses. A shorter interval costs more.
         </small>
         <div className={styles.field}>
           <label htmlFor="polling-interval">
-            Sweep interval, in minutes (0 = off)
+            Check interval, in minutes (0 = off)
           </label>
           <input
             id="polling-interval"
@@ -411,7 +408,7 @@ function AssistantTab() {
         </div>
         <SettingToggle
           label="Slack"
-          help="Lets a separate, cheaper routine check read your Slack messages and tell the assistant only when something needs you."
+          help="Check your Slack messages for things that need you."
           value={polling.slack}
           onChange={(enabled) =>
             void setPolling({ ...polling, slack: enabled })
@@ -419,7 +416,7 @@ function AssistantTab() {
         />
         <SettingToggle
           label="Teams"
-          help="Lets a separate, cheaper routine check read your Teams messages and tell the assistant only when something needs you."
+          help="Check your Teams messages for things that need you."
           value={polling.teams}
           onChange={(enabled) =>
             void setPolling({ ...polling, teams: enabled })

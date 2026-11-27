@@ -613,7 +613,9 @@ export type AssistantEvent =
    * The assistant's sub-agents changed (spawned, started, ended, dropped
    * off). Carries the whole list, oldest first — a snapshot.
    */
-  | { type: "subagentsChanged"; subagents: SubagentInfo[] };
+  | { type: "subagentsChanged"; subagents: SubagentInfo[] }
+  /** The Slack/Teams sweep started or finished; drives the bot, not the chat. */
+  | { type: "sweeping"; active: boolean };
 
 /**
  * Whether a queued item can be edited or withdrawn before delivery. Only a
@@ -674,6 +676,13 @@ export type TranscriptRole =
 /** Whether a Responses item wants the user (`podium_core::ResponseKind`). */
 export type ResponseKind = "needsYou" | "fyi";
 
+/** Where a Responses item stands (`podium_core::ResponseState`). */
+export type ResponseState = "open" | "parked" | "dismissed";
+
+/** Why a Responses item is listed (`podium_core::ResponseReason`). */
+export type ResponseReason =
+  "question" | "crashed" | "review" | "message" | "other";
+
 /**
  * One item in the assistant's Responses list (`podium_core::ResponseItem`):
  * the essential point of an agent update, filed by the assistant itself.
@@ -697,6 +706,18 @@ export interface ResponseItem {
   todoId: TodoId | null;
   /** RFC 3339 timestamp. */
   createdAt: string;
+  /**
+   * Identity: `agent:<processId>`, `msg:<slack|teams>:<conversation>:<thread>`,
+   * or for assistant-filed items `process:<id>`, `todo:<id>`, `item:<id>`.
+   */
+  key: string;
+  /** What "it changed" means for this key; may be empty. */
+  fingerprint: string;
+  /** Never `dismissed` on the list the UI gets. */
+  state: ResponseState;
+  reason: ResponseReason;
+  /** Slack/Teams author; `source` is the place. */
+  sender: string | null;
   /**
    * The non-empty parts of agent, project, to-do and source joined with
    * " · " (`ResponseItem::label`) — the name a reply carries to the session.

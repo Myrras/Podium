@@ -191,6 +191,7 @@ export default function App() {
   useEffect(() => {
     void useAssistantStore.getState().loadResponses();
     void useAssistantStore.getState().loadEnabled();
+    void useAssistantStore.getState().loadProactivity();
   }, []);
 
   // Terminals are not React-rendered, so push theme/font changes into the
@@ -335,30 +336,37 @@ export default function App() {
           <span className={styles.tagline}>agent console</span>
         </div>
         <div className={styles.titlebarRight}>
-          <button
-            type="button"
-            className={styles.settingsBtn}
-            aria-label="Assistant"
-            title="Assistant"
-            aria-pressed={assistantOpen}
-            onClick={() => setAssistantOpen(!assistantOpen)}
-          >
-            <AssistantIcon size={16} />
-          </button>
-          <button
-            type="button"
-            className={`${styles.settingsBtn} ${styles.powerBtn}`}
-            aria-label="Assistant power"
-            title={
-              assistantEnabled ? "Turn assistant off" : "Turn assistant on"
-            }
-            aria-pressed={assistantEnabled}
-            onClick={() =>
-              void useAssistantStore.getState().setEnabled(!assistantEnabled)
-            }
-          >
-            <PowerIcon size={16} />
-          </button>
+          {/* Floor mode has these on the front desk. */}
+          {mode !== "floor" && (
+            <>
+              <button
+                type="button"
+                className={styles.settingsBtn}
+                aria-label="Assistant"
+                title="Assistant"
+                aria-pressed={assistantOpen}
+                onClick={() => setAssistantOpen(!assistantOpen)}
+              >
+                <AssistantIcon size={16} />
+              </button>
+              <button
+                type="button"
+                className={`${styles.settingsBtn} ${styles.powerBtn}`}
+                aria-label="Assistant power"
+                title={
+                  assistantEnabled ? "Turn assistant off" : "Turn assistant on"
+                }
+                aria-pressed={assistantEnabled}
+                onClick={() =>
+                  void useAssistantStore
+                    .getState()
+                    .setEnabled(!assistantEnabled)
+                }
+              >
+                <PowerIcon size={16} />
+              </button>
+            </>
+          )}
           {/* macOS reaches Settings via the native menu bar (⌘,); the gear
               lives in the custom title bar on the other platforms. */}
           {!isMac && (
@@ -423,7 +431,8 @@ export default function App() {
             </main>
           </>
         )}
-        {assistantOpen && (
+        {/* In Floor mode the assistant is the front desk on the map, not a pane. */}
+        {assistantOpen && mode !== "floor" && (
           <>
             <div
               className={styles.sidebarResizer}

@@ -206,8 +206,8 @@ replaces it; refused for a queued or ended one). `waiting`:
 - never expires (it is not ended),
 - counts as live for the quit guard, the keep/stop dialog and
   `isSubagentLive`,
-- is skipped by proactivity's stuck checks (the assistant already has the
-  question).
+- is not filed as a waiting agent by proactivity (the assistant already has
+  the question).
 
 The tool answers at once that the answer arrives as the next message, so the
 sub-agent ends its turn.
@@ -220,7 +220,7 @@ via `quote_line`) worded **answer-first**. Answer it yourself with
 mention it only in the usual short report. Relay only a decision that is
 genuinely the user's (preference, risk, money, people, anything it cannot
 infer) as a needsYou `add_response` keyed by the process id with a recommended
-answer. That item is what pings the desktop, so a question does not by
+answer. That item is what reaches the user, so a question does not by
 default. The identity prompt says the same (pinned by tests).
 
 ### Answering
@@ -298,19 +298,18 @@ below still applies.
 For `trust_window` (30 s) after a start Podium watches its output
 (`shows_trust_prompt`: header, "Yes, I trust this folder" and "No, exit", no
 permission prompt, session not yet started) and reports it like a prompt seen
-on screen (`report_agent_waiting`), so proactivity raises it at once. Podium
+on screen (`report_agent_waiting`). Podium
 never answers it: the dialog focuses "No, exit" and ignores an early keypress,
 an Enter would end the session. The stuck-sub-agent nudge says the user
 answers it once, from the sub-agent list.
 
 ## Proactivity
 
-A sub-agent exit is not announced as an agent that "finished" (`is_subagent`
-early return). A stuck one (prompt, silence, escalation) gets its own wording
-(`stuck_subagent_text`): no project, no `respawn_agent` (refused for
-sub-agents). Stop it and start a fresh `spawn_subagent` carrying the answer.
-The user can answer in its terminal. `processes_with_subagents` feeds the
-dedupe so stuck reports don't restart from scratch.
+A sub-agent never gets an overview item: it is not a project agent, and
+the assistant answers its questions or files a `needsYou` item itself (see
+[Questions](#questions)). Its folder-trust dialog is reported like a prompt
+seen on screen (`report_agent_waiting`). Podium never answers it; the user
+does, once, from the sub-agent list.
 
 ## Visibility
 

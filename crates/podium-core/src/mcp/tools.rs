@@ -947,12 +947,24 @@ impl PodiumTools {
     ) -> Result<CallToolResult, McpError> {
         let project_id = parse_project_id(&p.project_id)?;
         let todo_id = parse_todo_id(&p.todo_id)?;
-        json_result(&without_comments(
-            &self
-                .orchestrator
-                .set_todo_done(project_id, todo_id, true)
-                .map_err(core_error)?,
-        ))
+        let info = self
+            .orchestrator
+            .set_todo_done(project_id, todo_id, true)
+            .map_err(core_error)?;
+        // The agent the to-do is assigned to finished it: ready to review.
+        if let Some(agent) = self.orchestrator.agent_for_todo(todo_id) {
+            if let Ok(process) = self.find_process(agent) {
+                if self.orchestrator.assistant_enabled() {
+                    self.orchestrator
+                        .file_review_response(
+                            &process,
+                            format!("{}{}", crate::responses::COMPLETED_TODO, info.text),
+                        )
+                        .map_err(core_error)?;
+                }
+            }
+        }
+        json_result(&without_comments(&info))
     }
 
     #[tool(
@@ -1045,7 +1057,7 @@ impl PodiumTools {
     }
 
     #[tool(
-        description = "Report back to the personal assistant when you finish your work, or when you are blocked and need the user. Pass your own process_id (the PODIUM_PROCESS_ID environment variable) and a short summary of what you did and what is left — no code or diffs. Delivered like a proactivity nudge: straight into a live assistant conversation, starting one if none is running, so the user hears about it when it happens rather than the next time they type."
+        description = "Report back to the personal assistant when you finish your work, or when you are blocked and need the user. Pass your own process_id (the PODIUM_PROCESS_ID environment variable) and a short summary of what you did and what is left — no code or diffs. Files a \"ready to review\" item in the user's overview; nothing is written to the chat."
     )]
     pub async fn report_to_assistant(
         &self,
@@ -1075,33 +1087,9 @@ impl PodiumTools {
             ));
         }
         let process = self.find_process(process_id)?;
-        let project = self
-            .orchestrator
-            .list_projects()
-            .into_iter()
-            .find(|proj| proj.id == process.project_id)
-            .map(|proj| proj.name)
-            .unwrap_or_else(|| "a closed project".to_string());
-        // Still delivered — the assistant should know what happened — but it
-        // must not tell the user about an agent they are looking at.
-        let viewing = if process.viewing {
-            " The user is viewing this agent right now: do not mention it to them and do \
-             not file a Responses item about it."
-        } else {
-            ""
-        };
-        // Name, project and summary are agent-written: quoted onto one line,
-        // so a report cannot start a line that reads like Podium speaking.
         self.orchestrator
-            .assistant_nudge(format!(
-                "[Podium] The agent {} (process {}) in project {} reports (its own words): {} \
-                 Tell the user in a line or two.{viewing}",
-                crate::assistant::quote_line(&process.name),
-                process.id,
-                crate::assistant::quote_line(&project),
-                crate::assistant::quote_line(summary)
-            ))
-            .await;
+            .file_review_response(&process, summary.to_string())
+            .map_err(core_error)?;
         Ok(text_result("Reported to the assistant.".to_string()))
     }
 

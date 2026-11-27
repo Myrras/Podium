@@ -30,6 +30,7 @@ import type {
   ProjectId,
 } from "../ipc/types";
 import { disposeTerminal } from "../lib/terminalRegistry";
+import { useAssistantStore } from "./assistantStore";
 import { useLayoutStore } from "./layoutStore";
 import { toastError } from "./toastStore";
 
@@ -170,6 +171,7 @@ export const useProcessStore = create<ProcessState>((set) => ({
       useLayoutStore.getState().clearOpenScratchpad();
       useLayoutStore.getState().clearOpenBoard();
       useLayoutStore.getState().clearOpenSubagent();
+      useAssistantStore.getState().handleAgentOpened(id);
     }
     set({ activeProcessId: id });
   },

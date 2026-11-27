@@ -144,7 +144,6 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | Command                 | Args                                        | Returns           |
 | ----------------------- | ------------------------------------------- | ----------------- |
 | `assistant_send`        | `{ text, attachments }` (`Attachment[]`)    | `bool` — delivered, not queued (reply streams as `assistant:event`) |
-| `assistant_day_start`   | –                                           | `bool` — as `assistant_send` |
 | `assistant_transcript`  | –                                           | `TranscriptEntry[]` |
 | `assistant_new_conversation` | `{ stopSubagents }` (false = sub-agents keep running into the new conversation) | – |
 | `assistant_subagents_list` | –                                         | `SubagentInfo[]` (oldest first; changes stream as `subagentsChanged`) |
@@ -165,7 +164,7 @@ maps camelCase JS argument keys to the snake_case Rust parameters.
 | `assistant_queue_remove` | `{ id }`                                   | –                 |
 | `assistant_interrupt`   | –                                           | – (queue drain streams as `assistant:event`) |
 | `assistant_responses_list` | –                                        | `ResponseItem[]` (newest first) |
-| `assistant_response_dismiss` | `{ id }` (unknown id: `responseNotFound`) | –              |
+| `assistant_set_response_state` | `{ key, state }` (`open`/`parked`/`dismissed`; unknown key: `responseNotFound`) | – |
 | `assistant_response_reply` | `{ id, text }`                           | `bool` — as `assistant_send` |
 
 ## Window

@@ -1,0 +1,152 @@
+import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(() => Promise.resolve(null)),
+}));
+
+import { useSelectionStore } from "../lib/selection";
+import { useProjectStore } from "../state/projectStore";
+import { useAssistantStore } from "../state/assistantStore";
+import { AssistantChat } from "./AssistantChat";
+import { Popover } from "./Popover";
+
+const initial = useAssistantStore.getState();
+
+function seed(enabled: boolean) {
+  useAssistantStore.setState(
+    {
+      ...initial,
+      enabled,
+      // Mount-time loads: no backend here.
+      loadAutonomy: vi.fn(() => Promise.resolve()),
+      hydrate: vi.fn(() => Promise.resolve()),
+      loadResponses: vi.fn(() => Promise.resolve()),
+    },
+    true,
+  );
+}
+
+const renderChat = () =>
+  render(
+    <AssistantChat header={(controls) => <nav>{controls}</nav>}>
+      <p>Host list</p>
+    </AssistantChat>,
+  );
+
+describe("AssistantChat", () => {
+  beforeEach(() => seed(true));
+
+  it("hands its controls to the host's header and renders the host's children", () => {
+    renderChat();
+    const nav = screen.getByRole("navigation");
+    expect(nav).toContainElement(screen.getByLabelText("Autonomy"));
+    expect(nav).toContainElement(screen.getByLabelText("Assistant memory"));
+    expect(screen.getByText("Host list")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message the assistant")).toBeInTheDocument();
+  });
+
+  it("keeps unsent composer text across unmount and clears it on send", async () => {
+    const user = userEvent.setup();
+    const send = vi.fn(() => Promise.resolve(true));
+    useAssistantStore.setState({ send });
+    const first = renderChat();
+    await user.type(
+      screen.getByLabelText("Message the assistant"),
+      "half a thought",
+    );
+    first.unmount();
+    renderChat();
+    const box = screen.getByLabelText("Message the assistant");
+    expect(box).toHaveValue("half a thought");
+    await user.type(box, "{Enter}");
+    expect(send).toHaveBeenCalled();
+    expect(screen.getByLabelText("Message the assistant")).toHaveValue("");
+  });
+
+  it("shows the off state instead of children, log and composer", () => {
+    seed(false);
+    renderChat();
+    expect(screen.getByText("The assistant is off")).toBeInTheDocument();
+    expect(screen.queryByText("Host list")).toBeNull();
+    expect(screen.queryByLabelText("Message the assistant")).toBeNull();
+    expect(screen.getByLabelText("Autonomy")).toBeDisabled();
+    expect(screen.queryByLabelText("Assistant memory")).toBeNull();
+  });
+
+  it("Esc cancels a waiting-message edit without saving or closing the popover", async () => {
+    const user = userEvent.setup();
+    const editPending = vi.fn(() => Promise.resolve());
+    useAssistantStore.setState({
+      editPending,
+      pending: [
+        { id: "q1", kind: "user", text: "first", attachments: [] },
+      ] as never,
+    });
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} title="Chat" onClose={onClose}>
+        <AssistantChat header={(c) => <nav>{c}</nav>}>
+          <p>Host</p>
+        </AssistantChat>
+      </Popover>,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Edit waiting message" }),
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Edit waiting message" }),
+      " more{Escape}",
+    );
+    expect(screen.getByText("first")).toBeInTheDocument();
+    expect(editPending).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("shows a dismissed project chip again and focuses on a focus request", async () => {
+    useProjectStore.setState({
+      projects: [{ id: "p1", name: "Webshop", root: "/fake/webshop" }],
+    } as never);
+    useSelectionStore.setState({
+      text: "",
+      items: [{ kind: "project", projectId: "p1", id: "p1" }],
+    });
+    const user = userEvent.setup();
+    renderChat();
+    await user.click(
+      screen.getByLabelText("Remove Project: Webshop from context"),
+    );
+    expect(screen.queryByText("Project: Webshop")).toBeNull();
+
+    act(() => useAssistantStore.getState().requestFocus());
+    expect(screen.getByText("Project: Webshop")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message the assistant")).toHaveFocus();
+    useSelectionStore.setState({ items: [] });
+  });
+
+  it("sends the project context once and drops its chip afterwards", async () => {
+    useProjectStore.setState({
+      projects: [{ id: "p1", name: "Webshop", root: "/fake/webshop" }],
+    } as never);
+    useSelectionStore.setState({
+      text: "",
+      items: [{ kind: "project", projectId: "p1", id: "p1" }],
+    });
+    const send = vi.fn(() => Promise.resolve(true));
+    useAssistantStore.setState({ send });
+    const user = userEvent.setup();
+    renderChat();
+    const input = screen.getByLabelText("Message the assistant");
+    await user.type(input, "one{Enter}");
+    expect(send).toHaveBeenLastCalledWith("one", [
+      expect.objectContaining({ kind: "text", name: "Project: Webshop" }),
+    ]);
+    expect(screen.queryByText("Project: Webshop")).toBeNull();
+    await user.type(input, "two{Enter}");
+    expect(send).toHaveBeenLastCalledWith("two", []);
+  });
+});

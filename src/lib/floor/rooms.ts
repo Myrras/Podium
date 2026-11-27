@@ -2,6 +2,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 
 import type {
   ProcessId,
+  ResponseItem,
   ProcessInfo,
   ProjectId,
   ProjectInfo,
@@ -11,6 +12,7 @@ import {
   UNTRACKED_ACTIVITY,
   useAgentActivityStore,
 } from "../../state/agentActivityStore";
+import { useAssistantStore } from "../../state/assistantStore";
 import { useLayoutStore } from "../../state/layoutStore";
 import { useProcessStore } from "../../state/processStore";
 import { useProjectStore } from "../../state/projectStore";
@@ -40,6 +42,26 @@ export function deskState(
       return "idle";
   }
 }
+
+/** What the assistant's `agent:<pid>` Responses item adds to a desk: parked (quiet) or ready to review. */
+export type DeskOverlay = "parked" | "review";
+
+export function overlayOf(
+  responses: ResponseItem[],
+  processId: ProcessId,
+): DeskOverlay | null {
+  const item = responses.find((r) => r.key === `agent:${processId}`);
+  if (item?.state === "parked") return "parked";
+  return item?.state === "open" && item.reason === "review" ? "review" : null;
+}
+
+/** Ids of the agents parked right now; they count for nobody. */
+const parkedIds = (responses: ResponseItem[], processes: ProcessInfo[]) =>
+  new Set(
+    processes
+      .filter((p) => overlayOf(responses, p.id) === "parked")
+      .map((p) => p.id),
+  );
 
 /** The desk states and their key, kept per processes and activity object: one pass per change, shared by every subscriber. */
 let states: {
@@ -91,6 +113,7 @@ function buildRooms(
   processes: ProcessInfo[],
   saved: Record<string, [number, number]>,
   state: (p: ProcessInfo) => DeskState,
+  parked: Set<ProcessId>,
 ): RoomModel[] {
   const parts = projects.map((project) => {
     const own = processes.filter((p) => p.projectId === project.id);
@@ -98,7 +121,8 @@ function buildRooms(
     const agents = kind("agent");
     const terminals = project.sections.terminals ? kind("terminal") : [];
     const services = kind("service");
-    const states = agents.map(state);
+    // A parked agent is quiet: it adds to no count.
+    const states = agents.filter((p) => !parked.has(p.id)).map(state);
     // The fixtures RoomWall hangs, so the room is wide enough for them.
     const fixtures = (
       [
@@ -163,6 +187,7 @@ let cache: {
   processes: ProcessInfo[];
   saved: Record<string, [number, number]>;
   states: string;
+  parked: string;
   rooms: RoomModel[];
 } | null = null;
 
@@ -176,7 +201,10 @@ export function getRooms(): RoomModel[] {
     processes,
     useAgentActivityStore.getState().details,
   );
+  const parked = parkedIds(useAssistantStore.getState().responses, processes);
+  const parkedKey = [...parked].join();
   if (
+    cache?.parked === parkedKey &&
     cache?.projects === projects &&
     cache.processes === processes &&
     cache.saved === saved &&
@@ -186,8 +214,12 @@ export function getRooms(): RoomModel[] {
   const byId = new Map(processes.map((p, i) => [p.id, list[i]]));
   const prev = new Map(cache?.rooms.map((r) => [r.project.id, r]));
   // Keep an unchanged room's object, so memo(Room) skips it.
-  const rooms = buildRooms(projects, processes, saved, (p) =>
-    byId.get(p.id)!,
+  const rooms = buildRooms(
+    projects,
+    processes,
+    saved,
+    (p) => byId.get(p.id)!,
+    parked,
   ).map((r) => {
     const old = prev.get(r.project.id);
     return old && sameRoom(old, r) ? old : r;
@@ -200,6 +232,7 @@ export function getRooms(): RoomModel[] {
     processes,
     saved,
     states: key,
+    parked: parkedKey,
     rooms: same ? cache!.rooms : rooms,
   };
   return cache.rooms;
@@ -215,6 +248,9 @@ export const subscribeRooms = (onChange: () => void) => {
       if (s.floorPositions !== prev.floorPositions) onChange();
     }),
     useAgentActivityStore.subscribe(onChange),
+    useAssistantStore.subscribe((s, prev) => {
+      if (s.responses !== prev.responses) onChange();
+    }),
   ];
   return () => off.forEach((f) => f());
 };

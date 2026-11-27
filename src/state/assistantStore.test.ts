@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mock the IPC command layer so the store talks to a fixture, not Tauri.
 vi.mock("../ipc/commands", () => ({
   assistantSend: vi.fn(() => Promise.resolve(true)),
-  assistantDayStart: vi.fn(() => Promise.resolve(true)),
   assistantProactivityGet: vi.fn(() => Promise.resolve(true)),
   assistantProactivitySet: vi.fn((enabled: boolean) =>
     Promise.resolve(enabled),
@@ -23,7 +22,7 @@ vi.mock("../ipc/commands", () => ({
   assistantNewConversation: vi.fn(() => Promise.resolve()),
   assistantTranscript: vi.fn(() => Promise.resolve([])),
   assistantResponsesList: vi.fn(() => Promise.resolve([])),
-  assistantResponseDismiss: vi.fn(() => Promise.resolve()),
+  assistantSetResponseState: vi.fn(() => Promise.resolve()),
   assistantResponseReply: vi.fn(() => Promise.resolve(true)),
   assistantSubagentsList: vi.fn(() => Promise.resolve([])),
   assistantSubagentStop: vi.fn(() => Promise.resolve()),
@@ -36,7 +35,6 @@ vi.mock("../ipc/commands", () => ({
 }));
 
 import {
-  assistantDayStart,
   assistantEnabledSet,
   assistantInterrupt,
   assistantPollingGet,
@@ -46,7 +44,7 @@ import {
   assistantQueueEdit,
   assistantQueueRemove,
   assistantQueueSendNow,
-  assistantResponseDismiss,
+  assistantSetResponseState,
   assistantResponseReply,
   assistantNewConversation,
   assistantResponsesList,
@@ -69,6 +67,7 @@ vi.mock("./agentActivityStore", () => ({
   viewedAgentId: () => viewed(),
 }));
 
+import { useFloorStore } from "./floorStore";
 import { useLayoutStore } from "./layoutStore";
 import { resetSeenResponses, useAssistantStore } from "./assistantStore";
 
@@ -85,6 +84,11 @@ function responseItem(overrides: Partial<ResponseItem> = {}): ResponseItem {
     processId: "proc-1",
     todoId: "todo-1",
     createdAt: "2026-01-01T10:00:00Z",
+    key: "process:proc-1",
+    fingerprint: "",
+    state: "open",
+    reason: "review",
+    sender: null,
     label: "Invoice export · Webshop · Export invoices",
     ...overrides,
   };
@@ -97,8 +101,6 @@ describe("assistantStore", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     vi.mocked(assistantSend).mockClear();
     vi.mocked(assistantSend).mockResolvedValue(true);
-    vi.mocked(assistantDayStart).mockClear();
-    vi.mocked(assistantDayStart).mockResolvedValue(true);
     vi.mocked(assistantProactivityGet).mockClear();
     vi.mocked(assistantProactivitySet).mockClear();
     vi.mocked(assistantProactivitySet).mockImplementation((enabled) =>
@@ -129,12 +131,21 @@ describe("assistantStore", () => {
     });
   });
 
+  it("mirrors the Slack/Teams sweep from sweeping events, outside the chat", () => {
+    useAssistantStore.setState({ sweeping: false });
+    useAssistantStore.getState().apply({ type: "sweeping", active: true });
+    expect(useAssistantStore.getState().sweeping).toBe(true);
+    useAssistantStore.getState().apply({ type: "sweeping", active: false });
+    expect(useAssistantStore.getState().sweeping).toBe(false);
+    expect(useAssistantStore.getState().messages).toEqual([]);
+  });
+
   describe("responses", () => {
     beforeEach(() => {
       vi.mocked(assistantResponsesList).mockReset();
       vi.mocked(assistantResponsesList).mockResolvedValue([]);
-      vi.mocked(assistantResponseDismiss).mockReset();
-      vi.mocked(assistantResponseDismiss).mockResolvedValue(undefined);
+      vi.mocked(assistantSetResponseState).mockReset();
+      vi.mocked(assistantSetResponseState).mockResolvedValue(undefined);
       vi.mocked(assistantResponseReply).mockReset();
       vi.mocked(assistantResponseReply).mockResolvedValue(true);
     });
@@ -168,8 +179,11 @@ describe("assistantStore", () => {
     it("dismisses optimistically and reloads the backend's list on failure", async () => {
       useAssistantStore.setState({ responses: [responseItem()] });
 
-      await useAssistantStore.getState().dismissResponse("r-1");
-      expect(assistantResponseDismiss).toHaveBeenCalledWith("r-1");
+      await useAssistantStore.getState().dismissResponse("process:proc-1");
+      expect(assistantSetResponseState).toHaveBeenCalledWith(
+        "process:proc-1",
+        "dismissed",
+      );
       expect(useAssistantStore.getState().responses).toEqual([]);
 
       // Superseded meanwhile: the backend now holds a newer item, and the
@@ -177,16 +191,74 @@ describe("assistantStore", () => {
       const newer = responseItem({ id: "r-2", text: "newer" });
       useAssistantStore.setState({ responses: [responseItem()] });
       vi.mocked(assistantResponsesList).mockResolvedValueOnce([newer]);
-      vi.mocked(assistantResponseDismiss).mockRejectedValueOnce({
+      vi.mocked(assistantSetResponseState).mockRejectedValueOnce({
         kind: "responseNotFound",
         message: "no such item",
       });
-      await useAssistantStore.getState().dismissResponse("r-1");
+      await useAssistantStore.getState().dismissResponse("process:proc-1");
       expect(useAssistantStore.getState().responses).toEqual([newer]);
       expect(useAssistantStore.getState().messages.slice(-1)[0]).toMatchObject({
         role: "notice",
         text: "no such item",
       });
+    });
+
+    it("handleAgentOpened dismisses only the agent's open review item", () => {
+      const review = responseItem({ key: "agent:proc-1" });
+      const asking = responseItem({
+        id: "r-2",
+        key: "agent:proc-2",
+        processId: "proc-2",
+        reason: "question",
+      });
+      useAssistantStore.setState({ responses: [review, asking] });
+      vi.mocked(assistantSetResponseState).mockClear();
+
+      useAssistantStore.getState().handleAgentOpened("proc-2");
+      expect(assistantSetResponseState).not.toHaveBeenCalled();
+
+      useAssistantStore.getState().handleAgentOpened("proc-1");
+      expect(assistantSetResponseState).toHaveBeenCalledWith(
+        "agent:proc-1",
+        "dismissed",
+      );
+    });
+
+    it("parks and brings back an item by key", async () => {
+      useAssistantStore.setState({ responses: [responseItem()] });
+
+      await useAssistantStore.getState().parkResponse("process:proc-1");
+      expect(assistantSetResponseState).toHaveBeenLastCalledWith(
+        "process:proc-1",
+        "parked",
+      );
+      expect(useAssistantStore.getState().responses[0].state).toBe("parked");
+
+      await useAssistantStore.getState().unparkResponse("process:proc-1");
+      expect(assistantSetResponseState).toHaveBeenLastCalledWith(
+        "process:proc-1",
+        "open",
+      );
+      expect(useAssistantStore.getState().responses[0].state).toBe("open");
+    });
+
+    it("pings only for crashed and review items, never for question", async () => {
+      await useAssistantStore.getState().loadResponses();
+      const apply = (items: ResponseItem[]) =>
+        useAssistantStore.getState().apply({ type: "responsesChanged", items });
+      apply([
+        responseItem({ id: "m", reason: "message" }),
+        responseItem({ id: "o", reason: "other" }),
+        // A waiting agent already pings via agentActivityStore.
+        responseItem({ id: "q", reason: "question" }),
+      ]);
+      expect(notifyAssistant).not.toHaveBeenCalled();
+
+      for (const reason of ["crashed", "review"] as const) {
+        notifyAssistant.mockClear();
+        apply([responseItem({ id: `n-${reason}`, reason })]);
+        expect(notifyAssistant).toHaveBeenCalledOnce();
+      }
     });
 
     it("adds a reply row when the reply is delivered", async () => {
@@ -271,41 +343,6 @@ describe("assistantStore", () => {
     expect(
       useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
     ).toEqual([["user", "hello"]]);
-  });
-
-  it("shows the day-start turn as soon as the backend takes it", async () => {
-    await useAssistantStore.getState().dayStart();
-
-    expect(assistantDayStart).toHaveBeenCalled();
-    expect(
-      useAssistantStore.getState().messages.map((m) => [m.role, m.text]),
-    ).toEqual([["user", "Start my day"]]);
-    expect(useAssistantStore.getState().busy).toBe(true);
-  });
-
-  it("shows no day-start bubble when the backend queued it instead", async () => {
-    vi.mocked(assistantDayStart).mockResolvedValueOnce(false);
-    await useAssistantStore.getState().dayStart();
-
-    // It is waiting behind a running turn, and the waiting row shows it.
-    expect(useAssistantStore.getState().messages).toEqual([]);
-    expect(useAssistantStore.getState().busy).toBe(false);
-  });
-
-  it("reports a failed day-start trigger as a notice", async () => {
-    vi.mocked(assistantDayStart).mockRejectedValueOnce({
-      kind: "io",
-      message: "could not spawn the session",
-    });
-    await useAssistantStore.getState().dayStart();
-
-    const msgs = useAssistantStore.getState().messages;
-    expect(msgs[msgs.length - 1]).toMatchObject({
-      role: "notice",
-      text: "could not spawn the session",
-    });
-    // The optimistic bubble must not leave the panel stuck on "thinking…".
-    expect(useAssistantStore.getState().busy).toBe(false);
   });
 
   it("tracks the running tool as activity, cleared at turn end", () => {
@@ -678,6 +715,17 @@ describe("assistantStore", () => {
       expect(notifyAssistant).not.toHaveBeenCalled();
     });
 
+    it("stays silent while desktop notifications are off", () => {
+      useAssistantStore.setState({ proactive: false });
+
+      snapshot(responseItem({ reason: "crashed" }));
+      expect(notifyAssistant).not.toHaveBeenCalled();
+
+      useAssistantStore.setState({ proactive: true });
+      snapshot(responseItem({ id: "r-2", reason: "crashed" }));
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
     it("pings for a new needs-you item with its text", () => {
       snapshot(responseItem());
 
@@ -807,6 +855,21 @@ describe("assistantStore", () => {
       snapshot(responseItem());
 
       expect(notifyAssistant).toHaveBeenCalledOnce();
+    });
+
+    it("in Floor mode only the front desk popover counts as visible", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      useLayoutStore.setState({ mode: "floor", assistantOpen: true });
+      useFloorStore.setState({ deskPopover: null });
+      snapshot(responseItem());
+      expect(notifyAssistant).toHaveBeenCalledOnce();
+
+      notifyAssistant.mockClear();
+      useFloorStore.setState({ deskPopover: "chat" as never });
+      snapshot(responseItem());
+      expect(notifyAssistant).not.toHaveBeenCalled();
+      useFloorStore.setState({ deskPopover: null });
+      useLayoutStore.setState({ mode: "project" });
     });
 
     it("skips an item about the agent the user is viewing", () => {

@@ -38,6 +38,7 @@ webview as `assistant:event`.
 | `queueItemDelivered` | a waiting message's turn came up |
 | `responsesChanged` | the Responses list changed |
 | `subagentsChanged` | the sub-agent list changed |
+| `sweeping` | the Slack/Teams sweep started or finished (`active`); drives the bot only |
 
 Unparseable lines (a chatty shell profile) are skipped, stderr is dropped,
 and the binary + cwd are injectable (`AssistantConfig`) so integration tests
@@ -65,7 +66,8 @@ never uses the CLI's own `Agent` tool (`Agent` and its old name `Task` are in
 its `--disallowedTools`, beside `Edit,Write,NotebookEdit,Bash`). See
 [Assistant sub-agents](assistant-subagents.md).
 
-It is told to keep agent updates to warnings and done-ness, how to stop
+It answers what the user asks and never writes to the chat on its own (Podium
+files the overview itself, see [Responses](#responses)). It is told how to stop
 agents safely (only the project in question; check the output for follow-up
 work and complete the to-do first), and how to pass on a push go-ahead. That
 go-ahead is a message to an existing Claude Code agent, which accepts it once
@@ -77,9 +79,8 @@ not Claude Code, the go-ahead goes to a fresh `claude-code` agent (no
 All of that is wording, not a gate — pinned by unit tests so a later prompt
 edit cannot quietly drop it.
 
-The notification policy the prompt spells out (what it may file as a
-Responses item) is described in
-[Assistant memory and proactivity](assistant-memory-and-proactivity.md#desktop-notifications).
+Which items reach the desktop is described in
+[Assistant memory and proactivity](assistant-memory-and-proactivity.md#notifications).
 
 ## MCP endpoint
 
@@ -241,7 +242,7 @@ messages were never delivered via `queueNotice`.
 The frontend gets the whole snapshot on every change (`queueChanged`), plus
 `queueItemDelivered` when a *waiting* message's turn comes up — the very
 first, immediately-delivered message needs no such event, since the sender
-already shows it itself. `assistant_send` (and `assistant_day_start`)
+already shows it itself. `assistant_send`
 therefore **return whether the message was delivered rather than queued**,
 and the panel adds its chat bubble only on `true`.
 
@@ -327,12 +328,12 @@ idempotent, since a failed write re-queues the same item.
 
 ## Responses
 
-Responses (`responses.rs`) are the short "needs you" / "FYI" points the
-assistant files via the `add_response` MCP tool, only for what the user
-actually needs (the identity prompt's rules, pinned by unit tests — see
-[Desktop notifications come from the Responses list
-only](assistant-memory-and-proactivity.md#desktop-notifications)). Podium itself files one per
-parked proposal. The detail stays in its chat reply.
+Responses (`responses.rs`) are the user's overview of what needs them,
+shown as "Needs you" and "Parked". Podium files most of it itself
+(agent asks, crashes, "ready to review", Slack/Teams messages; see
+[proactivity](assistant-memory-and-proactivity.md#items)) and a parked
+proposal; the assistant files one via `add_response` only for a sub-agent
+decision that is genuinely the user's. The detail stays in the chat.
 
 ### Storage and context
 
@@ -342,25 +343,41 @@ survive a restart *and* the blank conversation every launch starts with —
 they are the user's to clear. Agent, project and to-do names (and the agent's
 colour) are resolved when the item is added, so an item about an exited agent
 still reads right. A live agent's own project wins over a mismatched
-`project_id`, and a context that is already gone (agent exited, project
-closed, to-do removed) is dropped from the item rather than refusing it.
-Agent and project names are capped at 40 chars, the to-do at 60, the source
-at 40.
+`project_id`, and a context that is already gone is dropped from the item
+rather than refusing it. Agent and project names are capped at 40 chars, the
+to-do at 60, the source at 40.
 
-### Superseding
+### Keys, fingerprint and state
 
-A newer item with the same `processId` or `todoId` replaces the open one,
-with these exceptions:
+Each item has a `key` (identity), a `fingerprint` (what "it changed" means)
+and a `state` (`open`, `parked`, `dismissed`), plus a `reason` (`question`,
+`crashed`, `review`, `message`, `other`). Keys: `agent:<processId>`,
+`msg:<source>:<conversation>:<thread>`, and for what the assistant files
+the old supersede identity (`process:<id>`, `todo:<id>`, `item:<id>`; a file
+from before keys derives it on load).
 
-- An FYI never replaces an open "needs you" (both stay).
-- An item about an agent is only replaced by another agent's item (the same
-  agent, or one on the same to-do, as after `respawn_agent`), never by an
-  agent-less one such as the sweep's.
-- An item with neither key never replaces anything.
+`ResponseStore::upsert` files by key:
 
-The nudges Podium sends name the agent's process id (and the lingering-to-do
-sweep each to-do's and project's id) so the assistant can pass them as the
-supersede key.
+- same key and fingerprint: `Unchanged`, nothing written or published, and
+  the state stays (a dismissed item stays dismissed after a restart);
+- same key, new fingerprint: `Changed`, replaced and back to **open**
+  ("Park until it changes" ends here);
+- unknown key: `New`.
+
+`reconcile(prefix, live)` drops every item under a prefix that is not live
+(agents that are gone, messages no longer waiting). The list is capped at
+100, dismissed items go first. The assistant's own items keep the old rules
+(`superseded_by`): a newer item about the same agent or to-do replaces the
+open one, an FYI never replaces a needs-you, and an item about an agent is
+only replaced by another agent's.
+
+### State, park and dismiss
+
+`assistant_set_response_state { key, state }` parks, unparks (`open`) or
+dismisses; an unknown key is `responseNotFound`. Dismissing is **soft**: the
+item stays on disk (so the same fingerprint does not bring it back) and the
+snapshot omits it. Parked items are listed but quiet: they ping nothing and
+count for nobody (Floor desks show them asleep).
 
 ### The add_response tool
 
@@ -388,8 +405,8 @@ in the order the changes happened, and a write that fails leaves the list
 
 ### Dismissing and replying
 
-The user either ticks an item (`assistant_response_dismiss`, it is just
-removed) or replies (`assistant_response_reply`). The reply is an ordinary
+The user either dismisses an item (`assistant_set_response_state`, soft)
+or replies (`assistant_response_reply`). The reply is an ordinary
 user turn through `send`'s path (`AssistantManager::send_reply`, so it queues
 like any message) carrying the answered `ResponseItem` itself. The session
 sees it as `[Reply to your Responses item — "<label>": "<item text>"]` + the
@@ -410,6 +427,17 @@ on the `AssistantStore`: the queue code needs it. `restore` skips an item a
 *newer* one has since replaced (an older item beside it never counts) and
 keeps the 100-item cap by dropping the oldest other item, never the restored
 one.
+
+An agent's item (`agent:` key) is not removed by `take` but left dismissed:
+the watcher re-files the same waiting episode every tick, and only the
+dismissed item keeps that `Unchanged`, out of sight. A dismissed agent item
+cannot be taken again (the double-submit guard), and `restore` finds it by id
+and opens it in place.
+
+Opening an agent in the UI clears its open `review` item (the blue tick):
+`assistantStore.handleAgentOpened`, called from `floorStore.openTerminal` and
+`processStore.setActiveProcess`, so every path (overview, front desk, desk,
+sidebar) is covered. `question` and `crashed` items stay.
 
 ### Labels and the panel
 

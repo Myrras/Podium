@@ -174,8 +174,8 @@ pub fn process_activity(state: State<'_, AppState>) -> HashMap<ProcessId, Output
 }
 
 /// The UI saw an input prompt on this agent's screen. Fire-and-forget: the
-/// core records it so the proactivity watcher can tell the user the agent is
-/// blocked, instead of waiting out its five-minute silence timer.
+/// core records it so the proactivity watcher can file the agent as waiting
+/// on the user.
 #[tauri::command]
 pub fn process_report_waiting(state: State<'_, AppState>, process_id: ProcessId) {
     state.orchestrator.report_agent_waiting(process_id);

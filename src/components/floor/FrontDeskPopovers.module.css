@@ -1,0 +1,22 @@
+/* Capped so the list never runs off the top of the window above the desk. */
+.list {
+  max-height: min(470px, calc(100vh - 200px));
+  overflow-y: auto;
+}
+
+/* A fixed height, so the log scrolls inside and the composer stays in view. */
+.chat {
+  height: min(560px, calc(100vh - 200px));
+}
+
+/* The house bot's state line, muted after the title. */
+.line {
+  margin-left: var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.line[data-state="waiting"] {
+  color: var(--warning);
+}

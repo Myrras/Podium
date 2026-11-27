@@ -26,7 +26,13 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   reset). The first fit skips when `moved` is set; it checks the flag, not the
   camera object, because StrictMode's simulated unmount runs `reset()`.
   `setCamera` defaults to `focus: null, animate: false`; `openTerminal` closes
-  the popover.
+  the popovers.
+- `floorStore.deskPopover` (`"chat" | "list" | null`): the front desk's
+  popover. `openDesk`/`toggleDesk` clear `popover` and `openPopover` clears
+  `deskPopover`, so one popover is open at a time. The bot, the queue's +N button
+  and the nameplate + (`startAgentIn`: `setDraft` then `openDesk("chat")`) open them.
+- The front desk holds the assistant's power button (`enabled`); the title bar
+  shows the Assistant and power buttons only in Project mode.
 - The pinned desk is `processStore.activeProcessId`; the open modal is
   `floorStore.terminalId`.
 
@@ -69,8 +75,13 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
 
 ## Components
 
-`Floor` → `FloorHeader`, `FloorMap` + `FloorWaypoints`, then `FloorStatusBar`,
-`FloorPopovers`, `FloorTerminalModal`, `FloorBoardModal`, `FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
+`Floor` → `FloorHeader`, `FloorMap` + `FloorWaypoints` + `FrontDesk`, then
+`FloorStatusBar`, `FloorPopovers`,
+`FrontDeskPopovers` (anchored on `data-desk="<chat|list>"`: `ResponsesSection`,
+or `AssistantChat` with its controls in the popover header; after its first open
+the chat popover stays mounted, hidden and inert via `Popover`'s `open={false}`,
+so reopening keeps log, scroll and state without refetching), `FloorTerminalModal`,
+`FloorBoardModal`, `FloorAgentModals`. `FloorMap` → `Room` → `RoomNameplate`, `RoomWall`, `Desk`.
 
 - The Git board (`openBoard`) is `FloorBoardModal`: a portal overlay like the
   terminal modal, with `BoardRefresh` and `GitBoard` in a card sized by

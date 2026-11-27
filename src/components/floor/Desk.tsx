@@ -1,12 +1,13 @@
 import type { ReactElement } from "react";
 import type { ProcessInfo } from "../../ipc/types";
-import { deskState } from "../../lib/floor/rooms";
+import { deskState, overlayOf } from "../../lib/floor/rooms";
 import { formatSince, pillState } from "../../lib/processStatus";
 import { useProcessActivity } from "../../lib/useAgentActivity";
 import { followCamera } from "../../lib/floor/follow";
 import { useContextMenu } from "../../lib/useContextMenu";
 import { useNow } from "../../lib/useNow";
 import { useFloorStore } from "../../state/floorStore";
+import { useAssistantStore } from "../../state/assistantStore";
 import { useProcessStore } from "../../state/processStore";
 import { DESK_H } from "../../lib/floor/geometry";
 import { openProcess, processMenu } from "../../lib/floor/menus";
@@ -49,10 +50,20 @@ export function Desk({
 }) {
   const act = useProcessActivity(process.id);
   const active = useProcessStore((s) => s.activeProcessId === process.id);
+  const overlay = useAssistantStore((s) =>
+    process.kind.kind === "agent" ? overlayOf(s.responses, process.id) : null,
+  );
+  const ringed = useFloorStore((s) => s.hoverDesk === process.id);
   const now = useNow(act.sinceMs, 15_000);
 
   const terminal = process.kind.kind === "terminal";
-  const state = deskState(process, act);
+  const parked = overlay === "parked";
+  // A parked agent shows the asleep bot, whatever it is really doing.
+  const state = parked ? "idle" : deskState(process, act);
+  // The live state is the truth: review shows only when nothing needs you or crashed.
+  const review =
+    overlay === "review" && state !== "needs" && state !== "crashed";
+  const shown = parked ? "parked" : review ? "review" : null;
   const ps = pillState(process.status, process.kind.kind, act);
   const stopped =
     terminal && (ps === "exited" || ps === "crashed" || ps === "notStarted");
@@ -62,11 +73,15 @@ export function Desk({
     ? stopped
       ? "stopped"
       : "terminal"
-    : state === "ended" || state === "crashed"
-      ? state
-      : `${state === "needs" ? "waiting" : state}${since ? ` ${since}` : ""}`;
+    : parked
+      ? "parked"
+      : review
+        ? "ready to review"
+        : state === "ended" || state === "crashed"
+          ? state
+          : `${state === "needs" ? "waiting" : state}${since ? ` ${since}` : ""}`;
   // Counts are 0 for Windows, WSL and Auggie agents: nothing to show.
-  const working = !terminal && state === "working";
+  const working = !terminal && state === "working" && !parked;
 
   const hover = (id: string | null) => () =>
     useFloorStore.getState().setHoverDesk(id);
@@ -77,6 +92,8 @@ export function Desk({
         type="button"
         className={styles.desk}
         data-state={terminal ? "terminal" : state}
+        data-overlay={shown ?? undefined}
+        data-ring={ringed || undefined}
         data-working={working || undefined}
         data-active={active || undefined}
         data-stopped={stopped || undefined}
@@ -114,11 +131,27 @@ export function Desk({
               variant={variant}
             />
           )}
-          {state === "idle" && !terminal && (
+          {state === "idle" && !terminal && !parked && (
             <span className={styles.zzz} aria-hidden="true">
               <i>z</i>
               <i>z</i>
               <i>Z</i>
+            </span>
+          )}
+          {parked && !terminal && (
+            <span
+              className={`${styles.mark} ${styles.hollow}`}
+              aria-hidden="true"
+            >
+              ?
+            </span>
+          )}
+          {review && !terminal && (
+            <span
+              className={`${styles.mark} ${styles.check}`}
+              aria-hidden="true"
+            >
+              ✓
             </span>
           )}
           {state === "needs" && !terminal && (

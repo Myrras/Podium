@@ -203,7 +203,7 @@ pub fn run() {
                 tracing::warn!("could not set up the assistant workspace: {e}");
             }
             // Every launch starts the assistant on a blank conversation: the
-            // panel's day-start button is the way back in, and a transcript
+            // panel starts fresh, and a transcript
             // replayed from days ago is mostly noise. `assistant-memory.md`
             // survives this, and is what carries continuity instead.
             // `block_on` rather than a spawned task: `setup` runs on the main
@@ -217,14 +217,10 @@ pub fn run() {
             // With the assistant turned off (Settings → Assistant) nothing
             // below starts a session: the watcher's nudges and sweeps are
             // dropped one by one while the setting is off.
-            // Watch the workspace on the assistant's behalf: an agent that
-            // finished or crashed, one that looks stuck and lingering to-dos
-            // become chat nudges — each starting the assistant's CLI if it is
-            // not already running, so the user hears about it there and then.
-            // A second, slower lane asks it to check the user's external
-            // sources (Slack, Teams) every few minutes and stay quiet unless
-            // something needs them. Silent while the proactivity setting is
-            // off. Spawned from inside the async runtime:
+            // Watch the workspace on the assistant's behalf: agents waiting
+            // or crashed become Responses items, and a slower lane sweeps the
+            // user's external sources (Slack, Teams) for messages waiting for
+            // them. Nothing is written to the chat. Spawned from inside the async runtime:
             // `setup` runs on the main thread, where the watcher's
             // `tokio::spawn` has no reactor and aborts the app.
             let orchestrator = Arc::clone(&state.orchestrator);
@@ -295,7 +291,6 @@ pub fn run() {
             commands::process::process_resize,
             commands::process::process_attach,
             commands::assistant::assistant_send,
-            commands::assistant::assistant_day_start,
             commands::assistant::assistant_transcript,
             commands::assistant::assistant_new_conversation,
             commands::assistant::assistant_memory_get,
@@ -314,7 +309,7 @@ pub fn run() {
             commands::assistant::assistant_queue_remove,
             commands::assistant::assistant_interrupt,
             commands::assistant::assistant_responses_list,
-            commands::assistant::assistant_response_dismiss,
+            commands::assistant::assistant_set_response_state,
             commands::assistant::assistant_response_reply,
             commands::assistant::assistant_subagents_list,
             commands::assistant::assistant_subagent_stop,

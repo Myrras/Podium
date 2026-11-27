@@ -6,7 +6,7 @@
  * locally when the user sends, and from the `assistant:event` stream as the
  * backend parses the headless session's output. Actions the assistant ran show
  * as cards in the same log, and actions the autonomy gate held back show as
- * proposal cards the user confirms or rejects here. Podium's proactive nudges
+ * proposal cards the user confirms or rejects here. Podium's own nudges
  * arrive as notice rows. Starting a new conversation clears both sides.
  */
 
@@ -15,7 +15,6 @@ import { create } from "zustand";
 import {
   assistantAutonomyGet,
   assistantAutonomySet,
-  assistantDayStart,
   assistantInterrupt,
   assistantMemoryGet,
   assistantMemorySet,
@@ -30,7 +29,7 @@ import {
   assistantQueueRemove,
   assistantQueueSendNow,
   assistantResolveProposal,
-  assistantResponseDismiss,
+  assistantSetResponseState,
   assistantResponseReply,
   assistantResponsesList,
   assistantSend,
@@ -48,21 +47,27 @@ import type {
   ProcessStatus,
   QueuedMessage,
   ResponseItem,
+  ResponseState,
   SubagentInfo,
 } from "../ipc/types";
 import { notifyAssistant } from "../lib/notify";
 import { textPreview } from "../lib/textPreview";
 import { viewedAgentId } from "./agentActivityStore";
+import { useFloorStore } from "./floorStore";
 import { useLayoutStore } from "./layoutStore";
 
 /**
  * Is the user already looking at the assistant's Responses list? True only
- * when the app window is focused and the chat pane is open — the same "don't
- * ping the window you're watching" rule `agentActivityStore` applies to
- * agents.
+ * when the app window is focused and the assistant is on screen (Project
+ * mode: the pane is open; Floor mode: the front desk popover is open) — the
+ * same "don't ping the window you're watching" rule `agentActivityStore`
+ * applies to agents.
  */
 function isAssistantVisible(): boolean {
-  return document.hasFocus() && useLayoutStore.getState().assistantOpen;
+  if (!document.hasFocus()) return false;
+  return useLayoutStore.getState().mode === "floor"
+    ? useFloorStore.getState().deskPopover !== null
+    : useLayoutStore.getState().assistantOpen;
 }
 
 export type ChatRole =
@@ -141,6 +146,10 @@ export function resetSeenResponses(): void {
   responsesBaselined = false;
 }
 
+// "question" is absent on purpose: a waiting agent already pings once through
+// agentActivityStore's prompt episode (works with the assistant off too).
+const PING_REASONS: ResponseItem["reason"][] = ["crashed", "review"];
+
 /**
  * Ping the desktop for Responses items this run has not seen before: the
  * Responses list is the only thing that reaches it. Several new items in one
@@ -154,15 +163,47 @@ function notifyNewResponses(items: ResponseItem[]): void {
   // Remembered even while off: items the backend restores on turning off
   // are not news when the assistant comes back on.
   for (const i of items) seenResponseIds.add(i.id);
-  if (!useAssistantStore.getState().enabled) return;
+  const { enabled, proactive } = useAssistantStore.getState();
+  // `proactive` is the "Desktop notifications" setting.
+  if (!enabled || !proactive) return;
   if (!responsesBaselined || fresh.length === 0 || isAssistantVisible()) return;
   const viewing = viewedAgentId();
   // The list is newest first, so is `fresh`.
-  const news = fresh.filter((i) => viewing === null || i.processId !== viewing);
+  // Only what needs the user pings; messages and the rest stay quiet.
+  const news = fresh.filter(
+    (i) =>
+      i.state === "open" &&
+      PING_REASONS.includes(i.reason) &&
+      (viewing === null || i.processId !== viewing),
+  );
   if (news.length === 0) return;
   const title = news.some((i) => i.kind === "needsYou") ? "Needs you" : "FYI";
   const more = news.length > 1 ? ` (+${news.length - 1} more)` : "";
   notifyAssistant(title, `${news[0].text}${more}`);
+}
+
+/** Optimistic state change; on failure, back to the backend's list. */
+async function setResponseState(
+  key: string,
+  state: ResponseState,
+  set: (fn: (s: AssistantState) => Partial<AssistantState>) => void,
+  get: () => AssistantState,
+): Promise<void> {
+  set((s) => ({
+    responses:
+      state === "dismissed"
+        ? s.responses.filter((r) => r.key !== key)
+        : s.responses.map((r) => (r.key === key ? { ...r, state } : r)),
+  }));
+  try {
+    await assistantSetResponseState(key, state);
+  } catch (e) {
+    // Reload rather than restore: a snapshot may have landed meanwhile.
+    set((s) => ({
+      messages: [...s.messages, message("notice", toIpcError(e).message)],
+    }));
+    await get().loadResponses();
+  }
 }
 
 /** A gated action awaiting (or carrying) the user's decision. */
@@ -199,7 +240,7 @@ interface AssistantState {
   activity: string | null;
   /** How much the assistant may do unasked; mirrors the persisted setting. */
   autonomy: AutonomyMode;
-  /** Whether Podium nudges the assistant unprompted; mirrors the setting. */
+  /** Whether desktop notifications are on (Settings → Notifications). */
   proactive: boolean;
   /**
    * The proactive external-source (Slack/Teams) polling sweep; mirrors the
@@ -230,6 +271,12 @@ interface AssistantState {
    * `subagentsChanged` snapshots, with `process:status` applied in between.
    */
   subagents: SubagentInfo[];
+  /**
+   * The Slack/Teams sweep is running (`sweeping` events). Not reset when the
+   * assistant is switched off: the run still ends with its own event, and
+   * the desk shows "off" meanwhile.
+   */
+  sweeping: boolean;
   /** Load the sub-agent list (on app start). */
   loadSubagents: () => Promise<void>;
   /** Stop (or cancel, while queued) one sub-agent — no confirm, the user's click. */
@@ -239,7 +286,13 @@ interface AssistantState {
   /** Drop the ended rows past their `expiresAt` (driven by its own timer). */
   pruneExpiredSubagents: (now?: number) => void;
   /** Tick a Responses item off. */
-  dismissResponse: (id: string) => Promise<void>;
+  /** Park an item (by key) until it changes. */
+  parkResponse: (key: string) => Promise<void>;
+  /** Bring a parked item back. */
+  unparkResponse: (key: string) => Promise<void>;
+  dismissResponse: (key: string) => Promise<void>;
+  /** Opening an agent handles its open "ready to review" item; asking and crashed stay. */
+  handleAgentOpened: (processId: ProcessId) => void;
   /** Reply to a Responses item; returns whether it was accepted. */
   replyResponse: (id: string, text: string) => Promise<boolean>;
   /** Replay the persisted transcript into the log (once, on mount). */
@@ -255,15 +308,13 @@ interface AssistantState {
   saveMemory: (content: string) => Promise<void>;
   /** Send a turn; returns whether it was accepted (the input clears then). */
   send: (text: string, attachments?: Attachment[]) => Promise<boolean>;
-  /** Trigger the day-start summary as a normal user turn. */
-  dayStart: () => Promise<void>;
   /** Push a local notice (e.g. a client-side attachment-limit rejection). */
   pushNotice: (text: string) => void;
   /** Load the stored autonomy mode (on mount). */
   loadAutonomy: () => Promise<void>;
   /** Change the autonomy mode. */
   setAutonomy: (mode: AutonomyMode) => Promise<void>;
-  /** Whether the assistant is switched on; off = no session, nudges or pings. */
+  /** Whether the assistant is switched on; off = no session or Responses pings. */
   enabled: boolean;
   /** Load the on/off switch (on app start). */
   loadEnabled: () => Promise<void>;
@@ -271,7 +322,7 @@ interface AssistantState {
   setEnabled: (enabled: boolean) => Promise<void>;
   /** Load the stored proactivity setting (Settings → Assistant). */
   loadProactivity: () => Promise<void>;
-  /** Turn proactive nudges on or off. */
+  /** Turn desktop notifications on or off. */
   setProactivity: (enabled: boolean) => Promise<void>;
   /** Load the stored polling settings (Settings → Assistant). */
   loadPolling: () => Promise<void>;
@@ -292,6 +343,10 @@ interface AssistantState {
   /** Text for the composer to take over (then cleared); `null` = none. */
   draft: string | null;
   setDraft: (text: string | null) => void;
+  /** Unsent composer text. Lives here so it outlives AssistantChat unmounting
+   *  when the popover closes; cleared only on send. */
+  composer: string;
+  setComposer: (text: string) => void;
   /** Bumped to ask the composer for focus (the floor's + button). */
   focusRequest: number;
   requestFocus: () => void;
@@ -332,8 +387,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   pending: [],
   responses: [],
   subagents: [],
+  sweeping: false,
   draft: null,
   setDraft: (draft) => set({ draft }),
+  composer: "",
+  setComposer: (composer) => set({ composer }),
   focusRequest: 0,
   requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
   loadSubagents: async () => {
@@ -387,18 +445,18 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       responsesBaselined = true;
     }
   },
-  dismissResponse: async (id) => {
-    set((s) => ({ responses: s.responses.filter((r) => r.id !== id) }));
-    try {
-      await assistantResponseDismiss(id);
-    } catch (e) {
-      // Back to the backend's list rather than the one from before the
-      // click: a snapshot may have landed meanwhile (the item superseded,
-      // a new one filed), and restoring the old array would undo it.
-      set((s) => ({
-        messages: [...s.messages, message("notice", toIpcError(e).message)],
-      }));
-      await get().loadResponses();
+  parkResponse: (key) => setResponseState(key, "parked", set, get),
+  unparkResponse: (key) => setResponseState(key, "open", set, get),
+  dismissResponse: (key) => setResponseState(key, "dismissed", set, get),
+  handleAgentOpened: (processId) => {
+    for (const r of get().responses) {
+      if (
+        r.processId === processId &&
+        r.reason === "review" &&
+        r.state === "open" &&
+        r.key.startsWith("agent:")
+      )
+        void get().dismissResponse(r.key);
     }
   },
   replyResponse: async (id, text) => {
@@ -510,25 +568,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         messages: [...s.messages, message("notice", err.message)],
       }));
       return false;
-    }
-  },
-  dayStart: async () => {
-    try {
-      // Echoed like `send`, and on the same delivered-or-queued answer: a
-      // user turn publishes no event of its own, so without the bubble the
-      // panel sits empty for the seconds the CLI takes to boot. The bubble is
-      // the button's own wording; the transcript keeps the longer prompt the
-      // backend actually sent. Queued instead, the waiting row covers it.
-      if (await assistantDayStart()) {
-        set((s) => ({
-          messages: [...s.messages, message("user", "Start my day")],
-          busy: true,
-        }));
-      }
-    } catch (e) {
-      set((s) => ({
-        messages: [...s.messages, message("notice", toIpcError(e).message)],
-      }));
     }
   },
   pushNotice: (text) =>
@@ -821,6 +860,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           return { responses: event.items };
         case "subagentsChanged":
           return { subagents: event.subagents };
+        case "sweeping":
+          return { sweeping: event.active };
       }
     });
   },
