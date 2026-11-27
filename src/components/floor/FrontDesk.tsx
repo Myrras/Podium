@@ -14,7 +14,7 @@ import { useAssistantStore } from "../../state/assistantStore";
 import { useFloorStore } from "../../state/floorStore";
 import { AssistantDesk, deskLine, useAssistantDesk } from "../AssistantDesk";
 import { LOOK, OverviewAvatar, itemName, itemPlace } from "../OverviewRow";
-import { CheckIcon, ParkIcon, ReplyIcon, SendIcon } from "../icons";
+import { CheckIcon, ParkIcon, PowerIcon, ReplyIcon, SendIcon } from "../icons";
 import styles from "./FrontDesk.module.css";
 
 const MAX_QUEUE = 6;
@@ -29,6 +29,7 @@ export function FrontDesk({
   const responses = useAssistantStore((s) => s.responses);
   const { state, helpers } = useAssistantDesk();
   const desk = useFloorStore((s) => s.deskPopover);
+  const enabled = useAssistantStore((s) => s.enabled);
   const open = responses
     .filter((r) => r.state === "open")
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -72,6 +73,16 @@ export function FrontDesk({
         <span className={styles.state} title={deskLine(state, helpers)}>
           {deskLine(state, helpers)}
         </span>
+        <button
+          type="button"
+          className={styles.power}
+          aria-label="Assistant power"
+          title={enabled ? "Turn assistant off" : "Turn assistant on"}
+          aria-pressed={enabled}
+          onClick={() => void useAssistantStore.getState().setEnabled(!enabled)}
+        >
+          <PowerIcon size={14} />
+        </button>
       </div>
     </div>
   );

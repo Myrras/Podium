@@ -99,8 +99,8 @@ Settings > General > Appearance > View.
   the last chip in the header.
 - **Front desk.** The assistant sits in the bottom-right corner of the map with
   a queue of what needs you. Hover an item for Reply, Park and Dismiss (a message: Reply or Done); click it
-  to fly to that agent (which takes the item off the queue). Past six items, **+N** opens the full list; its bot (or the title
-  bar's assistant button) opens the chat above the desk. Esc inside closes it.
+  to fly to that agent (which takes the item off the queue). Past six items, **+N** opens the full list; its bot opens
+  the chat above the desk. The desk's power button turns the assistant on or off. Esc inside closes it.
   A desk shows a tick when its agent is ready to review (opening the agent clears it), and sleeps while its
   item is parked. While the assistant checks Slack and Teams, its bot reads
   through letters.
@@ -348,7 +348,7 @@ they did.
   cannot (a WSL backend, no Claude Code config yet) does the first one ask:
   open it from the list and answer "Yes, I trust this folder" once.
 - **Power switch** — the power button in the title bar (next to the assistant
-  button) turns the assistant off: no session, no desktop
+  button; on the front desk in Floor mode) turns the assistant off: no session, no desktop
   notifications, and its running sub-agents are stopped. The panel then shows
   "The assistant is off" with a *Turn on* button; the choice is remembered.
 - **Memory** — a markdown file the assistant maintains itself and you can

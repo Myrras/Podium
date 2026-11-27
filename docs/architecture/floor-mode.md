@@ -29,10 +29,10 @@ subscription stays mounted in App. `Floor` calls `floorStore.reset()` on unmount
   the popovers.
 - `floorStore.deskPopover` (`"chat" | "list" | null`): the front desk's
   popover. `openDesk`/`toggleDesk` clear `popover` and `openPopover` clears
-  `deskPopover`, so one popover is open at a time. The bot, the queue's +N button,
-  the title bar's assistant button (`toggleDesk("chat")`, marked
-  `data-popover-keep` so its mousedown does not close the chat first) and the
-  nameplate + (`startAgentIn`: `setDraft` then `openDesk("chat")`) open them.
+  `deskPopover`, so one popover is open at a time. The bot, the queue's +N button
+  and the nameplate + (`startAgentIn`: `setDraft` then `openDesk("chat")`) open them.
+- The front desk holds the assistant's power button (`enabled`); the title bar
+  shows the Assistant and power buttons only in Project mode.
 - The pinned desk is `processStore.activeProcessId`; the open modal is
   `floorStore.terminalId`.
 

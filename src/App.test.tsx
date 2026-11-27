@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom leaves `navigator.platform` empty, so pin the platform explicitly;
@@ -307,20 +307,16 @@ describe("App — Floor mode", () => {
     expect(screen.queryByLabelText("Personal assistant")).toBeNull();
     expect(screen.queryByLabelText("Resize assistant")).toBeNull();
 
-    // The title-bar button opens the front desk's chat, not the docked pane;
-    // a second click closes it again.
-    const toggle = screen.getByLabelText("Assistant");
-    await user.click(toggle);
-    expect(screen.queryByLabelText("Personal assistant")).toBeNull();
+    // Both assistant buttons live on the front desk in Floor mode.
+    expect(screen.queryByLabelText("Assistant")).toBeNull();
+    expect(screen.getByRole("button", { name: "Assistant power" })).toBe(
+      within(screen.getByText("Front desk").parentElement!).getByRole(
+        "button",
+        { name: "Assistant power" },
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "Open chat" }));
     expect(useFloorStore.getState().deskPopover).toBe("chat");
-    expect(
-      await screen.findByLabelText("Message the assistant"),
-    ).toBeInTheDocument();
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
-
-    await user.click(toggle);
-    expect(useFloorStore.getState().deskPopover).toBeNull();
-    expect(screen.getByLabelText("Message the assistant")).not.toBeVisible();
     expect(useLayoutStore.getState().assistantOpen).toBe(true);
   });
 
@@ -329,6 +325,10 @@ describe("App — Floor mode", () => {
     render(<App />);
     expect(screen.getByLabelText("Personal assistant")).toBeInTheDocument();
     expect(screen.queryByText("Front desk")).toBeNull();
+    expect(screen.getByLabelText("Assistant")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Assistant power" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the app-level subscriptions in Floor mode", async () => {

@@ -75,6 +75,24 @@ beforeEach(() => {
 });
 
 describe("FrontDesk", () => {
+  it("shows the assistant power state and toggles it", async () => {
+    const setEnabled = vi.fn(() => Promise.resolve());
+    seed([]);
+    useAssistantStore.setState({ setEnabled });
+    render(<FrontDesk />);
+    const power = screen.getByRole("button", { name: "Assistant power" });
+    expect(power).toHaveAttribute("aria-pressed", "true");
+    expect(power).toHaveAttribute("title", "Turn assistant off");
+    await userEvent.click(power);
+    expect(setEnabled).toHaveBeenCalledWith(false);
+
+    act(() => useAssistantStore.setState({ enabled: false }));
+    expect(power).toHaveAttribute("aria-pressed", "false");
+    expect(power).toHaveAttribute("title", "Turn assistant on");
+    await userEvent.click(power);
+    expect(setEnabled).toHaveBeenCalledWith(true);
+  });
+
   it("queues open items newest first, at most six, then +N", () => {
     seed([1, 2, 3, 4, 5, 6, 7, 8].map((n) => item(n)));
     render(<FrontDesk />);

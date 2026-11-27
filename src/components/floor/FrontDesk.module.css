@@ -101,6 +101,26 @@
   color: var(--text-muted);
 }
 
+.power {
+  flex: none;
+  margin-left: auto;
+  padding: 2px;
+  display: flex;
+  background: none;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.power:hover {
+  background: var(--surface-hover);
+}
+
+.power[aria-pressed="true"] {
+  color: var(--accent);
+}
+
 .state {
   min-width: 0;
   overflow: hidden;

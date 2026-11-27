@@ -38,7 +38,6 @@ import { subagentProcess } from "./lib/subagents";
 import { readTerminalTheme } from "./lib/terminalTheme";
 import { startAgentActivityMonitor } from "./state/agentActivityStore";
 import { useAssistantStore } from "./state/assistantStore";
-import { useFloorStore } from "./state/floorStore";
 import { useIssueStore } from "./state/issueStore";
 import { useLayoutStore } from "./state/layoutStore";
 import { useProcessStore } from "./state/processStore";
@@ -84,8 +83,6 @@ export default function App() {
   const assistantOpen = useLayoutStore((s) => s.assistantOpen);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const assistantEnabled = useAssistantStore((s) => s.enabled);
-  const deskChatOpen = useFloorStore((s) => s.deskPopover === "chat");
-  const toggleDesk = useFloorStore((s) => s.toggleDesk);
   const assistantWidth = useLayoutStore((s) => s.assistantWidth);
   const setAssistantWidth = useLayoutStore((s) => s.setAssistantWidth);
 
@@ -339,36 +336,37 @@ export default function App() {
           <span className={styles.tagline}>agent console</span>
         </div>
         <div className={styles.titlebarRight}>
-          <button
-            type="button"
-            className={styles.settingsBtn}
-            aria-label="Assistant"
-            title="Assistant"
-            aria-pressed={mode === "floor" ? deskChatOpen : assistantOpen}
-            // Floor mode has no pane: the button toggles the front desk's chat
-            // popover, so a mousedown on it must not close that popover first.
-            data-popover-keep={mode === "floor" || undefined}
-            onClick={() => {
-              if (mode === "floor") toggleDesk("chat");
-              else setAssistantOpen(!assistantOpen);
-            }}
-          >
-            <AssistantIcon size={16} />
-          </button>
-          <button
-            type="button"
-            className={`${styles.settingsBtn} ${styles.powerBtn}`}
-            aria-label="Assistant power"
-            title={
-              assistantEnabled ? "Turn assistant off" : "Turn assistant on"
-            }
-            aria-pressed={assistantEnabled}
-            onClick={() =>
-              void useAssistantStore.getState().setEnabled(!assistantEnabled)
-            }
-          >
-            <PowerIcon size={16} />
-          </button>
+          {/* Floor mode has these on the front desk. */}
+          {mode !== "floor" && (
+            <>
+              <button
+                type="button"
+                className={styles.settingsBtn}
+                aria-label="Assistant"
+                title="Assistant"
+                aria-pressed={assistantOpen}
+                onClick={() => setAssistantOpen(!assistantOpen)}
+              >
+                <AssistantIcon size={16} />
+              </button>
+              <button
+                type="button"
+                className={`${styles.settingsBtn} ${styles.powerBtn}`}
+                aria-label="Assistant power"
+                title={
+                  assistantEnabled ? "Turn assistant off" : "Turn assistant on"
+                }
+                aria-pressed={assistantEnabled}
+                onClick={() =>
+                  void useAssistantStore
+                    .getState()
+                    .setEnabled(!assistantEnabled)
+                }
+              >
+                <PowerIcon size={16} />
+              </button>
+            </>
+          )}
           {/* macOS reaches Settings via the native menu bar (⌘,); the gear
               lives in the custom title bar on the other platforms. */}
           {!isMac && (
