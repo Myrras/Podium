@@ -292,7 +292,9 @@ impl AgentAdapter for CliAdapter {
             // The CLI runs in the distro, so its transcripts live there.
             Some(_) => claude_session_query(session_id)
                 .is_some_and(|q| crate::platform::run_shell_ok_on(wsl, &q)),
-            None => claude_config_dir().is_some_and(|dir| claude_session_in(&dir, session_id)),
+            None => claude_config_dirs()
+                .iter()
+                .any(|dir| claude_session_in(dir, session_id)),
         }
     }
 
@@ -304,7 +306,9 @@ impl AgentAdapter for CliAdapter {
         if self.session_flags.is_none() || wsl.is_some() || cfg!(windows) {
             return None;
         }
-        claude_live_session_in(&claude_config_dir()?, cli)
+        claude_config_dirs()
+            .iter()
+            .find_map(|dir| claude_live_session_in(dir, cli))
     }
 
     fn build_launch(&self, ctx: &AgentLaunchCtx) -> CoreResult<LaunchPlan> {
@@ -468,6 +472,41 @@ pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".claude"))
+}
+
+/// Every config dir a Claude agent may have used, in lookup order:
+/// `$CLAUDE_CONFIG_DIR`, `~/.claude`, then each `~/.claude-*` with a
+/// `projects/` dir. Podium's GUI process lacks the shell's `CLAUDE_CONFIG_DIR`
+/// (e.g. a `claude()` function pointing at `~/.claude-personal`), so all are
+/// searched.
+fn claude_config_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let env = std::env::var_os("CLAUDE_CONFIG_DIR");
+    claude_config_dirs_in(home.as_deref().map(Path::new), env.as_deref())
+}
+
+fn claude_config_dirs_in(home: Option<&Path>, env: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = env.map(PathBuf::from).into_iter().collect();
+    if let Some(home) = home {
+        dirs.push(home.join(".claude"));
+        let mut extra: Vec<PathBuf> = fs::read_dir(home)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".claude-"))
+            .map(|e| e.path())
+            .filter(|p| p.join("projects").is_dir())
+            .collect();
+        extra.sort();
+        dirs.extend(extra);
+    }
+    let mut seen = Vec::new();
+    dirs.retain(|d| {
+        let new = !seen.contains(d);
+        seen.push(d.clone());
+        new
+    });
+    dirs
 }
 
 /// Whether Claude Code stored a transcript for `session_id` under
@@ -1465,6 +1504,36 @@ mod tests {
         assert!(!claude_session_in(dir.path(), &id));
         fs::write(project.join(format!("{id}.jsonl")), "{}\n").expect("write");
         assert!(claude_session_in(dir.path(), &id));
+    }
+
+    #[test]
+    fn config_dirs_cover_env_default_and_sibling_folders() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let h = home.path();
+        fs::create_dir_all(h.join(".claude-personal/projects")).expect("mkdir");
+        fs::create_dir_all(h.join(".claude-x")).expect("mkdir");
+        let env = h.join("custom");
+        let dirs = claude_config_dirs_in(Some(h), Some(env.as_os_str()));
+        assert_eq!(
+            dirs,
+            vec![env.clone(), h.join(".claude"), h.join(".claude-personal")]
+        );
+        // The env dir equal to `~/.claude` is listed once.
+        let same = h.join(".claude");
+        let dirs = claude_config_dirs_in(Some(h), Some(same.as_os_str()));
+        assert_eq!(dirs, vec![same, h.join(".claude-personal")]);
+    }
+
+    #[test]
+    fn a_transcript_in_a_sibling_config_dir_is_found() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let id = ProcessId::new().to_string();
+        let project = home.path().join(".claude-personal/projects/-tmp-p");
+        fs::create_dir_all(&project).expect("mkdir");
+        fs::write(project.join(format!("{id}.jsonl")), "{}\n").expect("write");
+        let dirs = claude_config_dirs_in(Some(home.path()), None);
+        assert!(!claude_session_in(&dirs[0], &id));
+        assert!(dirs.iter().any(|d| claude_session_in(d, &id)));
     }
 
     /// The WSL check is the same lookup spelled for the distro's shell; run
