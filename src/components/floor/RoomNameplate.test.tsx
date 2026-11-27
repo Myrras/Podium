@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProjectInfo } from "../../ipc/types";
@@ -92,12 +92,14 @@ describe("RoomNameplate", () => {
     });
   });
 
-  it("has a terminal button that opens a terminal without jumping", () => {
+  it("has a terminal button that opens a terminal without jumping", async () => {
+    vi.mocked(newTerminal).mockResolvedValue("t9");
     render(<RoomNameplate room={a} />);
     fireEvent.click(
       screen.getByRole("button", { name: "New terminal in Proj a" }),
     );
     expect(newTerminal).toHaveBeenCalledWith(a.project);
+    await waitFor(() => expect(useFloorStore.getState().terminalId).toBe("t9"));
     expect(jumpTo).not.toHaveBeenCalled();
   });
 

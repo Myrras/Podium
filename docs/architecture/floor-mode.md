@@ -131,7 +131,7 @@ so reopening keeps log, scroll and state without refetching), `FloorTerminalModa
   with a search field (arrow keys, Enter) and has Edit commands in the header.
 - Stopped terminals: `Desk` greys the art and labels it "stopped". The terminal
   modal shows the state; × closes it (after a confirmation); the nameplate's Git board icon calls `openBoardInWorkArea` and its terminal icon calls
-  `newTerminal`.
+  `newTerminal` and opens the new terminal in the modal (`openTerminal`).
 
 ## Esc and terminal rules
 

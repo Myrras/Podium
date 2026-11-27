@@ -22,7 +22,7 @@ beforeEach(() => {
 
 describe("newTerminal", () => {
   it("adds, starts and activates a numbered project terminal", async () => {
-    await newTerminal(project);
+    expect(await newTerminal(project)).toBe("t9");
     expect(setActiveProject).toHaveBeenCalledWith("p1");
     expect(addProcess).toHaveBeenCalledWith(
       "p1",

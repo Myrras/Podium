@@ -1,4 +1,10 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProcessInfo, ProjectInfo, WorktreeInfo } from "../../ipc/types";
@@ -277,10 +283,12 @@ describe("ProjectMenuPopover", () => {
 
   it("worktree view: free worktree can be removed, terminal opens", async () => {
     m.worktreeRemove.mockResolvedValue([used]);
+    m.newTerminal.mockResolvedValue("t9");
     setup("wt-a");
     expect(screen.queryByText("Open the agent")).toBeNull();
     fireEvent.click(screen.getByText("Open a terminal here"));
     expect(m.newTerminal).toHaveBeenCalledWith(project, free);
+    await waitFor(() => expect(useFloorStore.getState().terminalId).toBe("t9"));
     await act(async () => {
       fireEvent.click(screen.getByText("Remove worktree"));
     });

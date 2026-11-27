@@ -170,7 +170,9 @@ export function ProjectMenuPopover({
               type="button"
               className="ghost"
               onClick={() => {
-                void newTerminal(project, wt);
+                void newTerminal(project, wt).then(
+                  (id) => id && useFloorStore.getState().openTerminal(id),
+                );
                 close();
               }}
             >

@@ -163,7 +163,11 @@ export function RoomNameplate({ room }: { room: RoomModel }) {
           className={styles.btn}
           aria-label={`New terminal in ${project.name}`}
           title="New terminal"
-          onClick={() => void newTerminal(project)}
+          onClick={() =>
+            void newTerminal(project).then(
+              (id) => id && useFloorStore.getState().openTerminal(id),
+            )
+          }
         >
           <TerminalIcon />
         </button>
