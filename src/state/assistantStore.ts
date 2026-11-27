@@ -289,6 +289,12 @@ interface AssistantState {
   interrupt: () => Promise<void>;
   /** Fold one backend stream event into the log. */
   apply: (event: AssistantEvent) => void;
+  /** Text for the composer to take over (then cleared); `null` = none. */
+  draft: string | null;
+  setDraft: (text: string | null) => void;
+  /** Bumped to ask the composer for focus (the floor's + button). */
+  focusRequest: number;
+  requestFocus: () => void;
 }
 
 let seq = 0;
@@ -326,6 +332,10 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   pending: [],
   responses: [],
   subagents: [],
+  draft: null,
+  setDraft: (draft) => set({ draft }),
+  focusRequest: 0,
+  requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
   loadSubagents: async () => {
     const gen = subagentsSnapshotGen;
     try {

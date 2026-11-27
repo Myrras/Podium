@@ -17,9 +17,8 @@
 
 import { useEffect, useState } from "react";
 
-import { projectJustRecipes } from "../ipc/commands";
 import type { ProjectId, WorktreeInfo } from "../ipc/types";
-import { useTerminalCommandsStore } from "../state/terminalCommandsStore";
+import { useTerminalCommands } from "../lib/terminalCommands";
 import { Modal } from "./Modal";
 import { CloseIcon, EditIcon, RunIcon } from "./icons";
 import styles from "./TerminalCommandsModal.module.css";
@@ -45,31 +44,13 @@ export function TerminalCommandsModal({
   onClose,
   onRun,
 }: TerminalCommandsModalProps) {
-  const custom = useTerminalCommandsStore((s) => s.customByRoot[root]);
-  const addCommand = useTerminalCommandsStore((s) => s.addCommand);
-  const updateCommand = useTerminalCommandsStore((s) => s.updateCommand);
-  const removeCommand = useTerminalCommandsStore((s) => s.removeCommand);
-
-  const [recipes, setRecipes] = useState<string[]>([]);
+  const { commands, add, update, remove } = useTerminalCommands(
+    { id: projectId, root },
+    open,
+  );
   const [draft, setDraft] = useState({ name: "", command: "" });
   /** Index in the custom list being edited, or null when adding a new one. */
   const [editing, setEditing] = useState<number | null>(null);
-
-  // Re-scan the justfile on every open, so edits show up without a reload.
-  useEffect(() => {
-    if (!open) return;
-    let stale = false;
-    projectJustRecipes(projectId)
-      .then((r) => {
-        if (!stale) setRecipes(r);
-      })
-      .catch(() => {
-        if (!stale) setRecipes([]);
-      });
-    return () => {
-      stale = true;
-    };
-  }, [open, projectId]);
 
   // A closed modal keeps no half-finished edit around for the next open.
   useEffect(() => {
@@ -81,8 +62,8 @@ export function TerminalCommandsModal({
 
   const submit = () => {
     if (!draft.command.trim()) return;
-    if (editing === null) addCommand(root, draft.command, draft.name);
-    else updateCommand(root, editing, draft);
+    if (editing === null) add(draft.command, draft.name);
+    else update(editing, draft);
     setDraft({ name: "", command: "" });
     setEditing(null);
   };
@@ -92,21 +73,6 @@ export function TerminalCommandsModal({
     else onRun(command, name);
     onClose();
   };
-
-  const commands = [
-    // Recipes are derived from the justfile, so they are not editable here;
-    // the terminal is named after the recipe rather than `just <recipe>`.
-    ...recipes.map((r) => ({
-      command: `just ${r}`,
-      name: r,
-      index: null as number | null,
-    })),
-    ...(custom ?? []).map((c, index) => ({
-      command: c.command,
-      name: c.name ?? c.command,
-      index,
-    })),
-  ];
 
   return (
     <Modal
@@ -160,7 +126,7 @@ export function TerminalCommandsModal({
                     aria-label={`Remove command "${name}"`}
                     title="Remove command"
                     onClick={() => {
-                      removeCommand(root, index);
+                      remove(index);
                       if (editing === index) {
                         setEditing(null);
                         setDraft({ name: "", command: "" });

@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import type { ScratchpadInfo } from "../ipc/types";
+import { useLayoutStore } from "../state/layoutStore";
 import { useProjectStore } from "../state/projectStore";
 import { useSelectionStore } from "../lib/selection";
 import { useScratchpadStore } from "../state/scratchpadStore";
@@ -366,5 +367,68 @@ describe("ScratchpadSubsection", () => {
         screen.getByText("Start agent on 2 scratchpads"),
       ).toBeInTheDocument();
     });
+  });
+
+  it("bare mode's + leaves the sidebar's saved collapse state alone", async () => {
+    const { addScratchpad } = seed([]);
+    const setSectionCollapsed = vi.fn();
+    const before = useLayoutStore.getState().setSectionCollapsed;
+    useLayoutStore.setState({ setSectionCollapsed });
+    render(
+      <ScratchpadSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "New scratchpad" }));
+    await waitFor(() => expect(addScratchpad).toHaveBeenCalledWith(PROJECT));
+    expect(setSectionCollapsed).not.toHaveBeenCalled();
+    useLayoutStore.setState({ setSectionCollapsed: before });
+  });
+
+  it("bare_hides_the_section_title_and_keeps_the_add_button", () => {
+    seed([scratchpad("a", "Scratchpad A")]);
+    render(
+      <ScratchpadSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Scratchpads")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "New scratchpad" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Scratchpad A")).toBeInTheDocument();
+  });
+
+  it("loads the list on mount in project mode, not in bare mode", () => {
+    const { refresh } = seed([]);
+    const { unmount } = render(
+      <ScratchpadSubsection
+        bare
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    unmount();
+    render(
+      <ScratchpadSubsection
+        projectId={PROJECT}
+        projectRoot="/fake/root"
+        onOpenScratchpad={vi.fn()}
+        onPickAgent={vi.fn()}
+      />,
+    );
+    expect(refresh).toHaveBeenCalledWith(PROJECT);
   });
 });

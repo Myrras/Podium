@@ -1,8 +1,9 @@
-/** Persistent sidebar layout: width and per-project collapse state. */
+/** Persistent layout: sidebar width, collapse state, mode and floor positions. */
 
 import { create } from "zustand";
 
 import type { ProcessId, ProjectId, ScratchpadId, TodoId } from "../ipc/types";
+import type { FloorMode } from "../lib/floor/types";
 import { useProcessStore } from "./processStore";
 
 interface LayoutPersisted {
@@ -18,6 +19,10 @@ interface LayoutPersisted {
   assistantOpen: boolean;
   /** Width of the assistant chat panel in px. */
   assistantWidth: number;
+  /** Project or Floor mode; `null` = not asked yet (shows the chooser, renders Project mode). */
+  mode: FloorMode | null;
+  /** Room positions on the floor in world px, keyed by project root. */
+  floorPositions: Record<string, [number, number]>;
 }
 
 const STORAGE_KEY = "podium.layout";
@@ -28,7 +33,25 @@ const DEFAULTS: LayoutPersisted = {
   collapsedSections: {},
   assistantOpen: false,
   assistantWidth: 340,
+  mode: null,
+  floorPositions: {},
 };
+
+/** The entries of `raw` that are `[x, y]` pairs of finite numbers. */
+function validPositions(raw: unknown): Record<string, [number, number]> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, [number, number]> = {};
+  for (const [root, xy] of Object.entries(raw)) {
+    if (
+      Array.isArray(xy) &&
+      xy.length === 2 &&
+      xy.every((n) => typeof n === "number" && Number.isFinite(n))
+    ) {
+      out[root] = [xy[0] as number, xy[1] as number];
+    }
+  }
+  return out;
+}
 
 function load(): LayoutPersisted {
   try {
@@ -54,6 +77,9 @@ function load(): LayoutPersisted {
         typeof saved.assistantWidth === "number"
           ? saved.assistantWidth
           : DEFAULTS.assistantWidth,
+      mode:
+        saved.mode === "project" || saved.mode === "floor" ? saved.mode : null,
+      floorPositions: validPositions(saved.floorPositions),
     };
   } catch {
     return structuredClone(DEFAULTS);
@@ -76,6 +102,8 @@ function persistable(state: LayoutPersisted): LayoutPersisted {
     collapsedSections: state.collapsedSections,
     assistantOpen: state.assistantOpen,
     assistantWidth: state.assistantWidth,
+    mode: state.mode,
+    floorPositions: state.floorPositions,
   };
 }
 
@@ -173,6 +201,14 @@ export interface LayoutState extends LayoutPersisted {
    * once it leaves the sidebar, so `podium.layout` does not keep growing.
    */
   forgetProject: (root: string) => void;
+  /** Switch between Project and Floor mode (persisted). */
+  setMode: (mode: FloorMode) => void;
+  /** Store a room's position on the floor (persisted). */
+  setFloorPosition: (root: string, xy: [number, number]) => void;
+  /** Store several room positions in one write (persisted); others stay. */
+  setFloorPositions: (positions: Record<string, [number, number]>) => void;
+  /** Forget every room position, so all rooms return to their default place. */
+  resetFloorPositions: () => void;
   /** Show or hide the assistant chat panel (persisted). */
   setAssistantOpen: (open: boolean) => void;
   /** Resize the assistant chat panel (persisted, clamped). */
@@ -253,8 +289,33 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       );
       const collapsedProjects = { ...s.collapsedProjects };
       delete collapsedProjects[root];
-      persist({ ...persistable(s), collapsedSections, collapsedProjects });
-      set({ collapsedSections, collapsedProjects });
+      const floorPositions = { ...s.floorPositions };
+      delete floorPositions[root];
+      persist({
+        ...persistable(s),
+        collapsedSections,
+        collapsedProjects,
+        floorPositions,
+      });
+      set({ collapsedSections, collapsedProjects, floorPositions });
+    },
+    setMode: (mode) => {
+      persist({ ...persistable(get()), mode });
+      set({ mode });
+    },
+    setFloorPosition: (root, xy) => {
+      const floorPositions = { ...get().floorPositions, [root]: xy };
+      persist({ ...persistable(get()), floorPositions });
+      set({ floorPositions });
+    },
+    setFloorPositions: (positions) => {
+      const floorPositions = { ...get().floorPositions, ...positions };
+      persist({ ...persistable(get()), floorPositions });
+      set({ floorPositions });
+    },
+    resetFloorPositions: () => {
+      persist({ ...persistable(get()), floorPositions: {} });
+      set({ floorPositions: {} });
     },
     setAssistantOpen: (assistantOpen) => {
       persist({ ...persistable(get()), assistantOpen });

@@ -1,0 +1,85 @@
+/* Fixed 12px layout that scales with its room, but never below 10px on screen (12 * 0.84): changing the font-size per zoom step reflowed it. Never wider than the room; the name ellipsizes. Pinned at the corner that touches the room. */
+.plate {
+  --grow: max(1, calc(0.84 / var(--z, 1)));
+  display: flex;
+  width: max-content;
+  max-width: calc(100% / var(--grow));
+  align-items: center;
+  gap: 0.5em;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text);
+  transform: scale(var(--grow));
+  transform-origin: bottom left;
+}
+
+/* Too small to hit when far out; the name and counts stay. */
+:global([data-far]) .btn {
+  display: none;
+}
+
+.needs,
+.crashed,
+.btn {
+  flex-shrink: 0;
+}
+
+.grip {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.25em 0.5em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: inherit;
+  font: inherit;
+  cursor: grab;
+  touch-action: none;
+}
+
+.grip:hover {
+  background: var(--surface-hover);
+}
+
+.plate[data-bad] .grip {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.name {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.needs,
+.crashed {
+  font-weight: 700;
+}
+
+.needs {
+  color: var(--warning);
+}
+
+.crashed {
+  color: var(--danger);
+}
+
+.btn {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  line-height: 1;
+  padding: 0.25em 0.5em;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}

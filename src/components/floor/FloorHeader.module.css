@@ -1,0 +1,91 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chips {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: var(--sp-2);
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* Fade the edges that have more chips beyond them (scrollEdges). */
+  --fade-left: 0px;
+  --fade-right: 0px;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--fade-left),
+    #000 calc(100% - var(--fade-right)),
+    transparent
+  );
+}
+
+.chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chips[data-more-left] {
+  --fade-left: 28px;
+}
+
+.chips[data-more-right] {
+  --fade-right: 28px;
+}
+
+.chip,
+.buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.chip:hover,
+.buttons button:hover {
+  background: var(--surface-hover);
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.add {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.empty {
+  align-self: center;
+}
+
+.needs {
+  color: var(--warning);
+}
+
+.crashed {
+  color: var(--danger);
+}
+
+.totals,
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}

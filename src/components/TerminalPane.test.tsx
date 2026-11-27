@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Per-command invoke stub; `process_git_branch` is overridable per test.
@@ -174,6 +174,155 @@ describe("TerminalPane header actions", () => {
       };
       render(<TerminalPane process={proc} />);
       expect(screen.getByText("Exited")).toBeVisible();
+    });
+  });
+
+  describe("caller props", () => {
+    const service = () => process("s1", "dev", { kind: "service" });
+    beforeEach(() => useProcessStore.setState({ processes: [service()] }));
+
+    it("renders as before without them", () => {
+      const { container } = render(<TerminalPane process={service()} />);
+      expect(container.querySelector("header svg")).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "dev" })).toBeNull();
+      expect(screen.getByText("dev")).toBeVisible();
+    });
+
+    it("puts leading in place of the icon and renders trailing", () => {
+      const { container } = render(
+        <TerminalPane
+          process={service()}
+          leading={<button type="button">Lead</button>}
+          trailing={<button type="button">Trail</button>}
+        />,
+      );
+      const header = container.querySelector("header")!;
+      expect(header.firstElementChild).toBe(
+        screen.getByRole("button", { name: "Lead" }),
+      );
+      expect(header.lastElementChild).toContainElement(
+        screen.getByRole("button", { name: "Trail" }),
+      );
+    });
+
+    it("hides the built-in actions with hideActions", () => {
+      render(<TerminalPane process={service()} hideActions />);
+      expect(screen.queryByRole("button", { name: "Stop dev" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Restart dev" })).toBeNull();
+    });
+
+    it("renames inline: Enter saves, blank is null", () => {
+      const onRename = vi.fn();
+      render(<TerminalPane process={service()} onRename={onRename} />);
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "  web " },
+      });
+      fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Enter" });
+      expect(onRename).toHaveBeenLastCalledWith("web");
+
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: " " },
+      });
+      fireEvent.blur(screen.getByLabelText("Name"));
+      expect(onRename).toHaveBeenLastCalledWith(null);
+    });
+
+    it("commits on blur only: an unmount alone or an Esc saves nothing", () => {
+      const onRename = vi.fn();
+      const first = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: " web " },
+      });
+      // The Floor modal blurs before it closes; a bare unmount is no commit.
+      first.unmount();
+      expect(onRename).not.toHaveBeenCalled();
+
+      const second = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "draft" },
+      });
+      fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Escape" });
+      second.unmount();
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    // Chromium/WebView2 blurs the input while Enter/Esc removes it: the blur
+    // lands before React re-renders, so both fire in one batch here.
+    it("saves nothing on the blur after Esc", () => {
+      const onRename = vi.fn();
+      const { unmount } = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      const input = screen.getByLabelText("Name");
+      fireEvent.change(input, { target: { value: "draft" } });
+      act(() => {
+        fireEvent.keyDown(input, { key: "Escape" });
+        fireEvent.blur(input);
+      });
+      unmount();
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    it("saves once on Enter followed by a blur", () => {
+      const onRename = vi.fn();
+      const { unmount } = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      const input = screen.getByLabelText("Name");
+      fireEvent.change(input, { target: { value: "web" } });
+      act(() => {
+        fireEvent.keyDown(input, { key: "Enter" });
+        fireEvent.blur(input);
+      });
+      unmount();
+      expect(onRename).toHaveBeenCalledTimes(1);
+      expect(onRename).toHaveBeenCalledWith("web");
+    });
+
+    it("does not rename on blur once the process is gone", () => {
+      const onRename = vi.fn();
+      const { unmount } = render(
+        <TerminalPane process={service()} onRename={onRename} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "web" },
+      });
+      act(() => useProcessStore.setState({ processes: [] }));
+      fireEvent.blur(screen.getByLabelText("Name"));
+      unmount();
+      expect(onRename).not.toHaveBeenCalled();
+    });
+
+    it("cancels the edit on Esc without letting it bubble", () => {
+      const onRename = vi.fn();
+      const outer = vi.fn();
+      render(
+        <div onKeyDown={outer}>
+          <TerminalPane process={service()} onRename={onRename} />
+        </div>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "dev" }));
+      fireEvent.change(screen.getByLabelText("Name"), {
+        target: { value: "draft" },
+      });
+      const notCancelled = fireEvent.keyDown(screen.getByLabelText("Name"), {
+        key: "Escape",
+      });
+      expect(notCancelled).toBe(false);
+      expect(outer).not.toHaveBeenCalled();
+      expect(onRename).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "dev" })).toBeVisible();
     });
   });
 });

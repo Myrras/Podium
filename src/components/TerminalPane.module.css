@@ -127,3 +127,56 @@
 .subagentKind + .headerActions {
   margin-left: var(--sp-2);
 }
+
+/* The name as a rename button: looks like the plain name. */
+.nameBtn {
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: text;
+}
+
+.nameInput {
+  min-width: 0;
+  width: 240px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/* Caller's actions at the far right; pushed right unless something already is. */
+.trailing {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.gitInfo + .trailing,
+.subagentKind + .trailing,
+.headerActions + .trailing {
+  margin-left: var(--sp-2);
+}
+
+/* With caller slots (Floor modal) the bar never wraps or overflows: the
+   status label and branch give way; the name and the slots keep their size. */
+.slotted .name {
+  flex-shrink: 0;
+  max-width: 240px;
+}
+
+.slotted .status {
+  overflow: hidden;
+}
+
+.slotted .status > :first-child,
+.slotted .gitInfo > svg {
+  flex-shrink: 0;
+}
+
+.slotted .statusText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

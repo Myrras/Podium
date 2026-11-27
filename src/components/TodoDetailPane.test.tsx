@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The stores pull in the IPC layer; jsdom has no Tauri bridge.
@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 import type { TodoComment, TodoInfo } from "../ipc/types";
 import { useLayoutStore } from "../state/layoutStore";
 import { useTodoStore } from "../state/todoStore";
+import { Popover } from "./Popover";
 import { TodoDetailPane } from "./TodoDetailPane";
 
 const initialTodo = useTodoStore.getState();
@@ -229,6 +230,56 @@ describe("TodoDetailPane", () => {
     });
   });
 
+  it("saves a title edit when a popover close blurs it", () => {
+    const { updateTodo } = seed();
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const onClose = vi.fn();
+    render(
+      <Popover anchor={anchor} onClose={onClose}>
+        <TodoDetailPane projectId={PROJECT} todoId={TODO} />
+      </Popover>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    input.focus();
+    fireEvent.change(input, { target: { value: " Ship the export " } });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(updateTodo).toHaveBeenCalledWith(PROJECT, TODO, {
+      text: "Ship the export",
+    });
+  });
+
+  it("does not save a title edit cancelled with Escape, nor on the blur after it", () => {
+    const { updateTodo } = seed();
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    fireEvent.change(input, { target: { value: "Nope" } });
+    // Chromium blurs the input as Esc removes it: both land in one batch.
+    act(() => {
+      fireEvent.keyDown(input, { key: "Escape" });
+      fireEvent.blur(input);
+    });
+
+    expect(updateTodo).not.toHaveBeenCalled();
+  });
+
+  it("cancels a comment edit on Escape and marks the key handled", () => {
+    const { editComment } = seed({ comments: [comment()] });
+    render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
+
+    fireEvent.click(screen.getByLabelText("Edit comment"));
+    const box = screen.getByRole("textbox", { name: "Edit comment" });
+    expect(fireEvent.keyDown(box, { key: "Escape" })).toBe(false);
+    expect(screen.queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(editComment).not.toHaveBeenCalled();
+  });
+
   it("cancels a title edit on Escape without saving", () => {
     const { updateTodo } = seed();
     render(<TodoDetailPane projectId={PROJECT} todoId={TODO} />);
@@ -338,5 +389,18 @@ describe("TodoDetailPane", () => {
     expect(openUrlMock).toHaveBeenCalledWith(
       "https://gitlab.example.com/acme/web/-/issues/42",
     );
+  });
+
+  it("calls onClose instead of clearing the open to-do", () => {
+    seed();
+    const onClose = vi.fn();
+    const clear = vi.fn();
+    useLayoutStore.setState({ clearOpenTodo: clear } as never);
+    render(
+      <TodoDetailPane projectId={PROJECT} todoId={TODO} onClose={onClose} />,
+    );
+    fireEvent.click(screen.getByLabelText("Close to-do"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
   });
 });

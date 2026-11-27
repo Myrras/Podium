@@ -1,0 +1,43 @@
+/* --gx, --gy, --gs are written by FloorMap from the camera: the dotted grid moves with the world. */
+.viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+  background-image: radial-gradient(
+    circle,
+    var(--border) 1px,
+    transparent 1.5px
+  );
+  background-size: var(--gs, 40px) var(--gs, 40px);
+  background-position: var(--gx, 0) var(--gy, 0);
+}
+
+/* Registered so --z can transition with the layer's scale: nameplates and desk marks then shrink with the map instead of jumping. */
+@property --z {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+.layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/*
+ * Exception to "animate only transform/opacity": --z animates so nameplates and
+ * desk marks stay in step with the map during a jump. Cost: a few dozen
+ * counter-scaled elements recalculate style each frame of one --dur-4 jump; a pan
+ * or wheel zoom does not animate.
+ */
+.layer[data-animate] {
+  transition:
+    transform var(--dur-4) var(--ease-out),
+    --z var(--dur-4) var(--ease-out);
+}

@@ -88,6 +88,33 @@
   border-color: var(--accent);
 }
 
+.viewOptions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.viewOption {
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-2) var(--ease-out),
+    background var(--dur-2) var(--ease-out);
+}
+
+.viewOption:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.viewOption.active {
+  border-color: var(--accent);
+}
+
 .swatch {
   display: flex;
   width: 56px;

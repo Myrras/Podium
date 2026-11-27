@@ -26,6 +26,8 @@ import {
   useSelectionStore,
 } from "../lib/selection";
 import { textPreview } from "../lib/textPreview";
+import { useContextMenu } from "../lib/useContextMenu";
+import { startAgentOnTodo } from "../lib/todoAgent";
 import { useLayoutStore } from "../state/layoutStore";
 import { useProcessStore } from "../state/processStore";
 import { useProjectStore } from "../state/projectStore";
@@ -40,7 +42,9 @@ import {
   CommentIcon,
   TodoIcon,
 } from "./icons";
+import { todoMenu } from "../lib/floor/menus";
 import { useSectionCollapsed } from "../lib/useSectionCollapsed";
+import { PopoverSlot } from "./Popover";
 import { SectionTitle } from "./SectionTitle";
 import sidebarStyles from "./Sidebar.module.css";
 import styles from "./TodoSubsection.module.css";
@@ -60,6 +64,9 @@ interface TodoRowProps {
   /** Plain click spawns the default agent; Cmd/Ctrl click opens the picker. */
   onSpawn: (e: React.MouseEvent) => void;
   onArchive: () => void;
+  /** Popover list: owner edge, full-title tooltip, Start as the one action. */
+  bare?: boolean;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /** Whether a running agent owns the to-do. A stopped owner keeps its link
@@ -76,6 +83,8 @@ function TodoRow({
   onActivate,
   onSpawn,
   onArchive,
+  bare,
+  onContextMenu,
 }: TodoRowProps) {
   const commentCount = todo.comments.length;
   const assigned = todo.assignedAgent;
@@ -90,6 +99,7 @@ function TodoRow({
       data-multiselect={multiSelected ? "true" : undefined}
       data-open={open ? "true" : undefined}
       data-assigned={assigned ? "true" : undefined}
+      onContextMenu={onContextMenu}
       style={
         // A stopped owner may have no colour: the square falls back to grey.
         assigned
@@ -118,7 +128,11 @@ function TodoRow({
         <button
           type="button"
           className={styles.textToggle}
-          title={`Open "${textPreview(todo.text)}" — Cmd/Ctrl+click to select`}
+          title={
+            bare
+              ? todo.text
+              : `Open "${textPreview(todo.text)}" — Cmd/Ctrl+click to select`
+          }
           onClick={onActivate}
         >
           <span className={styles.text}>{todo.text}</span>
@@ -145,16 +159,21 @@ function TodoRow({
             <AgentIcon size={13} />
           </button>
         )}
-        <button
-          type="button"
-          className={styles.action}
-          aria-label={`Archive to-do "${todo.text}"`}
-          title="Archive to-do"
-          onClick={onArchive}
-        >
-          <ArchiveIcon size={13} />
-        </button>
-        <CopyIdButton id={todo.id} className={styles.action} />
+        {/* The popover keeps rows quiet: archive is in the right-click menu. */}
+        {!bare && (
+          <>
+            <button
+              type="button"
+              className={styles.action}
+              aria-label={`Archive to-do "${todo.text}"`}
+              title="Archive to-do"
+              onClick={onArchive}
+            >
+              <ArchiveIcon size={13} />
+            </button>
+            <CopyIdButton id={todo.id} className={styles.action} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -164,6 +183,8 @@ interface TodoSubsectionProps {
   projectId: ProjectId;
   /** Project root: the key its collapse state is persisted under. */
   projectRoot: string;
+  /** Popover use: no section header or collapse, always open. */
+  bare?: boolean;
   /** Open the to-do detail dialog (hosted by the sidebar). */
   onOpenTodo: (projectId: ProjectId, todoId: TodoId) => void;
   /**
@@ -181,6 +202,7 @@ interface TodoSubsectionProps {
 export function TodoSubsection({
   projectId,
   projectRoot,
+  bare = false,
   onOpenTodo,
   onPickAgent,
 }: TodoSubsectionProps) {
@@ -196,7 +218,14 @@ export function TodoSubsection({
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const menu = useContextMenu();
   const inputRef = useRef<HTMLInputElement>(null);
+  // The live text, read by submit: a blur right after Esc (Chromium blurs
+  // the input as it goes) finds it cleared and adds nothing.
+  const pendingText = useRef("");
+  // The text of the add in flight: a blur during it (Enter, then a close)
+  // does not add the same text again.
+  const inFlight = useRef<string | null>(null);
 
   // Multi-select lives in the shared selection store — the assistant
   // composer shows the same rows as context chips. Only the Shift+range
@@ -214,9 +243,10 @@ export function TodoSubsection({
   const anchorRef = useRef<TodoId | null>(null);
 
   // Initial pull; later changes arrive via the `todo:changed` refresh.
+  // A Floor popover (bare) skips it: useFloorData already loaded the list.
   useEffect(() => {
-    void refresh(projectId);
-  }, [projectId, refresh]);
+    if (!bare) void refresh(projectId);
+  }, [projectId, refresh, bare]);
 
   // Ids to spawn on, in list order (stable, matches what the user sees).
   // To-dos a running agent owns can't be part of a selection.
@@ -229,38 +259,35 @@ export function TodoSubsection({
   );
 
   // The to-do currently open in the work area, highlighted like a selected
-  // agent/terminal row.
-  const openTodoId = openTodo?.projectId === projectId ? openTodo.todoId : null;
+  // agent/terminal row. A Floor popover is not the work area: no highlight.
+  const openTodoId =
+    !bare && openTodo?.projectId === projectId ? openTodo.todoId : null;
 
   useEffect(() => {
     if (adding) inputRef.current?.focus();
   }, [adding]);
 
   const submit = async () => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      setAdding(false);
-      setText("");
-      return;
-    }
-    if (await addTodo(projectId, trimmed)) setText("");
+    const trimmed = pendingText.current.trim();
+    if (!trimmed) return cancel();
+    if (inFlight.current === trimmed) return;
+    inFlight.current = trimmed;
+    const added = await addTodo(projectId, trimmed);
+    if (inFlight.current === trimmed) inFlight.current = null;
+    // A failed add keeps the text for a retry; text edited meanwhile stays too.
+    if (!added || pendingText.current.trim() !== trimmed) return;
+    pendingText.current = "";
+    setText("");
   };
 
   const cancel = () => {
+    pendingText.current = "";
     setAdding(false);
     setText("");
   };
 
-  // Plain click spawns the default agent immediately; Cmd/Ctrl+click opens the
-  // picker so the user can choose which agent runs the to-do.
-  const spawnOnTodo = (e: React.MouseEvent, todo: TodoInfo) => {
-    setActiveProject(projectId);
-    if (e.metaKey || e.ctrlKey) {
-      onPickAgent(projectId, [todo.id], todo.text);
-      return;
-    }
-    void spawnAgent(projectId, { todoIds: [todo.id] });
-  };
+  const spawnOnTodo = (e: React.MouseEvent, todo: TodoInfo) =>
+    startAgentOnTodo(projectId, todo, e, onPickAgent);
 
   // A row's title click: Cmd/Ctrl toggles selection, Shift extends a range
   // from the anchor, a plain click opens the to-do to read/edit it. A plain
@@ -312,52 +339,107 @@ export function TodoSubsection({
     anchorRef.current = null;
   };
 
-  const [collapsed, setCollapsed] = useSectionCollapsed(projectRoot, "todos");
+  const [storedCollapsed, setCollapsed] = useSectionCollapsed(
+    projectRoot,
+    "todos",
+  );
+  const collapsed = bare ? false : storedCollapsed;
+
+  const headerActions = (
+    <>
+      <button
+        type="button"
+        className={`${sidebarStyles.addBtn} ${bare ? "" : sidebarStyles.hoverAction}`}
+        aria-label="View archived to-dos"
+        title="Archived to-dos"
+        onClick={() => {
+          setActiveProject(projectId);
+          setArchiveOpen(true);
+        }}
+      >
+        <ArchiveIcon size={13} />
+      </button>
+      <button
+        type="button"
+        className={sidebarStyles.addBtn}
+        aria-label="New to-do"
+        title="New to-do"
+        onClick={() => {
+          // bare (a Floor popover) never touches the sidebar's saved collapse state.
+          if (!bare) setCollapsed(false);
+          setAdding(true);
+        }}
+      >
+        <AddIcon size={13} />
+      </button>
+    </>
+  );
+
+  const addForm = adding && (
+    <form
+      className={styles.addForm}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <input
+        ref={inputRef}
+        className={styles.addInput}
+        value={text}
+        placeholder="What needs doing?"
+        aria-label="New to-do text"
+        onChange={(e) => {
+          setText(e.target.value);
+          pendingText.current = e.target.value;
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        onBlur={() => void submit()}
+      />
+    </form>
+  );
 
   return (
     <div
       className={sidebarStyles.subsection}
       data-collapsed={collapsed ? "true" : undefined}
     >
-      <div className={sidebarStyles.sectionHeader}>
-        <SectionTitle
-          title="To-dos"
-          Icon={TodoIcon}
-          count={todos.length}
-          collapsed={collapsed}
-          onToggle={() => setCollapsed(!collapsed)}
-        />
-        <button
-          type="button"
-          className={`${sidebarStyles.addBtn} ${sidebarStyles.hoverAction}`}
-          aria-label="View archived to-dos"
-          title="Archived to-dos"
-          onClick={() => {
-            setActiveProject(projectId);
-            setArchiveOpen(true);
-          }}
-        >
-          <ArchiveIcon size={13} />
-        </button>
-        <button
-          type="button"
-          className={sidebarStyles.addBtn}
-          aria-label="New to-do"
-          title="New to-do"
-          onClick={() => {
-            setCollapsed(false);
-            setAdding(true);
-          }}
-        >
-          <AddIcon size={13} />
-        </button>
-      </div>
-      {collapsed ? null : todos.length > 0 || adding ? (
-        <div className={styles.rows}>
+      {bare ? (
+        <PopoverSlot name="header">{headerActions}</PopoverSlot>
+      ) : (
+        <div className={sidebarStyles.sectionHeader}>
+          <SectionTitle
+            title="To-dos"
+            Icon={TodoIcon}
+            count={todos.length}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed)}
+          />
+          {headerActions}
+        </div>
+      )}
+      {/* The popover counts open to-dos: its placeholder shows at 0 open,
+          above any done ones still waiting to be archived. */}
+      {!collapsed &&
+        !adding &&
+        (bare ? todos.every((t) => t.done) : todos.length === 0) && (
+          <div className={sidebarStyles.placeholder}>
+            {bare ? "No open to-dos. Add one with +." : "No to-dos yet."}
+          </div>
+        )}
+      {!collapsed && (todos.length > 0 || adding) && (
+        <div className={`${styles.rows} ${bare ? styles.bare : ""}`}>
+          {bare && addForm}
           {todos.map((todo) => (
             <TodoRow
               key={todo.id}
               todo={todo}
+              bare={bare}
               multiSelected={selected.has(todo.id)}
               open={openTodoId === todo.id}
               onToggleDone={() =>
@@ -366,33 +448,15 @@ export function TodoSubsection({
               onActivate={(e) => activateTodo(e, todo.id)}
               onSpawn={(e) => spawnOnTodo(e, todo)}
               onArchive={() => void setTodoArchived(projectId, todo.id, true)}
+              onContextMenu={
+                bare
+                  ? (e) => menu.open(e, todoMenu(projectId, todo))
+                  : undefined
+              }
             />
           ))}
-          {adding && (
-            <form
-              className={styles.addForm}
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submit();
-              }}
-            >
-              <input
-                ref={inputRef}
-                className={styles.addInput}
-                value={text}
-                placeholder="What needs doing?"
-                aria-label="New to-do text"
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") cancel();
-                }}
-                onBlur={() => void submit()}
-              />
-            </form>
-          )}
+          {!bare && addForm}
         </div>
-      ) : (
-        <div className={sidebarStyles.placeholder}>No to-dos yet.</div>
       )}
       {/* Stays visible while collapsed: the selection outlives the fold, so
           its "Start agent" / Clear actions must too. */}
@@ -421,6 +485,7 @@ export function TodoSubsection({
           </button>
         </div>
       )}
+      {menu.element}
       <ArchiveModal
         open={archiveOpen}
         projectId={projectId}

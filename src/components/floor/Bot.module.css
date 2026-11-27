@@ -1,0 +1,84 @@
+.bot {
+  flex: none;
+  display: block;
+  width: var(--s, 64px);
+  height: var(--s, 64px);
+  overflow: hidden;
+}
+
+.bot > i {
+  display: block;
+  width: 800%;
+  height: 100%;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+}
+
+.bot[data-state="working"] > i {
+  animation: type var(--dur-beat) steps(4) infinite;
+  animation-delay: calc(var(--dur-beat) * var(--phase, 0) * -1);
+}
+
+.bot[data-state="needs"] > i {
+  transform: translateX(-50%);
+}
+
+.bot[data-state="idle"] > i,
+.bot[data-state="ended"] > i,
+.bot[data-state="crashed"] > i {
+  transform: translateX(-75%);
+}
+
+.bot[data-state="idle"],
+.bot[data-state="ended"],
+.bot[data-state="crashed"] {
+  opacity: 0.45;
+  filter: saturate(0.2);
+}
+
+.two > i {
+  width: 200%;
+}
+
+.px {
+  flex: none;
+  display: block;
+  width: 32px;
+  height: 32px;
+  overflow: hidden;
+}
+
+.px > i {
+  display: block;
+  width: 200%;
+  height: 100%;
+  background-size: 100% 100%;
+  image-rendering: pixelated;
+  animation: two var(--dur-beat) steps(2) infinite;
+  animation-delay: calc(var(--dur-beat) * var(--phase, 0) * -1);
+}
+
+.mon > i {
+  animation-duration: calc(var(--dur-beat) * 1.5);
+  animation-delay: calc(var(--dur-beat) * 1.5 * var(--phase, 0) * -1);
+}
+
+@keyframes type {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes two {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-100%);
+  }
+}

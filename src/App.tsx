@@ -51,6 +51,8 @@ import { useWorktreeStore } from "./state/worktreeStore";
 import { AssistantPane } from "./components/AssistantPane";
 import { CloseWarningModal } from "./components/CloseWarningModal";
 import { LogoMark } from "./components/LogoMark";
+import { ModeChooser } from "./components/ModeChooser";
+import { Floor } from "./components/floor/Floor";
 import { GitBoard } from "./components/GitBoard";
 import { ScratchpadDetailPane } from "./components/ScratchpadDetailPane";
 import { SettingsModal } from "./components/SettingsModal";
@@ -77,6 +79,7 @@ export default function App() {
   const openTodo = useLayoutStore((s) => s.openTodo);
   const openScratchpad = useLayoutStore((s) => s.openScratchpad);
   const openBoard = useLayoutStore((s) => s.openBoard);
+  const mode = useLayoutStore((s) => s.mode);
   const assistantOpen = useLayoutStore((s) => s.assistantOpen);
   const setAssistantOpen = useLayoutStore((s) => s.setAssistantOpen);
   const assistantEnabled = useAssistantStore((s) => s.enabled);
@@ -374,43 +377,52 @@ export default function App() {
       </header>
 
       <div className={styles.body}>
-        <Sidebar />
-        <div
-          className={styles.sidebarResizer}
-          onMouseDown={onSidebarResizerDown}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-        />
-        <main className={styles.work}>
-          {openBoard ? (
-            <GitBoard
-              key={openBoard.projectId}
-              projectId={openBoard.projectId}
+        {/* Floor mode replaces only sidebar and work area; `null` (not chosen yet) is Project mode. */}
+        {mode === "floor" ? (
+          <main className={styles.floor}>
+            <Floor />
+          </main>
+        ) : (
+          <>
+            <Sidebar />
+            <div
+              className={styles.sidebarResizer}
+              onMouseDown={onSidebarResizerDown}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
             />
-          ) : openScratchpad ? (
-            <ScratchpadDetailPane
-              key={openScratchpad.scratchpadId}
-              projectId={openScratchpad.projectId}
-              scratchpadId={openScratchpad.scratchpadId}
-            />
-          ) : openTodo ? (
-            <TodoDetailPane
-              key={openTodo.todoId}
-              projectId={openTodo.projectId}
-              todoId={openTodo.todoId}
-            />
-          ) : openSubagent ? (
-            <TerminalPane
-              key={openSubagent.id}
-              process={subagentProcess(openSubagent)}
-            />
-          ) : activeProcess ? (
-            <TerminalPane process={activeProcess} />
-          ) : (
-            <WelcomeScreen />
-          )}
-        </main>
+            <main className={styles.work}>
+              {openBoard ? (
+                <GitBoard
+                  key={openBoard.projectId}
+                  projectId={openBoard.projectId}
+                />
+              ) : openScratchpad ? (
+                <ScratchpadDetailPane
+                  key={openScratchpad.scratchpadId}
+                  projectId={openScratchpad.projectId}
+                  scratchpadId={openScratchpad.scratchpadId}
+                />
+              ) : openTodo ? (
+                <TodoDetailPane
+                  key={openTodo.todoId}
+                  projectId={openTodo.projectId}
+                  todoId={openTodo.todoId}
+                />
+              ) : openSubagent ? (
+                <TerminalPane
+                  key={openSubagent.id}
+                  process={subagentProcess(openSubagent)}
+                />
+              ) : activeProcess ? (
+                <TerminalPane process={activeProcess} />
+              ) : (
+                <WelcomeScreen />
+              )}
+            </main>
+          </>
+        )}
         {assistantOpen && (
           <>
             <div
@@ -437,6 +449,7 @@ export default function App() {
         open={closeWarnOpen}
         onClose={() => setCloseWarnOpen(false)}
       />
+      <ModeChooser />
     </div>
   );
 }

@@ -1,0 +1,7 @@
+/* Map and waypoint layer share this box, so waypoints can sit absolutely over the map. */
+.mapArea {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
