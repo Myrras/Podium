@@ -76,6 +76,8 @@ Session memory (`agent/session_memory.rs`, setting `remember_sessions` in
 [To-dos](todos.md#restart-resumes-the-session)). It persists in
 `session_memory.json` in the app data dir, keyed by project root.
 
+The restore's transcript check searches every Claude config dir (`claude_config_dirs`): `$CLAUDE_CONFIG_DIR`, `~/.claude`, and each `~/.claude-*` with a `projects/` dir, since the GUI process lacks a shell-only `CLAUDE_CONFIG_DIR`. A missing transcript is logged (`warn`) and the entry skipped.
+
 ### Capture at shutdown
 
 `Orchestrator::shutdown()` is the only place a session is captured. Each

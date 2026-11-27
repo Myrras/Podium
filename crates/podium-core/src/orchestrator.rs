@@ -1784,6 +1784,11 @@ impl Orchestrator {
             .session_stored(&entry.adapter_id, &entry.session_id, wsl)
             .await
         {
+            tracing::warn!(
+                process = %entry.name,
+                session = %entry.session_id,
+                "skipping a remembered agent session: no transcript found"
+            );
             return Ok(());
         }
         // A worktree the agent already made under the requested name is not

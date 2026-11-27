@@ -10,6 +10,10 @@ when it merges.
 
 ## [Unreleased]
 
+### Fixed
+
+- Agents whose Claude Code uses another config folder (`CLAUDE_CONFIG_DIR`, e.g. `~/.claude-personal`) are resumed after a restart again.
+
 ## [3.4.1] - 2026-11-26
 
 ### Fixed
