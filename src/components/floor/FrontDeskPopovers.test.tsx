@@ -63,7 +63,12 @@ beforeEach(() => {
     {
       ...initialAssistant,
       enabled: true,
-      responses: [question],
+      responses: [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+        ...question,
+        id: `r-${n}`,
+        key: `agent:proc-${n}`,
+        processId: `proc-${n}`,
+      })),
       // Mount-time loads of the chat: no backend here.
       loadAutonomy: vi.fn(() => Promise.resolve()),
       hydrate: vi.fn(() => Promise.resolve()),
@@ -77,10 +82,10 @@ const chat = () => screen.queryByLabelText("Message the assistant");
 const list = () => screen.queryByRole("region", { name: "Responses" });
 
 describe("FrontDeskPopovers", () => {
-  it("opens the overview list from the count chip", async () => {
+  it("opens the overview list from +N", async () => {
     const user = userEvent.setup();
     renderDesk();
-    await user.click(screen.getByRole("button", { name: "1 needs you" }));
+    await user.click(screen.getByRole("button", { name: "Show all 7" }));
     expect(list()).toBeInTheDocument();
     expect(screen.getByText("What needs you")).toBeInTheDocument();
     expect(chat()).toBeNull();
@@ -103,7 +108,7 @@ describe("FrontDeskPopovers", () => {
     const user = userEvent.setup();
     renderDesk();
     await user.click(screen.getByRole("button", { name: "Open chat" }));
-    await user.click(screen.getByRole("button", { name: "1 needs you" }));
+    await user.click(screen.getByRole("button", { name: "Show all 7" }));
     expect(list()).toBeInTheDocument();
     expect(chat()).not.toBeVisible();
 
@@ -122,7 +127,7 @@ describe("FrontDeskPopovers", () => {
     const bot = screen.getByRole("button", { name: "Open chat" });
     await user.click(bot);
 
-    fireEvent.keyDown(screen.getByRole("button", { name: "1 needs you" }), {
+    fireEvent.keyDown(screen.getByRole("button", { name: "Show all 7" }), {
       key: "Escape",
     });
     expect(chat()).toBeInTheDocument();
@@ -146,7 +151,7 @@ describe("FrontDeskPopovers", () => {
     expect(popover).toHaveAttribute("inert");
 
     // The hidden chat's outside-click handler is off: a click in the list keeps it open.
-    await user.click(screen.getByRole("button", { name: "1 needs you" }));
+    await user.click(screen.getByRole("button", { name: "Show all 7" }));
     fireEvent.mouseDown(list()!);
     expect(useFloorStore.getState().deskPopover).toBe("list");
 

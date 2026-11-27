@@ -99,7 +99,7 @@ Settings > General > Appearance > View.
   the last chip in the header.
 - **Front desk.** The assistant sits in the bottom-right corner of the map with
   a queue of what needs you. Hover an item for Reply, Park and Dismiss (a message: Reply or Done); click it
-  to fly to that agent (which takes the item off the queue). The count opens the full list, its bot (or the title
+  to fly to that agent (which takes the item off the queue). Past six items, **+N** opens the full list; its bot (or the title
   bar's assistant button) opens the chat above the desk. Esc inside closes it.
   A desk shows a tick when its agent is ready to review, and sleeps while its
   item is parked. While the assistant checks Slack and Teams, its bot reads

@@ -1,7 +1,7 @@
 /**
  * The assistant on the floor: a desk pinned to the bottom-right corner of the
  * map (it does not pan or zoom). The house bot opens the chat, the queue holds
- * every open Responses item, and the count opens the full list; both open as
+ * every open Responses item (the +N past six opens the full list); both open as
  * popovers above the desk (`FrontDeskPopovers`, anchored on `data-desk`).
  */
 
@@ -54,21 +54,21 @@ export function FrontDesk({
             <Figure key={item.key} item={item} />
           ))}
           {n > MAX_QUEUE && (
-            <span className={styles.more}>+{n - MAX_QUEUE}</span>
+            <button
+              type="button"
+              className={styles.more}
+              aria-label={`Show all ${n}`}
+              title={`Show all ${n}`}
+              data-desk="list"
+              aria-expanded={desk === "list"}
+              onClick={onOpenList}
+            >
+              +{n - MAX_QUEUE}
+            </button>
           )}
         </div>
       </div>
       <div className={styles.line}>
-        <button
-          type="button"
-          className={styles.count}
-          data-n={n}
-          data-desk="list"
-          aria-expanded={desk === "list"}
-          onClick={onOpenList}
-        >
-          {n ? `${n} ${n === 1 ? "needs" : "need"} you` : "Nothing needs you"}
-        </button>
         <span className={styles.state} title={deskLine(state, helpers)}>
           {deskLine(state, helpers)}
         </span>

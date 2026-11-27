@@ -87,24 +87,20 @@ describe("FrontDesk", () => {
       "Agent 3",
     ]);
     expect(screen.getByText("+2")).toBeInTheDocument();
-    expect(screen.getByText("8 need you")).toBeInTheDocument();
   });
 
-  it("leaves parked items out of the queue and the count", () => {
+  it("leaves parked items out of the queue", () => {
     seed([item(1), item(2, { state: "parked" })]);
     render(<FrontDesk />);
     expect(figures()).toEqual(["Agent 1"]);
-    expect(screen.getByText("1 needs you")).toBeInTheDocument();
   });
 
-  it("says nothing needs you when the queue is empty", () => {
+  it("has no count button, only the desk line", () => {
     seed([item(1, { state: "parked" })]);
     render(<FrontDesk />);
     expect(figures()).toEqual([]);
-    expect(screen.getByText("Nothing needs you")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Nothing needs you" }).nextSibling,
-    ).toHaveTextContent("Idle");
+    expect(screen.queryByText(/need(s)? you/i)).toBeNull();
+    expect(screen.getByText("Idle")).toBeInTheDocument();
   });
 
   it("shows the bot reading letters only while the Slack/Teams check runs", () => {
@@ -244,14 +240,14 @@ describe("FrontDesk", () => {
     expect(dismissResponse).toHaveBeenCalledWith("msg:slack:c1:t1");
   });
 
-  it("opens chat from the bot and the list from the count", async () => {
+  it("opens chat from the bot and the list from +N", async () => {
     const onOpenChat = vi.fn();
     const onOpenList = vi.fn();
-    seed([item(1)]);
+    seed([1, 2, 3, 4, 5, 6, 7].map((n) => item(n)));
     render(<FrontDesk onOpenChat={onOpenChat} onOpenList={onOpenList} />);
     await userEvent.click(screen.getByRole("button", { name: "Open chat" }));
     expect(onOpenChat).toHaveBeenCalledTimes(1);
-    await userEvent.click(screen.getByRole("button", { name: "1 needs you" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show all 7" }));
     expect(onOpenList).toHaveBeenCalledTimes(1);
   });
 });
